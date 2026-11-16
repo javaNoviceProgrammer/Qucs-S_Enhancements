@@ -105,7 +105,10 @@ QString spiceOf(const EquivalentCircuit& circuit, const QString& name, const QSt
 /// (\a name: the schematic's own, which its dataset and display take - the
 /// file's base name; every circuit's was "equivalent.dat", one export's
 /// simulation writing over another's.)
-QString schematicOf(const EquivalentCircuit& circuit, const QStringList& comment, const QString& name = QStringLiteral("equivalent"));
+/// (\a usSymbol: its resistors drawn as the US zigzag, as a new part is
+/// where the settings say so - every one was "european", whatever they said.)
+QString schematicOf(const EquivalentCircuit& circuit, const QStringList& comment, const QString& name = QStringLiteral("equivalent"),
+                    bool usSymbol = false);
 
 } // namespace qucs_s::rf25
 

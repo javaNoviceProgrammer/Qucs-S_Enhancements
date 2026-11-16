@@ -130,14 +130,32 @@ std::optional<FullWave> solvedStandard(const QString& path, const QList<double>&
     const std::optional<Model> model = Model::fromJson(f.readAll(), &notes);
     if (!model) return fail(tr("%1 is no RF 2.5D model: %2").arg(name, notes));
     const QString named = textOf(model->layout(), QStringLiteral("file")).trimmed();
-    if (named.isEmpty()) return fail(tr("%1 names no layout.").arg(name));
-    const QString layoutPath = QFileInfo(named).isAbsolute() ? named : QFileInfo(path).absoluteDir().absoluteFilePath(named);
-    QString error;
-    std::atomic_bool cancelled{false};
-    qucs_s::layout::Progress progress{0};
-    const std::shared_ptr<const qucs_s::layout::Layout> read = qucs_s::layout::read(layoutPath, &error, &cancelled, &progress);
-    if (!read) return fail(tr("%1's layout could not be read: %2").arg(name, error));
-    const Processed processed = processRead(*model, *read, QFileInfo(layoutPath).fileName());
+    // (A standard of its own shapes alone names no file: they are processed
+    //  over an empty layout, as its tab does - NF2 of the open items, where
+    //  such a standard solved alone and was refused here.)
+    const Node* own = model->layout().child(QStringLiteral("rf_shapes"));
+    const bool shapesAlone = named.isEmpty() && own != nullptr && std::any_of(own->children.cbegin(), own->children.cend(), [](const Node& n) {
+        return n.enabled && n.type == QLatin1String("rf_shape");
+    });
+    if (named.isEmpty() && !shapesAlone) return fail(tr("%1 names no layout, and has no shapes of its own.").arg(name));
+    const QString layoutPath = shapesAlone ? QString() : QFileInfo(named).isAbsolute() ? named : QFileInfo(path).absoluteDir().absoluteFilePath(named);
+    std::shared_ptr<const qucs_s::layout::Layout> read;
+    if (shapesAlone) {
+        auto empty = std::make_shared<qucs_s::layout::Layout>();
+        qucs_s::layout::Cell top;
+        top.name = QStringLiteral("TOP");
+        empty->cells << top;
+        empty->topCells << 0;
+        empty->byName.insert(top.name, 0);
+        read = empty;
+    } else {
+        QString error;
+        std::atomic_bool cancelled{false};
+        qucs_s::layout::Progress progress{0};
+        read = qucs_s::layout::read(layoutPath, &error, &cancelled, &progress);
+        if (!read) return fail(tr("%1's layout could not be read: %2").arg(name, error));
+    }
+    const Processed processed = processRead(*model, *read, shapesAlone ? QString() : QFileInfo(layoutPath).fileName());
     if (!processed.ok()) return fail(tr("%1: %2").arg(name, processed.problems.join(QLatin1Char(' '))));
     QStringList said;
     const Mesh mesh = meshOf(processed.conductors, tabMeshSettings(*model, &said), model->solveStack(), topFrequency(*model));
@@ -382,8 +400,9 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
     job.mesh = mesh;
     job.conductors = processed.conductors;
     job.stack = model.solveStack();
-    for (const QString& p : processed.problems)
-        if (p.startsWith(QStringLiteral("Cutout: "))) job.processWarnings << p;
+    // (The Cutout's, as processing kept them: matched by their text, they
+    //  held only while nothing was translated - the review of 26ff2805.)
+    job.processWarnings << processed.cutoutProblems;
     // The layers that end: their shapes, and what is beyond them.
     for (auto it = processed.extents.cbegin(); it != processed.extents.cend(); ++it) {
         const Layer* layer = job.stack.named(it.key());
@@ -858,25 +877,10 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
             job.stripFrequencies = 0;
             job.calibrated = 0;
             ++job.calibrationsBegun;
+            // (Its strips not converged, solved once more with longer cells:
+            //  calibrate()'s own, P14 of the open items.)
             calibration = std::make_shared<Calibration>(
                 calibrate(job.stack, how, job.top, feed, solvedAt, 1e-6, &quiet, port.strips / 1e-6));
-            // Its strips' solve not converged - an 8.2 mm strip held
-            // compressed, past the dense bound -: tried once more with its
-            // cells twice as long along them, few enough to solve dense, and
-            // said (P14 of the open items: there was no retry).
-            if (!calibration->ok() && !job.stop.load() && calibration->problems.join(QLatin1Char(' ')).contains(QLatin1String("GMRES"))) {
-                MeshSettings longer = how;
-                longer.stretch = std::max(2 * how.stretch, 8.0);
-                auto again = std::make_shared<Calibration>(
-                    calibrate(job.stack, longer, job.top, feed, solvedAt, 1e-6, &quiet, port.strips / 1e-6));
-                if (again->ok()) {
-                    again->lines.prepend(tr("Its strips solved again with cells %1 times as long as wide along them: with "
-                                            "cells as the structure's they did not converge (%2).")
-                                             .arg(longer.stretch, 0, 'g', 3)
-                                             .arg(calibration->problems.join(QLatin1Char(' '))));
-                    calibration = again;
-                }
-            }
             if (calibration->ok() && solvedAt.size() < frequencies.size()) {
                 *calibration = calibrationAt(*calibration, frequencies);
                 calibration->lines << tr("Its strips solved at the %1 frequencies the structure was, and read at the "

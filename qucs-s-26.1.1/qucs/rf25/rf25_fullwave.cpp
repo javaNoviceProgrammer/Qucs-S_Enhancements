@@ -4748,6 +4748,14 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             out.openBlas = out.openBlas || a.openBlas;
             out.symmetricLu = out.symmetricLu || a.symmetric;
         }
+        // (Held dense, said as the compressed one is: the mesh's estimate of
+        //  it held compressed is not what was done - NF6 of the open items.)
+        const double bytes = 16.0 * double(nr + nc) * double(nr + nc);
+        out.lines << tr("The system held dense (%1 runs and cells, %2 a dense matrix is set up for): %3 a frequency, "
+                        "solved by LU.")
+                         .arg(nr + nc)
+                         .arg(nr + nc > most ? tr("past the %1, as asked").arg(most) : tr("within the %1").arg(most))
+                         .arg(bytes >= 1e9 ? tr("%1 GB").arg(bytes / 1e9, 0, 'f', 2) : tr("%1 MB").arg(bytes / 1e6, 0, 'f', 1));
         if (out.symmetricLu)
             out.lines << tr("Each frequency's system factorized as the symmetric matrix it is, L D L^T - half an LU's "
                             "arithmetic, the quicker where many frequencies at once share the machine: this machine "

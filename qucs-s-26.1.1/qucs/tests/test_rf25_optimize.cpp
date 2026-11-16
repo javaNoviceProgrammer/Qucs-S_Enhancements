@@ -130,6 +130,11 @@ private slots:
         QVERIFY(std::abs(read(QStringLiteral("S21_deg"), Over::Most, G::Monitor) - -36) < 1e-9);
         QVERIFY(std::abs(read(QStringLiteral("S21_deg"), Over::At, G::Monitor, 2.5e9) - -90) < 1e-9);
         QVERIFY(std::abs(read(QStringLiteral("S21_deg"), Over::At, G::Monitor, 2e9) - -72) < 1e-9);
+        // Where its least and most fall (NF1): a frequency, in Hz.
+        QVERIFY(std::abs(read(QStringLiteral("S21_deg"), Over::LeastAt, G::Monitor) - 3e9) < 1e-3);
+        QCOMPARE(dim, fem::parseUnit(QStringLiteral("Hz"))->dim);
+        QVERIFY(std::abs(read(QStringLiteral("S21_deg"), Over::MostAt, G::Monitor) - 1e9) < 1e-3);
+        QCOMPARE(dim, fem::parseUnit(QStringLiteral("Hz"))->dim);
         // Refused: no frequency for At, one outside, a name it has not.
         rf::Reading r;
         r.expression = QStringLiteral("S21_deg");
@@ -151,6 +156,23 @@ private slots:
         QVERIFY(rf::overOf(QStringLiteral("max"), Over::Worst, &over) && over == Over::Most);
         QVERIFY(rf::overOf(QStringLiteral("At"), Over::Worst, &over) && over == Over::At);
         QVERIFY(!rf::overOf(QStringLiteral("mean"), Over::Worst, &over));
+        QVERIFY(rf::overOf(QStringLiteral("min_at"), Over::Worst, &over) && over == Over::LeastAt);
+        QVERIFY(rf::overOf(QStringLiteral("MAX_AT"), Over::Worst, &over) && over == Over::MostAt);
+        // A reading's name, where two read one expression.
+        rf::Reading named;
+        named.expression = QStringLiteral("S21_dB");
+        named.over = Over::Least;
+        named.from = 3e9;
+        named.to = 7e9;
+        QCOMPARE(rf::readingName(named), QStringLiteral("S21_dB min 3-7 GHz"));
+        named.over = Over::At;
+        named.at = 5.5e9;
+        QCOMPARE(rf::readingName(named), QStringLiteral("S21_dB at 5.5 GHz"));
+        named.over = Over::MostAt;
+        named.from = NAN;
+        QCOMPARE(rf::readingName(named), QStringLiteral("S21_dB max_at …-7 GHz"));
+        named.to = NAN;
+        QCOMPARE(rf::readingName(named), QStringLiteral("S21_dB max_at"));
         double hz = 0;
         QVERIFY(rf::frequencyOf(QStringLiteral("2.4[GHz]"), ps, &hz, &why) && std::abs(hz - 2.4e9) < 1);
         QVERIFY(rf::frequencyOf(QString(), ps, &hz, &why) && std::isnan(hz));
@@ -216,7 +238,7 @@ private slots:
         const QJsonArray q = QJsonArray() << QJsonArray{"C11"};
         QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"h", "1", "2"})}, {"quantities", q}}, "no parameter h"));
         QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[um]", "2[um]"})}}, "reads nothing"));
-        QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[um]", "2[um]"})}, {"quantities", (QJsonArray() << QJsonArray{"C11", "worst"})}}, "last, min, max or at"));
+        QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[um]", "2[um]"})}, {"quantities", (QJsonArray() << QJsonArray{"C11", "worst"})}}, "last, min, max, at, min_at or max_at"));
         QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "0", "2[um]", "3", "log"})}, {"quantities", q}}, "above nought"));
         QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[um]"})}, {"quantities", q}}, "a From and a To"));
         QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[V]", "2[um]"})}, {"quantities", q}}, "From"));
@@ -225,6 +247,19 @@ private slots:
         QVERIFY(refused({{"parameters", QJsonArray{QJsonArray{"w", "1[um]", "2[um]"}, QJsonArray{"L", "1[mm]", "2[mm]"}, QJsonArray{"er", "1", "2"}}}, {"quantities", q}}, "one or two"));
         QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[um]", "2[um]"})}, {"quantities", (QJsonArray() << QJsonArray{"C11", "at"})}}, "give it in At"));
         QVERIFY(refused({{"parameters", (QJsonArray() << QJsonArray{"w", "1[um]", "2[um]"})}, {"quantities", q}, {"parallel", 0}}, "Solves at once"));
+
+        // What a run found kept in the node, read back with it unsaid (NF3:
+        // "no property of a Parametric Sweep", where an exported model was
+        // imported again).
+        {
+            rf::Model kept = m;
+            kept.find(tag)->props.insert(QStringLiteral("result"), QJsonObject{{"columns", QJsonArray{"w"}}});
+            QString notes;
+            const std::optional<rf::Model> back = rf::Model::fromJson(kept.toJson(), &notes);
+            QVERIFY2(back.has_value() && !notes.contains(QStringLiteral("result")), qPrintable(notes));
+            QVERIFY(back->find(tag)->props.value(QStringLiteral("result")).isObject());
+            QVERIFY2(rf::sweepPlan(*back, *back->find(tag), &why).has_value(), qPrintable(why));
+        }
 
         // A point's model: the parameters it varies, as SI values in their units.
         const rf::Model point = rf::withParameters(m, {{"w", rf::siText(20e-6, fem::parseUnit(QStringLiteral("m"))->dim)}});
@@ -299,6 +334,15 @@ private slots:
         QVERIFY(added != nullptr);
         const QString tag = added->tag;
         QCOMPARE(rf::optimizationNode(m), m.find(tag));
+        // A variable's Type the optimizer does not know: among the model's
+        // problems, which rf25_edit answers with (NF4) - E24 known.
+        {
+            rf::Model typed = m;
+            typed.find(tag)->props.insert(QStringLiteral("variables"), QJsonArray() << QJsonArray{"w", "", "10[um]", "200[um]", "E24"});
+            QVERIFY2(!typed.problems().join(' ').contains(QStringLiteral("Type")), qPrintable(typed.problems().join(" | ")));
+            typed.find(tag)->props.insert(QStringLiteral("variables"), QJsonArray() << QJsonArray{"w", "", "10[um]", "200[um]", "E25"});
+            QVERIFY2(typed.problems().join(' ').contains(QStringLiteral("w's Type \"E25\" is not one of")), qPrintable(typed.problems().join(" | ")));
+        }
         QString why;
         std::optional<rf::OptimizationPlan> plan = rf::optimizationPlan(m, *m.find(tag), &why);
         QVERIFY2(plan.has_value(), qPrintable(why));
@@ -319,7 +363,7 @@ private slots:
             return no && why.contains(QLatin1String(said));
         };
         const QJsonArray w = QJsonArray() << QJsonArray{"w", "", "10[um]", "200[um]"};
-        QVERIFY(refused({{"variables", w}, {"objectives", QJsonArray() << QJsonArray{"Z0", "MIN", "", "", "sometimes"}}}, "worst, last, min, max or at"));
+        QVERIFY(refused({{"variables", w}, {"objectives", QJsonArray() << QJsonArray{"Z0", "MIN", "", "", "sometimes"}}}, "worst, last, min, max, at, min_at or max_at"));
         QVERIFY(refused({{"variables", w}, {"objectives", QJsonArray() << QJsonArray{"Z0", "MIN", "", "", "at"}}}, "give it in At"));
         QVERIFY(refused({{"variables", QJsonArray() << QJsonArray{"h", "", "1", "2"}}, {"objectives", QJsonArray() << QJsonArray{"Z0"}}}, "no parameter h"));
         QVERIFY(refused({{"variables", w}, {"objectives", QJsonArray() << QJsonArray{"Z0", "MON"}}}, "nothing to reach"));

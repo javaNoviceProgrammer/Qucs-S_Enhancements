@@ -3971,6 +3971,14 @@ private slots:
             QVERIFY2(fit.value("S differs by at most").isDouble() && fit.value("S differs by at most").toDouble() < 0.05,
                      qPrintable(QString::fromUtf8(QJsonDocument(fit).toJson())));
             QCOMPARE(fit.value("frequencies").toInt(), 1);
+            // Its window (NF7): a number in Hz or a quantity; none of the
+            // solve's frequencies in it, or no frequency, said.
+            const QJsonObject past = call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}, {"from", 1e15}}, 120000);
+            QVERIFY2(failed(past) && text(past).contains(QStringLiteral("No frequency of the solve's")), qPrintable(text(past)));
+            const QJsonObject volts = call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}, {"to", "3[V]"}}, 120000);
+            QVERIFY2(failed(volts) && text(volts).contains(QStringLiteral("'to'")), qPrintable(text(volts)));
+            const QJsonObject wide = json(call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}, {"from", "0[Hz]"}, {"to", "1000[GHz]"}}, 120000)).toObject();
+            QCOMPARE(wide.value("frequencies").toInt(), 1);
             // How it was fitted: together on S, the branches' own rms beside
             // it, or branch by branch (F6 of the open items of 8 November).
             const bool together = fit.value("fitted").toString().startsWith(QStringLiteral("every value together, to the solve's S"));

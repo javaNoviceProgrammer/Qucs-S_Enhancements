@@ -1110,8 +1110,25 @@ QJsonObject QucsControl::rf25Circuit(const QJsonObject& args)
         const QDir dir = file.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(file).absoluteDir();
         where = QDir::cleanPath(dir.absoluteFilePath(where));
     }
+    // Its window (NF7 of the open items): 'from' and 'to', else the node's.
     QString why;
-    const std::optional<EquivalentCircuit> c = model->equivalentCircuit(&why);
+    double window[2] = {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN()};
+    {
+        const qucs_s::rf25::Node* n = node.isEmpty() ? nullptr : model->model().root.find(node);
+        const std::shared_ptr<qucs_s::fem::ParameterScope> ps = qucs_s::fem::evaluateParameters(model->model().parameters());
+        const QJsonValue asked[2] = {args.value(QLatin1String("from")), args.value(QLatin1String("to"))};
+        for (int e = 0; e < 2; ++e) {
+            const QString key = e == 0 ? QStringLiteral("from") : QStringLiteral("to");
+            const QJsonValue given = asked[e];
+            const QString text = given.isDouble() ? QStringLiteral("%1[Hz]").arg(given.toDouble(), 0, 'g', 17)
+                                 : given.isString() ? given.toString().trimmed()
+                                 : n != nullptr ? qucs_s::rf25::textOf(*n, key).trimmed()
+                                                : QString();
+            if (!text.isEmpty() && (ps == nullptr || !qucs_s::rf25::frequencyOf(text, *ps, &window[e], &why)))
+                return errorResult(tr("'%1': %2").arg(key, ps == nullptr ? tr("the model's parameters do not evaluate") : why));
+        }
+    }
+    const std::optional<EquivalentCircuit> c = model->equivalentCircuit(&why, window[0], window[1]);
     if (!c) return errorResult(model->fullWave() ? why : tr("Nothing is solved full-wave yet: rf25_solve it first (solver full_wave)."));
 
     QJsonObject out;
@@ -1983,6 +2000,7 @@ QJsonObject QucsControl::rf25Sweep(const QJsonObject& args)
                     {QStringLiteral("failed"), r.failed}, {QStringLiteral("stopped"), r.stopped}, {QStringLiteral("seconds"), r.seconds},
                     {QStringLiteral("old"), doc->analysisOld(tag)}, {QStringLiteral("points"), points}};
     if (!r.error.isEmpty()) out.insert(QStringLiteral("error"), r.error);
+    if (!r.notes.isEmpty()) out.insert(QStringLiteral("notes"), QJsonArray::fromStringList(r.notes));
     if (r.points.size() > rows) out.insert(QStringLiteral("note"), tr("%1 of its %2 points: 'rows' asks for more.").arg(rows).arg(r.points.size()));
     return jsonResult(out);
 }

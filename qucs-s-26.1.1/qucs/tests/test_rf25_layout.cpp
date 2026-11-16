@@ -804,6 +804,18 @@ private slots:
                                  "Dot's radius is not a length above zero", "Elsewhere cuts M9, which is no layer"})
             QVERIFY2(says(problems, said), qPrintable(QLatin1String(said) + QLatin1String(": ") + problems.join(" | ")));
         QCOMPARE(problems.size(), 5);
+        // Each with its region's tag: R1's own, not R10's, whose name begins
+        // with R1's (the review of 26ff2805: matched by "Cutout: R1", R1's
+        // row took R10's too).
+        m.layout().child(QStringLiteral("rf_cutout"))->children.clear();
+        const QString r1 = region(m, "rectangle", {{"x1", QStringLiteral("0")}}, QStringLiteral("R1")).tag;
+        const QString r10 = region(m, "circle", {{"radius", QStringLiteral("0")}}, QStringLiteral("R10")).tag;
+        const rf::Cutout tagged = rf::cutoutOf(m, nullptr);
+        QCOMPARE(tagged.problems.size(), 2);
+        QCOMPARE(tagged.problems.at(0).first, r1);
+        QVERIFY(tagged.problems.at(0).second.contains(QStringLiteral("has no area")));
+        QCOMPARE(tagged.problems.at(1).first, r10);
+        QVERIFY(tagged.problems.at(1).second.contains(QStringLiteral("radius")));
     }
 
     // What the regions do to a layer's shapes: one inside kept as it was

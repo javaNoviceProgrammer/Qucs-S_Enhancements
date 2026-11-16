@@ -185,6 +185,7 @@ void SweepPage::showResult(const QString& name, const SweepResult& r, bool old)
     if (r.stopped) summary += tr(" - stopped");
     if (r.seconds > 0) summary += tr(", in %1 s").arg(r.seconds, 0, 'g', 3);
     if (old) summary += tr(". Of the model before a change: run it again for the model as it is.");
+    if (!r.notes.isEmpty()) summary += QLatin1Char(' ') + r.notes.join(QLatin1Char(' '));
     a_summary->setText(summary);
     a_table->clear();
     a_table->setColumnCount(int(r.columns.size()) + 1);

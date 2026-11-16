@@ -14,6 +14,7 @@
 #include "rf25_bondwire.h"
 
 #include "multiphysics/fem_expr.h"
+#include "multiphysics/optimizer_core.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
@@ -737,10 +738,24 @@ QList<NodeKind> makeKinds()
           rows(QStringLiteral("quantities"), tr("Quantities"), {tr("Expression"), tr("Over"), tr("From"), tr("To"), tr("At")},
                tr("What is read at each point: an expression of the solution's values and the parameters - S21_dB, Z11_re, GD21, "
                   "VSWR1, Z0, eps_eff, C11, Lloop - over the frequencies From to To (all of them when empty), Over its last "
-                  "(the default), min, max, or at the frequency At")),
+                  "(the default), min, max, at the frequency At, or min_at and max_at - where its min or max falls, in Hz: a "
+                  "notch's frequency. Two of one expression are named by how each is read")),
           integer(QStringLiteral("parallel"), tr("Solves at once"), 1,
                   tr("How many points are solved at a time: each takes the memory of a solve, and the machine's threads are "
-                     "shared between them"))},
+                     "shared between them")),
+          // What the last run found: written by it, not a setting - the
+          // Optimization's own as the multiphysics kind has it. (Not one of
+          // the kind's, a saved or exported sweep's was said to be "no
+          // property" when read again: NF3 of the open items.)
+          [] {
+              P kept;
+              kept.key = QStringLiteral("result");
+              kept.label = tr("The last run's result, written by it");
+              kept.kind = P::Text;
+              kept.defaultValue = QJsonValue(QJsonValue::Undefined);
+              kept.showIf = QStringLiteral("result=shown");
+              return kept;
+          }()},
          {}, {}, false, false, QStringLiteral("sweep"),
          tr("The model solved at each value of one or two of its parameters - a width, a length, a permittivity -, each "
             "point a whole solve by the study, the quantities asked read at each: a table and a plot of them, and each "
@@ -758,13 +773,14 @@ QList<NodeKind> makeKinds()
                     p.choiceLabels = {tr("Expression"), tr("Kind"), tr("Value"), tr("Weight"), tr("Over"), tr("From"), tr("To"), tr("At")};
                     p.columnChoices = {{}, QStringList{QStringLiteral("MIN"), QStringLiteral("MAX"), QStringLiteral("TARGET"), QStringLiteral("LE"),
                                                        QStringLiteral("GE"), QStringLiteral("EQ"), QStringLiteral("MON")},
-                                       {}, {}, QStringList{QStringLiteral("worst"), QStringLiteral("last"), QStringLiteral("min"), QStringLiteral("max"), QStringLiteral("at")},
+                                       {}, {}, QStringList{QStringLiteral("worst"), QStringLiteral("last"), QStringLiteral("min"), QStringLiteral("max"), QStringLiteral("at"),
+                                                   QStringLiteral("min_at"), QStringLiteral("max_at")},
                                        {}, {}, {}};
                     p.tooltip = tr("Each an expression of the solution's values - S21_dB, Z11_re, GD21, VSWR1, Z0, eps_eff, C11, Lloop - and the "
                                    "parameters, and what is asked of it: MIN as small and MAX as large as it can be; TARGET at Value (least "
                                    "squares); LE, GE and EQ limits at Value; MON only shown. Weight: how much it counts among the others (1). "
                                    "Over the frequencies From to To (all of them when empty): its worst (the default, as its kind judges it), its "
-                                   "last, min or max, or at the frequency At.");
+                                   "last, min or max, at the frequency At, or min_at and max_at - where its min or max falls, in Hz.");
                 }
                 settings << p;
             }
@@ -809,7 +825,13 @@ QList<NodeKind> makeKinds()
             "2N-port, the near ends first, then the far ends.")});
     add({QStringLiteral("rf_circuit"), tr("Equivalent circuit"), QStringLiteral("export"), QStringLiteral("export"), none,
          {file(QStringLiteral("file"), tr("File")),
-          text(QStringLiteral("name"), tr("Name"), QString(), tr("The SPICE subcircuit's name (empty: the model's)"))},
+          text(QStringLiteral("name"), tr("Name"), QString(), tr("The SPICE subcircuit's name (empty: the model's)")),
+          // (NF7 of the open items: a wide solve fitted below its first
+          //  resonance without solving it again.)
+          expr(QStringLiteral("from"), tr("From"), QStringLiteral("Hz"), QString(),
+               tr("The solve's frequencies it is fitted to, from this (empty: its first) - below a resonance, where a lumped "
+                  "circuit holds")),
+          expr(QStringLiteral("to"), tr("To"), QStringLiteral("Hz"), QString(), tr("... to this (empty: its last)"))},
          {}, {}, false, false, QStringLiteral("ec"),
          tr("A lumped circuit fitted to a full-wave solve of one or two ports: a pi of R, L and C - between the ports, "
             "and from each to the ground - each branch the form that fits it best, written as a Qucs-S schematic to "
@@ -1614,6 +1636,19 @@ QStringList Model::problems() const
     }
     if (calibrations > 0 && driven2 != 2)
         said << tr("A TRL calibration is of a two-port, and the model has %1 port(s).").arg(driven2);
+    // An Optimization's variables: each Type one the optimizer knows (NF4 of
+    // the open items - said only by its run, so that rf25_edit took any).
+    if (const Node* analyses = root.child(QStringLiteral("rf_analyses")))
+        for (const Node& a : analyses->children) {
+            if (!a.enabled || a.type != QLatin1String("rf_optimization")) continue;
+            for (const QJsonValue& row : a.props.value(QLatin1String("variables")).toArray()) {
+                const QJsonArray cells = row.toArray();
+                const QString type = cells.size() > 4 ? cells.at(4).toString().trimmed() : QString();
+                if (!type.isEmpty() && !qucs_s::optimization::knownVariableType(type))
+                    said << tr("%1: %2's Type \"%3\" is not one of LIN_DOUBLE, LOG_DOUBLE, LIN_INT, LOG_INT, E3, E6, E12, E24, E48, E96, E192.")
+                                .arg(a.label.isEmpty() ? a.tag : a.label, cells.at(0).toString().trimmed(), type);
+            }
+        }
     if (ports().children.empty())
         said << tr("The model has no port: there is nothing to drive it with.");
     return said;

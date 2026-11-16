@@ -412,11 +412,14 @@ Cutout cutoutOf(const Model& model, QStringList* problems)
     if (node == nullptr || !flagIn(*node, QStringLiteral("apply"), true)) return out;
     const fem::Scope scope = scopeOf(model.parameters());
     const Stack stack = model.stack();
-    const auto say = [problems](const QString& text) {
+    QString current;   // (the region being read: its tag)
+    const auto say = [problems, &out, &current](const QString& text) {
         if (problems != nullptr) *problems << text;
+        out.problems.append(std::make_pair(current, text));
     };
     for (const Node& r : node->children) {
         if (!r.enabled || r.type != QLatin1String("rf_region")) continue;
+        current = r.tag;
         const QString name = nameOf(r);
         // A length of it in µm, or nothing and why.
         bool readable = true;
@@ -1218,6 +1221,7 @@ Processed processRead(const Model& model, const layout::Layout& read, const QStr
     out.problems += map.problems;
     out.report.lines += map.notes;
     out.problems += said;
+    for (const auto& [region, text] : std::as_const(how.cutout.problems)) out.cutoutProblems << text;
     return out;
 }
 

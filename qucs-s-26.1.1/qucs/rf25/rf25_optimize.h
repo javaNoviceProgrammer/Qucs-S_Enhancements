@@ -22,6 +22,7 @@
 #include "../multiphysics/optimizer_core.h"
 #include "rf25_solve.h"
 
+#include <QHash>
 #include <QJsonObject>
 #include <QList>
 #include <QSet>
@@ -60,6 +61,9 @@ struct SolutionValues {
     QStringList names;
     QList<fem::Dim> dims;               ///< by name
     QList<QVector<double>> at;          ///< by frequency, by name
+    /// A value's unit where its dimension does not say it: alpha_dB's dB/m,
+    /// which as a dimension is 1/m (NF5 of the open items).
+    QHash<QString, QString> units;
     int index(const QString& name) const { return int(names.indexOf(name)); }
 };
 /// \a solution's values; \a model gives a quasi-static solve its frequencies
@@ -75,7 +79,11 @@ struct Reading {
         Last,    ///< the last frequency's
         At,      ///< at \a at, read between the two frequencies about it
         Least,   ///< the least
-        Most     ///< the most
+        Most,    ///< the most
+        /// Where the least or the most falls, Hz - a notch's frequency, a
+        /// peak's (NF1 of the open items) - read at the sweep's frequency.
+        LeastAt,
+        MostAt
     };
     QString expression;
     double from = std::numeric_limits<double>::quiet_NaN();
@@ -83,9 +91,12 @@ struct Reading {
     Over over = Over::Worst;
     double at = std::numeric_limits<double>::quiet_NaN();
 };
-/// "worst", "last", "at", "min", "max" (empty: \a fallback); false where it
-/// is none of them.
+/// "worst", "last", "at", "min", "max", "min_at", "max_at" (empty: \a
+/// fallback); false where it is none of them.
 bool overOf(const QString& text, Reading::Over fallback, Reading::Over* over);
+/// \a reading named by how it reads its expression: "S21_dB min 3-7 GHz",
+/// "S21_dB at 5 GHz".
+QString readingName(const Reading& reading);
 /// \a text as a frequency in \a parameters ("2.4[GHz]", an expression); NaN
 /// where it is empty. False and why where it is no frequency.
 bool frequencyOf(const QString& text, const fem::ParameterScope& parameters, double* hertz, QString* why);
@@ -171,6 +182,9 @@ struct SweepResult {
     QStringList units;      ///< each column's
     int parameters = 0;     ///< how many of the columns are parameters
     QList<SweepPoint> points;
+    /// What a reader of its columns should know: the frequency a quantity
+    /// with no window was read at (NF5).
+    QStringList notes;
     int solved = 0, failed = 0;
     bool stopped = false;
     double seconds = 0;
@@ -199,7 +213,7 @@ SweepResult runSweep(const Model& model, std::shared_ptr<const qucs_s::layout::L
  * multiphysics one reads - its mode, method and settings, the parameters it
  * varies, design centering's spreads, the shared checks of what a method
  * can take - by the same pieces (fem_optimize.h), and its objectives' own
- * columns: Over (worst, the default; last, min, max, at), From, To, At - a
+ * columns: Over (worst, the default; last, min, max, at, min_at, max_at), From, To, At - a
  * Reading for each objective, in order.
  */
 struct OptimizationPlan {

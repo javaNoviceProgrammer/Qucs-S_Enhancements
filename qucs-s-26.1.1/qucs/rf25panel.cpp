@@ -405,10 +405,10 @@ void RF25Panel::updateStatusColumn()
             if (on && !applied.contains(tag)) {
                 status = tr("cannot be read");
                 colour = red;
-                const QString name = nameOf(*n);
+                // (Its own, by its tag: by its name, R1 took R10's too.)
                 QStringList why;
-                for (const QString& s : std::as_const(cutSaid))
-                    if (s.startsWith(QStringLiteral("Cutout: %1").arg(name))) why << s;
+                for (const auto& [region, text] : cut.problems)
+                    if (region == tag) why << text;
                 item->setToolTip(1, why.join(QLatin1Char('\n')));
             } else {
                 status = textOf(*n, QStringLiteral("action")) == QLatin1String("remove") ? tr("taken out") : tr("kept");

@@ -140,6 +140,7 @@ SolutionValues solutionValues(const ModelSolution& solution, const Model& model)
                 const int r = add(QStringLiteral("R") + tail, dimOf("Ohm/m")), l = add(QStringLiteral("L") + tail, dimOf("H/m"));
                 const int g = add(QStringLiteral("G") + tail, dimOf("S/m")), c = add(QStringLiteral("C") + tail, dimOf("F/m"));
                 const int a = add(QStringLiteral("alpha_dB") + tail, dimOf("1/m"));
+                out.units.insert(QStringLiteral("alpha_dB") + tail, QStringLiteral("dB/m"));
                 for (int k = 0; k < fs.size(); ++k) {
                     const fem::LineRLGC line = asLine(e, net, solution.length, fs.at(k));
                     if (!line.error.isEmpty()) continue;
@@ -172,8 +173,30 @@ bool overOf(const QString& text, Reading::Over fallback, Reading::Over* over)
     else if (t == QLatin1String("at")) *over = Reading::Over::At;
     else if (t == QLatin1String("min") || t == QLatin1String("least")) *over = Reading::Over::Least;
     else if (t == QLatin1String("max") || t == QLatin1String("most")) *over = Reading::Over::Most;
+    else if (t == QLatin1String("min_at")) *over = Reading::Over::LeastAt;
+    else if (t == QLatin1String("max_at")) *over = Reading::Over::MostAt;
     else return false;
     return true;
+}
+
+QString readingName(const Reading& reading)
+{
+    const auto ghz = [](double f) { return QString::number(f / 1e9, 'g', 6); };
+    QString how;
+    switch (reading.over) {
+    case Reading::Over::Worst: how = QStringLiteral("worst"); break;
+    case Reading::Over::Last: how = QStringLiteral("last"); break;
+    case Reading::Over::At: return QStringLiteral("%1 at %2 GHz").arg(reading.expression, ghz(reading.at));
+    case Reading::Over::Least: how = QStringLiteral("min"); break;
+    case Reading::Over::Most: how = QStringLiteral("max"); break;
+    case Reading::Over::LeastAt: how = QStringLiteral("min_at"); break;
+    case Reading::Over::MostAt: how = QStringLiteral("max_at"); break;
+    }
+    QString out = QStringLiteral("%1 %2").arg(reading.expression, how);
+    if (std::isfinite(reading.from) || std::isfinite(reading.to))
+        out += QStringLiteral(" %1-%2 GHz").arg(std::isfinite(reading.from) ? ghz(reading.from) : QStringLiteral("…"),
+                                                 std::isfinite(reading.to) ? ghz(reading.to) : QStringLiteral("…"));
+    return out;
 }
 
 bool frequencyOf(const QString& text, const fem::ParameterScope& parameters, double* hertz, QString* why)
@@ -246,6 +269,14 @@ bool readingValue(const SolutionValues& values, const fem::ParameterScope& param
     case Reading::Over::Most:
         *value = *std::max_element(ys.cbegin(), ys.cend());
         return true;
+    case Reading::Over::LeastAt:
+    case Reading::Over::MostAt: {
+        // (Where it falls: its frequency, Hz.)
+        const auto it = reading.over == Reading::Over::LeastAt ? std::min_element(ys.cbegin(), ys.cend()) : std::max_element(ys.cbegin(), ys.cend());
+        *value = fs.at(int(it - ys.cbegin()));
+        *dim = fem::Dim::of(0, 0, -1);
+        return true;
+    }
     case Reading::Over::At: {
         const double f = reading.at;
         if (!std::isfinite(f)) {
@@ -499,7 +530,7 @@ std::optional<SweepPlan> sweepPlan(const Model& model, const Node& node, QString
         reading.expression = cellText(r.at(0));
         if (reading.expression.isEmpty()) continue;
         if (!overOf(cellText(r.at(1)), Reading::Over::Last, &reading.over) || reading.over == Reading::Over::Worst)
-            return refuse(tr("%1: %2's Over is \"%3\" - last, min, max or at").arg(plan.name, reading.expression, cellText(r.at(1))));
+            return refuse(tr("%1: %2's Over is \"%3\" - last, min, max, at, min_at or max_at").arg(plan.name, reading.expression, cellText(r.at(1))));
         QString bad;
         if (!frequencyOf(cellText(r.at(2)), *ps, &reading.from, &bad) || !frequencyOf(cellText(r.at(3)), *ps, &reading.to, &bad)
             || !frequencyOf(cellText(r.at(4)), *ps, &reading.at, &bad))
@@ -550,6 +581,7 @@ QJsonObject SweepResult::toJson() const
     o.insert(QStringLiteral("failed"), failed);
     o.insert(QStringLiteral("stopped"), stopped);
     o.insert(QStringLiteral("seconds"), seconds);
+    if (!notes.isEmpty()) o.insert(QStringLiteral("notes"), QJsonArray::fromStringList(notes));
     QJsonArray rows;
     for (const SweepPoint& p : points) {
         QJsonObject r;
@@ -582,6 +614,7 @@ SweepResult SweepResult::fromJson(const QJsonObject& o)
     r.failed = o.value(QStringLiteral("failed")).toInt();
     r.stopped = o.value(QStringLiteral("stopped")).toBool();
     r.seconds = o.value(QStringLiteral("seconds")).toDouble();
+    for (const QJsonValue& v : o.value(QStringLiteral("notes")).toArray()) r.notes << v.toString();
     for (const QJsonValue& v : o.value(QStringLiteral("points")).toArray()) {
         const QJsonObject p = v.toObject();
         SweepPoint point;
@@ -628,8 +661,14 @@ SweepResult runSweep(const Model& model, std::shared_ptr<const qucs_s::layout::L
         result.units << (a.dim.isNone() ? QString() : fem::dimName(a.dim));
     }
     result.parameters = int(plan.axes.size());
+    // (A quantity's column its expression; where two read one expression -
+    //  its min over a window and its value at a frequency -, each named by
+    //  how it reads it too: alike, the second overwrote the first in the
+    //  points' columns - NF1 of the open items.)
     for (const Reading& q : plan.quantities) {
-        result.columns << q.expression;
+        int alike = 0;
+        for (const Reading& other : plan.quantities) alike += other.expression == q.expression ? 1 : 0;
+        result.columns << (alike > 1 ? readingName(q) : q.expression);
         result.units << QString();   // (known once the first point is read)
     }
     const QList<QList<double>> points = plan.points();
@@ -671,7 +710,27 @@ SweepResult runSweep(const Model& model, std::shared_ptr<const qucs_s::layout::L
             }
             point.measured[q] = v;
             std::lock_guard<std::mutex> lock(mutex);
-            if (result.units.at(plan.axes.size() + q).isEmpty() && !dim.isNone()) result.units[plan.axes.size() + q] = fem::dimName(dim);
+            const Reading& reading = plan.quantities.at(q);
+            QString& unit = result.units[plan.axes.size() + q];
+            if (unit.isEmpty()) {
+                // (A value whose unit its dimension does not say: its own,
+                //  where the quantity is that value alone.)
+                const QString own = reading.over == Reading::Over::LeastAt || reading.over == Reading::Over::MostAt
+                                        ? QString()
+                                        : values.units.value(reading.expression.trimmed());
+                if (!own.isEmpty()) unit = own;
+                else if (!dim.isNone()) unit = fem::dimName(dim);
+            }
+            // (Its last with no window: the frequency it was read at said,
+            //  once - NF5, a column that did not say it.)
+            if (reading.over == Reading::Over::Last && !std::isfinite(reading.to) && !values.frequencies.isEmpty()) {
+                const QString column = result.columns.at(plan.axes.size() + q);
+                const QString said = tr("%1 is read at the solution's last frequency, %2 GHz.")
+                                         .arg(column, QString::number(values.frequencies.last() / 1e9, 'g', 6));
+                bool known = false;
+                for (const QString& n : std::as_const(result.notes)) known = known || n.startsWith(column + QStringLiteral(" is read at"));
+                if (!known) result.notes << said;
+            }
         }
         point.solved = true;
         if (solution.wave) {
@@ -771,7 +830,7 @@ std::optional<OptimizationPlan> optimizationPlan(const Model& model, const Node&
         Reading reading;
         reading.expression = o.expression;
         if (!overOf(cellText(r.at(4)), Reading::Over::Worst, &reading.over))
-            return refuse(tr("%1: %2's Over is \"%3\" - worst, last, min, max or at").arg(plan.name, o.expression, cellText(r.at(4))));
+            return refuse(tr("%1: %2's Over is \"%3\" - worst, last, min, max, at, min_at or max_at").arg(plan.name, o.expression, cellText(r.at(4))));
         QString bad;
         if (!frequencyOf(cellText(r.at(5)), *ps, &reading.from, &bad) || !frequencyOf(cellText(r.at(6)), *ps, &reading.to, &bad)
             || !frequencyOf(cellText(r.at(7)), *ps, &reading.at, &bad))

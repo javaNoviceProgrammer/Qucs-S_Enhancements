@@ -15,6 +15,7 @@
 #include "elidedlabel.h"
 #include "main.h"
 #include "misc.h"
+#include "symbolstyle.h"
 #include "multiphysics/fem_expr.h"
 #include "rf25/rf25_deembed.h"
 #include "rf25/rf25_inductance.h"
@@ -3098,7 +3099,10 @@ QString touchstone2From(const QString& text, int ports, int frequencies)
 QString RF25Doc::exportText(const QString& tag, QString* error) const
 {
     if (const Node* node = circuitNode(a_model, tag)) {
-        const std::optional<EquivalentCircuit> circuit = equivalentCircuit(error);
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const std::optional<EquivalentCircuit> circuit
+            = equivalentCircuit(error, textOf(*node, QStringLiteral("from")).trimmed().isEmpty() ? nan : numberOf(*node, QStringLiteral("from"), a_model, nan),
+                                textOf(*node, QStringLiteral("to")).trimmed().isEmpty() ? nan : numberOf(*node, QStringLiteral("to"), a_model, nan));
         if (!circuit) return {};
         if (error != nullptr) error->clear();
         return circuitText(*circuit, exportPath(tag), textOf(*node, QStringLiteral("name")).trimmed());
@@ -3108,7 +3112,7 @@ QString RF25Doc::exportText(const QString& tag, QString* error) const
     return exportText(what, error);
 }
 
-std::optional<EquivalentCircuit> RF25Doc::equivalentCircuit(QString* error) const
+std::optional<EquivalentCircuit> RF25Doc::equivalentCircuit(QString* error, double from, double to) const
 {
     const auto none = [error](const QString& why) {
         if (error != nullptr) *error = why;
@@ -3116,7 +3120,23 @@ std::optional<EquivalentCircuit> RF25Doc::equivalentCircuit(QString* error) cons
     };
     if (!a_fullWave || !a_fullWave->ok())
         return none(tr("An equivalent circuit is fitted to a full-wave solve of the ports: solve the model full-wave first."));
-    EquivalentCircuit c = fitCircuit(a_fullWave->portNames, a_fullWave->frequencies, a_fullWave->s, a_fullWave->references);
+    // (Its window's frequencies, to a part in a billion at its ends.)
+    QList<double> fs;
+    QList<QList<QList<std::complex<double>>>> s;
+    for (int k = 0; k < a_fullWave->frequencies.size(); ++k) {
+        const double f = a_fullWave->frequencies.at(k);
+        if (std::isfinite(from) && f < from * (1 - 1e-9)) continue;
+        if (std::isfinite(to) && f > to * (1 + 1e-9)) continue;
+        fs << f;
+        s << a_fullWave->s.at(k);
+    }
+    if (fs.isEmpty())
+        return none(tr("No frequency of the solve's (%1 to %2 GHz) is from %3 to %4 GHz.")
+                        .arg(a_fullWave->frequencies.first() / 1e9, 0, 'g', 6)
+                        .arg(a_fullWave->frequencies.last() / 1e9, 0, 'g', 6)
+                        .arg(std::isfinite(from) ? QString::number(from / 1e9, 'g', 6) : QStringLiteral("…"),
+                             std::isfinite(to) ? QString::number(to / 1e9, 'g', 6) : QStringLiteral("…")));
+    EquivalentCircuit c = fitCircuit(a_fullWave->portNames, fs, s, a_fullWave->references);
     if (!c.ok()) return none(c.problems.join(QLatin1Char(' ')));
     return c;
 }
@@ -3129,7 +3149,8 @@ QString RF25Doc::circuitText(const EquivalentCircuit& circuit, const QString& pa
     comment << tr("An equivalent circuit of %1, fitted to its full-wave solve by Qucs-S %2.").arg(model, misc::buildName());
     comment << circuit.lines;
     const QString suffix = QFileInfo(path).suffix().toLower();
-    if (suffix == QLatin1String("sch")) return schematicOf(circuit, comment, QFileInfo(path).completeBaseName());
+    if (suffix == QLatin1String("sch"))
+        return schematicOf(circuit, comment, QFileInfo(path).completeBaseName(), QucsSettings.ComponentSymbols == qucs_s::symbols::US);
     // (A SPICE name: letters, digits and underscores.)
     QString sub = name.isEmpty() ? (a_DocName.isEmpty() ? QStringLiteral("model") : QFileInfo(a_DocName).completeBaseName()) : name;
     sub.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9_]")), QStringLiteral("_"));
