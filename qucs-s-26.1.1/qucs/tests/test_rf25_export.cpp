@@ -308,6 +308,32 @@ private slots:
         QCOMPARE(windowOf(x), QRectF(QPointF(-100, -50), QPointF(300, 150)));
         QVERIFY(x.json.contains("Air lid"));
         QVERIFY2(x.notes.join(' ').contains(QStringLiteral("side walls")), qPrintable(x.notes.join(' ')));
+        // A cover of no height (a lid on the stack, as a stripline's): no
+        // air row - a row of no thickness the Layer Stack refuses -, its lid
+        // alone, and the model built.
+        {
+            rf::Model lidded = stackedModel();
+            for (rf::Node& n : lidded.stackNode().children)
+                if (n.type == QLatin1String("rf_cover")) {
+                    n.props.insert(QStringLiteral("height"), QStringLiteral("0"));
+                    n.props.insert(QStringLiteral("kind"), QStringLiteral("perfect"));
+                }
+            QVERIFY2(lidded.stack().ok(), qPrintable(lidded.stack().problems.join(' ')));
+            QTemporaryDir dir;
+            QString why;
+            QVERIFY(rf::writeLayoutGds(e, dir.filePath(QStringLiteral("x.gds")), QStringLiteral("TOP"), &why));
+            const rf::Mp3dExport x = rf::mp3dOf(lidded, e, QStringLiteral("x.gds"), QStringLiteral("x"));
+            QVERIFY2(x.ok(), qPrintable(x.problems.join(' ')));
+            QVERIFY(x.json.contains("Air lid"));
+            std::optional<fem::Model> model = fem::Model::fromJson(x.json, &why);
+            QVERIFY2(model.has_value(), qPrintable(why));
+            model->fileName = dir.filePath(QStringLiteral("x.qfem3d"));
+            const fem::GeometryBuild3 g = fem::buildGeometry3(*model, *fem::evaluateParameters(*model));
+            QVERIFY2(g.ok(), qPrintable(QStringList(g.errors.values()).join(' ')));
+            bool air = false;
+            for (const fem::Node& mat : model->component().child(QStringLiteral("materials"))->children) air = air || mat.label == QLatin1String("Air");
+            QVERIFY(!air);
+        }
         rf::Model broken = stackedModel();
         for (rf::Node& n : broken.stackNode().children)
             if (n.type == QLatin1String("rf_substrate")) n.props.insert(QStringLiteral("thickness"), QStringLiteral("0"));

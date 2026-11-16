@@ -5080,6 +5080,20 @@ private slots:
             QVERIFY(f.open(QIODevice::ReadOnly));
             QVERIFY(f.readAll().contains("\"visibility\": \"frame\""));
         }
+        // The stack picture follows it, read again from the file too.
+        auto* picture = doc->findChild<qucs_s::rf25::StackView*>(QStringLiteral("rfStackView"));
+        QVERIFY(picture != nullptr);
+        QCOMPARE(picture->visibility().value(QStringLiteral("M1")), QStringLiteral("frame"));
+        QVERIFY(doc->reload());
+        QCOMPARE(doc->visibility(QStringLiteral("m1")), RF25Doc::Visibility::Frame);
+        QCOMPARE(picture->visibility().value(QStringLiteral("M1")), QStringLiteral("frame"));
+        // ... and a framed layer renamed, by its new name.
+        QVERIFY(doc->editNode(QStringLiteral("m1"), [](rf::Node& n) { n.label = QStringLiteral("Strip"); }, QStringLiteral("rename")));
+        QCOMPARE(picture->visibility().value(QStringLiteral("Strip")), QStringLiteral("frame"));
+        QVERIFY(!picture->visibility().contains(QStringLiteral("M1")));
+        doc->undo();
+        QCOMPARE(picture->visibility().value(QStringLiteral("M1")), QStringLiteral("frame"));
+        emit button->menu()->aboutToShow();
         // Show All, and Undo of it.
         item(QStringLiteral("rfVisibilityShowAll"))->trigger();
         QVERIFY(!doc->anyHidden());
@@ -5128,6 +5142,8 @@ private slots:
             panel()->selectNode(tag);
             auto* write = panel()->findChild<QPushButton*>(QStringLiteral("rfWriteExport"));
             QVERIFY(write != nullptr);
+            // (Write writes; Open in Multiphysics 3D opens.)
+            QVERIFY2(!write->toolTip().contains(QStringLiteral("opens it there")), qPrintable(write->toolTip()));
             write->click();
             auto* said = panel()->findChild<QLabel*>(QStringLiteral("rfExportSaid"));
             QVERIFY(said != nullptr);
@@ -5153,6 +5169,67 @@ private slots:
         QVERIFY2(three->readNotes().isEmpty(), qPrintable(three->readNotes()));
         QVERIFY(three->waitForIdle());
         QVERIFY2(three->geometry().ok(), qPrintable(three->messages().join(QLatin1Char(' '))));
+        // Never over the model's own layout: a 3D model whose .gds beside it
+        // is the layout's, a GDSII export onto it, an export onto the model
+        // itself - refused and said, the files as they were.
+        const QString layoutPath = doc->layoutFile();
+        QVERIFY(layoutPath.endsWith(QStringLiteral("strip.gds")));
+        const auto bytesOf = [](const QString& p) {
+            QFile f(p);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        const QByteArray layoutBefore = bytesOf(layoutPath), modelBefore = bytesOf(file);
+        QVERIFY(!layoutBefore.isEmpty());
+        for (const auto& [tag, named] : {std::pair{mp3, QStringLiteral("strip.qfem3d")}, std::pair{gds, QStringLiteral("strip.gds")},
+                                          std::pair{gds, QStringLiteral("./sub/../strip.gds")}, std::pair{dxf, QStringLiteral("shapes.qrf25")}}) {
+            QVERIFY(doc->editNode(tag, [named](rf::Node& n) { n.props.insert(QStringLiteral("file"), named); }, QStringLiteral("file")));
+            QString refused;
+            QVERIFY2(doc->writeLayoutExport(tag, nullptr, &refused).isEmpty(), qPrintable(named));
+            QVERIFY2(refused.contains(QStringLiteral("write over it")), qPrintable(refused));
+            QCOMPARE(bytesOf(layoutPath), layoutBefore);
+            QVERIFY(!QFile::exists(QFileInfo(file).absoluteDir().filePath(QStringLiteral("strip.qfem3d"))));
+            doc->undo();
+        }
+        QCOMPARE(bytesOf(file), modelBefore);
+        // A link to the layout is the layout.
+#ifndef Q_OS_WIN
+        {
+            const QString link = QFileInfo(file).absoluteDir().filePath(QStringLiteral("linked.gds"));
+            QFile::remove(link);
+            QVERIFY(QFile::link(layoutPath, link));
+            QVERIFY(doc->editNode(gds, [](rf::Node& n) { n.props.insert(QStringLiteral("file"), QStringLiteral("linked.gds")); }, QStringLiteral("file")));
+            QString refused;
+            QVERIFY(doc->writeLayoutExport(gds, nullptr, &refused).isEmpty());
+            QVERIFY2(refused.contains(QStringLiteral("write over it")), qPrintable(refused));
+            QCOMPARE(bytesOf(layoutPath), layoutBefore);
+            doc->undo();
+            QFile::remove(link);
+        }
+#endif
+        // The .gds first: one that cannot be written (a folder in its place)
+        // leaves no .qfem3d naming it.
+        {
+            const QDir here = QFileInfo(file).absoluteDir();
+            QVERIFY(here.mkpath(QStringLiteral("blocked.gds")));
+            QVERIFY(doc->editNode(mp3, [](rf::Node& n) { n.props.insert(QStringLiteral("file"), QStringLiteral("blocked.qfem3d")); }, QStringLiteral("file")));
+            QString refused;
+            QVERIFY(doc->writeLayoutExport(mp3, nullptr, &refused).isEmpty());
+            QVERIFY(!refused.isEmpty());
+            QVERIFY(!QFile::exists(here.filePath(QStringLiteral("blocked.qfem3d"))));
+            doc->undo();
+        }
+        // A Touchstone export onto the layout, the same.
+        {
+            QString ts;
+            for (const rf::Node& n : doc->model().root.child(QStringLiteral("rf_exports"))->children)
+                if (n.type == QLatin1String("rf_touchstone")) ts = n.tag;
+            QVERIFY(!ts.isEmpty());
+            QVERIFY(doc->editNode(ts, [](rf::Node& n) { n.props.insert(QStringLiteral("file"), QStringLiteral("strip.gds")); }, QStringLiteral("file")));
+            QString refused;
+            QVERIFY(doc->writeExport(ts, &refused).isEmpty());
+            QVERIFY2(refused.contains(QStringLiteral("write over it")), qPrintable(refused));
+            QCOMPARE(bytesOf(layoutPath), layoutBefore);
+        }
         // A model that cannot be written: said, nothing written.
         QString why;
         QVERIFY(doc->writeLayoutExport(QStringLiteral("no such export"), nullptr, &why).isEmpty());

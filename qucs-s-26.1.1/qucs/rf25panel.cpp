@@ -978,7 +978,7 @@ void RF25Panel::showSettings()
                                        "must be solved full-wave first.")
                           : n->type == QLatin1String("rf_mp3d")
                               ? tr("Writes the model as a 3D model of Multiphysics 3D (.qfem3d), with the GDSII file of its shapes "
-                                   "beside it, and opens it there. No solve is needed: its shapes as processed.")
+                                   "beside it; Open in Multiphysics 3D opens it. No solve is needed: its shapes as processed.")
                           : shapesOut ? tr("Writes the shapes as processed. No solve is needed.")
                                       : tr("Writes the file at the study's own frequencies. The model must be solved first."));
         auto* said = new QLabel(a_form);
