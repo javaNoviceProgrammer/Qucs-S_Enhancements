@@ -82,6 +82,7 @@ public:
     /// The layers not shown, by name ("hidden" or "frame"): a hidden one
     /// drawn as a faint dashed outline, a framed one as its outline alone.
     void setVisibility(const QHash<QString, QString>& byName);
+    const QHash<QString, QString>& visibility() const { return a_visibility; }
     QSize minimumSizeHint() const override { return QSize(90, 120); }
     QSize sizeHint() const override { return QSize(150, 320); }
 
@@ -455,6 +456,9 @@ public:
     /// The files the layout export \a tag writes, written: the path of each
     /// (the .qfem3d first, then its .gds), or none and why in \a error.
     QStringList writeLayoutExport(const QString& tag, QStringList* said = nullptr, QString* error = nullptr) const;
+    /// Why \a path may not be written by an export - it is the model's own
+    /// layout file, or the model itself -, or empty.
+    QString overOwnFile(const QString& path) const;
     /// Where writeExport() would put it: the node's file, made absolute
     /// against the model, or the default beside it. Empty where there is
     /// no such node.

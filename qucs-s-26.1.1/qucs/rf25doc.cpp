@@ -40,6 +40,7 @@
 #include <QLabel>
 #include <QLocale>
 #include <QActionGroup>
+#include <filesystem>
 #include <QMenu>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -995,6 +996,9 @@ void RF25Doc::applyModel(const Model& model, bool read)
     if (read) contentRead();
     else edited();
     a_stack->setStack(a_model.stack());
+    // (Read, reloaded, renamed, or set with something else: the picture's
+    //  visibility follows the model's, as the view's does.)
+    a_stack->setVisibility(layerVisibility(a_model));
     showProblems();
     // (A port added, moved or taken away is drawn at once, before any
     //  preparing it may bring.)
@@ -3480,6 +3484,24 @@ QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
     return what.version2 ? touchstone2From(text, 2, int(ls.points.size())) : text;
 }
 
+QString RF25Doc::overOwnFile(const QString& path) const
+{
+    // The same file however it is named - a link, another case on a disk
+    // that does not tell them apart: std::filesystem::equivalent(), which is
+    // false where either is not there.
+    const auto same = [](const QString& a, const QString& b) {
+        std::error_code ec;
+        return std::filesystem::equivalent(std::filesystem::path(a.toStdU16String()), std::filesystem::path(b.toStdU16String()), ec) && !ec;
+    };
+    const QString layout = layoutFile();
+    if (!layout.isEmpty() && (QDir::cleanPath(path) == QDir::cleanPath(layout) || same(path, layout)))
+        return tr("%1 is the model's own layout: an export would write over it. Give the export another File.")
+            .arg(QDir::toNativeSeparators(path));
+    if (!a_DocName.isEmpty() && (QDir::cleanPath(path) == QDir::cleanPath(QFileInfo(a_DocName).absoluteFilePath()) || same(path, a_DocName)))
+        return tr("%1 is the model itself: an export would write over it. Give the export another File.").arg(QDir::toNativeSeparators(path));
+    return {};
+}
+
 QStringList RF25Doc::writeLayoutExport(const QString& tag, QStringList* said, QString* error) const
 {
     const auto fail = [error](const QString& why) {
@@ -3494,6 +3516,10 @@ QStringList RF25Doc::writeLayoutExport(const QString& tag, QStringList* said, QS
     const LayoutExport shapes = layoutExportOf(a_model, *a_processed);
     if (!shapes.ok()) return fail(shapes.problems.join(QLatin1Char(' ')));
     const QString path = exportPath(tag);
+    // (Never over the model's own files: a 3D model's .gds beside it, or a
+    //  GDSII export's File, that is the layout read would replace it with
+    //  its processed shapes, and the model would read its own output.)
+    if (const QString why = overOwnFile(path); !why.isEmpty()) return fail(why);
     const QString madeBy = QStringLiteral("Qucs-S %1").arg(misc::buildName());
     const QString title = a_DocName.isEmpty() ? QStringLiteral("model") : QFileInfo(a_DocName).completeBaseName();
     QStringList notes = shapes.notes;
@@ -3528,14 +3554,18 @@ QStringList RF25Doc::writeLayoutExport(const QString& tag, QStringList* said, QS
                                   ? nan
                                   : numberOf(*node, QStringLiteral("margin"), a_model, nan, &ok);
         if (!ok || (std::isfinite(margin) && margin < 0)) return fail(tr("The export's margin is not a length of nought or more."));
+        const QString gdsPath = info.absoluteDir().filePath(gds);
+        if (const QString why = overOwnFile(gdsPath); !why.isEmpty()) return fail(why);
         const Mp3dExport three = mp3dOf(a_model, shapes, gds, title, margin, madeBy);
         if (!three.ok()) return fail(three.problems.join(QLatin1Char(' ')));
         notes << three.notes;
-        if (!put(path, three.json)) return {};
+        // The shapes first: an open 3D tab then builds the new model on its
+        // new shapes once, and a .gds that cannot be written leaves the
+        // .qfem3d as it was. (The .qfem3d first in what is returned.)
         QString why;
-        const QString gdsPath = info.absoluteDir().filePath(gds);
         if (!writeLayoutGds(shapes, gdsPath, QStringLiteral("TOP"), &why)) return fail(why);
-        written << gdsPath;
+        if (!put(path, three.json)) return {};
+        written = QStringList{path, gdsPath};
     }
     if (said != nullptr) *said = notes;
     return written;
@@ -3546,6 +3576,11 @@ QString RF25Doc::writeExport(const QString& tag, QString* error, QStringList* sa
     if (isLayoutExport(tag)) {
         const QStringList written = writeLayoutExport(tag, said, error);
         return written.value(0);
+    }
+    // (Where first: never over the model's own files, solved or not.)
+    if (const QString over = overOwnFile(exportPath(tag)); !over.isEmpty()) {
+        if (error != nullptr) *error = over;
+        return {};
     }
     QString why;
     const QString text = exportText(tag, &why);

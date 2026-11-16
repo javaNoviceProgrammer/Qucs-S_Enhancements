@@ -439,13 +439,17 @@ Mp3dExport mp3dOf(const Model& model, const LayoutExport& shapes, const QString&
             break;
         }
         case Layer::Cover: {
-            row(l.name, QString(), l.z0, l.thickness);
-            Material air;
-            air.label = l.name;
-            air.rows << l.name;
-            // (The air drawn as its frame: shut, it hides the stack under it.)
-            air.visibility = hidden.value(l.name, QStringLiteral("frame"));
-            dielectrics << air;
+            // (A cover of no height - a lid on the stack, as a stripline's -
+            //  has no air: its lid alone, where it is one.)
+            if (l.thickness > 0) {
+                row(l.name, QString(), l.z0, l.thickness);
+                Material air;
+                air.label = l.name;
+                air.rows << l.name;
+                // (The air drawn as its frame: shut, it hides the stack under it.)
+                air.visibility = hidden.value(l.name, QStringLiteral("frame"));
+                dielectrics << air;
+            }
             if (l.variant == QLatin1String("perfect")) {
                 const QString lid = l.name + QStringLiteral(" lid");
                 row(lid, QString(), l.z1, thinnest);
