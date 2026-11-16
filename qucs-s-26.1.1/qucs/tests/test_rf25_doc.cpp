@@ -4936,6 +4936,31 @@ private slots:
         QCOMPARE(doc->view()->drawing().strokes().first().points.size(), 3);
         QVERIFY(doc->view()->clearDrawing(true));
         QVERIFY2(!QFileInfo::exists(kept), "none left: the file goes");
+        // Saved over a name that has strokes beside it, with none of its own:
+        // that file's strokes not taken, the file gone (the review of
+        // 6dce480e: read on a save, another document's strokes appeared).
+        {
+            const QString other = path(QStringLiteral("viewother.qrf25"));
+            QFile beside(other + QStringLiteral(".drawings"));
+            QVERIFY(beside.open(QIODevice::WriteOnly));
+            beside.write(QJsonDocument(QJsonObject{{"strokes", qucs_s::markup::strokesJson({stroke})}}).toJson());
+            beside.close();
+            doc->setName(other);
+            QCOMPARE(doc->save(), 0);
+            QVERIFY(doc->view()->drawing().isEmpty());
+            QVERIFY(!QFileInfo::exists(other + QStringLiteral(".drawings")));
+        }
+        // Strokes that cannot be written beside it: said, once.
+        {
+            QSignalSpy said(doc->view(), &LayoutView::drawingNotKept);
+            doc->view()->keepDrawingIn(path(QStringLiteral("no_such_folder/x.qrf25.drawings")), false);
+            doc->view()->addStroke(stroke);
+            doc->view()->addStroke(stroke);
+            QCOMPARE(said.size(), 1);
+            QTRY_VERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral("cannot be kept")), qPrintable(doc->problemsText()->toPlainText()));
+            doc->view()->clearDrawing(true);
+        }
+        doc->setDocChanged(false);
         app->closeAllFiles();
     }
 

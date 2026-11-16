@@ -171,10 +171,13 @@ public:
     /// A stroke added as though it was drawn (Claude's tools, the tests).
     void addStroke(const qucs_s::markup::Stroke& stroke);
     /// The strokes kept in \a path, a file beside the document (its own name
-    /// and ".drawings"): read from it where the drawing is empty, and written
-    /// at each change - removed when none is left. Empty: kept nowhere (V1
-    /// of the RF 2.5D open items: a tab closed, its strokes were lost).
-    void keepDrawingIn(const QString& path);
+    /// and ".drawings"), written at each change - removed when none is left.
+    /// \a read (a document opened): read from it where the drawing is empty;
+    /// else (saved, Save As) written there, what is there replaced - read, a
+    /// document saved over another's name took that one's strokes (the
+    /// review of 6dce480e). Empty: kept nowhere (V1 of the RF 2.5D open
+    /// items: a tab closed, its strokes were lost).
+    void keepDrawingIn(const QString& path, bool read = true);
     QString drawingFile() const { return a_drawingFile; }
     /// The names a tab gives the file's layers (an RF 2.5D model's: its
     /// stack's, by its layer map), by layer index: a stroke's reading says
@@ -334,6 +337,10 @@ signals:
     void gridToggleRequested();
     /// A stroke drawn, erased, undone or cleared.
     void drawingChanged();
+    /// The strokes cannot be written beside the document - a folder that
+    /// cannot be written, a library's file, a share -: said once, until they
+    /// can (the review of 6dce480e: they were lost on close without a word).
+    void drawingNotKept(const QString& why);
     /// Claude's sketch was drawn or taken away.
     void sketchChanged();
 
@@ -407,7 +414,8 @@ private:
     qucs_s::markup::Drawing a_drawing;
     QString a_drawingFile;
     QHash<int, QString> a_layerNames;
-    void saveDrawing() const;
+    bool a_drawingUnkept = false;
+    void saveDrawing();
     qucs_s::markup::Stroke a_stroke;               // the one being drawn
     QList<qucs_s::markup::Stroke> a_beforeErase;  // the strokes as an eraser's drag found them
     bool a_erased = false;
