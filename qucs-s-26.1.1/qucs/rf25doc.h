@@ -138,6 +138,10 @@ public:
     /// shapes, the rulers kept and dropped (V3 of the open items: it said
     /// nothing); empty before one.
     QString rereadSaid() const { return a_rereadSaid; }
+    /// SHA-1 of the layout file's bytes as they were read - what was meshed
+    /// and solved -, before a read the file's on disk; empty where it names
+    /// none.
+    QByteArray layoutStamp() const;
 
     // The model.
     const qucs_s::rf25::Model& model() const { return a_model; }
@@ -705,8 +709,6 @@ private:
     /// The solution shown kept beside the model, where it is of the model
     /// as it is on disk: after a solve of it, and when it is saved.
     void keepSolution();
-    /// SHA-1 of the layout file's bytes; empty where it names none.
-    QByteArray layoutStamp() const;
     /// What the bar counts now: of how many, how many done (nought of
     /// nought: busy), what it is in words, and which count it is - the
     /// sweep's frequencies, or one feed's calibration strips -, whose clock

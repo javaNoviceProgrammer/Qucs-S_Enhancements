@@ -341,6 +341,10 @@ signals:
     /// cannot be written, a library's file, a share -: said once, until they
     /// can (the review of 6dce480e: they were lost on close without a word).
     void drawingNotKept(const QString& why);
+    /// They are kept again after drawingNotKept() - written, or nothing left
+    /// to keep (Save As into a folder that can be written): what it said is
+    /// no longer so (the review of 4b723ea9).
+    void drawingKept();
     /// Claude's sketch was drawn or taken away.
     void sketchChanged();
 
@@ -414,7 +418,8 @@ private:
     qucs_s::markup::Drawing a_drawing;
     QString a_drawingFile;
     QHash<int, QString> a_layerNames;
-    bool a_drawingUnkept = false;
+    bool a_drawingUnkept = false;   // (drawingNotKept() said, of a_unkeptFile, and not kept since)
+    QString a_unkeptFile;
     void saveDrawing();
     qucs_s::markup::Stroke a_stroke;               // the one being drawn
     QList<qucs_s::markup::Stroke> a_beforeErase;  // the strokes as an eraser's drag found them

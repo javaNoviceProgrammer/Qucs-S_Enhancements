@@ -830,7 +830,6 @@ QJsonArray LayoutView::readDrawing(bool points) const
 void LayoutView::keepDrawingIn(const QString& path, bool read)
 {
     a_drawingFile = path;
-    a_drawingUnkept = false;
     if (path.isEmpty()) return;
     if (read && a_drawing.isEmpty()) {
         QFile file(path);
@@ -851,8 +850,14 @@ void LayoutView::keepDrawingIn(const QString& path, bool read)
 void LayoutView::saveDrawing()
 {
     if (a_drawingFile.isEmpty()) return;
+    const auto kept = [this] {
+        if (!a_drawingUnkept) return;
+        a_drawingUnkept = false;
+        emit drawingKept();
+    };
     if (a_drawing.isEmpty()) {
         QFile::remove(a_drawingFile);
+        kept();
         return;
     }
     QSaveFile file(a_drawingFile);
@@ -863,9 +868,10 @@ void LayoutView::saveDrawing()
                                 > 0
                          && file.commit();
     if (written) {
-        a_drawingUnkept = false;
-    } else if (!a_drawingUnkept) {
+        kept();
+    } else if (!a_drawingUnkept || a_unkeptFile != a_drawingFile) {
         a_drawingUnkept = true;
+        a_unkeptFile = a_drawingFile;
         emit drawingNotKept(tr("The pen's strokes cannot be kept in %1 (%2): they go when the tab is closed.")
                                 .arg(QDir::toNativeSeparators(a_drawingFile), file.errorString()));
     }
@@ -1972,6 +1978,7 @@ void LayoutDoc::buildUi()
     connect(a_penButton, &markup::PenButton::clearAllRequested, this, [this] { a_view->clearDrawing(true); });
     connect(a_view, &LayoutView::drawingChanged, this, &LayoutDoc::updatePen);
     connect(a_view, &LayoutView::drawingNotKept, this, [this](const QString& why) { a_info->setText(why); });
+    connect(a_view, &LayoutView::drawingKept, this, [this] { a_info->clear(); });
     connect(a_view, &LayoutView::modeChanged, this, [this](LayoutView::Mode mode) {
         const QSignalBlocker block(a_rulerButton), blockPen(a_penButton);
         a_rulerButton->setChecked(mode == LayoutView::Mode::Ruler);
