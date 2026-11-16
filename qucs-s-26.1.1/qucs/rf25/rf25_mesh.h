@@ -30,8 +30,11 @@
 #include <QList>
 #include <QMap>
 #include <QPolygonF>
+#include <QRectF>
 #include <QString>
 #include <QStringList>
+
+#include <cmath>
 
 namespace qucs_s::rf25 {
 
@@ -42,6 +45,22 @@ struct MeshCell {
     QPointF centre;      ///< µm
     double area = 0;     ///< µm²
     bool onEdge = false; ///< it touches the conductor's boundary
+    /// The rectangle its charge is spread over in the solvers' closed
+    /// forms: its box where it is one; a cell clipped by a slanted side, a
+    /// rectangle of its own area at its own centroid, as its box is in
+    /// shape. Spread over its box - up to twice its area, its middle off
+    /// its centroid -, a square turned 45 degrees read its C 8, 3.5 and
+    /// 1.9 % over the square's at cells of a fifth, a tenth and a
+    /// twentieth of its side.
+    QRectF charged() const
+    {
+        const QRectF box = outline.boundingRect();
+        const double whole = box.width() * box.height();
+        if (!(area > 0) || !(whole > 0) || area >= (1 - 1e-9) * whole) return box;
+        const double k = std::sqrt(area / whole);
+        const QSizeF size(box.width() * k, box.height() * k);
+        return QRectF(centre - QPointF(size.width() / 2, size.height() / 2), size);
+    }
 };
 
 /// The rf_mesh node read.

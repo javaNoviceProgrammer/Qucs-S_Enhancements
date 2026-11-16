@@ -162,6 +162,66 @@ static QList<QPolygonF> mergedOf(const QList<QPolygonF>& shapes, bool* ok)
     return *ok ? joined : shapes;
 }
 
+QPolygonF simplifiedOutline(const QPolygonF& polygon, double tolerance, double* moved)
+{
+    if (moved != nullptr) *moved = 0;
+    QList<QPointF> points(polygon.begin(), polygon.end());
+    while (points.size() > 1 && points.first() == points.last()) points.removeLast();
+    const int n = int(points.size());
+    if (!(tolerance > 0) || n <= 4) return polygon;
+    // (Two corners far apart are kept, and each of the two chains between
+    //  them thinned: the corner furthest from the line between a chain's
+    //  ends kept where it is beyond the tolerance, and each half thinned
+    //  in turn.)
+    int far = 0;
+    double farthest = -1;
+    for (int i = 1; i < n; ++i) {
+        const double d = std::hypot(points.at(i).x() - points.at(0).x(), points.at(i).y() - points.at(0).y());
+        if (d > farthest) {
+            farthest = d;
+            far = i;
+        }
+    }
+    QList<bool> kept(n, false);
+    kept[0] = kept[far] = true;
+    const auto distance = [](QPointF p, QPointF a, QPointF b) {
+        const QPointF d = b - a;
+        const double len2 = d.x() * d.x() + d.y() * d.y();
+        if (!(len2 > 0)) return std::hypot(p.x() - a.x(), p.y() - a.y());
+        const double t = std::clamp(((p.x() - a.x()) * d.x() + (p.y() - a.y()) * d.y()) / len2, 0.0, 1.0);
+        return std::hypot(p.x() - a.x() - t * d.x(), p.y() - a.y() - t * d.y());
+    };
+    double worst = 0;
+    QList<std::pair<int, int>> chains{{0, far}, {far, n}};   // (the end n is corner 0 again)
+    while (!chains.isEmpty()) {
+        const auto [from, to] = chains.takeLast();
+        if (to - from < 2) continue;
+        const QPointF a = points.at(from), b = points.at(to % n);
+        int best = -1;
+        double most = -1;
+        for (int i = from + 1; i < to; ++i) {
+            const double d = distance(points.at(i), a, b);
+            if (d > most) {
+                most = d;
+                best = i;
+            }
+        }
+        if (most > tolerance) {
+            kept[best] = true;
+            chains.push_back({from, best});
+            chains.push_back({best, to});
+        } else {
+            worst = std::max(worst, most);
+        }
+    }
+    QPolygonF out;
+    for (int i = 0; i < n; ++i)
+        if (kept.at(i)) out << points.at(i);
+    if (out.size() < 3) return polygon;
+    if (moved != nullptr) *moved = worst;
+    return out;
+}
+
 QPolygonF withoutJogs(const QPolygonF& polygon, double under, int* removed)
 {
     QPolygonF p = polygon;
@@ -882,6 +942,8 @@ Processing processingOf(const Node& node, const QList<fem::Model::Parameter>& pa
     how.dropSlivers = flagIn(node, QStringLiteral("drop_slivers"), how.dropSlivers);
     how.snap = flagIn(node, QStringLiteral("snap"), how.snap);
     how.heal = flagIn(node, QStringLiteral("heal"), how.heal);
+    how.simplify = flagIn(node, QStringLiteral("simplify"), how.simplify);
+    how.curveTolerance = numberIn(node, QStringLiteral("curve_tolerance"), scope, how.curveTolerance, problems);
     how.removeFill = flagIn(node, QStringLiteral("remove_fill"), how.removeFill);
     how.viaDistance = numberIn(node, QStringLiteral("via_distance"), scope, how.viaDistance, problems);
     how.sliverWidth = numberIn(node, QStringLiteral("sliver_width"), scope, how.sliverWidth, problems);
@@ -897,6 +959,7 @@ Processing processingOf(const Node& node, const QList<fem::Model::Parameter>& pa
     if (how.viaDistance < 0 && problems != nullptr) *problems << tr("Processing: the via distance is below zero.");
     if (how.sliverWidth < 0 && problems != nullptr) *problems << tr("Processing: the sliver width is below zero.");
     if (how.grid <= 0 && how.snap && problems != nullptr) *problems << tr("Processing: the grid is not a length above zero.");
+    if (how.curveTolerance < 0 && problems != nullptr) *problems << tr("Processing: the curves' tolerance is below zero.");
     return how;
 }
 
@@ -1113,6 +1176,27 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
                                        "touch.").arg(layer).arg(touching);
         }
 
+        // Curves thinned: a circle drawn of many segments, each corner a
+        // part of the mesh's own - a spiral of 180 segments a turn meshed
+        // to 170,000 cells where 24 made 7,000 - as one of as few as keep the outline within the
+        // tolerance. The corners of a shape that is no curve are far from
+        // the line between their neighbours, and stay.
+        if (how.simplify) {
+            for (QPolygonF& s : shapes) {
+                const double around = perimeterOf(s);
+                const double tolerance = how.curveTolerance > 0 ? how.curveTolerance / perUnit
+                                         : around > 0 ? std::min(0.1e-6 / perUnit, 0.01 * 2 * areaOf(s) / around) : 0;
+                double moved = 0;
+                const QPolygonF thinner = simplifiedOutline(s, tolerance, &moved);
+                if (thinner.size() < s.size() && thinner.size() >= 3) {
+                    out.report.cornersDropped += int(s.size() - thinner.size());
+                    out.report.simplifiedMost = std::max(out.report.simplifiedMost, moved * perUnit * 1e6);
+                    ++out.report.simplified;
+                    s = thinner;
+                }
+            }
+        }
+
         // Slivers: fill, assist shapes and the crumbs a boolean leaves.
         if (how.dropSlivers && sliverWidth > 0) {
             QList<QPolygonF> kept;
@@ -1145,6 +1229,10 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
                                              "taken out.")
                                               .arg(out.report.healed).arg(jogged).arg(4 * grid, 0, 'g', 3)
                                         : tr("Healed %1 shape(s).").arg(out.report.healed));
+    if (out.report.simplified > 0)
+        out.report.lines << tr("Simplified %1 shape(s)' curves: %2 corner(s) nearer the line between their neighbours than the "
+                               "tolerance dropped, the outline moved %3 µm at most (Processing > Simplify curves).")
+                                .arg(out.report.simplified).arg(out.report.cornersDropped).arg(out.report.simplifiedMost, 0, 'g', 3);
     if (out.report.fill > 0) out.report.lines << tr("Dropped %1 dummy fill shape(s).").arg(out.report.fill);
     if (out.report.ignored > 0)
         out.report.lines << tr("%1 shape(s) are on layers the map does not name.").arg(out.report.ignored);

@@ -885,6 +885,39 @@ private slots:
         }
     }
 
+    // A square turned 45 degrees is the square: the cells its slanted sides clip each spread their charge
+    // over a rectangle of their own area at their own centroid, not over
+    // their box - up to twice their area, its middle off their centroid. At
+    // cells of a twentieth of its side the turned square reads its C 2.05 %
+    // over the square's, quasi-static and full wave alike - the clipped
+    // edge's own error, which halves as the cells do -; spread over their
+    // boxes, 2.23 and 2.25 %.
+    void aSquareTurnedIsTheSquare()
+    {
+        const rf::Stack st = grounded(4, 300e-6);
+        const double a = 100, h = a / std::sqrt(2.0);
+        const rf::Conductor square = strip(-a / 2, -a / 2, a, a);
+        rf::Conductor diamond = square;
+        diamond.outline = QPolygonF({QPointF(0, -h), QPointF(h, 0), QPointF(0, h), QPointF(-h, 0)});
+        QList<double> quasi, full;
+        for (const rf::Conductor& c : {square, diamond}) {
+            rf::MeshSettings how;
+            how.maximum = 5e-6;
+            how.cellsAcross = 0;
+            const rf::Mesh mesh = rf::meshOf({c}, how, st, 1e9);
+            const rf::Extraction e = rf::extract(mesh, {c}, st);
+            const rf::FullWave w = rf::fullWaveOf(mesh, {c}, st, {internalPort(QPointF(0, 0), QStringLiteral("M1"))}, {1e9});
+            QVERIFY2(e.ok() && w.ok(), qPrintable(e.problems.join(" | ") + why(w)));
+            quasi << e.maxwell.at(0).at(0);
+            full << -1.0 / (2 * M_PI * 1e9 * w.z.at(0).at(0).at(0).imag());
+        }
+        qWarning("turned: quasi-static %+.3f %%, full wave %+.3f %% (square %.4f / %.4f fF)", 100 * (quasi.at(1) / quasi.at(0) - 1),
+                 100 * (full.at(1) / full.at(0) - 1), quasi.at(0) * 1e15, full.at(0) * 1e15);
+        QVERIFY2(quasi.at(1) / quasi.at(0) - 1 < 0.0215, qPrintable(QStringLiteral("quasi-static %1 against %2").arg(quasi.at(1)).arg(quasi.at(0))));
+        QVERIFY2(full.at(1) / full.at(0) - 1 < 0.0215, qPrintable(QStringLiteral("full wave %1 against %2").arg(full.at(1)).arg(full.at(0))));
+        QVERIFY(quasi.at(1) > quasi.at(0) && full.at(1) > full.at(0));
+    }
+
     // Past its low-frequency limit a solve says so (N4 of the open items: a
     // spiral at 10 Hz read S21 -118 dB, an open, with nothing but GMRES's
     // iterations said): a copper line's charges' term outweighs its
