@@ -154,6 +154,25 @@ private slots:
         //  in Re and Im gave 1.6 % at 9 ns, the sweep's step's inverse.)
         QVERIFY2(echo < 5e-3 * peak, qPrintable(QStringLiteral("%1 of the peak at %2 ns").arg(echo / peak).arg(echoAt * 1e9)));
         QVERIFY(t.lines.join(QLatin1Char(' ')).contains(QStringLiteral("phase turns by up to 45 degrees")));
+        // A line of 25 Ohm in 50, its S11 swept finely - 3.6 degrees of the
+        // line a step - through its nulls, where its phase flips by nearly
+        // 180 degrees however fine the sweep: not said (P37 of the open
+        // items: it said "178 degrees").
+        {
+            const double z = 25, r0 = 50, length = 0.1037e-9;   // (its one-way delay: its nulls off the sweep's points)
+            QList<double> f1;
+            QList<Complex> s11;
+            for (int k = 1; k <= 200; ++k) {
+                const double f = k * 0.1e9;
+                const Complex t = kJ * std::tan(2 * M_PI * f * length);
+                const Complex zin = z * (r0 + z * t) / (z + r0 * t);
+                f1 << f;
+                s11 << (zin - r0) / (zin + r0);
+            }
+            const rf::TimeDomain line = rf::timeDomainOf(f1, s11, true, 50, 6, 800);
+            QVERIFY2(line.ok(), qPrintable(line.problems.join(" | ")));
+            QVERIFY2(!line.lines.join(' ').contains(QStringLiteral("phase turns")), qPrintable(line.lines.join(" | ")));
+        }
         // A sweep from 1 GHz on a grid of 31.25 MHz: said.
         QList<double> high;
         QList<Complex> sHigh;

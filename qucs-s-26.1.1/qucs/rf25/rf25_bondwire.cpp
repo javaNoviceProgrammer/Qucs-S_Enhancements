@@ -349,6 +349,7 @@ BondWired withBondWires(const Stack& stack, const QList<Conductor>& conductors, 
             via.to = to;
             via.sigma = legSigma;
             via.standsFor = wire.name;
+            via.roundWire = true;   // (one cell, as its strips: rf25_mesh.cpp)
             vias << via;
             const double across = side * 1e6;
             Conductor square;

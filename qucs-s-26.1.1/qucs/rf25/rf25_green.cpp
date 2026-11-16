@@ -1001,18 +1001,28 @@ QList<Green::Image> Green::strongestTerms(int most) const
 
 double Green::beyondStrongest(double rho, int most) const
 {
-    if (!ok() || rho <= 0) return 0;
+    if (!ok()) return 0;
     build();
-    double sum = 0;
-    for (int i = most; i < a_images.size(); ++i)
-        sum += a_images.at(i).a / std::sqrt(rho * rho + a_images.at(i).z * a_images.at(i).z);
     // (allTerms() puts the charge itself first at one height, so the
     // images beyond the n'th of allTerms() are the images beyond the
     // (n-1)'th of a_images.)
-    if (sameHeight() && most > 0 && a_side == 0) {
-        sum = 0;
-        for (int i = most - 1; i < a_images.size(); ++i)
-            sum += a_images.at(i).a / std::sqrt(rho * rho + a_images.at(i).z * a_images.at(i).z);
+    const int from = sameHeight() && most > 0 && a_side == 0 ? most - 1 : most;
+    // At the charge's own place too - a cell's own potential: the images
+    // left out there are as far as they are. It was nought, so that a
+    // lid's endless images lost a share of each cell's own potential that
+    // hung on which of them were the strongest - a part in a hundred
+    // thousand of a layer's permittivity moved a stripline's C by 0.4 %,
+    // its G read from that some ten times what it is (P32 of the open
+    // items). An image where the charge is, too weak to be among the
+    // strongest, is the charge's own spread over its cell - a part in a
+    // thousand of it at most - and is left out near it, where its 1/rho
+    // stands for nothing a cell holds.
+    const double near = 1e-3 * a_zRef;
+    double sum = 0;
+    for (int i = std::max(0, from); i < a_images.size(); ++i) {
+        const Image& t = a_images.at(i);
+        if (rho <= near && std::abs(t.z) <= 1e-9 * a_zRef) continue;
+        sum += t.a / std::sqrt(rho * rho + t.z * t.z);
     }
     return sum / (4 * M_PI * epsilon());
 }

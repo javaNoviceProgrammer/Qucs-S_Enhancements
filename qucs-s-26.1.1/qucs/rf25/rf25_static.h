@@ -266,7 +266,12 @@ struct ExtractControl {
         Losses,         ///< each lossy dielectric's share, a solve each: done of all
         /// The loop's inductance, after the charge (rf25_inductance.h) - the
         /// tab said "starting" through it, minutes of it.
-        Loop
+        Loop,
+        /// The layers that end: their correction's Green's functions, one for
+        /// each pair of heights its panels and cells are at - thousands,
+        /// where the stack's own are some tens: done of all (P40 of the open
+        /// items: the tab said the stack's "20 of 20" through 20 minutes).
+        Ended
     };
     const std::atomic_bool* stop = nullptr;
     std::atomic_int* step = nullptr;   ///< a Step

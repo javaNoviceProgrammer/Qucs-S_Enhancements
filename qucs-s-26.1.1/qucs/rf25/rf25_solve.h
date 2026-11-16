@@ -43,7 +43,10 @@ namespace qucs_s::rf25 {
 /// tool's question, which must leave the model as it was.
 struct SolveRequest {
     QString solver;              ///< "quasi_static" or "full_wave"; empty: the study's
-    QList<double> frequencies;   ///< a full-wave solve's, Hz; empty: the study's sweep
+    /// A full-wave solve's, Hz; empty: the study's sweep. A quasi-static
+    /// solve's first is the frequency its losses are asked at, where its
+    /// dispersive dielectrics are taken (else at the study's highest).
+    QList<double> frequencies;
     QString matrix;              ///< "automatic", "dense" or "compressed"; empty: the study's Matrix
     /// A full-wave sweep's points added where its answer changes
     /// (rf25_adaptive.h): 1 yes, 0 no, -1 as the study says. Never of
@@ -100,6 +103,9 @@ struct SolveJob {
     /// Its loop alone, no charge solve first (SolveRequest::loopOnly).
     bool loopOnly = false;
     QPointF in, out;
+    /// The metals the loop's two ends are on, where the ports say (an edge
+    /// port's conductor; an internal port's metal not the one both share).
+    QString inLayer, outLayer;
     double frequency = 0;
     QString portsSaid;
     std::shared_ptr<Inductance> inductance;

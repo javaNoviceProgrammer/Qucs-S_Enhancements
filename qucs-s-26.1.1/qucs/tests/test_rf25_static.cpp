@@ -905,6 +905,34 @@ private slots:
     // centred stripline's C is Cohn's exact one (IEEE Trans. MTT 2(2),
     // 1954), Z0 = eta/4 K(k)/K(k'), k = sech(pi w / 2b), its eps_eff eps_r,
     // to 0.5 %, its lid in the stack's last dielectric's top or over a gap.
+    // A sheet thick against how high it stands over its ground is warned
+    // of, with Wheeler's correction as the size of what it leaves out (P39
+    // of the open items: laminate copper 15 µm thick on 60 µm, 120 µm wide,
+    // read its C 7 % under a 3D solve's, and said nothing). 15 µm: 14.7 µm
+    // wider, 12 %; 1 µm thin, and the 15 µm solved as its two faces: nothing.
+    void aThickSheetOverItsGroundIsWarnedOf()
+    {
+        const QList<rf::Conductor> trace{strip(0, 0, 600, 120)};
+        const auto warned = [&trace](double t, bool faces) {
+            rf::Stack st = layered({{3.5, 60e-6}});
+            for (rf::Layer& l : st.layers)
+                if (l.kind == rf::Layer::Metal) {
+                    l.thickness = t;
+                    l.sigma = 5.8e7;
+                    l.twoSheets = faces;
+                }
+            rf::MeshSettings how;
+            how.maximum = 50e-6;
+            return rf::meshOf(trace, how, st, 1e9).warnings.join(QLatin1Char(' '));
+        };
+        const QString thick = warned(15e-6, false);
+        QVERIFY2(thick.contains(QStringLiteral("M1 is 15 µm thick as a sheet 60 µm over the ground"))
+                     && thick.contains(QStringLiteral("14.7 µm wider than its 120 (12 %)")),
+                 qPrintable(thick));
+        QVERIFY2(!warned(1e-6, false).contains(QStringLiteral("Wheeler")), qPrintable(warned(1e-6, false)));
+        QVERIFY2(!warned(15e-6, true).contains(QStringLiteral("Wheeler")), qPrintable(warned(15e-6, true)));
+    }
+
     void aLidClosesTheStack()
     {
         const double H = 100e-6;
@@ -957,6 +985,28 @@ private slots:
                 // Over air, less than eps_r, and Z0 above the closed one's.
                 QVERIFY(lp.epsilonEff < 0.99 * epsr && lp.z0 > z0);
             }
+        }
+        // Lossy, its G: all of the field in the one dielectric, w C tan
+        // delta to the nudge's rounding (P32 of the open items: it read
+        // -0.257 S/m against +7.1e-3).
+        // A sheet, and copper 5 µm thick under 195 µm (the open items' own).
+        for (const double t : {5e-6, 0.0}) {
+            rf::Stack lossy = stripline(epsr, b);
+            for (rf::Layer& l : lossy.layers) {
+                if (l.kind == rf::Layer::Dielectric || l.kind == rf::Layer::Substrate) l.tand = 0.01;
+                if (l.kind == rf::Layer::Metal) {
+                    l.thickness = t;
+                    l.sigma = 5.8e7;
+                }
+                if (l.name == QLatin1String("UP")) l.thickness = b / 2 - t;
+            }
+            const rf::Extraction e = rf::extract(mesh, line, lossy);
+            QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+            const rf::LineParameters lp = rf::lineParameters(e, 0, length, 1e9);
+            const double expected = 2 * M_PI * 1e9 * lp.c * 0.01;
+            QVERIFY2(lp.ok() && std::abs(lp.g / expected - 1) < 1e-3,
+                     qPrintable(QStringLiteral("metal %1 µm: G %2 S/m against w C tan delta %3 | %4").arg(t * 1e6).arg(lp.g)
+                                    .arg(expected).arg(lp.problems.join(" | "))));
         }
     }
 

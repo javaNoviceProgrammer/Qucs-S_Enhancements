@@ -2037,6 +2037,9 @@ private slots:
             line(st, 1000, 100, 4, 100e-6, 4, {1e9}, &e);
             const rf::FullWave a = solve(st, 1000, 1e9), c = solve(st, 2000, 1e9);
             QVERIFY2(a.ok() && c.ok() && e.ok(), qPrintable(why(a) + why(c)));
+            // Its sides open, its ports returning through the ground: the
+            // guide they feed warned of, not only noted (P38 of the open items).
+            QVERIFY2(says(a.warnings, "The lid has no side walls"), qPrintable(a.warnings.join(" | ")));
             const LowFrequency lf = lowFrequency(a, c, 0, 1000e-6, 2000e-6);
             const rf::LineParameters lp = rf::lineParameters(e, 0, 1000e-6, 1e9);
             QVERIFY2(std::abs(lf.lPer / lp.l - 1) < 0.01, qPrintable(QStringLiteral("L %1 nH/mm against %2").arg(lf.lPer * 1e6).arg(lp.l * 1e6)));
@@ -2148,6 +2151,8 @@ private slots:
             const auto stack = [&](double l) { return boxed(er, b, QRectF(QPointF(0, -2e-3), QPointF(l * 1e-6, 2.1e-3))); };
             const rf::FullWave a = solve(stack(1000), 1000, 100, {fl}), c = solve(stack(2000), 2000, 100, {fl});
             QVERIFY2(a.ok() && c.ok(), qPrintable(why(a) + why(c)));
+            // (Its walls close the lid's guide: nothing warned of it.)
+            QVERIFY2(!says(a.warnings, "The lid has no side walls"), qPrintable(a.warnings.join(" | ")));
             const TwoLine wave = twoLine(chainOf(zOf(a, 0)), chainOf(zOf(c, 0)), 1000e-6, 2000e-6, k0 * 2);
             const double ee = std::pow(wave.gamma.imag() / k0, 2);
             qWarning("a boxed stripline at 1 GHz: eps_eff %.5g, Z0 %.5g Ohm (Cohn's %.5g)", ee, wave.z0.real(), cohn);
@@ -2435,6 +2440,66 @@ private slots:
     // a round wire's Rs/(2 pi a) along it and its legs' within 10 % (0.1405
     // against 0.1314 Ohm; 7 % over at direct current too, the cells' way
     // along the strip).
+    // A bond wire high over its ground, meshed as the app meshes it (the
+    // solve stack's round-wire layers): its R is a round wire's, Rs/(2 pi
+    // a) along its span and its legs, whatever the cells across - each of
+    // its strips one cell across and each leg one bar (P34 of the open
+    // items: at six across, its strips' current crowded to their edges and
+    // its legs were bundles of thin vias, 1.8 to 2.3 times a round wire's,
+    // where one across read 1.04). Gold, 25 µm, 1.5 mm, its pads 254 µm over
+    // the ground, at 1 GHz.
+    void aBondWiresResistanceIsARoundWiresOnAnyMesh()
+    {
+        const double a = 12.5e-6, za = 254e-6, fr = 1e9, sigma = 4.1e7;
+        const double rs = std::sqrt(M_PI * fr * 4e-7 * M_PI / sigma);
+        rf::Stack base = withVia(grounded(1, za), QStringLiteral("V0"), QStringLiteral("ground"), QStringLiteral("M1"));
+        const QList<rf::Conductor> pads{strip(-50, -50, 100, 100), strip(1450, -50, 100, 100), on(QStringLiteral("V0"), 1475, -25, 50, 50)};
+        rf::BondWire gold;
+        gold.name = QStringLiteral("W1");
+        gold.fromMetal = gold.toMetal = QStringLiteral("M1");
+        gold.to = QPointF(1500, 0);
+        gold.diameter = 2 * a;
+        gold.sigma = sigma;
+        for (const double height : {150e-6, 300e-6}) {
+            gold.height = height;
+            const rf::BondWired bw = rf::withBondWires(base, pads, {gold});
+            QVERIFY2(bw.ok(), qPrintable(bw.problems.join(" | ")));
+            // Its length: its span, and its fitted heights' steps up and down.
+            QList<double> z;
+            double h = 0;
+            for (const rf::Layer& layer : bw.stack.layers) {
+                if (layer.kind == rf::Layer::Metal && layer.standsFor == gold.name) z << h;
+                if (layer.kind == rf::Layer::Dielectric || layer.kind == rf::Layer::Substrate) h += layer.thickness;
+            }
+            QCOMPARE(z.size(), 3);
+            double legs = std::abs(z.first() - za) + std::abs(z.last() - za);
+            for (int i = 0; i + 1 < z.size(); ++i) legs += std::abs(z.at(i + 1) - z.at(i));
+            const double want = rs / (2 * M_PI * a) * (1.5e-3 + legs);
+            for (const int across : {1, 6}) {
+                rf::MeshSettings how;
+                how.maximum = 25e-6;
+                how.cellsAcross = across;
+                const rf::Mesh mesh = rf::meshOf(bw.conductors, how, bw.stack, 0);
+                // (One cell across each strip - the wire runs along x -, one to
+                //  each leg: a strip e^1.5 a wide, a leg a/0.44705 square.)
+                for (const rf::MeshCell& cell : mesh.cells) {
+                    const rf::Layer* layer = bw.stack.named(cell.layer);
+                    if (layer == nullptr || !layer->roundWire) continue;
+                    const QRectF box = cell.outline.boundingRect();
+                    const double across = layer->kind == rf::Layer::Via ? a / 0.44705 : std::exp(1.5) * a;
+                    QVERIFY2(std::abs(box.height() * 1e-6 / across - 1) < 1e-3,
+                             qPrintable(QStringLiteral("a cell of %1 %2 by %3 µm").arg(cell.layer).arg(box.width()).arg(box.height())));
+                }
+                const rf::FullWave w = rf::fullWaveOf(mesh, bw.conductors, bw.stack, {internalPort(QPointF(0, 0), QStringLiteral("M1"))}, {fr});
+                QVERIFY2(w.ok(), qPrintable(why(w)));
+                const double r = w.z.at(0).at(0).at(0).real();
+                qWarning("loop %g µm, %d across: R %.4g Ohm, a round wire's %.4g", height * 1e6, across, r, want);
+                QVERIFY2(std::abs(r / want - 1) < 0.03, qPrintable(QStringLiteral("loop %1 µm, %2 across: %3 Ohm against %4")
+                                                                       .arg(height * 1e6).arg(across).arg(r).arg(want)));
+            }
+        }
+    }
+
     void aBondWireIsItsArc()
     {
         rf::Stack base = grounded(1, 10e-6);
@@ -2697,6 +2762,57 @@ private slots:
     {
         const rf::Stack stack = withVia(grounded(4, 200e-6), QStringLiteral("V0"), QStringLiteral("ground"), QStringLiteral("M1"));
         const QList<double> f{1e9, 6e9};
+        // Meshed as the app meshes it (MeshSettings' plane, the tab's from the
+        // Processing): a stepped line's half is the whole's cells above the
+        // plane, exactly half of them, its edges graded as the whole's and
+        // its cut not - and its two ends alike, S11 its S22 (P36 of the open
+        // items: meshed alone, two thirds of the whole's cells, its strips
+        // cut twice as finely, its ends 2e-4 apart). A sheet, and one 35 µm
+        // thick, whose walls' charge is in it: the half's cut no wall.
+        for (const double thickness : {0.0, 35e-6}) {
+            const rf::Stack stack = withVia(grounded(4, 200e-6, 0, thickness, 5.8e7), QStringLiteral("V0"), QStringLiteral("ground"),
+                                            QStringLiteral("M1"));
+            const QList<rf::Conductor> whole{strip(0, -50, 1000, 100), strip(1000, -150, 1000, 300), strip(2000, -50, 1000, 100)};
+            QList<rf::Conductor> half;
+            for (const rf::Conductor& c : whole) {
+                const QRectF box = c.outline.boundingRect();
+                half << strip(box.left(), 0, box.width(), box.bottom());
+            }
+            rf::MeshSettings how;
+            how.maximum = 100e-6;
+            how.cellsAcross = 4;
+            how.gaps = true;
+            const rf::Mesh a = rf::meshOf(whole, how, stack, 6e9);
+            how.symmetryAxis = 2;
+            how.symmetryAt = 0;
+            const rf::Mesh b = rf::meshOf(half, how, stack, 6e9);
+            QVERIFY2(a.ok() && b.ok(), qPrintable((a.problems + b.problems).join(" | ")));
+            QCOMPARE(b.cells.size() * 2, a.cells.size());
+            for (const rf::MeshCell& cell : b.cells) {
+                bool found = false;
+                for (const rf::MeshCell& other : a.cells)
+                    found = found || (std::abs(other.centre.x() - cell.centre.x()) < 1e-9 && std::abs(other.centre.y() - cell.centre.y()) < 1e-9
+                                      && std::abs(other.area - cell.area) < 1e-9 * cell.area);
+                QVERIFY2(found, qPrintable(QStringLiteral("the half's cell at %1, %2 is not the whole's").arg(cell.centre.x()).arg(cell.centre.y())));
+            }
+            QVERIFY2(b.lines.join(' ').contains(QStringLiteral("Meshed as the whole with its mirror")), qPrintable(b.lines.join(" | ")));
+            const QList<rf::FullWavePort> ports{edgePort(QPointF(0, 0)), edgePort(QPointF(3000, 0))};
+            rf::FullWaveControl control;
+            control.symmetry.axis = 2;
+            control.symmetry.at = 0;
+            control.symmetry.magnetic = true;
+            const rf::FullWave wa = rf::fullWaveOf(a, whole, stack, ports, {6e9}, 1e-6, nullptr);
+            const rf::FullWave wb = rf::fullWaveOf(b, half, stack, ports, {6e9}, 1e-6, &control);
+            QVERIFY2(wa.ok() && wb.ok(), qPrintable(why(wa) + why(wb)));
+            const auto& sa = wa.s.at(0);
+            const auto& sb = wb.s.at(0);
+            const double ends = std::abs(sb.at(0).at(0) - sb.at(1).at(1)), apart = std::abs(sb.at(1).at(0) - sa.at(1).at(0));
+            qWarning("a stepped line, its metal %g µm, meshed whole, %d cells, and as its half, %d: S11 - S22 %.2e of the half, S21 %.2e "
+                     "from the whole's",
+                     thickness * 1e6, int(a.cells.size()), int(b.cells.size()), ends, apart);
+            QVERIFY2(ends < 1e-9, qPrintable(QString::number(ends)));
+            QVERIFY2(apart < 1e-9, qPrintable(QString::number(apart)));
+        }
         const auto solve = [&](const QList<rf::Conductor>& conductors, int across, const QList<rf::FullWavePort>& ports,
                                const rf::FullWaveControl* control) {
             return rf::fullWaveOf(evenly(conductors, across, 100e-6), conductors, stack, ports, f, 1e-6, control);
@@ -2812,6 +2928,10 @@ private slots:
             QCOMPARE(how.symmetryAxis, 2);
             QVERIFY(std::abs(how.symmetryAt - 20e-6) < 1e-15);
             QVERIFY(!how.symmetryMagnetic);
+            // (The tab's mesh has it - its half meshed as the whole and cut.)
+            const rf::MeshSettings meshing = rf::tabMeshSettings(m, nullptr);
+            QCOMPARE(meshing.symmetryAxis, 2);
+            QVERIFY(std::abs(meshing.symmetryAt - 20) < 1e-9);
             const rf::HfssExport hfss = rf::hfssExportOf(m, {strip(0, 20, 100, 50)}, {}, QStringLiteral("half"));
             QVERIFY(hfss.problems.join(QLatin1Char(' ')).contains(QStringLiteral("plane of symmetry")));
         }

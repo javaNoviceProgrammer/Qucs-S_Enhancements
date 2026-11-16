@@ -606,11 +606,50 @@ QString chargeCostOf(int cells)
     return said;
 }
 
-Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const Stack& stack, double top,
+QList<Conductor> withMirrors(const QList<Conductor>& conductors, int axis, double at)
+{
+    if (axis == 0) return conductors;
+    QList<Conductor> out;
+    for (const Conductor& c : conductors) {
+        Conductor m = c;
+        for (QPointF& p : m.outline) p = axis == 1 ? QPointF(2 * at - p.x(), p.y()) : QPointF(p.x(), 2 * at - p.y());
+        std::reverse(m.outline.begin(), m.outline.end());
+        const QRectF box = c.outline.boundingRect();
+        const double side = axis == 1 ? box.left() : box.top();
+        if (std::abs(side - at) <= 1e-9 * std::max({1.0, std::abs(at), box.width(), box.height()})) {
+            const QList<QPolygonF> joined = unitedOf({c.outline, m.outline});
+            if (joined.size() == 1) {
+                Conductor u = c;
+                u.outline = joined.first();
+                out << u;
+                continue;
+            }
+        }
+        out << c << m;
+    }
+    return out;
+}
+
+Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack& stack, double top,
             double micrometre)
 {
     Mesh mesh;
     const double perUnit = micrometre > 0 ? micrometre : 1e-6;
+    // A plane of symmetry: the half meshed as the whole is - the conductors
+    // with their mirrors, which join them across the plane - and the cells
+    // beyond the plane dropped, any across it cut at it (below). So the
+    // half's cells are the whole's: its cut no edge, its widths and its
+    // cells across the whole's, the cell budget the whole's, and its two
+    // ends as alike as the whole's. Meshed alone, its cut was graded as an
+    // edge, its strips cut twice as finely, and the outline the cut leaves
+    // split into pieces otherwise than the whole's - two thirds of the
+    // whole's cells, a fill no quicker, and S11 and S22 of a line 2e-4 apart
+    // (P36 of the open items).
+    const int axis = how.symmetryAxis;
+    const double plane = how.symmetryAt;
+    // (One that reaches the plane united with its mirror - one outline,
+    //  split into pieces as the whole's is; the rest beside theirs.)
+    const QList<Conductor> conductors = withMirrors(given, axis, plane);
     if (conductors.isEmpty()) {
         mesh.problems << tr("There are no shapes to mesh.");
         return mesh;
@@ -931,8 +970,19 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
     const double pieceMost = std::max(double(kMostUnknowns), double(most));
     int facing = 0;
     QList<int> cellConductor;   // (each cell's conductor, for the check of touching pieces below)
+    // A layer standing for a round wire (a bond wire's strips and legs,
+    // Layer::roundWire) is one cell across, its edges not halved: a strip's
+    // width and conductivity are a round wire's with its current even across
+    // it, and a leg's square one bar's with its skin round it. Cut finer, a
+    // strip's current crowded to its edges, as a flat strip's does and a
+    // round wire's does not, and a leg was a bundle of thin vias each with
+    // its own skin: at six across, with a pad's cells, the wire's R read 1.8
+    // to 2.3 times a round wire's (P34 of the open items).
+    QSet<QString> roundWires;
+    for (const Layer& l : stack.layers)
+        if (l.roundWire) roundWires << l.name;
     const auto cut = [&mesh, &pieces, &meetings, &conductors, &how, &narrowest, &finest, &strips, &facing, &cellConductor,
-                      size, pieceMost](int perFeature, double* many) {
+                      &roundWires, size, pieceMost](int perFeature, double* many) {
         mesh.cells.clear();
         cellConductor.clear();
         narrowest = finest = 0;
@@ -950,8 +1000,10 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
             const double perimeter = piece.rectangle ? 0 : perimeterOf(shape);
             const double feature = piece.feature > 0 ? piece.feature : piece.rectangle ? narrow
                                                                                         : (perimeter > 0 ? 2 * area / perimeter : narrow);
+            const bool round = roundWires.contains(conductor.layer);
             double across = size;
-            if (perFeature > 0 && feature > 0) across = std::min(across, feature / perFeature);
+            if (round && feature > 0) across = feature * (1 + 1e-9);
+            else if (perFeature > 0 && feature > 0) across = std::min(across, feature / perFeature);
             // (Its length the way its slab says, where it says: a rectangle
             //  cut thin between two slabs is no strip along its thin side.)
             const bool alongX = piece.along >= 0 ? piece.along == 0 : bounds.width() >= bounds.height();
@@ -967,11 +1019,14 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
                 *many = squares;
                 return false;
             }
-            const double* gap = piece.gap;
-            piece.xs = gridLines(bounds.left(), bounds.width(), stepX, how.edges && piece.grade[0], how.edges && piece.grade[1],
+            static const double none[4] = {0, 0, 0, 0};
+            const double* gap = round ? none : piece.gap;
+            const bool edges = how.edges && !round;
+            piece.xs = gridLines(bounds.left(), bounds.width(), stepX, edges && piece.grade[0], edges && piece.grade[1],
                                  how.gapShare * gap[0], how.gapShare * gap[1]);
-            piece.ys = gridLines(bounds.top(), bounds.height(), stepY, how.edges && piece.grade[2], how.edges && piece.grade[3],
+            piece.ys = gridLines(bounds.top(), bounds.height(), stepY, edges && piece.grade[2], edges && piece.grade[3],
                                  how.gapShare * gap[2], how.gapShare * gap[3]);
+            if (round) continue;
             // (The sides graded past the edges' one halving, for the line
             //  that says so: those whose quarter gap is narrower than it.)
             for (int k = 0; k < 4 && how.edges; ++k) {
@@ -1286,6 +1341,69 @@ Mesh meshOf(const QList<Conductor>& conductors, const MeshSettings& how, const S
             mesh.warnings << w;
             mesh.lines << w;
         }
+    }
+    // A sheet thick against how high it stands over the ground: its walls and
+    // its top, a thickness higher, are not in a sheet, and Wheeler's
+    // correction says how much wider they make it - laminate copper 15 µm
+    // thick on 60 µm read its C 7 % under a 3D solve's, with no word (P39 of
+    // the open items).
+    if (!stack.layers.isEmpty() && stack.layers.first().kind == Layer::Ground) {
+        QMap<QString, double> narrowestOn;   // (each layer's narrowest conductor across, µm)
+        for (const Conductor& c : given) {
+            const QRectF box = c.outline.boundingRect();
+            const double a = std::abs(areaOf(c.outline)), perimeter = perimeterOf(c.outline);
+            // (A rectangle's short side; a trace of any other shape twice its
+            //  area over its perimeter, which is its width where it is long.)
+            const bool rectangle = std::abs(a - box.width() * box.height()) <= 1e-9 * box.width() * box.height();
+            const double across = rectangle ? std::min(box.width(), box.height())
+                                  : perimeter > 0 ? std::min(std::min(box.width(), box.height()), 2 * a / perimeter) : 0;
+            if (across > 0 && (!narrowestOn.contains(c.layer) || across < narrowestOn.value(c.layer))) narrowestOn.insert(c.layer, across);
+        }
+        double h = 0;   // (what a metal stands on: the dielectrics below it, µm)
+        for (const Layer& l : stack.layers) {
+            if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) h += l.thickness / perUnit;
+            if (l.kind != Layer::Metal || l.twoSheets || !(l.thickness > 0) || l.roundWire || !narrowestOn.contains(l.name)) continue;
+            const double t = l.thickness / perUnit, w = narrowestOn.value(l.name);
+            if (!(h > 0) || 2 * h <= t) continue;
+            const double widened = t / M_PI * (1 + std::log(2 * h / t));
+            if (widened < 0.05 * w) continue;   // (an ordinary board's, 35 µm on 0.5 mm, is some 4 %: not said)
+            const QString warned = tr("%1 is %2 µm thick as a sheet %3 µm over the ground: its walls and its top are not in this "
+                                      "answer, and Wheeler's correction makes its narrowest conductor %4 µm wider than its %5 "
+                                      "(%6 %) - its capacitance reads low by up to that much. Solved as its two faces (the "
+                                      "metal's Solved as), they are in it.")
+                                       .arg(l.name).arg(t, 0, 'g', 3).arg(h, 0, 'g', 4).arg(widened, 0, 'g', 3).arg(w, 0, 'g', 4)
+                                       .arg(100 * widened / w, 0, 'f', 0);
+            mesh.warnings << warned;
+            mesh.lines << warned;
+        }
+    }
+
+    if (axis != 0) {
+        // (The half kept: above the plane. A cell across it cut at it.)
+        const int whole = int(mesh.cells.size());
+        QList<MeshCell> half;
+        for (MeshCell cell : std::as_const(mesh.cells)) {
+            const QRectF box = cell.outline.boundingRect();
+            const double lo = axis == 1 ? box.left() : box.top(), hi = axis == 1 ? box.right() : box.bottom();
+            const double tol = 1e-9 * std::max({1.0, std::abs(lo), std::abs(hi)});
+            if (hi <= plane + tol) continue;
+            if (lo < plane - tol) {
+                const QRectF beyond = axis == 1 ? QRectF(QPointF(plane, box.top() - 1), QPointF(box.right() + 1, box.bottom() + 1))
+                                                : QRectF(QPointF(box.left() - 1, plane), QPointF(box.right() + 1, box.bottom() + 1));
+                QPolygonF cut = cell.outline.intersected(QPolygonF(beyond));
+                if (cut.size() > 1 && cut.first() == cut.last()) cut.removeLast();
+                const double a = areaOf(cut);
+                if (!(a > 0)) continue;
+                cell.outline = cut;
+                cell.centre = centroidOf(cut, a);
+                cell.area = a;
+            }
+            half << cell;
+        }
+        mesh.cells = half;
+        mesh.lines << tr("Meshed as the whole with its mirror across the plane of symmetry, %1 cells, and the half of them "
+                         "beyond the plane kept: %2.")
+                          .arg(whole).arg(half.size());
     }
 
     // The unknowns: an edge two cells of a layer share is where current

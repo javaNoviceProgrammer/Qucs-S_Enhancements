@@ -575,6 +575,9 @@ QString extractStepSaid(int step, int done, int all, int images)
         return tr("solving again for each lossy dielectric's share of the field, %1 of %2").arg(done + 1).arg(all);
     case ExtractControl::Loop:
         return tr("finding the loop's inductance over its runs of current");
+    case ExtractControl::Ended:
+        return done < 0 ? tr("solving the correction of the layers that end over its panels")
+                        : tr("building the Green's functions of the layers that end, %1 of %2").arg(done).arg(all);
     default:
         return tr("starting");
     }
@@ -828,7 +831,11 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             c.z = height.value(mesh.cells.at(k).layer);
             charged << c;
         }
-        dielectric = dielectricCorrection(plan, charged, false, control != nullptr ? control->stop : nullptr);
+        // (Its Green's functions counted as they are built: ExtractControl::Ended.)
+        dielectric = dielectricCorrection(plan, charged, false, control != nullptr ? control->stop : nullptr, 0,
+                                          [control](int done, int all) {
+                                              if (control != nullptr) control->at(ExtractControl::Ended, done, all);
+                                          });
         if (stopped()) return out;
         if (!dielectric.ok()) {
             out.problems += dielectric.problems;
@@ -1058,7 +1065,9 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             c.z = height.value(mesh.cells.at(k).layer);
             charged << c;
         }
-        whole = dielectricCorrection(all, charged, false, control->stop);
+        whole = dielectricCorrection(all, charged, false, control->stop, 0, [control](int done, int count) {
+            control->at(ExtractControl::Ended, done, count);
+        });
         if (stopped()) return out;
         // (Without it no per metre at all: the layer everywhere's
         //  cross-section with the whole of the correction as drawn added

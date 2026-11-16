@@ -250,7 +250,11 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
  * the near field's LU; \a stop, given, is heeded there.
  */
 Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, QPointF from, QPointF to,
-                        double micrometre = 1e-6, double frequency = 0, const std::atomic_bool* stop = nullptr);
+                        double micrometre = 1e-6, double frequency = 0, const std::atomic_bool* stop = nullptr,
+                        const QString& fromLayer = QString(), const QString& toLayer = QString());
+// (\a fromLayer and \a toLayer, given, are the metals the two ends are on:
+//  where another conductor lies under the point too - a ground plate both
+//  of a model's via ports start from -, the end is the face on this one.)
 
 /// How many runs and cells a loop is solved dense up to: 3000, or RF 2.5D >
 /// Settings…' dense limit where that is lower. Past it inductanceOf() holds

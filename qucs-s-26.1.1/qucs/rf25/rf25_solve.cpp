@@ -74,6 +74,13 @@ MeshSettings tabMeshSettings(const Model& model, QStringList* said)
     MeshSettings how = meshSettingsOf(model.mesh(), model.parameters(), said);
     how.compressed = meshedCompressed(model);
     how.gaps = true;
+    // (The plane of symmetry the Processing cuts the layout at: its half's
+    //  cut is no edge, and its width the whole's - rf25_mesh.h.)
+    if (const Node* node = model.layout().child(QStringLiteral("rf_processing"))) {
+        const Processing processing = processingOf(*node, model.parameters(), nullptr);
+        how.symmetryAxis = processing.symmetryAxis;
+        how.symmetryAt = processing.symmetryAt / 1e-6;   // (the processed shapes are in µm: processRead())
+    }
     return how;
 }
 
@@ -538,6 +545,7 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
         // it takes; with one, or none, there is no loop and the quasi-static
         // L of a uniform line is all that can be said.
         QList<QPointF> at;
+        QList<QPair<QString, QString>> metals;   // (each end's: an edge port's conductor twice; an internal port's from and to)
         for (const Node& port : model.ports().children) {
             if (!port.enabled) continue;
             if (port.type != QLatin1String("rf_edge_port") && port.type != QLatin1String("rf_internal_port")) continue;
@@ -550,11 +558,35 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
             if (!ok) continue;
             // (The ports are in metres; the cells are in the layout's own.)
             at << QPointF(x, y) / 1e-6;
+            if (port.type == QLatin1String("rf_edge_port")) {
+                const QString metal = textOf(port, QStringLiteral("conductor"));
+                metals << qMakePair(metal, metal);
+            } else {
+                metals << qMakePair(textOf(port, QStringLiteral("from")), textOf(port, QStringLiteral("to")));
+            }
         }
         if (at.size() >= 2) {
             job.loop = true;
             job.in = at.at(0);
             job.out = at.at(1);
+            // Each end on its own metal: two internal ports that start from
+            // one ground plate (a model built for the full wave, its via
+            // ports) end the loop on the metals they reach, not on the plate
+            // under both - "both ends of the loop on the same face" (P42 of
+            // the open items). A stack's own ground is no metal of the mesh.
+            const auto endOn = [&model](const QPair<QString, QString>& own, const QPair<QString, QString>& other) {
+                const auto metal = [&model](const QString& name) {
+                    const Layer* l = model.stack().named(name);
+                    return l != nullptr && l->kind == Layer::Metal ? l->name : QString();
+                };
+                if (own.first == own.second) return metal(own.first);
+                const QString from = metal(own.first), to = metal(own.second);
+                if (!from.isEmpty() && (from == metal(other.first) || from == metal(other.second))) return to;
+                if (!to.isEmpty() && (to == metal(other.first) || to == metal(other.second))) return from;
+                return to.isEmpty() ? from : to;
+            };
+            job.inLayer = endOn(metals.at(0), metals.at(1));
+            job.outLayer = endOn(metals.at(1), metals.at(0));
             job.frequency = topFrequency(model);
             if (at.size() > 2)
                 job.portsSaid = tr("%1 ports: the loop is taken from the first two.").arg(at.size());
@@ -575,18 +607,23 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
             job.stackSaid << said;
         }
     // A quasi-static solve is of one frequency: its dispersive dielectrics
-    // taken at the study's highest, where its losses are said - the full
-    // wave takes them at each of its own.
+    // taken at the one its losses are asked at, else at the study's highest,
+    // where its losses are said - the full wave takes them at each of its
+    // own. (They were taken at the study's highest whatever was asked, so
+    // that R and G at 1 GHz came with eps at 20: P33 of the open items.)
     if (!job.fullWave && job.stack.dispersive()) {
         QStringList taken;
-        const Stack at = job.stack.atFrequency(job.top);
+        const bool asked = !request.frequencies.isEmpty() && request.frequencies.first() > 0;
+        const double f = asked ? request.frequencies.first() : job.top;
+        const Stack at = job.stack.atFrequency(f);
         for (int i = 0; i < job.stack.layers.size(); ++i)
             if (!job.stack.layers.at(i).dispersion.isEmpty())
                 taken << tr("%1 eps_r %2, tan d %3").arg(at.layers.at(i).name).arg(at.layers.at(i).epsr, 0, 'g', 4)
                              .arg(at.layers.at(i).tand, 0, 'g', 3);
-        job.dispersedSaid = (job.top > 0 ? tr("The dispersive dielectrics are taken at %1 GHz, the study's highest frequency: %2.")
-                                                  .arg(job.top / 1e9, 0, 'g', 4)
-                                          : tr("The dispersive dielectrics are taken at direct current: %2."))
+        job.dispersedSaid = (asked   ? tr("The dispersive dielectrics are taken at %1 GHz, the frequency asked for: %2.").arg(f / 1e9, 0, 'g', 4)
+                             : f > 0 ? tr("The dispersive dielectrics are taken at %1 GHz, the study's highest frequency: %2.")
+                                           .arg(f / 1e9, 0, 'g', 4)
+                                     : tr("The dispersive dielectrics are taken at direct current: %2."))
                                 .arg(taken.join(QStringLiteral(", ")));
         job.stack = at;
     }
@@ -632,7 +669,7 @@ void runSolve(SolveJob& job)
         job.stepAll = 0;
         job.step = ExtractControl::Loop;
         job.inductance = std::make_shared<Inductance>(
-            inductanceOf(job.mesh, job.conductors, job.stack, job.in, job.out, 1e-6, job.frequency, &job.stop));
+            inductanceOf(job.mesh, job.conductors, job.stack, job.in, job.out, 1e-6, job.frequency, &job.stop, job.inLayer, job.outLayer));
     }
 }
 

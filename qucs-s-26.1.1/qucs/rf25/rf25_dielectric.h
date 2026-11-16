@@ -75,6 +75,7 @@
 #include <QStringList>
 
 #include <atomic>
+#include <functional>
 
 namespace qucs_s::rf25 {
 
@@ -163,7 +164,10 @@ struct DielectricCorrection {
  * those next to them -, and past it refused.
  */
 DielectricCorrection dielectricCorrection(const DielectricPlan& plan, const QList<ChargedCell>& cells, bool factored = false,
-                                          const std::atomic_bool* stop = nullptr, int mostPanels = 0);
+                                          const std::atomic_bool* stop = nullptr, int mostPanels = 0,
+                                          const std::function<void(int, int)>& progress = {});
+// (\a progress: how many of its Green's functions are built, of all; then
+//  -1 of all while its panels' system is solved.)
 
 /// The most panels a correction sets up: 8000 (a dense system of half a
 /// gigabyte), or what setDielectricMostPanels() set - 0 the build's again.

@@ -50,6 +50,16 @@ QList<QPolygonF> unionOf(const QList<QPolygonF>& shapes, int* joined = nullptr);
 bool touchAlongAnEdge(const QPolygonF& a, const QPolygonF& b, double tol);
 /// \a shapes grown by \a distance (negative: shrunk), in their own units.
 QList<QPolygonF> offsetOf(const QList<QPolygonF>& shapes, double distance);
+/// \a shapes united (gdstk's boolean "or"), µm: those that touch or overlap
+/// one outline. \a shapes as they are where it fails.
+QList<QPolygonF> unitedOf(const QList<QPolygonF>& shapes);
+/// \a polygon without its jogs: each side shorter than \a under between two
+/// sides along the other axis - a step of a few grid units in an outline
+/// otherwise along x and y - taken out by moving the shorter of those two
+/// sides across by it, so that every side stays along x or y (its two
+/// points merged would slant them). How many were taken out added to
+/// \a removed.
+QPolygonF withoutJogs(const QPolygonF& polygon, double under, int* removed = nullptr);
 /// The part of \a shapes that is inside \a within: a cut, which is how a
 /// cell of the mesh is taken out of a conductor.
 QList<QPolygonF> clipTo(const QList<QPolygonF>& shapes, const QPolygonF& within);

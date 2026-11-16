@@ -303,13 +303,31 @@ public:
         const auto k = pairKey(zf, zs);
         if (a_greens.count(k) == 0) a_greens.emplace(k, Green(a_layers, std::min(zf, zs), std::max(zf, zs)));
     }
-    /// Built, each; false and why where one could not be.
-    bool build(const std::atomic_bool* stop, QStringList* problems)
+    /// Built, each, on as many threads as the machine has, \a progress told
+    /// how many of all are as they go (from the caller's thread); false and
+    /// why where one could not be. (One after another they were thousands of
+    /// some milliseconds each - 8664 of a flip chip's bump, its pad solved as
+    /// its two faces and its die's layers ending at the die -, a minute or
+    /// more with nothing said: P40 of the open items.)
+    bool build(const std::atomic_bool* stop, QStringList* problems, const std::function<void(int, int)>& progress = {})
     {
+        std::vector<Green*> all;
+        for (auto& entry : a_greens) all.push_back(&entry.second);
+        for (auto& entry : a_fields) all.push_back(&entry.second);
+        const int count = int(all.size());
+        std::atomic_int next{0}, done{0};
+        onThreads(std::clamp(QThread::idealThreadCount(), 1, std::max(1, count)), [&](int t) {
+            for (int i = next++; i < count; i = next++) {
+                if (stop != nullptr && stop->load()) return;
+                all[std::size_t(i)]->stopWith(stop);
+                (void)all[std::size_t(i)]->images();
+                const int now = ++done;
+                if (t == 0 && progress) progress(now, count);
+            }
+        });
+        if (progress) progress(done.load(), count);
+        if (stop != nullptr && stop->load()) return false;
         for (auto& [key, g] : a_greens) {
-            g.stopWith(stop);
-            (void)g.images();
-            if (stop != nullptr && stop->load()) return false;
             if (!g.ok()) {
                 *problems += g.problems();
                 return false;
@@ -324,9 +342,6 @@ public:
             a_direct[key] = a;
         }
         for (auto& [key, g] : a_fields) {
-            g.stopWith(stop);
-            (void)g.images();
-            if (stop != nullptr && stop->load()) return false;
             if (!g.ok()) {
                 *problems += g.problems();
                 return false;
@@ -861,7 +876,7 @@ double DielectricCorrection::at(int i, int j) const
 }
 
 DielectricCorrection dielectricCorrection(const DielectricPlan& plan, const QList<ChargedCell>& given, bool factored,
-                                          const std::atomic_bool* stop, int mostPanels)
+                                          const std::atomic_bool* stop, int mostPanels, const std::function<void(int, int)>& progress)
 {
     // A metal a hair off a region's face - an oxide of some nanometres
     // between - taken as on it: the step its field is read over is some
@@ -1318,10 +1333,12 @@ DielectricCorrection dielectricCorrection(const DielectricPlan& plan, const QLis
         for (const double zs : std::as_const(gaussZ)) greens.wantField(zf, zs, side);
         for (const double zs : std::as_const(cellZ)) greens.wantField(zf, zs, side);
     }
-    if (!greens.build(stop, &out.problems)) {
+    if (!greens.build(stop, &out.problems, progress)) {
         if (out.problems.isEmpty()) out.problems << tr("Stopped.");
         return out;
     }
+    // (Its panels' system next, said: done -1.)
+    if (progress) progress(-1, greens.size());
 
     // The panels' system M Q = T q and what they put on the cells, P_cb:
     // Q_i / A_i - delta_i E_i(Q) = delta_i E_i(q), E_i the field normal to

@@ -595,6 +595,40 @@ private slots:
     // The mesh solved: a straight bar's inductance is its own partial
     // inductance, since a current going along it has no choice, and its
     // resistance is the bar's.
+    // A loop whose two ends' points lie on a plate under them too - a model
+    // built for the full wave, its two via ports both from one ground plate
+    // to the leads -: each end on the metal it names, the leads', not on the
+    // plate's one edge both points are on (P42 of the open items: "both ends
+    // of the loop are on the same face"). The bar's L as without the plate.
+    void aLoopsEndsAreOnTheMetalsTheyName()
+    {
+        rf::Stack stack = grounded(4, 100e-6, 3e-6, 5.8e7);
+        rf::Layer plate = stack.layers.at(2), oxide = stack.layers.at(1);
+        plate.name = QStringLiteral("M0");
+        plate.tag = QStringLiteral("m0");
+        oxide.kind = rf::Layer::Dielectric;
+        oxide.name = QStringLiteral("OX");
+        oxide.tag = QStringLiteral("ox");
+        oxide.thickness = 10e-6;
+        stack.layers.insert(2, plate);
+        stack.layers.insert(3, oxide);
+        const double length = 400.0, width = 40.0;
+        rf::Conductor under;
+        under.layer = QStringLiteral("M0");
+        under.outline = QPolygonF(QRectF(-50, 20, 500, 100));   // (its lower edge through both ends' points)
+        const QList<rf::Conductor> both{strip(0, 0, length, width), under};
+        const rf::Mesh mesh = meshed(both, 20);
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        const QPointF a(10, 20), b(length - 10, 20);
+        const rf::Inductance plain = rf::inductanceOf(mesh, both, stack, a, b, 1e-6, 1e9);
+        QVERIFY2(!plain.ok() && plain.problems.join(' ').contains(QStringLiteral("same face")), qPrintable(plain.problems.join(" | ")));
+        const rf::Inductance named = rf::inductanceOf(mesh, both, stack, a, b, 1e-6, 1e9, nullptr, QStringLiteral("M1"), QStringLiteral("M1"));
+        QVERIFY2(named.ok(), qPrintable(named.problems.join(" | ")));
+        const QList<rf::Conductor> alone{strip(0, 0, length, width)};
+        const rf::Inductance bar = rf::inductanceOf(meshed(alone, 20), alone, stack, a, b, 1e-6, 1e9, nullptr, QStringLiteral("M1"), QStringLiteral("M1"));
+        QVERIFY2(bar.ok() && std::abs(named.l / bar.l - 1) < 1e-6, qPrintable(QStringLiteral("%1 against %2 nH").arg(named.l * 1e9).arg(bar.l * 1e9)));
+    }
+
     void aStraightBarsSolvedInductanceIsItsOwn()
     {
         const double length = 400.0, width = 40.0;   // µm

@@ -162,6 +162,63 @@ static QList<QPolygonF> mergedOf(const QList<QPolygonF>& shapes, bool* ok)
     return *ok ? joined : shapes;
 }
 
+QPolygonF withoutJogs(const QPolygonF& polygon, double under, int* removed)
+{
+    QPolygonF p = polygon;
+    if (p.size() > 1 && p.first() == p.last()) p.removeLast();
+    if (!(under > 0)) return p;
+    const auto alongX = [](QPointF d) { return d.y() == 0 && d.x() != 0; };
+    const auto alongY = [](QPointF d) { return d.x() == 0 && d.y() != 0; };
+    // (Points repeated, and points on a straight side, taken out.)
+    const auto tidy = [](QPolygonF& q) {
+        for (bool again = true; again && q.size() > 3;) {
+            again = false;
+            for (int i = 0; i < q.size() && q.size() > 3; ++i) {
+                const QPointF a = q.at((i + q.size() - 1) % q.size()), b = q.at(i), c = q.at((i + 1) % q.size());
+                const QPointF u = b - a, v = c - b;
+                const double cross = u.x() * v.y() - u.y() * v.x(), dot = u.x() * v.x() + u.y() * v.y();
+                if (b == a || (cross == 0 && dot > 0)) {
+                    q.remove(i);
+                    again = true;
+                    break;
+                }
+            }
+        }
+    };
+    tidy(p);
+    for (int round = 0; round < 10000 && p.size() >= 6; ++round) {
+        const int n = int(p.size());
+        int at = -1;
+        for (int i = 0; i < n && at < 0; ++i) {
+            const QPointF a = p.at(i), b = p.at((i + 1) % n), d = b - a;
+            if (!(std::hypot(d.x(), d.y()) < under)) continue;
+            const QPointF before = a - p.at((i + n - 1) % n), after = p.at((i + 2) % n) - b;
+            // (A step: the side along one axis, the two beside it along the
+            //  other.)
+            if ((alongX(d) && alongY(before) && alongY(after)) || (alongY(d) && alongX(before) && alongX(after))) at = i;
+        }
+        if (at < 0) break;
+        const QPointF a = p.at(at), b = p.at((at + 1) % n), d = b - a;
+        const QPointF before = a - p.at((at + n - 1) % n), after = p.at((at + 2) % n) - b;
+        if (std::hypot(after.x(), after.y()) <= std::hypot(before.x(), before.y())) {
+            p[(at + 1) % n] -= d;
+            p[(at + 2) % n] -= d;
+        } else {
+            p[at] += d;
+            p[(at + n - 1) % n] += d;
+        }
+        tidy(p);
+        if (removed != nullptr) ++*removed;
+    }
+    return p;
+}
+
+QList<QPolygonF> unitedOf(const QList<QPolygonF>& shapes)
+{
+    bool ok = true;
+    return mergedOf(shapes, &ok);
+}
+
 /// \a shapes grown (or, for a negative distance, shrunk) by \a distance µm.
 QList<QPolygonF> offsetOf(const QList<QPolygonF>& shapes, double distance)
 {
@@ -449,13 +506,28 @@ QList<OwnShape> ownShapesOf(const Model& model, QStringList* problems)
     const auto say = [problems](const QString& text) {
         if (problems != nullptr) *problems << text;
     };
+    // The Layout's unit, m: a bare number of a shape is in it, as its
+    // coordinates are drawn - read as metres, a strip of "100" by "50" was
+    // a hundred metres long, and the solve said there was no layout (P6 of
+    // the open items). A length with a unit, or of the parameters, is as it
+    // says.
+    double unit = 1e-6;
+    {
+        const QString text = textOf(model.layout(), QStringLiteral("unit")).trimmed();
+        const fem::Expression e = fem::Expression::compile(text.isEmpty() ? QStringLiteral("1[um]") : text, scope);
+        if (e.isValid() && e.isConstant() && std::isfinite(e.constant()) && e.constant() > 0) unit = e.constant();
+    }
     for (const Node& n : node->children) {
         if (!n.enabled || n.type != QLatin1String("rf_shape")) continue;
         const QString name = nameOf(n);
         // A length of it in µm, or nothing and why (the first thing wrong).
         bool readable = true;
         const auto length = [&](const QJsonValue& v, const QString& what) {
-            const QString text = v.isDouble() ? QString::number(v.toDouble(), 'g', 17) : v.toString();
+            if (v.isDouble()) return v.toDouble() * unit / 1e-6;
+            const QString text = v.toString();
+            bool plain = false;
+            const double bare = text.trimmed().toDouble(&plain);
+            if (plain) return bare * unit / 1e-6;
             const fem::Expression e = fem::Expression::compile(text.trimmed().isEmpty() ? QStringLiteral("0") : text, scope);
             if (!e.isValid() || !e.isConstant() || !std::isfinite(e.constant())) {
                 if (readable)
@@ -879,6 +951,7 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
     const double viaDistance = how.viaDistance / perUnit;
     const double sliverWidth = how.sliverWidth / perUnit;
     const double grid = how.grid / perUnit;
+    int jogged = 0;   // (jogs the heal took out, over every layer)
 
     for (auto it = byLayer.constBegin(); it != byLayer.constEnd(); ++it) {
         const QString& layer = it.key();
@@ -937,11 +1010,18 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
                     else ++repeated;
                 }
                 while (tidy.size() > 1 && tidy.last() == tidy.first()) tidy.removeLast();
+                // Its jogs: steps of a few grid units in an outline along x
+                // and y, each of which the mesh cut a slab for - an
+                // octagon with 5 nm jogs meshed to 153,590 cells, 7,418
+                // snapped (P41 of the open items).
+                int jogs = 0;
+                tidy = withoutJogs(tidy, 4 * grid, &jogs);
+                jogged += jogs;
                 // United with itself, which is what undoes a crossing or a
                 // zero-width neck.
                 QList<QPolygonF> one = unionOf({tidy, tidy});
                 if (one.isEmpty()) one = {tidy};
-                if (repeated > 0 || one.size() != 1 || one.first().size() != tidy.size()) ++out.report.healed;
+                if (jogs > 0 || repeated > 0 || one.size() != 1 || one.first().size() != tidy.size()) ++out.report.healed;
                 healed += one;
             }
             shapes = healed;
@@ -1049,7 +1129,11 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
 
     if (how.snap && out.report.snapped > 0)
         out.report.lines << tr("Snapped %1 shape(s) to a %2 µm grid.").arg(out.report.snapped).arg(grid);
-    if (out.report.healed > 0) out.report.lines << tr("Healed %1 shape(s).").arg(out.report.healed);
+    if (out.report.healed > 0)
+        out.report.lines << (jogged > 0 ? tr("Healed %1 shape(s), %2 jog(s) under %3 µm - steps of a few grid units in a side - "
+                                             "taken out.")
+                                              .arg(out.report.healed).arg(jogged).arg(4 * grid, 0, 'g', 3)
+                                        : tr("Healed %1 shape(s).").arg(out.report.healed));
     if (out.report.fill > 0) out.report.lines << tr("Dropped %1 dummy fill shape(s).").arg(out.report.fill);
     if (out.report.ignored > 0)
         out.report.lines << tr("%1 shape(s) are on layers the map does not name.").arg(out.report.ignored);

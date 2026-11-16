@@ -80,11 +80,20 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
     };
     // How far the phase turns between the sweep's points, where S is not
     // nothing: past some 20 degrees a step, the resampling between them is
-    // the phase's guess.
+    // the phase's guess. Not through a null - a point under half the largest
+    // within three either side, S dipping there, which a coarse sweep of an
+    // even |S| does not -, where the phase flips however finely S is swept:
+    // a line's S11 passing through its nulls said its 178 degrees there
+    // (P37 of the open items).
     double largest = 0, turned = 0;
     for (const Complex& v : s) largest = std::max(largest, std::abs(v));
+    const auto nearNull = [&s, n](int k) {
+        double around = 0;
+        for (int j = std::max(0, k - 3); j <= std::min(n - 1, k + 3); ++j) around = std::max(around, std::abs(s.at(j)));
+        return std::abs(s.at(k)) < 0.5 * around;
+    };
     for (int k = 1; k < n; ++k)
-        if (std::abs(s.at(k)) > 1e-3 * largest && std::abs(s.at(k - 1)) > 1e-3 * largest)
+        if (std::abs(s.at(k)) > 1e-3 * largest && std::abs(s.at(k - 1)) > 1e-3 * largest && !nearNull(k) && !nearNull(k - 1))
             turned = std::max(turned, std::abs(std::arg(s.at(k) / s.at(k - 1))));
     // Kaiser's window over the band, one at nought and its least at the top.
     const auto window = [&](int k) {

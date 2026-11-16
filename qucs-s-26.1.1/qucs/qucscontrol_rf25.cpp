@@ -448,7 +448,10 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         if (!given) return errorResult(tr("'frequency' is a frequency above zero (\"10[GHz]\")."));
         asked = *given;
     }
-    if (fullWave && asked > 0) request.frequencies = {asked};
+    // (A quasi-static solve's too, where a dielectric is dispersive: taken
+    //  there, not at the study's highest. Elsewhere it changes nothing, and
+    //  a solve asked so still joins one going on.)
+    if (asked > 0 && (fullWave || model->model().stack().dispersive())) request.frequencies = {asked};
     // A sweep's points added where its answer changes, or not, for this
     // solve alone: the study's "Add points where it changes" otherwise.
     if (args.contains(QLatin1String("adaptive"))) {
@@ -485,6 +488,10 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         if (step == ExtractControl::Greens)
             why = tr(" The time is in the stack's Green's functions, which the mesh does not change: fewer layers, or "
                      "thin ones of permittivities nearer their neighbours', build sooner.");
+        else if (step == ExtractControl::Ended)
+            why = tr(" The time is in the layers that end: their correction's Green's functions, one for each pair of "
+                     "heights its panels and cells are at - a metal solved as a sheet has half the heights of its two "
+                     "faces, and a layer drawn everywhere none.");
         else if (step >= ExtractControl::Charge)
             why = tr(" A coarser mesh solves sooner: fewer cells across a conductor, or a larger largest cell (the Mesh "
                      "node).");
