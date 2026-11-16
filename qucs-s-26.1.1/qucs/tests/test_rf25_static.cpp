@@ -952,6 +952,9 @@ private slots:
             if (warned != nullptr) *warned = mesh.warnings;
             if (lines != nullptr) *lines = mesh.lines;
             const rf::Extraction e = rf::extract(mesh, both, st);
+            // (A Maxwell matrix: the check raises no false alarm on a plate
+            //  nearly enclosed by the other - the review of f13694ea.)
+            if (!rf::maxwellDoubts(e.maxwell, e.names).isEmpty()) return -1.0;
             return e.ok() ? -e.maxwell.at(0).at(1) : 0.0;
         };
         QStringList warned, lines;
@@ -970,6 +973,41 @@ private slots:
         QVERIFY2(warned.isEmpty(), qPrintable(warned.join(" | ")));
         solved(80, 10, &warned);
         QVERIFY2(warned.join(' ').contains(QStringLiteral("times the gap")), qPrintable(warned.join(" | ")));
+
+        // Ordinary layouts with a lower metal near, which a plate's rule must
+        // not reach (the review of f13694ea: shared there, each piece took
+        // the others' lines across it): a coplanar line over a ground 2 µm
+        // below, and three tracks over a shield, at 50 µm cells - meshed as
+        // with the lower metal far away, cell for cell.
+        const auto cellsOf = [](double gap) {
+            rf::Stack lower = layered({{4.1, 5e-6}});
+            rf::Layer between;
+            between.kind = rf::Layer::Dielectric;
+            between.name = QStringLiteral("ILD");
+            between.tag = QStringLiteral("ild");
+            between.thickness = gap;
+            between.epsr = 4.1;
+            rf::Layer upper;
+            upper.kind = rf::Layer::Metal;
+            upper.name = QStringLiteral("M2");
+            upper.tag = QStringLiteral("m2");
+            lower.layers << between << upper;
+            const auto on2 = [](double x, double y, double w, double h) {
+                rf::Conductor c = strip(x, y, w, h);
+                c.layer = QStringLiteral("M2");
+                return c;
+            };
+            QList<rf::Conductor> cpw{strip(-500, -500, 2000, 1000), on2(0, -25, 1000, 50), on2(0, 55, 1000, 200), on2(0, -255, 1000, 200)};
+            QList<rf::Conductor> shield{strip(-200, -200, 1400, 600), on2(0, 0, 1000, 20), on2(0, 90, 1000, 20), on2(0, 180, 1000, 20)};
+            rf::MeshSettings how;
+            how.maximum = 50e-6;
+            return std::make_pair(int(rf::meshOf(cpw, how, lower, 1e9).cells.size()), int(rf::meshOf(shield, how, lower, 1e9).cells.size()));
+        };
+        const auto nearby = cellsOf(2e-6), apart = cellsOf(200e-6);
+        qWarning("a coplanar line over a ground 2 µm down: %d cells (%d far); tracks over a shield: %d (%d far)", nearby.first, apart.first,
+                 nearby.second, apart.second);
+        QCOMPARE(nearby.first, apart.first);
+        QCOMPARE(nearby.second, apart.second);
     }
 
     void aCapacitanceMatrixThatIsNoMaxwellMatrixIsSaid()
@@ -1005,6 +1043,9 @@ private slots:
                      && thick.contains(QStringLiteral("14.7 µm wider than its 120 (12 %)")),
                  qPrintable(thick));
         QVERIFY2(!warned(1e-6, false).contains(QStringLiteral("Wheeler")), qPrintable(warned(1e-6, false)));
+        // Thicker than twice its height, where Wheeler's log no longer holds:
+        // said all the same, without a number (the review of 791a8ed2).
+        QVERIFY2(warned(130e-6, false).contains(QStringLiteral("thicker than twice its height")), qPrintable(warned(130e-6, false)));
         QVERIFY2(!warned(15e-6, true).contains(QStringLiteral("Wheeler")), qPrintable(warned(15e-6, true)));
     }
 

@@ -103,6 +103,7 @@ struct CutRegion {
     QPolygonF outline;      ///< µm; a circle as a polygon of many sides
     bool keep = true;       ///< kept, the rest masked (false: taken out)
     QStringList layers;     ///< the stack layers it cuts, by name (empty: every one)
+    QString tag;            ///< its node's, for the tree to mark it read (last: the regions are written as aggregates)
     bool cuts(const QString& layer) const { return layers.isEmpty() || layers.contains(layer); }
 };
 

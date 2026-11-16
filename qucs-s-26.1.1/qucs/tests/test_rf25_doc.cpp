@@ -1080,6 +1080,16 @@ private slots:
         const QString tag = cutout->children.at(0).tag;
         QTRY_COMPARE(itemOf(tree, QStringLiteral("cutout"))->text(1), QStringLiteral("1 region(s)"));
         QCOMPARE(itemOf(tree, tag)->text(1), QStringLiteral("kept"));
+        // One that cannot be read is marked on its row, why in its tip, and
+        // the Cutout counts what is applied (C1 of the open items: it read
+        // "kept", the Cutout "1 region(s)", and was dropped with no sign).
+        QVERIFY(doc->editNode(tag, [](rf::Node& n) { n.props.insert(QStringLiteral("x1"), QStringLiteral("no_such_length")); },
+                              QStringLiteral("unreadable")));
+        QTRY_COMPARE(itemOf(tree, tag)->text(1), QStringLiteral("cannot be read"));
+        QVERIFY2(itemOf(tree, tag)->toolTip(1).contains(QStringLiteral("is not a number")), qPrintable(itemOf(tree, tag)->toolTip(1)));
+        QCOMPARE(itemOf(tree, QStringLiteral("cutout"))->text(1), QStringLiteral("0 of 1 region(s) applied"));
+        doc->undo();
+        QTRY_COMPARE(itemOf(tree, tag)->text(1), QStringLiteral("kept"));
 
         // The region's form: a rectangle's corners; a polygon's corners as a
         // table in their place.

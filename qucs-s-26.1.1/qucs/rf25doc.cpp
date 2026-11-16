@@ -2276,7 +2276,10 @@ RF25Doc::Count RF25Doc::countNow() const
             else if (lp.runs.load() > 0)
                 c.said += QLatin1Char('.');
         }
-        if (all > 0) {
+        // (Counted where it counts: the layers that end's panels, done -1,
+        //  busy as the matrix's steps are - the bar stood full through them,
+        //  -1 out of its range: the review of 791a8ed2.)
+        if (all > 0 && done >= 0) {
             c.of = all;
             c.done = std::min(done, all);
             c.key = QStringLiteral("static %1").arg(step);

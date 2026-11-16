@@ -1237,6 +1237,11 @@ struct AtFrequency {
     MatrixC z;                           ///< ports x ports
     MatrixC current;                     ///< runs x ports
     double rcond = 1;
+    /// How far the charges' term outweighs the rest of a run's own in M, at
+    /// its largest over the runs: past some 1e11 the currents are lost in
+    /// its rounding - the mixed potential's breakdown at a low frequency,
+    /// an open where a coil is (N4 of the open items). Nought: not measured.
+    double chargeOverSeries = 0;
     /// Dense: the seconds its fill took (the Green's functions, the system
     /// and P, up to its LU) and its LU (the factors, the solve, rcond: not
     /// its wait for OpenBLAS's thread), and whether Accelerate's LAPACK or
@@ -2372,6 +2377,19 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric)
     sharedOut(nr, threads, [&c, &p, &m, jw](int b) { chargeColumn(c, p, jw, m, b); });
     ownImpedances(c, f, [&m](int a, int b, Complex v) { m(a, b) += v; });
     groundImpedances(c, f, [&m](int a, int b, Complex v) { m(a, b) += v; });
+    // The charges' term against the rest of each run's own (N4): the rest is
+    // what is left of the diagonal less it - nothing but its rounding where
+    // the currents are lost.
+    {
+        const auto pAt = [&p](int i, int j) { return i < 0 || j < 0 ? Complex(0, 0) : p(i, j); };
+        for (int a = 0; a < nr; ++a) {
+            const int t = c.tail.at(a), h = c.head.at(a);
+            const Complex charge = overJw(pAt(t, t) - pAt(t, h) - pAt(h, t) + pAt(h, h), jw);
+            const double rest = std::abs(m(a, a) - charge);
+            const double ratio = std::abs(charge) / std::max(rest, 1e-300 * std::abs(charge) + 1e-300);
+            out.chargeOverSeries = std::max(out.chargeOverSeries, ratio);
+        }
+    }
 
     // A port and a via: the via's potential at the port's cells, by their
     // shares. Along the runs a via's potential telescopes from the via to
@@ -2909,6 +2927,23 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
                             .arg(f / 1e9, 0, 'g', 4)
                             .arg(out.iterations)
                             .arg(most);
+    // The charges' term against the rest of a run's own (N4), estimated from
+    // the kernels on runs spread over the layout - this solve holds no
+    // diagonal to read it from: the rest a run's jw L and its sheet's
+    // resistance.
+    {
+        const int np0 = c.planar;
+        const int step = std::max(1, np0 / 64);
+        for (int a = 0; a < np0; a += step) {
+            const int t = c.tail.at(a), h = c.head.at(a);
+            if (t < 0 || h < 0) continue;
+            const Complex charge = overJw(k.potential(t, t) - k.potential(t, h) - k.potential(h, t) + k.potential(h, h), jw);
+            const Filament& run = c.runs.at(a);
+            const Complex own = run.width > 0 ? sheetImpedance(run.sigma, run.thickness, f) * (run.length() / run.width) : Complex(0, 0);
+            const double rest = std::abs(jw * k.inductance(a, a) + own);
+            if (rest > 0) out.chargeOverSeries = std::max(out.chargeOverSeries, std::abs(charge) / rest);
+        }
+    }
     out.current = current;
     out.z = c.drive.transpose() * pd / jw + pathZ
             - (rhs.transpose() * current + current.transpose() * rhs - current.transpose() * applied);
@@ -4906,6 +4941,23 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             out.gain = eig.eigenvalues().maxCoeff() - 1;
             out.gainAt = frequencies.at(k);
         }
+        // Past its low-frequency limit (N4 of the open items): the charges'
+        // term so far over the currents' that they are lost in its rounding -
+        // a spiral at 10 Hz read S21 -118 dB, an open, with nothing but
+        // GMRES's iterations said. Dense, some 1e15 - a line's loss within a
+        // part in a thousand at 2.5e15, 2 % off at 2.5e16: 1e16 -, compressed
+        // alike; but where GMRES ran near its limit, as it did there, from
+        // 1e12. The ratio goes as one over the frequency where the metal's
+        // resistance outweighs its reactance, as it does there.
+        const int mostIterations = control != nullptr && control->mostIterations > 0 ? control->mostIterations : kMostIterations;
+        const bool struggled = compress && a.iterations >= kNearMiss * mostIterations;
+        if (const double limit = struggled ? 1e12 : 1e16; a.chargeOverSeries > limit)
+            out.warnings << tr("At %1 Hz the solve is past its low-frequency limit: its charges' term outweighs its currents' "
+                               "%2 times, and the currents are lost in its rounding - a coil may read as an open. Solved "
+                               "above some %3 Hz it is not.")
+                                .arg(frequencies.at(k), 0, 'g', 4)
+                                .arg(a.chargeOverSeries, 0, 'g', 2)
+                                .arg(frequencies.at(k) * a.chargeOverSeries / limit, 0, 'g', 2);
         if (a.rcond < 1e-14)
             out.lines << tr("At %1 GHz the system is nearly singular (a reciprocal condition of %2): the answer there may "
                             "be rounding.")

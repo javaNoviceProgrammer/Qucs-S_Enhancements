@@ -4025,6 +4025,8 @@ private slots:
         for (const char* key : {"S11_dB", "S21_dB", "S12_dB", "S22_dB"}) QVERIFY2(sweep.at(0).toObject().contains(QLatin1String(key)), key);
         const QJsonObject checks = out.value("checks").toObject();
         QVERIFY2(checks.value("reciprocal").toBool() && checks.value("passive").toBool(), qPrintable(text(solved)));
+        // (Reciprocal by S's asymmetry, said beside Z's: N5 of the open items.)
+        QVERIFY2(checks.contains("S asymmetry") && checks.value("S asymmetry").toDouble() <= 1e-9, qPrintable(text(solved)));
         QVERIFY(out.value("unknowns").toObject().value("runs of current").toInt() > 0);
         QVERIFY(!out.value("what it did").toArray().isEmpty());
         // The model is left as it was: its study is still quasi-static, and

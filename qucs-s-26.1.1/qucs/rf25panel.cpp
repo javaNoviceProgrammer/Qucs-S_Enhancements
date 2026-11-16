@@ -348,6 +348,13 @@ void RF25Panel::updateStatusColumn()
     const QColor grey = QApplication::palette().color(QPalette::Disabled, QPalette::Text);
     const QColor red(198, 40, 40);
     const Stack stack = a_doc->model().stack();
+    // The Cutout as read: which of its regions are applied, and why one is
+    // not - shown on its row and counted, where every enabled region read
+    // "kept" or "taken out" (C1 of the open items).
+    QStringList cutSaid;
+    const Cutout cut = cutoutOf(a_doc->model(), &cutSaid);
+    QSet<QString> applied;
+    for (const CutRegion& r : cut.regions) applied << r.tag;
     QTreeWidgetItemIterator it(a_tree);
     while (*it) {
         QTreeWidgetItem* item = *it;
@@ -386,9 +393,26 @@ void RF25Panel::updateStatusColumn()
             for (const Node& r : n->children) regions += r.enabled ? 1 : 0;
             status = !flagOf(*n, QStringLiteral("apply")) ? tr("not applied")
                    : regions == 0                         ? tr("the whole layout")
+                   : int(applied.size()) < regions        ? tr("%1 of %2 region(s) applied").arg(applied.size()).arg(regions)
                                                           : tr("%1 region(s)").arg(regions);
+            if (flagOf(*n, QStringLiteral("apply")) && int(applied.size()) < regions) {
+                colour = red;
+                item->setToolTip(1, cutSaid.join(QLatin1Char('\n')));
+            }
         } else if (n->type == QLatin1String("rf_region")) {
-            status = textOf(*n, QStringLiteral("action")) == QLatin1String("remove") ? tr("taken out") : tr("kept");
+            const Node* parent = a_doc->model().layout().child(QStringLiteral("rf_cutout"));
+            const bool on = parent != nullptr && flagOf(*parent, QStringLiteral("apply")) && n->enabled;
+            if (on && !applied.contains(tag)) {
+                status = tr("cannot be read");
+                colour = red;
+                const QString name = nameOf(*n);
+                QStringList why;
+                for (const QString& s : std::as_const(cutSaid))
+                    if (s.startsWith(QStringLiteral("Cutout: %1").arg(name))) why << s;
+                item->setToolTip(1, why.join(QLatin1Char('\n')));
+            } else {
+                status = textOf(*n, QStringLiteral("action")) == QLatin1String("remove") ? tr("taken out") : tr("kept");
+            }
         } else if (const Layer* layer = stack.named(nameOf(*n)); layer != nullptr && layer->tag == tag) {
             // A layer of the stack: how thick it is, and where it sits.
             if (layer->z1 > layer->z0)

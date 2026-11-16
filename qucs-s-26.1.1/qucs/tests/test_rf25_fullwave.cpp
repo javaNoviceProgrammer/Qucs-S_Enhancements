@@ -850,6 +850,28 @@ private slots:
         }
     }
 
+    // Past its low-frequency limit a solve says so (N4 of the open items: a
+    // spiral at 10 Hz read S21 -118 dB, an open, with nothing but GMRES's
+    // iterations said): a copper line's charges' term outweighs its
+    // currents' some 2.6e16 times at 1 Hz, its loss 2 % off (dense) - warned,
+    // dense and compressed; from 10 Hz up, within a part in a thousand, not.
+    void aSolvePastItsLowFrequencyLimitSaysSo()
+    {
+        const rf::Stack st = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
+        const QList<rf::Conductor> cs{strip(0, 0, 2000, 100)};
+        for (const bool squeezed : {false, true}) {
+            rf::FullWaveControl control;
+            control.matrix = squeezed ? rf::FullWaveControl::Matrix::Compressed : rf::FullWaveControl::Matrix::Dense;
+            const rf::FullWave w = rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, st, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))},
+                                                  {1, 10, 1e3, 1e6}, 1e-6, &control);
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            const QString said = w.warnings.join(QLatin1Char(' '));
+            QVERIFY2(said.contains(QStringLiteral("At 1 Hz the solve is past its low-frequency limit")), qPrintable(said));
+            for (const char* f : {"At 10 Hz the solve is past", "At 1000 Hz the solve is past", "At 1e+06 Hz the solve is past"})
+                QVERIFY2(!said.contains(QLatin1String(f)), qPrintable(said));
+        }
+    }
+
     void aDielectricConductsAsTheSubstrateDoes()
     {
         const rf::Stack whole = [] {
