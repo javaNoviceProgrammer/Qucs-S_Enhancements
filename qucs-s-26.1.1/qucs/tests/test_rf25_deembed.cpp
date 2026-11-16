@@ -990,6 +990,40 @@ private slots:
         QCOMPARE(given.strip, 800.0);
     }
 
+    // Where one set of strips takes over from another the two are blended
+    // (D5 of the open items: a spiral's S21 stepped by 0.1 dB at 95-96 GHz
+    // where shorter strips took over).
+    void stripsTakingOverAreBlended()
+    {
+        const rf::Stack thick = grounded(9.8, 254e-6);
+        const rf::MeshSettings how = meshing(3, 100);
+        QList<double> fs;
+        for (double f = 16e9; f <= 28e9 + 1; f += 0.5e9) fs << f;
+        const rf::Calibration c = rf::calibrate(thick, how, 0, QStringLiteral("M1"), 250, fs);
+        QVERIFY2(c.ok(), qPrintable(c.problems.join(" | ")));
+        // (The 2532 µm strips to 25 GHz, the 1266 µm ones from 25.5.)
+        const int at = int(fs.indexOf(25.5e9));
+        QVERIFY2(at > 0 && c.stripAt.at(at - 1) > c.stripAt.at(at), qPrintable(QStringLiteral("%1").arg(at)));
+        QVERIFY2(c.lines.join(' ').contains(QStringLiteral("blended over 3 % of the frequency either side - 4 frequency(ies)")),
+                 qPrintable(c.lines.join(" | ")));
+        // Each alone, unblended: their discontinuity steps between the two;
+        // in the sweep, blended, by some half of that a step (a third of the
+        // jump each over three steps, the two sets' own slopes beside it:
+        // 0.185 against 0.353).
+        const rf::Calibration below = rf::calibrate(thick, how, 0, QStringLiteral("M1"), 250, {25e9});
+        const rf::Calibration above = rf::calibrate(thick, how, 0, QStringLiteral("M1"), 250, {25.5e9});
+        QVERIFY(below.ok() && above.ok() && below.stripAt.first() > above.stripAt.first());
+        const auto step = [](const std::array<std::complex<double>, 4>& a, const std::array<std::complex<double>, 4>& b) {
+            double d = 0;
+            for (int m = 0; m < 4; ++m) d = std::max(d, std::abs(a[m] - b[m]));
+            return d;
+        };
+        const double raw = step(below.discontinuity.first(), above.discontinuity.first());
+        double blended = 0;
+        for (int k = at - 2; k <= at + 2; ++k) blended = std::max(blended, step(c.discontinuity.at(k - 1), c.discontinuity.at(k)));
+        QVERIFY2(blended < 0.6 * raw, qPrintable(QStringLiteral("blended steps %1 at most, against %2 taken whole").arg(blended).arg(raw)));
+    }
+
     // Where the shorter strip is a whole number of half waves long its line
     // is all but the identity, and gave the line's impedance poorly - 124
     // Ohm among 145s on the phase E check's feed at 26 GHz. The third strip

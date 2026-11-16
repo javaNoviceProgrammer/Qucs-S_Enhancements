@@ -971,7 +971,13 @@ QJsonObject QucsControl::rf25Converge(const QJsonObject& args)
                                   {QStringLiteral("cell um"), l.cell},
                                   {QStringLiteral("cells"), l.cells},
                                   {QStringLiteral("unknowns"), l.unknowns},
-                                  {QStringLiteral("seconds"), std::round(l.seconds * 10) / 10}});
+                                  {QStringLiteral("seconds"), std::round(l.seconds * 10) / 10},
+                                  // (Written back into the Mesh node, it is this mesh: D2.)
+                                  {QStringLiteral("mesh node"),
+                                   QJsonObject{{QStringLiteral("cells_across"), l.asked},
+                                               {QStringLiteral("per_wavelength"), l.perWavelength},
+                                               {QStringLiteral("maximum"), l.maximum > 0 ? QStringLiteral("%1[um]").arg(l.maximum, 0, 'g', 6) : QStringLiteral("0")},
+                                               {QStringLiteral("gap_share"), QString::number(l.gapShare, 'g', 6)}}}});
     out.insert(QStringLiteral("meshes"), meshes);
     const auto kindOf = [](Convergence::Kind k) {
         switch (k) {
@@ -996,6 +1002,8 @@ QJsonObject QucsControl::rf25Converge(const QJsonObject& args)
         if (w.verdict.kind == Convergence::Kind::Converging) {
             value.insert(QStringLiteral("order"), std::round(w.verdict.order * 100) / 100);
             value.insert(QStringLiteral("limit"), number(w, w.verdict.limit));
+            // (Faster than as h^2.5: its limit not to be trusted - D1.)
+            if (w.verdict.fast) value.insert(QStringLiteral("too fast to trust"), true);
         }
         if (w.verdict.kind != Convergence::Kind::Settled) value.insert(QStringLiteral("error of the finest"), w.verdict.error);
         values.append(value);

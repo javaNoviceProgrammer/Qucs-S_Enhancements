@@ -788,16 +788,20 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
         return fullWaveOf(mesh, job.conductors, job.stack, job.ports, f, 1e-6, &control, job.returns);
     };
     std::shared_ptr<FullWave> wave;
-    // The frequencies solved, which the ports' feeds are calibrated at: an
-    // adaptive sweep's few, its calibrations read at the rest as it reads
-    // the structure (calibrationAt()).
-    QList<double> solvedAt = frequencies;
+    // The ports' feeds are calibrated at every frequency of the sweep, an
+    // adaptive one's too: read at the rest from a rational fit of its few
+    // (calibrationAt()), a calibration that changes strips at a frequency is
+    // no rational function, and the de-embedded S missed by 4.5 to 12 times
+    // the sweep's tolerance where its own check, of the structure's S, was
+    // met - D3 of the open items. Strips are a fraction of the structure.
+    const QList<double> solvedAt = frequencies;
+    QList<double> structureAt = frequencies;
     if (adaptive) {
         AdaptiveSettings settings;
         settings.tolerance = tolerance;
         const Adapted a = adaptiveSweep(frequencies, solveAt, settings, [&job] { return job.stop.load(); });
         wave = std::make_shared<FullWave>(a.wave);
-        if (!a.whole) solvedAt = a.solved;
+        if (!a.whole) structureAt = a.solved;
     } else {
         wave = std::make_shared<FullWave>(solveAt(frequencies));
     }
@@ -881,12 +885,11 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
             //  calibrate()'s own, P14 of the open items.)
             calibration = std::make_shared<Calibration>(
                 calibrate(job.stack, how, job.top, feed, solvedAt, 1e-6, &quiet, port.strips / 1e-6));
-            if (calibration->ok() && solvedAt.size() < frequencies.size()) {
-                *calibration = calibrationAt(*calibration, frequencies);
-                calibration->lines << tr("Its strips solved at the %1 frequencies the structure was, and read at the "
-                                         "sweep's other %2 from a rational fit through them, as the structure is.")
-                                          .arg(solvedAt.size()).arg(frequencies.size() - solvedAt.size());
-            }
+            if (calibration->ok() && structureAt.size() < frequencies.size())
+                calibration->lines << tr("Its strips solved at every one of the sweep's %1 frequencies, where the structure "
+                                         "was at %2 of them: a calibration that changes strips is no rational function to "
+                                         "read between them.")
+                                          .arg(frequencies.size()).arg(structureAt.size());
         }
         if (job.stop.load()) {
             wave->problems << tr("Stopped while taking out the ports' own discontinuities.");
@@ -960,6 +963,9 @@ void convergeOn(SolveJob& job)
         level.largest = mesh.largest;
         level.cells = int(mesh.cells.size());
         level.unknowns = mesh.cost.unknowns;
+        level.perWavelength = how.perWavelength;
+        level.maximum = how.maximum / 1e-6;
+        level.gapShare = how.gapShare;
         QList<Watched> watched;
         if (job.fullWave) {
             QStringList notes;

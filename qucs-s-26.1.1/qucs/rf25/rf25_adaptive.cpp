@@ -332,6 +332,42 @@ Adapted adaptiveSweep(const QList<double>& sweep, const std::function<FullWave(c
     double lastError = 0;
     bool midpoints = true;
     QList<int> before;   // what was solved before the last round
+    // The ends of the band: a gap at either end wider than the median gap
+    // has its middle solved and held to the fit before the sweep may stop -
+    // a spiral's 87 to 100 GHz, the widest gap, missed by three times the
+    // tolerance at 99 GHz where the test, met in the middle, never looked
+    // (D4 of the open items). True where every such check was met.
+    int endChecks = 0;
+    const auto endsHold = [&]() -> bool {
+        if (solved.size() < 3) return true;
+        QList<int> gaps;
+        for (int j = 0; j + 1 < solved.size(); ++j) gaps << solved.at(j + 1) - solved.at(j);
+        QList<int> sorted = gaps;
+        std::sort(sorted.begin(), sorted.end());
+        const int median = sorted.at(sorted.size() / 2);
+        QList<int> next;
+        for (const int j : {0, int(gaps.size()) - 1})
+            if (gaps.at(j) > median && gaps.at(j) > 1) {
+                const int mid = (solved.at(j) + solved.at(j + 1)) / 2;
+                if (!next.contains(mid)) next << mid;
+            }
+        if (next.isEmpty()) return true;
+        const auto said = fitOf(solved);
+        QList<QList<QList<C>>> foretold;
+        for (const int i : std::as_const(next)) foretold << sAtFit(said, i);
+        before = solved;
+        if (!take(next)) return false;   // (out.wave says why)
+        endChecks += int(next.size());
+        solved << next;
+        std::sort(solved.begin(), solved.end());
+        bool all = true;
+        for (int j = 0; j < next.size(); ++j) {
+            const double e = largestDifference(foretold.at(j), sAt.value(next.at(j)));
+            lastError = std::max(lastError, e);
+            all = all && e <= how.tolerance;
+        }
+        return all;
+    };
     while (true) {
         if (stop()) return out;
         // The frequencies to solve next: first the middle of every gap; then
@@ -376,8 +412,13 @@ Adapted adaptiveSweep(const QList<double>& sweep, const std::function<FullWave(c
             all = all && e <= how.tolerance;
         }
         inARow = all ? inARow + int(next.size()) : 0;
-        if (inARow >= 2) break;
         if (int(solved.size()) >= n) break;
+        if (inARow >= 2) {
+            if (endsHold()) break;
+            if (!out.wave.problems.isEmpty()) return out;
+            inARow = 0;
+            if (int(solved.size()) >= n) break;
+        }
     }
 
     // Every frequency of the sweep: those solved as they solved, the rest
@@ -434,6 +475,9 @@ Adapted adaptiveSweep(const QList<double>& sweep, const std::function<FullWave(c
                         "tolerance %8.")
                          .arg(out.solved.size()).arg(n).arg(out.rounds).arg(n - out.solved.size()).arg(out.degree)
                          .arg(inARow).arg(lastError, 0, 'g', 2).arg(how.tolerance, 0, 'g', 2);
+    if (endChecks > 0)
+        out.lines << tr("At an end of the band where the gap was wider than the median, its middle was solved and held to "
+                        "the fit before stopping: %n frequency(ies).", nullptr, endChecks);
     out.lines << tr("Solved at %1 GHz.").arg(at.join(QStringLiteral(", ")));
     wave.lines = out.lines + wave.lines;
     out.wave = wave;
@@ -538,6 +582,10 @@ Convergence convergenceOf(const QList<double>& sizes, const QList<C>& values)
         out.order = order;
         out.limit = v3 + (v3 - v2) * std::pow(h3, order) / (std::pow(h2, order) - std::pow(h3, order));
         out.error = std::abs(v3 - out.limit);
+        if (order > 2.5) {
+            out.fast = true;
+            out.error = std::max(out.error, std::abs(v3 - v2) * h3 / (h2 - h3));
+        }
         return out;
     }
     out.kind = Convergence::Kind::NotYet;
@@ -673,10 +721,18 @@ void judge(MeshConvergence& check)
         across << QString::number(l.across);
         factors << QString::number(l.factor, 'g', 3);
     }
-    int converging = 0, settled = 0, oscillating = 0, notYet = 0;
+    int converging = 0, settled = 0, oscillating = 0, notYet = 0, fast = 0;
     double worstS = 0, worstRelative = 0;
+    // (The model's own mesh, where it is not the finest: how far it is from
+    //  the limits, which is what the check is for.)
+    int own = -1;
+    for (int i = 0; i < check.levels.size(); ++i)
+        if (std::abs(check.levels.at(i).factor - 1) < 1e-9) own = i;
+    if (own == check.levels.size() - 1) own = -1;
+    double ownS = 0, ownRelative = 0;
     for (Watched& w : check.values) {
         w.verdict = convergenceOf(sizes, w.values);
+        if (w.verdict.fast) ++fast;
         switch (w.verdict.kind) {
         case Convergence::Kind::Converging: ++converging; break;
         case Convergence::Kind::Settled: ++settled; break;
@@ -688,6 +744,12 @@ void judge(MeshConvergence& check)
         if (w.verdict.kind == Convergence::Kind::NotYet || w.verdict.kind == Convergence::Kind::TwoMeshes) continue;
         if (w.complex) worstS = std::max(worstS, w.verdict.error);
         else if (std::abs(w.verdict.limit) > 0) worstRelative = std::max(worstRelative, w.verdict.error / std::abs(w.verdict.limit));
+        if (own >= 0 && own < w.values.size()) {
+            // (Its distance from the limit, and the limit's own error.)
+            const double off = std::abs(w.values.at(own) - w.verdict.limit) + w.verdict.error;
+            if (w.complex) ownS = std::max(ownS, off);
+            else if (std::abs(w.verdict.limit) > 0) ownRelative = std::max(ownRelative, off / std::abs(w.verdict.limit));
+        }
     }
     QStringList at;
     for (const double f : std::as_const(check.frequencies)) at << ghz(f);
@@ -713,6 +775,15 @@ void judge(MeshConvergence& check)
                         .arg(check.levels.last().across)
                         .arg(listSaid(within))
                         .arg(notYet > 0 ? tr(" - of those converging; what is not converging yet wants a finer mesh") : QString());
+        QStringList ownWithin;
+        if (ownS > 0) ownWithin << tr("S within %1").arg(ownS, 0, 'g', 2);
+        if (ownRelative > 0) ownWithin << tr("the rest within %1 %").arg(100 * ownRelative, 0, 'g', 2);
+        if (!ownWithin.isEmpty())
+            head += tr(" The model's own mesh (%1 across) has %2 of them.").arg(check.levels.at(own).across).arg(listSaid(ownWithin));
+        if (fast > 0)
+            head += tr(" %n value(s) converge faster than as h^2.5, faster than the edges' charge lets a method of moments: "
+                       "three readings that happen to lie on a steep curve - their error taken at first order, their limit "
+                       "not to be trusted until a finer mesh agrees.", nullptr, fast);
     }
     check.lines << head;
     for (int i = 0; i < check.levels.size(); ++i) {
@@ -721,6 +792,13 @@ void judge(MeshConvergence& check)
         if (l.across != l.asked) line += tr(" (%1 asked: the solver's cells ran out)").arg(l.asked);
         line += tr(", %1 cells from %2 to %3 µm, %4 unknowns, %5 s.")
                     .arg(l.cells).arg(l.smallest, 0, 'g', 3).arg(l.largest, 0, 'g', 3).arg(l.unknowns).arg(l.seconds, 0, 'f', 1);
+        // (What the Mesh node takes to make it: D2 of the open items.)
+        if (l.perWavelength > 0)
+            line += tr(" As the Mesh node: Cells across a conductor %1, Cells per wavelength %2, Largest cell %3, Gap share %4.")
+                        .arg(l.asked)
+                        .arg(l.perWavelength)
+                        .arg(l.maximum > 0 ? QStringLiteral("%1[um]").arg(l.maximum, 0, 'g', 4) : tr("none"))
+                        .arg(l.gapShare, 0, 'g', 3);
         check.lines << line;
     }
     for (const Watched& w : std::as_const(check.values)) {
@@ -732,6 +810,7 @@ void judge(MeshConvergence& check)
         case Convergence::Kind::Converging:
             said = tr("converging as h^%1, toward %2: the finest within %3 of it")
                        .arg(v.order, 0, 'f', 1).arg(valueSaid(w, v.limit), errorSaid(w, v.error, v.limit));
+            if (v.fast) said += tr(" - faster than a method of moments converges: not to be trusted until a finer mesh agrees");
             break;
         case Convergence::Kind::Settled: said = tr("settled"); break;
         case Convergence::Kind::Oscillating:
@@ -754,12 +833,16 @@ void judge(MeshConvergence& check)
 
 QList<int> defaultLevels(int cellsAcross)
 {
+    // (One finer than the model's own besides: the three coarse ones alone,
+    //  1, 2 and 3 across, put a C within 0.59 % of a limit it passed by 5 %
+    //  at 8 - D1 of the open items. The verdict is the last three's; the
+    //  model's own is said against it.)
     if (cellsAcross < 3) return {std::max(1, cellsAcross), std::max(1, cellsAcross) * 2, std::max(1, cellsAcross) * 4};
     QList<int> out;
-    for (const int n : {std::max(1, int(std::lround(cellsAcross / 4.0))), std::max(2, int(std::lround(cellsAcross / 2.0))), cellsAcross})
+    for (const int n : {std::max(1, int(std::lround(cellsAcross / 4.0))), std::max(2, int(std::lround(cellsAcross / 2.0))), cellsAcross,
+                        2 * cellsAcross})
         if (!out.contains(n)) out << n;
     std::sort(out.begin(), out.end());
-    if (out.size() < 3) return {cellsAcross, cellsAcross * 2, cellsAcross * 4};
     return out;
 }
 

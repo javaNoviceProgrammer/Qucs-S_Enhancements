@@ -106,10 +106,12 @@ private slots:
     void aLineOfManyResonancesIsReadWithinTheTolerance();
     void theCurrentsAreCarriedByTheFit();
     void aShortSweepIsSolvedWhole();
+    void theEndsOfTheBandAreChecked();
     void aStoppedOrFailedSweepSaysSo();
     void aCalibrationIsReadBetweenItsFrequencies();
     void reciprocityAndPassivityAreTakenOverEveryFrequency();
     void aValueConvergingIsExtrapolated();
+    void theModelsOwnMeshIsSaidAgainstTheLimit();
     void aValueNotConvergingIsSaid();
     void aMeshIsRefinedAsAWhole();
 };
@@ -167,7 +169,8 @@ void TestRf25Adaptive::anAdaptiveSweepSolvesFewAndReadsTheRest()
     qInfo("The resonator: %d of 201 solved in %d rounds, S within %.2g everywhere", int(a.solved.size()), a.rounds, worst);
     QVERIFY2(a.wave.lines.first().startsWith(QStringLiteral("Adding points where the answer changes: %1 of the study's 201 frequencies solved").arg(a.solved.size())),
              qPrintable(a.wave.lines.first()));
-    QVERIFY(a.wave.lines.at(1).startsWith(QStringLiteral("Solved at 1, ")));
+    // (Then the ends' checks, where a gap there was wide - D4 -, and where it solved.)
+    QVERIFY(a.wave.lines.at(1).startsWith(QStringLiteral("Solved at 1, ")) || a.wave.lines.at(2).startsWith(QStringLiteral("Solved at 1, ")));
     // The solve's own lines after it.
     QVERIFY(a.wave.lines.contains(QStringLiteral("solved 5")));
 }
@@ -211,6 +214,33 @@ void TestRf25Adaptive::theCurrentsAreCarriedByTheFit()
         }
     }
     QVERIFY2(worst < 1e-4, qPrintable(QString::number(worst)));
+}
+
+// The ends of the band (D4 of the open items: a spiral's last gap, 87 to
+// 100 GHz, the widest, missed by three times the tolerance at 99 GHz, the
+// test met in the middle): a lossy line 8 mm long, its loss as the root of
+// f - read with the sweep stopping where the middle met it, 0.011 off at
+// 37.5 GHz, 5.5 times the tolerance; a gap at either end wider than the
+// median gap has its middle solved and held to the fit before the sweep
+// stops, and it is read within the tolerance.
+void TestRf25Adaptive::theEndsOfTheBandAreChecked()
+{
+    const auto zOf = [](double f) {
+        const double c0 = 299792458.0, len = 0.008;
+        const cd gamma(2 * std::sqrt(f / 1e9), 2 * M_PI * f * 2 / c0);
+        const cd zc(50, 0);
+        const cd z11 = zc / std::tanh(gamma * len), z12 = zc / std::sinh(gamma * len);
+        return QList<QList<cd>>{{z11, z12}, {z12, z11}};
+    };
+    Solver solver{zOf};
+    const QList<double> sweep = sweepOf(1e9, 40e9, 157);
+    const rf::Adapted a = rf::adaptiveSweep(sweep, std::ref(solver));
+    QVERIFY(a.wave.ok() && a.converged);
+    double worst = 0;
+    for (int k = 0; k < sweep.size(); ++k) worst = std::max(worst, largest(a.wave.s[k], rf::scatteringOf(zOf(sweep[k]), {50, 50})));
+    QVERIFY2(worst <= 2e-3, qPrintable(QStringLiteral("%1 | %2").arg(worst).arg(a.wave.lines.join(" | "))));
+    QVERIFY2(a.wave.lines.join(' ').contains(QStringLiteral("its middle was solved and held to the fit before stopping")),
+             qPrintable(a.wave.lines.join(" | ")));
 }
 
 void TestRf25Adaptive::aShortSweepIsSolvedWhole()
@@ -321,6 +351,7 @@ void TestRf25Adaptive::aValueConvergingIsExtrapolated()
         QVERIFY(std::abs(c.limit - cd(2, 0)) < 1e-9);
         QVERIFY(std::abs(c.error - 0.3) < 1e-9);
         QVERIFY(std::abs(c.ratio - 0.25) < 1e-12);
+        QVERIFY(!c.fast);
     }
     // Sizes not halving, a complex value, order 1.5: found as it is.
     {
@@ -340,12 +371,59 @@ void TestRf25Adaptive::aValueConvergingIsExtrapolated()
         QCOMPARE(int(c.kind), int(rf::Convergence::Kind::Converging));
         QVERIFY(std::abs(c.limit - cd(2, 0)) < 1e-9);
     }
+    // Converging as h^4, faster than a method of moments can: three
+    // readings on a steep curve (D1 of the open items) - its error taken at
+    // first order, not Richardson's at h^4.
+    {
+        const QList<double> h{4, 2, 1};
+        QList<cd> v;
+        for (const double x : h) v << cd(2 + 0.01 * std::pow(x, 4), 0);
+        const rf::Convergence c = rf::convergenceOf(h, v);
+        QCOMPARE(int(c.kind), int(rf::Convergence::Kind::Converging));
+        QVERIFY(std::abs(c.order - 4) < 1e-6 && c.fast);
+        QVERIFY(std::abs(c.limit - cd(2, 0)) < 1e-9);
+        QVERIFY2(std::abs(c.error - 0.15) < 1e-9, qPrintable(QString::number(c.error)));   // (0.15 over 1 to 2, where h^4 says 0.01)
+    }
     // Not moving at all.
     {
         const rf::Convergence c = rf::convergenceOf({4, 2, 1}, {cd(7, 0), cd(7, 0), cd(7, 0)});
         QCOMPARE(int(c.kind), int(rf::Convergence::Kind::Settled));
         QCOMPARE(c.limit, cd(7, 0));
     }
+}
+
+// The check's report: where the model's own mesh is not the finest (a mesh
+// twice as fine besides, D1 of the open items), how far it is from the
+// limits; each mesh as the Mesh node makes it (D2); a value converging too
+// fast said.
+void TestRf25Adaptive::theModelsOwnMeshIsSaidAgainstTheLimit()
+{
+    rf::MeshConvergence check;
+    check.fullWave = false;
+    for (const double factor : {0.5, 1.0, 2.0}) {
+        rf::MeshLevel l;
+        l.factor = factor;
+        l.asked = l.across = int(4 * factor);
+        l.perWavelength = int(20 * factor);
+        l.gapShare = 0.25 / factor;
+        check.levels << l;
+    }
+    rf::Watched c;
+    c.name = QStringLiteral("C of a");
+    c.unit = QStringLiteral("fF");
+    for (const double h : {2.0, 1.0, 0.5}) c.values << cd(100 + 2 * h, 0);   // (first order, toward 100: the own mesh 2 off, and the limit within 1)
+    rf::Watched steep;
+    steep.name = QStringLiteral("C of b");
+    steep.unit = QStringLiteral("fF");
+    for (const double h : {2.0, 1.0, 0.5}) steep.values << cd(50 + 0.1 * std::pow(h, 4), 0);
+    check.values << c << steep;
+    rf::judge(check);
+    const QString head = check.lines.value(0);
+    QVERIFY2(head.contains(QStringLiteral("The model's own mesh (4 across) has the rest within 3 % of them.")), qPrintable(head));
+    QVERIFY2(head.contains(QStringLiteral("1 value(s) converge faster than as h^2.5")), qPrintable(head));
+    QVERIFY2(check.lines.value(3).contains(QStringLiteral("As the Mesh node: Cells across a conductor 8, Cells per wavelength 40, Largest cell none, Gap share 0.125.")),
+             qPrintable(check.lines.value(3)));
+    QVERIFY2(check.lines.value(5).contains(QStringLiteral("not to be trusted until a finer mesh agrees")), qPrintable(check.lines.value(5)));
 }
 
 void TestRf25Adaptive::aValueNotConvergingIsSaid()

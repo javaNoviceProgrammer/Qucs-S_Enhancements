@@ -515,6 +515,13 @@ MeshSettings meshSettingsOf(const Node& node, const QList<fem::Model::Parameter>
     if (across.isDouble()) how.cellsAcross = across.toInt();
     else if (across.isString() && !across.toString().trimmed().isEmpty()) how.cellsAcross = across.toString().toInt();
     how.stretch = numberIn(node, QStringLiteral("stretch"), scope, how.stretch, tr("Mesh"), problems);
+    // (A convergence check's mesh written back: its share at the gaps too -
+    //  D2 of the open items.)
+    how.gapShare = numberIn(node, QStringLiteral("gap_share"), scope, how.gapShare, tr("Mesh"), problems);
+    if (!(how.gapShare > 0 && how.gapShare <= 1)) {
+        if (problems != nullptr) *problems << tr("Mesh: the share of a gap its outermost cells come down to is above nought and one at most.");
+        how.gapShare = 0.25;
+    }
     const QJsonValue most = propertyOf(node, QStringLiteral("most_cells"));
     if (most.isDouble()) how.most = most.toInt();
     else if (most.isString() && !most.toString().trimmed().isEmpty()) how.most = most.toString().toInt();
@@ -791,9 +798,11 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // they overlap each is a piece of its own, its lines shared with the
     // other's below and none crossing the rest of it. Left whole, their
     // cells stayed misaligned and their C read as low as P28's did, with
-    // nothing said (the review of 26ff2805). (Only where the cells are 50
-    // times the gap or more, misaligned some 25 % low at 62 times: a line
-    // over a ground nearer than its cells keeps its cells.)
+    // nothing said (the review of 26ff2805). (Wherever the gap is under a
+    // tenth of the cells, as the plates' rule: misaligned, a coplanar line's
+    // signal 2 µm over its ground read its C 32 % low at 50 µm cells, 25
+    // times the gap - the review of 2b157c78, where only 50 times and more
+    // was cut.)
     int stackedCut = 0;
     {
         const double sliver = 0.05 * size;
@@ -805,7 +814,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 for (int b = a + 1; b < pieces.size(); ++b) {
                     if (!pieces.at(b).rectangle) continue;
                     const double dz = gapBetween(a, b);
-                    if (!(dz > 0) || dz >= 0.1 * size || size < 50 * dz) continue;
+                    if (!(dz > 0) || dz >= 0.1 * size) continue;
                     const QRectF overlap = pieces.at(a).box.intersected(pieces.at(b).box);
                     if (!(overlap.width() > sliver && overlap.height() > sliver)) continue;
                     const double larger = std::max(pieces.at(a).box.width() * pieces.at(a).box.height(),
@@ -1339,13 +1348,22 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                              .arg(many, 0, 'g', 3).arg(size, 0, 'g', 3);
         return mesh;
     }
-    if (perFeature < how.cellsAcross && fits)
-        mesh.lines << tr("%1 cells across a conductor would be more than the %2 this build solves: %3 across instead.")
-                          .arg(how.cellsAcross).arg(most).arg(perFeature);
-    else if (perFeature < how.cellsAcross)
-        mesh.lines << tr("Fewer cells across a conductor do not bring the mesh within the %1 this build solves: the "
-                         "largest cell, or the wavelength, sets the size there - ask for a larger largest cell.")
-                          .arg(most);
+    // (A warning too, in the solve's answer: said in the tab's notes alone,
+    //  a model asking for 8 across solved at 2 without a word in it - D2 of
+    //  the open items.)
+    if (perFeature < how.cellsAcross && fits) {
+        const QString w = tr("%1 cells across a conductor would be more than the %2 this build solves: %3 across instead "
+                             "(Most cells on the Mesh node raises it).")
+                              .arg(how.cellsAcross).arg(most).arg(perFeature);
+        mesh.lines << w;
+        mesh.warnings << w;
+    } else if (perFeature < how.cellsAcross) {
+        const QString w = tr("Fewer cells across a conductor do not bring the mesh within the %1 this build solves: the "
+                             "largest cell, or the wavelength, sets the size there - ask for a larger largest cell.")
+                              .arg(most);
+        mesh.lines << w;
+        mesh.warnings << w;
+    }
     if (perFeature > 0 && narrowest > 0) {
         mesh.narrowest = narrowest;
         mesh.across = perFeature;
@@ -1376,14 +1394,16 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         }
     }
     // (Pieces whose cells nothing aligns - a slanted side's parts - coarse
-    //  against their gap: said, their C reading low as a MIM's did.)
+    //  against their gap: said, their C reading low as a MIM's did. From 10
+    //  times the gap: misaligned cells cost some ten times what aligned ones
+    //  do, a third of the C at 25 times - the review of 2b157c78.)
     double unalignedGap = 0, unalignedCell = 0;
     for (const Facing& pair : std::as_const(unaligned)) {
         double widest = 0;
         for (const int k : {pair.a, pair.b})
             for (const QList<double>* lines : {&pieces.at(k).xs, &pieces.at(k).ys})
                 for (int i = 1; i < lines->size(); ++i) widest = std::max(widest, lines->at(i) - lines->at(i - 1));
-        if (widest > 150 * pair.dz && (unalignedGap <= 0 || widest / pair.dz > unalignedCell / unalignedGap)) {
+        if (widest > 10 * pair.dz && (unalignedGap <= 0 || widest / pair.dz > unalignedCell / unalignedGap)) {
             unalignedGap = pair.dz;
             unalignedCell = widest;
         }
@@ -1393,7 +1413,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                              "piece a plate of the other), under cells some %2 µm across - %3 times the gap: their "
                              "capacitance there reads low. A largest cell under %4 µm brings it nearer.")
                               .arg(unalignedGap, 0, 'g', 3).arg(unalignedCell, 0, 'g', 3).arg(int(std::round(unalignedCell / unalignedGap)))
-                              .arg(50 * unalignedGap, 0, 'g', 3);
+                              .arg(10 * unalignedGap, 0, 'g', 3);
         mesh.warnings << w;
         mesh.lines << w;
     }

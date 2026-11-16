@@ -471,13 +471,51 @@ static Calibration calibrateOnce(const Stack& stack, const MeshSettings& how, do
     QList<std::pair<double, double>> halfBands;
     double halfApart = 0;
     bool halfLast = false;
+    // Where one set of strips takes over from another, the two blended
+    // across 3 % either side of the change: taken whole, S stepped there by
+    // some 0.02 against a slope ten times smaller - a spiral's S21 -2.11,
+    // -2.23, then -2.13 dB at 94, 95 and 96 GHz -, which an adaptive fit
+    // bent to meet (D5 of the open items). Each set was solved at every
+    // frequency; the one taken away is as good as the other a little way
+    // past where it falls short.
+    QList<int> chosenAt;
+    for (const double f : frequencies) chosenAt << best(f);
+    QList<std::pair<double, std::pair<int, int>>> changes;   // (Hz between the two, from set, to set)
+    for (int k = 1; k < frequencies.size(); ++k)
+        if (chosenAt.at(k) != chosenAt.at(k - 1))
+            changes << std::make_pair(0.5 * (frequencies.at(k - 1) + frequencies.at(k)), std::make_pair(chosenAt.at(k - 1), chosenAt.at(k)));
+    constexpr double kBlend = 0.03;   // either side, as a share of the frequency
+    int blended = 0;
     for (const double f : frequencies) {
         const int b = best(f);
         const Strips& s = sets.at(b);
         const int k = s.indexOf(f);
-        out.discontinuity << s.error.at(k);
-        out.gamma << s.gamma.at(k);
-        out.impedance << s.impedance.at(k);
+        // (The other set, and its weight: nought outside every change's band.)
+        int other = -1;
+        double weight = 0;
+        for (const auto& [at, pair] : std::as_const(changes)) {
+            const double t = (f - at) / (2 * kBlend * at) + 0.5;   // 0 at the band's low end, 1 at its high
+            if (t <= 0 || t >= 1) continue;
+            const int mine = f < at ? pair.first : pair.second;
+            if (mine != b) continue;
+            other = f < at ? pair.second : pair.first;
+            weight = f < at ? t : 1 - t;   // the other's share, a half at the change
+        }
+        if (other >= 0 && weight > 0) {
+            const Strips& o = sets.at(other);
+            const int j = o.indexOf(f);
+            const auto mix = [weight](const Complex& a, const Complex& c) { return (1 - weight) * a + weight * c; };
+            Chain e = s.error.at(k);
+            for (int m = 0; m < int(e.size()); ++m) e[m] = mix(s.error.at(k)[m], o.error.at(j)[m]);
+            out.discontinuity << e;
+            out.gamma << mix(s.gamma.at(k), o.gamma.at(j));
+            out.impedance << mix(s.impedance.at(k), o.impedance.at(j));
+            ++blended;
+        } else {
+            out.discontinuity << s.error.at(k);
+            out.gamma << s.gamma.at(k);
+            out.impedance << s.impedance.at(k);
+        }
         out.residual << s.residual.at(k);
         out.stripAt << s.strip;
         if (b > 0 && (shorterFrom == 0 || f < shorterFrom)) shorterFrom = f;
@@ -626,6 +664,10 @@ static Calibration calibrateOnce(const Stack& stack, const MeshSettings& how, do
                          .arg(baseAgreed / 1e9, 0, 'g', 4)
                          .arg(lengths.join(tr(" and ")))
                          .arg(shorterFrom / 1e9, 0, 'g', 4);
+        if (blended > 0)
+            out.lines << tr("Where one set of strips takes over from another, the two are blended over 3 % of the frequency "
+                            "either side - %1 frequency(ies) -, so that the de-embedded S does not step there.")
+                             .arg(blended);
     }
     if (out.strip < whole)
         out.lines << tr("Strips of %1 µm, eight heights and twice the width, were more than a dense solve takes on this "
