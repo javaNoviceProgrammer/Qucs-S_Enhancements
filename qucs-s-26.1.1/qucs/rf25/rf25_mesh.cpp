@@ -775,14 +775,23 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             pieces << piece;
         }
     }
-    // Each metal's faces' heights, µm (a sheet's both its bottom): which
-    // pieces face each other across a thin dielectric.
+    // Each metal's faces' heights, µm (a sheet's both its bottom), as the
+    // solvers place them: which pieces face each other across a thin
+    // dielectric. A metal takes no room, but one solved as its two faces
+    // its thickness over it (thickened()), which the metals above it are
+    // raised by. Left out, a lower plate's top face came out above the
+    // upper plate - a MIM's plates of 0.49 and 0.15 µm 40 nm apart as their
+    // faces, the gap -0.45 µm - and its cells were never aligned: 52 % low at
+    // 5 µm cells, as P28 had been.
     QHash<QString, QPair<double, double>> span;
     {
         double z = 0;
         for (const Layer& l : stack.layers) {
             if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) z += l.thickness / perUnit;
-            if (l.kind == Layer::Metal) span.insert(l.name, qMakePair(z, l.twoSheets ? z + l.thickness / perUnit : z));
+            if (l.kind != Layer::Metal) continue;
+            const double room = l.twoSheets && l.thickness > 0 ? l.thickness / perUnit : 0;
+            span.insert(l.name, qMakePair(z, z + room));
+            z += room;
         }
     }
     const auto gapBetween = [&](int a, int b) {
@@ -1479,6 +1488,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // validates, is a few per cent. Said where the thickness is a quarter of
     // the narrowest gap or more (B2 of the open items of 8 November: nothing
     // was said).
+    QSet<QString> wallsWarned;   // (a sheet's layers said so: their thickness over the ground is not said again, below)
     {
         QMap<QString, double> narrowestGap;   // (µm, by layer: between pieces facing each other across x or y)
         for (int a = 0; a < pieces.size(); ++a)
@@ -1534,6 +1544,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                                        "reads low, by some 20 % where it is as thick as the gap is wide. Solved as its two "
                                        "faces (the metal's Solved as), they are in it.")
                                         .arg(it.key()).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3);
+            if (!metal->twoSheets && !metal->automatic) wallsWarned << it.key();
             mesh.warnings << w;
             mesh.lines << w;
         }
@@ -1544,22 +1555,54 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // thick on 60 µm read its C 7 % under a 3D solve's, with no word (P39 of
     // the open items).
     if (!stack.layers.isEmpty() && stack.layers.first().kind == Layer::Ground) {
+        // (Each conductor's width - a rectangle's short side; a trace of any
+        //  other shape twice its area over its perimeter, which is its width
+        //  where it is long - and its length, its area over that. With their
+        //  mirrors, on a plane of symmetry: a strip the plane halves is as
+        //  wide as the whole - P36's half warned of strips half as wide as
+        //  the whole's, which it did not. And
+        //  none that faces another metal across a thin gap, whose charge
+        //  is the plates'.)
+        QSet<int> plates;
+        for (const Facing& pair : std::as_const(facingPairs)) plates << pieces.at(pair.a).conductor << pieces.at(pair.b).conductor;
+        struct Trace {
+            double width, length;
+        };
+        QMap<QString, QList<Trace>> tracesOn;
         QMap<QString, double> narrowestOn;   // (each layer's narrowest conductor across, µm)
-        for (const Conductor& c : given) {
+        for (int k = 0; k < conductors.size(); ++k) {
+            const Conductor& c = conductors.at(k);
             const QRectF box = c.outline.boundingRect();
             const double a = std::abs(areaOf(c.outline)), perimeter = perimeterOf(c.outline);
-            // (A rectangle's short side; a trace of any other shape twice its
-            //  area over its perimeter, which is its width where it is long.)
             const bool rectangle = std::abs(a - box.width() * box.height()) <= 1e-9 * box.width() * box.height();
             const double across = rectangle ? std::min(box.width(), box.height())
                                   : perimeter > 0 ? std::min(std::min(box.width(), box.height()), 2 * a / perimeter) : 0;
-            if (across > 0 && (!narrowestOn.contains(c.layer) || across < narrowestOn.value(c.layer))) narrowestOn.insert(c.layer, across);
+            if (!(across > 0) || plates.contains(k)) continue;
+            if (!narrowestOn.contains(c.layer) || across < narrowestOn.value(c.layer)) narrowestOn.insert(c.layer, across);
+            tracesOn[c.layer] << Trace{across, a / across};
         }
+        // (A microstrip's impedance of no thickness in one medium,
+        //  Hammerstad's, to a constant: its capacitance goes as one over it.
+        //  And Wheeler's widening for a thickness, in Hammerstad's two forms:
+        //  over its ground's height where it is wide beside it, over its own
+        //  width where it is narrow - which the wide one alone made some
+        //  eight times too much on a 4 µm line 200 µm up, "93 %", where it is
+        //  9 % of its C.)
+        const auto impedance = [](double u) {
+            return u <= 1 ? 60 * std::log(8 / u + u / 4) : 120 * M_PI / (u + 1.393 + 0.667 * std::log(u + 1.444));
+        };
+        const auto widening = [](double w, double h, double t) {
+            return std::max(0.0, t / M_PI * (1 + std::log(w / h >= 1 / (2 * M_PI) ? 2 * h / t : 4 * M_PI * w / t)));
+        };
         double h = 0;   // (what a metal stands on: the dielectrics below it, µm)
         for (const Layer& l : stack.layers) {
             if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) h += l.thickness / perUnit;
             if (l.kind != Layer::Metal || l.twoSheets || !(l.thickness > 0) || l.roundWire || !narrowestOn.contains(l.name)) continue;
-            const double t = l.thickness / perUnit, w = narrowestOn.value(l.name);
+            // (A layer whose walls beside its gaps were said: the same want,
+            //  the same remedy - two of each on an inductor's two metals were
+            //  four warnings where two say it.)
+            if (wallsWarned.contains(l.name)) continue;
+            const double t = l.thickness / perUnit;
             if (!(h > 0)) continue;
             // (Twice as thick as it stands high, or more, Wheeler's log no
             //  longer holds - and a sheet is furthest off there: said without
@@ -1573,16 +1616,25 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 mesh.lines << warned;
                 continue;
             }
-            const double widened = t / M_PI * (1 + std::log(2 * h / t));
-            // (35 µm copper on 1.6 mm of FR-4, 3 mm wide, is some 2 %: not
-            //  said; on 0.5 mm, 0.96 mm wide, 5.1 %: said.)
-            if (widened < 0.05 * w) continue;
+            // (Its conductors' C to the ground, each by its length, as sheets
+            //  and widened: laminate copper 15 µm thick on 60 µm, 120 µm wide,
+            //  6.9 % - its C was 7 % under a 3D solve's, P39 of the open items;
+            //  35 µm copper on 1.6 mm of FR-4, 3 mm wide, 1 %, and on 0.5 mm,
+            //  0.96 mm wide, 2.8 %: not said.)
+            double asSheets = 0, widened = 0;
+            for (const Trace& trace : tracesOn.value(l.name)) {
+                asSheets += trace.length / impedance(trace.width / h);
+                widened += trace.length / impedance((trace.width + widening(trace.width, h, t)) / h);
+            }
+            const double more = asSheets > 0 ? widened / asSheets - 1 : 0;
+            if (!(more >= 0.05)) continue;
             const QString warned = tr("%1 is %2 µm thick as a sheet %3 µm over the ground: its walls and its top are not in this "
-                                      "answer, and Wheeler's correction makes its narrowest conductor %4 µm wider than its %5 "
-                                      "(%6 %) - its capacitance reads low by up to that much. Solved as its two faces (the "
-                                      "metal's Solved as), they are in it.")
-                                       .arg(l.name).arg(t, 0, 'g', 3).arg(h, 0, 'g', 4).arg(widened, 0, 'g', 3).arg(w, 0, 'g', 4)
-                                       .arg(100 * widened / w, 0, 'f', 0);
+                                      "answer. Wheeler's correction for its thickness, in Hammerstad's microstrip, gives its "
+                                      "conductors %4 % more capacitance to the ground than as sheets (its narrowest %5 µm across): "
+                                      "it reads low by up to that much, the less the more of their charge other conductors near "
+                                      "them hold. Solved as its two faces (the metal's Solved as), they are in it.")
+                                       .arg(l.name).arg(t, 0, 'g', 3).arg(h, 0, 'g', 4).arg(100 * more, 0, 'f', 0)
+                                       .arg(narrowestOn.value(l.name), 0, 'g', 4);
             mesh.warnings << warned;
             mesh.lines << warned;
         }

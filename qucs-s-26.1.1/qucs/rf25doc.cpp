@@ -1102,9 +1102,12 @@ void RF25Doc::showProblems()
         // (The charges the solve has, which the log counts: a metal solved
         //  as its two faces has each cell twice. The line said its own
         //  cells "to solve the charge on" - 924 where the solve had 1848,
-        //  a quarter of the matrix it filled.)
+        //  a quarter of the matrix it filled. And its count is theirs, as
+        //  the Mesh's notes give it: the mesh's own cells read 19,372 beside
+        //  the notes' 22,148, a model's three metals solved as their faces
+        //  - taken for a layer hidden.)
         tail += tr("; %1 cell(s), %2")
-                    .arg(a_mesh->cells.size())
+                    .arg(a_mesh->charges > 0 ? a_mesh->charges : int(a_mesh->cells.size()))
                     .arg(meshedCompressed(a_model) ? a_mesh->cost.said
                                                    : chargeCostOf(a_mesh->charges > 0 ? a_mesh->charges : int(a_mesh->cells.size())));
     if (a_solveJob && a_solveJob->fullWave && a_solveJob->calibrating)
