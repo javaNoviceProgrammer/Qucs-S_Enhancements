@@ -1584,6 +1584,14 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
 
 bool writeGdsOf(const QList<QPair<int, QPolygonF>>& shapes, const QString& path, const QString& cell, QString* error)
 {
+    QList<GdsShape> list;
+    list.reserve(shapes.size());
+    for (const auto& [layer, polygon] : shapes) list << GdsShape{layer, 0, polygon};
+    return writeGdsShapes(list, path, cell, error);
+}
+
+bool writeGdsShapes(const QList<GdsShape>& shapes, const QString& path, const QString& cell, QString* error)
+{
     // gdstk tells what it does to one FILE* of its own: one at a time.
     QMutexLocker lock(&fem::gdstkLock());
     QTemporaryDir scratch;
@@ -1601,11 +1609,11 @@ bool writeGdsOf(const QList<QPair<int, QPolygonF>>& shapes, const QString& path,
     const QByteArray cellName = cell.isEmpty() ? QByteArrayLiteral("TOP") : cell.toLatin1();
     top->init(cellName.constData());
     library.cell_array.append(top);
-    for (const auto& [layer, polygon] : shapes) {
+    for (const GdsShape& shape : shapes) {
         auto* p = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
-        p->tag = gdstk::make_tag(uint32_t(layer), 0);
-        p->point_array.ensure_slots(uint64_t(polygon.size()));
-        for (const QPointF& q : polygon) p->point_array.append(gdstk::Vec2{{q.x(), q.y()}});
+        p->tag = gdstk::make_tag(uint32_t(shape.layer), uint32_t(shape.datatype));
+        p->point_array.ensure_slots(uint64_t(shape.outline.size()));
+        for (const QPointF& q : shape.outline) p->point_array.append(gdstk::Vec2{{q.x(), q.y()}});
         top->polygon_array.append(p);
     }
     const gdstk::ErrorCode code = library.write_gds(QFile::encodeName(written).constData(), 0, nullptr);

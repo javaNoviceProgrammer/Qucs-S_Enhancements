@@ -317,6 +317,7 @@ set_tests_properties(test_rf25_fullwave_2 PROPERTIES
   TIMEOUT 900)
 qucs_add_test(test_rf25_returns)
 qucs_add_test(test_rf25_hfss)
+qucs_add_test(test_rf25_export)
 qucs_add_test(test_rf25_stack)
 qucs_add_test(test_rf25_stack_drawing)
 qucs_add_test(test_rf25_deembed)

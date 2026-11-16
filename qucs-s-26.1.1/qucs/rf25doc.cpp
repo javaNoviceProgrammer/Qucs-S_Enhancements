@@ -39,6 +39,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLocale>
+#include <QActionGroup>
 #include <QMenu>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -169,6 +170,13 @@ void StackView::setFocused(const QString& tag)
     update();
 }
 
+void StackView::setVisibility(const QHash<QString, QString>& byName)
+{
+    if (a_visibility == byName) return;
+    a_visibility = byName;
+    update();
+}
+
 QList<QPair<QString, QRectF>> StackView::places() const
 {
     QList<QPair<QString, QRectF>> out;
@@ -256,11 +264,22 @@ void StackView::paintEvent(QPaintEvent*)
             }
         if (layer == nullptr) continue;
         const QColor colour = RF25Doc::layerColor(index);
-        p.setBrush(layer->isConductor() ? colour : QColor(colour.red(), colour.green(), colour.blue(), 90));
-        p.setPen(QPen(colour.darker(140), tag == a_focus ? 2.0 : 1.0));
+        // Hidden: a faint dashed outline, where it would be; its frame
+        // alone: the outline, no fill.
+        const QString shown = a_visibility.value(layer->name);
+        if (shown == QLatin1String("hidden")) {
+            QColor faint = palette().color(QPalette::Disabled, QPalette::Text);
+            p.setBrush(Qt::NoBrush);
+            p.setPen(QPen(faint, tag == a_focus ? 2.0 : 1.0, Qt::DashLine));
+        } else {
+            p.setBrush(shown == QLatin1String("frame") ? QBrush(Qt::NoBrush)
+                       : layer->isConductor()           ? QBrush(colour)
+                                                        : QBrush(QColor(colour.red(), colour.green(), colour.blue(), 90)));
+            p.setPen(QPen(colour.darker(140), tag == a_focus ? 2.0 : 1.0));
+        }
         p.drawRect(place);
         if (place.height() >= 11 && place.width() > 30) {
-            p.setPen(palette().color(QPalette::Text));
+            p.setPen(palette().color(shown == QLatin1String("hidden") ? QPalette::Disabled : QPalette::Normal, QPalette::Text));
             p.drawText(place.adjusted(4, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft,
                        p.fontMetrics().elidedText(layer->name, Qt::ElideRight, int(place.width()) - 8));
         }
@@ -358,6 +377,7 @@ RF25Doc::RF25Doc(QucsApp* app, const QString& name) : QFrame(), QucsDoc(app, nam
     // read drew it, so a new model's view said "No layer" beside a status
     // line counting three.
     a_stack->setStack(a_model.stack());
+    a_stack->setVisibility(layerVisibility(a_model));
     showProblems();
     if (app != nullptr) connect(this, SIGNAL(signalFileChanged(bool)), app, SLOT(slotFileChanged(bool)));
 }
@@ -465,6 +485,26 @@ void RF25Doc::buildUi()
     a_showPortsButton->setCheckable(true);
     a_showPortsButton->setChecked(a_showPorts);
     connect(a_showPortsButton, &QToolButton::toggled, this, &RF25Doc::setPortsShown);
+    // Shown, hidden or its frame alone, each layer of the stack (as
+    // Multiphysics 3D's Visibility): the
+    // layer chosen in the tree, every one again, or each by its name.
+    a_visibilityButton = button(tr("Visibility"),
+                                tr("How the view draws each layer of the stack - its shapes, cells and currents: shown, hidden or its "
+                                   "outlines alone. The first three act on the layer chosen in the tree; each layer is listed below "
+                                   "them"),
+                                "rfVisibility");
+    a_visibilityButton->setPopupMode(QToolButton::InstantPopup);
+    // (The style's own arrow is drawn over the text's last letters: the ▾ is
+    //  part of the text, as Multiphysics 3D's is.)
+    a_visibilityButton->setText(tr("Visibility") + QStringLiteral(" \u25BE"));
+    a_visibilityButton->setAccessibleName(tr("Visibility"));
+    a_visibilityButton->setStyleSheet(QStringLiteral("QToolButton#rfVisibility::menu-indicator { image: none; width: 0px; }"));
+    {
+        auto* menu = new QMenu(a_visibilityButton);
+        menu->setObjectName(QStringLiteral("rfVisibilityMenu"));
+        a_visibilityButton->setMenu(menu);
+        connect(menu, &QMenu::aboutToShow, this, &RF25Doc::fillVisibilityMenu);
+    }
     row->addSpacing(10);
     // Ports placed by hand on the layout.
     a_edgePortButton = button(tr("Edge Port"),
@@ -936,6 +976,20 @@ bool RF25Doc::editNode(const QString& tag, const std::function<void(Node&)>& cha
 void RF25Doc::applyModel(const Model& model, bool read)
 {
     const QString layoutBefore = layoutFile();
+    // What is hidden alone changed: drawn again, nothing made again - the
+    // shapes, the mesh and a solution are as they were.
+    const bool drawnOnly = !read && model.toObject() != a_model.toObject()
+                           && withoutVisibility(model).toObject() == withoutVisibility(a_model).toObject();
+    if (drawnOnly) {
+        a_model = model;
+        a_lastChangeRead = false;
+        edited();
+        a_stack->setVisibility(layerVisibility(a_model));
+        showLayout();
+        showOverlays();
+        emit modelChanged();
+        return;
+    }
     a_model = model;
     a_lastChangeRead = read;
     if (read) contentRead();
@@ -1266,6 +1320,7 @@ QVector<LayerStyle> RF25Doc::stylesFor(const Layout& layout) const
             mapped.insert(key, to);
         }
     const Stack stack = a_model.stack();
+    const QHash<QString, QString> hidden = layerVisibility(a_model);
     QVector<LayerStyle> styles;
     styles.reserve(layout.layers.size());
     for (int i = 0; i < layout.layers.size(); ++i) {
@@ -1281,6 +1336,10 @@ QVector<LayerStyle> RF25Doc::stylesFor(const Layout& layout) const
             style.fill = colour;
             style.pattern = stack.layers.at(at).isConductor() ? Qt::SolidPattern : Qt::Dense4Pattern;
             style.name = tr("%1 (%2)").arg(key.text(), stack.layers.at(at).name);
+            // Its layer of the stack hidden, or its outlines alone.
+            const QString shown = hidden.value(stack.layers.at(at).name);
+            if (shown == QLatin1String("hidden")) style.visible = false;
+            else if (shown == QLatin1String("frame")) style.pattern = Qt::NoBrush;
         } else {
             // Not sent to the stack: drawn hollow and grey, so that what is
             // left out of the solve is plain to see.
@@ -1846,18 +1905,24 @@ void RF25Doc::showOverlays()
             if (stack.layers.at(i).name == layer || stack.layers.at(i).tag == layer) return RF25Doc::layerColor(i);
         return QColor(130, 135, 145);
     };
+    // What is hidden of the stack (its Visibility): a hidden layer's shapes,
+    // cells and currents not drawn; a framed one's outlines alone.
+    const QHash<QString, QString> shown = layerVisibility(a_model);
+    const auto hiddenLayer = [&shown](const QString& layer) { return shown.value(layer) == QLatin1String("hidden"); };
+    const auto framedLayer = [&shown](const QString& layer) { return shown.value(layer) == QLatin1String("frame"); };
     // The model's own shapes, as its parameters make them: filled in their
     // layers' colours as the layout's shapes are, each named.
     a_ownShapes = ownShapesOf(a_model);
     {
         QMap<QString, QList<QPolygonF>> byLayer;
-        for (const OwnShape& s : std::as_const(a_ownShapes)) byLayer[s.layer] << s.outline;
+        for (const OwnShape& s : std::as_const(a_ownShapes))
+            if (!hiddenLayer(s.layer)) byLayer[s.layer] << s.outline;
         for (auto it = byLayer.constBegin(); it != byLayer.constEnd(); ++it) {
             LayoutView::Overlay overlay;
             overlay.shapes = it.value();
             QColor fill = colourOf(it.key());
             fill.setAlpha(150);
-            overlay.fill = fill;
+            if (!framedLayer(it.key())) overlay.fill = fill;
             overlay.line = outlineColor(colourOf(it.key()));
             overlay.width = 1.0;
             overlay.name = tr("%1, the model's own shapes").arg(it.key());
@@ -1884,7 +1949,8 @@ void RF25Doc::showOverlays()
         // all. What the processing changed is then plain against the
         // original beneath it.
         QMap<QString, QList<QPolygonF>> byLayer;
-        for (const Conductor& c : a_processed->conductors) byLayer[c.layer] << c.outline;
+        for (const Conductor& c : a_processed->conductors)
+            if (!hiddenLayer(c.layer)) byLayer[c.layer] << c.outline;
         for (auto it = byLayer.constBegin(); it != byLayer.constEnd(); ++it) {
             LayoutView::Overlay overlay;
             overlay.shapes = it.value();
@@ -1902,7 +1968,8 @@ void RF25Doc::showOverlays()
         QColor ink = a_view->colors().ink;
         ink.setAlpha(190);
         QMap<QString, QList<QPolygonF>> byLayer;
-        for (const MeshCell& c : a_mesh->cells) byLayer[c.layer] << c.outline;
+        for (const MeshCell& c : a_mesh->cells)
+            if (!hiddenLayer(c.layer)) byLayer[c.layer] << c.outline;
         for (auto it = byLayer.constBegin(); it != byLayer.constEnd(); ++it) {
             LayoutView::Overlay overlay;
             overlay.shapes = it.value();
@@ -1943,6 +2010,9 @@ void RF25Doc::showOverlays()
             }
             for (auto it = density.cbegin(); it != density.cend(); ++it) {
                 if (it.key() < 0 || it.key() >= a_mesh->cells.size() || !(it.value() > 0)) continue;
+                // (A layer hidden, or drawn as its outlines alone: no fill.)
+                const QString& on = a_mesh->cells.at(it.key()).layer;
+                if (hiddenLayer(on) || framedLayer(on)) continue;
                 const double below = 20 * std::log10(it.value() / most);   // dB, at most nought
                 const int b = std::clamp(int(std::floor((below + 60) / 60 * bands)), 0, bands - 1);
                 (a_fullWave->viaCells.contains(it.key()) ? vias : layer)[b].shapes << a_mesh->cells.at(it.key()).outline;
@@ -3129,10 +3199,29 @@ const Node* circuitNode(const qucs_s::rf25::Model& model, const QString& tag)
 
 } // namespace
 
+bool RF25Doc::isLayoutExport(const QString& tag) const
+{
+    const Node* node = a_model.root.find(tag);
+    return node != nullptr
+           && (node->type == QLatin1String("rf_mp3d") || node->type == QLatin1String("rf_gds") || node->type == QLatin1String("rf_dxf"));
+}
+
 QString RF25Doc::exportPath(const QString& tag) const
 {
     const QDir dir = a_DocName.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(a_DocName).absoluteDir();
     const QString stem = a_DocName.isEmpty() ? QStringLiteral("model") : QFileInfo(a_DocName).completeBaseName();
+    // The model's shapes: the node's file, else <model>_<tag> beside it, of
+    // its kind's suffix.
+    if (isLayoutExport(tag)) {
+        const Node* node = a_model.root.find(tag);
+        const QString suffix = node->type == QLatin1String("rf_mp3d") ? QStringLiteral("qfem3d")
+                               : node->type == QLatin1String("rf_gds") ? QStringLiteral("gds")
+                                                                        : QStringLiteral("dxf");
+        const QString named = textOf(*node, QStringLiteral("file")).trimmed();
+        if (named.isEmpty()) return QDir::cleanPath(dir.absoluteFilePath(QStringLiteral("%1_%2.%3").arg(stem, tag, suffix)));
+        const QFileInfo info(named);
+        return info.isAbsolute() ? info.absoluteFilePath() : QDir::cleanPath(dir.absoluteFilePath(named));
+    }
     // An equivalent circuit: the node's file, else a part beside the model.
     if (const Node* circuit = circuitNode(a_model, tag)) {
         const QString named = textOf(*circuit, QStringLiteral("file")).trimmed();
@@ -3391,8 +3480,73 @@ QString RF25Doc::exportText(const ExportRequest& what, QString* error) const
     return what.version2 ? touchstone2From(text, 2, int(ls.points.size())) : text;
 }
 
-QString RF25Doc::writeExport(const QString& tag, QString* error) const
+QStringList RF25Doc::writeLayoutExport(const QString& tag, QStringList* said, QString* error) const
 {
+    const auto fail = [error](const QString& why) {
+        if (error != nullptr) *error = why;
+        return QStringList();
+    };
+    if (error != nullptr) error->clear();
+    const Node* node = a_model.root.find(tag);
+    if (!isLayoutExport(tag)) return fail(tr("There is no Multiphysics 3D, GDSII or DXF export called %1 in this model.").arg(tag));
+    if (!a_processed)
+        return fail(a_layoutProblem.isEmpty() ? tr("Its shapes are not made yet: its layout has not been read.") : a_layoutProblem);
+    const LayoutExport shapes = layoutExportOf(a_model, *a_processed);
+    if (!shapes.ok()) return fail(shapes.problems.join(QLatin1Char(' ')));
+    const QString path = exportPath(tag);
+    const QString madeBy = QStringLiteral("Qucs-S %1").arg(misc::buildName());
+    const QString title = a_DocName.isEmpty() ? QStringLiteral("model") : QFileInfo(a_DocName).completeBaseName();
+    QStringList notes = shapes.notes;
+    QStringList written;
+    const auto put = [&](const QString& where, const QByteArray& bytes) {
+        QSaveFile file(where);
+        if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
+            if (error != nullptr) *error = tr("%1 could not be written: %2.").arg(QDir::toNativeSeparators(where), file.errorString());
+            return false;
+        }
+        written << where;
+        return true;
+    };
+    if (node->type == QLatin1String("rf_dxf")) {
+        // (Each layer coloured as this tab draws it.)
+        QMap<QString, QColor> colours;
+        const Stack stack = a_model.stack();
+        for (int i = 0; i < stack.layers.size(); ++i) colours.insert(stack.layers.at(i).name, layerColor(i));
+        if (!put(path, dxfOf(shapes, colours, madeBy))) return {};
+    } else if (node->type == QLatin1String("rf_gds")) {
+        QString why;
+        if (!writeLayoutGds(shapes, path, QStringLiteral("TOP"), &why)) return fail(why);
+        written << path;
+    } else {
+        // The 3D model, and the GDSII file it reads its shapes from beside
+        // it, of its name.
+        const QFileInfo info(path);
+        const QString gds = info.completeBaseName() + QStringLiteral(".gds");
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        bool ok = true;
+        const double margin = textOf(*node, QStringLiteral("margin")).trimmed().isEmpty()
+                                  ? nan
+                                  : numberOf(*node, QStringLiteral("margin"), a_model, nan, &ok);
+        if (!ok || (std::isfinite(margin) && margin < 0)) return fail(tr("The export's margin is not a length of nought or more."));
+        const Mp3dExport three = mp3dOf(a_model, shapes, gds, title, margin, madeBy);
+        if (!three.ok()) return fail(three.problems.join(QLatin1Char(' ')));
+        notes << three.notes;
+        if (!put(path, three.json)) return {};
+        QString why;
+        const QString gdsPath = info.absoluteDir().filePath(gds);
+        if (!writeLayoutGds(shapes, gdsPath, QStringLiteral("TOP"), &why)) return fail(why);
+        written << gdsPath;
+    }
+    if (said != nullptr) *said = notes;
+    return written;
+}
+
+QString RF25Doc::writeExport(const QString& tag, QString* error, QStringList* said) const
+{
+    if (isLayoutExport(tag)) {
+        const QStringList written = writeLayoutExport(tag, said, error);
+        return written.value(0);
+    }
     QString why;
     const QString text = exportText(tag, &why);
     if (!why.isEmpty()) {
@@ -3573,6 +3727,94 @@ QString RF25Doc::rulerSaid() const
         .arg(micrometres(*a_layout, std::hypot(d.x(), d.y())), micrometres(*a_layout, d.x()), micrometres(*a_layout, d.y()),
              micrometres(*a_layout, r.p1().x()), micrometres(*a_layout, r.p1().y()), micrometres(*a_layout, r.p2().x()))
         .arg(micrometres(*a_layout, r.p2().y()));
+}
+
+QString RF25Doc::visibilityName(Visibility v)
+{
+    return v == Visibility::Hidden ? QStringLiteral("hidden") : v == Visibility::Frame ? QStringLiteral("frame") : QString();
+}
+
+RF25Doc::Visibility RF25Doc::visibilityOf(const QString& name)
+{
+    if (name == QLatin1String("hidden")) return Visibility::Hidden;
+    if (name == QLatin1String("frame")) return Visibility::Frame;
+    return Visibility::Shown;
+}
+
+bool RF25Doc::canHide(const QString& tag) const
+{
+    const Node* n = a_model.find(tag);
+    return n != nullptr && qucs_s::rf25::canHide(*n);
+}
+
+RF25Doc::Visibility RF25Doc::visibility(const QString& tag) const
+{
+    const Node* n = a_model.find(tag);
+    return n != nullptr && qucs_s::rf25::canHide(*n) ? visibilityOf(n->visibility) : Visibility::Shown;
+}
+
+bool RF25Doc::setVisibility(const QString& tag, Visibility v)
+{
+    if (!canHide(tag) || visibility(tag) == v) return false;
+    const Node* n = a_model.find(tag);
+    const QString what = v == Visibility::Hidden ? tr("Hide %1") : v == Visibility::Frame ? tr("Frame Only %1") : tr("Show %1");
+    return editNode(tag, [name = visibilityName(v)](Node& node) { node.visibility = name; }, what.arg(nameOf(*n)));
+}
+
+bool RF25Doc::anyHidden() const
+{
+    return !layerVisibility(a_model).isEmpty();
+}
+
+bool RF25Doc::showAllLayers()
+{
+    if (!anyHidden()) return false;
+    return setModel(withoutVisibility(a_model), tr("Show All"));
+}
+
+void RF25Doc::fillVisibilityMenu()
+{
+    QMenu* menu = a_visibilityButton->menu();
+    menu->clear();
+    // The layer chosen in the tree: the three states, its own checked.
+    const bool layer = canHide(a_focus);
+    const Visibility now = visibility(a_focus);
+    auto* group = new QActionGroup(menu);
+    const auto add = [&](const QString& text, const char* name, Visibility v) {
+        QAction* a = menu->addAction(text);
+        a->setObjectName(QLatin1String(name));
+        a->setCheckable(true);
+        a->setChecked(layer && now == v);
+        a->setEnabled(layer);
+        group->addAction(a);
+        const QString tag = a_focus;
+        connect(a, &QAction::triggered, this, [this, tag, v] { setVisibility(tag, v); });
+    };
+    add(tr("Show"), "rfVisibilityShow", Visibility::Shown);
+    add(tr("Hide"), "rfVisibilityHide", Visibility::Hidden);
+    add(tr("Frame Only"), "rfVisibilityFrame", Visibility::Frame);
+    if (!layer) {
+        QAction* why = menu->addAction(tr("Choose a layer of the stack in the tree for these"));
+        why->setEnabled(false);
+    }
+    menu->addSeparator();
+    QAction* all = menu->addAction(tr("Show All"), this, [this] { showAllLayers(); });
+    all->setObjectName(QStringLiteral("rfVisibilityShowAll"));
+    all->setEnabled(anyHidden());
+    // Each layer by its name: checked where it is drawn, its outlines alone
+    // said; a click hides a drawn one and shows a hidden one.
+    const Node& stack = a_model.stackNode();
+    if (!stack.children.empty()) menu->addSection(tr("Layers"));
+    for (const Node& n : stack.children) {
+        if (!qucs_s::rf25::canHide(n)) continue;
+        const Visibility v = visibilityOf(n.visibility);
+        QAction* a = menu->addAction(v == Visibility::Frame ? tr("%1 (frame only)").arg(nameOf(n)) : nameOf(n));
+        a->setObjectName(QStringLiteral("rfVisibilityLayer_") + n.tag);
+        a->setCheckable(true);
+        a->setChecked(v != Visibility::Hidden);
+        const QString tag = n.tag;
+        connect(a, &QAction::triggered, this, [this, tag, v] { setVisibility(tag, v == Visibility::Hidden ? Visibility::Shown : Visibility::Hidden); });
+    }
 }
 
 void RF25Doc::focusNode(const QString& tag)

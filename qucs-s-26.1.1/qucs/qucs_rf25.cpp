@@ -11,6 +11,7 @@
  */
 #include "qucs.h"
 
+#include "multiphysics3ddoc.h"
 #include "rf25doc.h"
 #include "rf25panel.h"
 #include "rf25settings.h"
@@ -65,6 +66,21 @@ void QucsApp::initRf25()
                                           lastDirOpenSave.isEmpty() ? QucsSettings.qucsWorkspaceDir.absolutePath() : lastDirOpenSave,
                                           tr("RF 2.5D models") + QStringLiteral(" (*.qrf25)"));
     if (!path.isEmpty()) openFileFromProjectView(QFileInfo(path), QString());
+  });
+
+  // A file the model wrote, opened in its own tab: a 3D model exported
+  // (Exports > Multiphysics 3D). One open already is read again from the file
+  // where it has no edits of its own, else brought to the front as it is.
+  connect(a_rf25Panel, &RF25Panel::openFileRequested, this, [this](const QString &path) {
+    if (path.isEmpty() || !QFileInfo::exists(path)) return;
+    int at = -1;
+    if (QucsDoc *open = findDoc(QFileInfo(path).absoluteFilePath(), &at); open != nullptr && at >= 0) {
+      if (auto *three = dynamic_cast<Multiphysics3DDoc *>(open); three != nullptr && !three->getDocChanged()) three->reload();
+      activatePaneOf(documentWidget(open));
+      DocumentTab->setCurrentIndex(at);
+      return;
+    }
+    openFileFromProjectView(QFileInfo(path), QString());
   });
 
   // The RF 2.5D menu, before View (after Multiphysics' own).

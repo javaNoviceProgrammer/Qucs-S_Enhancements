@@ -395,7 +395,10 @@ QByteArray stampOf(const QByteArray& bytes)
 
 QByteArray solveStampOf(const Model& model)
 {
-    Model copy = model;
+    // (What is hidden in the view is no part of it: a solution stays current
+    //  when a layer is hidden, and one kept before there was any reads as
+    //  before.)
+    Model copy = withoutVisibility(model);
     if (Node* exports = copy.root.child(QStringLiteral("rf_exports"))) exports->children.clear();
     return stampOf(copy.toJson());
 }

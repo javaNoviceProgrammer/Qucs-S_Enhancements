@@ -102,6 +102,14 @@ bool writeHfssExport(const HfssExport& written, const QString& scriptPath, QStri
 /// Writes \a shapes (µm) as a GDSII file of one cell. False and why.
 bool writeGdsOf(const QList<QPair<int, QPolygonF>>& shapes, const QString& path, const QString& cell, QString* error);
 
+/// A shape of a GDSII file: its layer, its datatype and its outline (µm).
+struct GdsShape {
+    int layer = 0, datatype = 0;
+    QPolygonF outline;
+};
+/// The same, each shape on its own layer and datatype.
+bool writeGdsShapes(const QList<GdsShape>& shapes, const QString& path, const QString& cell, QString* error);
+
 /// What a file of a 3D Layout project read as an RF 2.5D model gives.
 struct HfssImport {
     QString kind;              ///< "exported script", "control file" or "project"

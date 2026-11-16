@@ -88,6 +88,8 @@ signals:
     void newModelRequested();
     /// A recent model to open; empty: one to be chosen.
     void openModelRequested(const QString& path);
+    /// A file the model wrote, to open in its own tab: a 3D model exported.
+    void openFileRequested(const QString& path);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;

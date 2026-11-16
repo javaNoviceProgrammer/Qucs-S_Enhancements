@@ -19,6 +19,7 @@
 #include "qucsdoc.h"
 #include "rf25/rf25_adaptive.h"
 #include "rf25/rf25_circuit.h"
+#include "rf25/rf25_export.h"
 #include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_hfss.h"
 #include "rf25/rf25_stackfile.h"
@@ -78,6 +79,9 @@ public:
     /// The layer marked: a tag of the tree (empty: none).
     void setFocused(const QString& tag);
     QString focused() const { return a_focus; }
+    /// The layers not shown, by name ("hidden" or "frame"): a hidden one
+    /// drawn as a faint dashed outline, a framed one as its outline alone.
+    void setVisibility(const QHash<QString, QString>& byName);
     QSize minimumSizeHint() const override { return QSize(90, 120); }
     QSize sizeHint() const override { return QSize(150, 320); }
 
@@ -95,6 +99,7 @@ private:
 
     Stack a_stack;
     QString a_focus;
+    QHash<QString, QString> a_visibility;
 };
 
 } // namespace qucs_s::rf25
@@ -440,7 +445,16 @@ public:
     /// That text written to the file the node names - or, where it names
     /// none, to model_<tag>.sNp beside the model. The path written, or
     /// empty and why in \a error.
-    QString writeExport(const QString& tag, QString* error = nullptr) const;
+    /// A Multiphysics 3D, GDSII or DXF export (layoutExport()) writes its
+    /// files, the .qfem3d with its .gds beside it; what it wrote and what it
+    /// left out in \a said.
+    QString writeExport(const QString& tag, QString* error = nullptr, QStringList* said = nullptr) const;
+    /// Whether \a tag is an export of the model's shapes - Multiphysics 3D,
+    /// GDSII or DXF -, which needs no solve.
+    bool isLayoutExport(const QString& tag) const;
+    /// The files the layout export \a tag writes, written: the path of each
+    /// (the .qfem3d first, then its .gds), or none and why in \a error.
+    QStringList writeLayoutExport(const QString& tag, QStringList* said = nullptr, QString* error = nullptr) const;
     /// Where writeExport() would put it: the node's file, made absolute
     /// against the model, or the default beside it. Empty where there is
     /// no such node.
@@ -642,6 +656,25 @@ public:
     /// layout fitted. The node the panel chose.
     void focusNode(const QString& tag);
     QString focusedNode() const { return a_focus; }
+
+    // What the view draws of each layer of the stack (its Visibility, as
+    // Multiphysics 3D's parts have it): shown, hidden, or its frame alone.
+    // Kept in the model (Node::visibility), each change a step of Undo; it
+    // changes what is drawn alone - the shapes, the mesh and a solution
+    // stay as they are.
+    enum class Visibility { Shown, Hidden, Frame };
+    static QString visibilityName(Visibility v);   ///< "", "hidden", "frame"
+    static Visibility visibilityOf(const QString& name);
+    /// Whether node \a tag may be hidden: a layer of the stack.
+    bool canHide(const QString& tag) const;
+    Visibility visibility(const QString& tag) const;
+    /// False where it cannot be, or is already.
+    bool setVisibility(const QString& tag, Visibility v);
+    /// Every layer shown again; false where none was hidden.
+    bool showAllLayers();
+    bool anyHidden() const;
+    /// The view's Visibility drop-down, beside Ports.
+    QToolButton* visibilityButton() const { return a_visibilityButton; }
     /// How each layer of the layout file is drawn: the colour of the stack
     /// layer the map sends it to, and grey and hollow for one the map
     /// leaves out of the solve.
@@ -745,6 +778,9 @@ private:
     std::shared_ptr<const qucs_s::rf25::Processed> a_processed;
     bool a_showPorts = true;
     QToolButton* a_showPortsButton = nullptr;
+    QToolButton* a_visibilityButton = nullptr;
+    /// The drop-down's items, as the node chosen and the layers are.
+    void fillVisibilityMenu();
     Placing a_placing = Placing::None;
     QString a_lastPlaced;          ///< the port put on the layout last: a Shift-drag's terminal returns it
     QToolButton* a_edgePortButton = nullptr;

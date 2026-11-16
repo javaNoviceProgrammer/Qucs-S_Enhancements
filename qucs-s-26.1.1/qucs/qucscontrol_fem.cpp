@@ -704,7 +704,9 @@ QString formatTextRf25()
         "\"kind\" quasi_static or full_wave, \"from\", \"to\", \"points\", \"scale\" linear or log, \"matrix\", \"adaptive\" (true in "
         "a new model: the full wave's sweep from a rational fit through a few frequencies; false or absent, every point "
         "solved) and \"adaptive_tolerance\". rf_exports: "
-        "rf_touchstone and rf_circuit. rf25_hfss_export writes a model for HFSS™ 3D Layout, rf25_hfss_import makes one of a "
+        "rf_touchstone and rf_circuit of a solution; rf_mp3d (\"file\", \"margin\": a .qfem3d of Multiphysics 3D and its .gds), "
+        "rf_gds and rf_dxf (\"file\") of the shapes, needing no solve (rf25_export 'node' writes one). A stack layer's node may "
+        "carry \"visibility\" \"hidden\" or \"frame\" (beside \"properties\"): what the tab's view draws of it. rf25_hfss_export writes a model for HFSS™ 3D Layout, rf25_hfss_import makes one of a "
         "project, its control file or an exported script, and rf25_compare sets a solve beside a Touchstone file's S. "
         "rf25_stack_export and rf25_stack_import write and read the stack alone, as an HFSS™ 3D Layout XML stackup or an EMX "
         "process file; rf25_stack_export also draws it as a PDF of its cross-section.");
