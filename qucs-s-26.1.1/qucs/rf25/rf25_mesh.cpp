@@ -563,8 +563,11 @@ MeshCost costOf(int unknowns, bool compressed)
         cost.matrixBytes = 2e4 * double(unknowns);
         cost.tooBig = unknowns > kMostCompressedUnknowns;
         const double mb = cost.matrixBytes / (1024 * 1024);
-        cost.said = mb >= 1024 ? tr("%1 unknowns; held compressed, some %2 GB").arg(unknowns).arg(mb / 1024, 0, 'f', 1)
-                               : tr("%1 unknowns; held compressed, some %2 MB").arg(unknowns).arg(mb, 0, 'f', 1);
+        // (Where: a study's Automatic holds a system under its dense limit
+        //  dense, which the solve says - this an estimate, not what it did,
+        //  NF6 of the open items.)
+        cost.said = mb >= 1024 ? tr("%1 unknowns; some %2 GB where they are held compressed").arg(unknowns).arg(mb / 1024, 0, 'f', 1)
+                               : tr("%1 unknowns; some %2 MB where they are held compressed").arg(unknowns).arg(mb, 0, 'f', 1);
         if (cost.tooBig)
             cost.said += tr(" - more than this build will set up (%1 unknowns at most). Merge the vias, drop the fill, or "
                             "mesh more coarsely.").arg(kMostCompressedUnknowns);
@@ -765,6 +768,79 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             pieces << piece;
         }
     }
+    // Each metal's faces' heights, µm (a sheet's both its bottom): which
+    // pieces face each other across a thin dielectric.
+    QHash<QString, QPair<double, double>> span;
+    {
+        double z = 0;
+        for (const Layer& l : stack.layers) {
+            if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) z += l.thickness / perUnit;
+            if (l.kind == Layer::Metal) span.insert(l.name, qMakePair(z, l.twoSheets ? z + l.thickness / perUnit : z));
+        }
+    }
+    const auto gapBetween = [&](int a, int b) {
+        const QString la = conductors.at(pieces.at(a).conductor).layer, lb = conductors.at(pieces.at(b).conductor).layer;
+        if (la == lb || !span.contains(la) || !span.contains(lb)) return -1.0;
+        const QPair<double, double> sa = span.value(la), sb = span.value(lb);
+        return sa.first <= sb.first ? sb.first - sa.second : sa.first - sb.second;
+    };
+    // Two rectangles on metals far nearer than their cells, overlapping
+    // where neither is a plate of the other - a top plate over a bottom one
+    // more than twice its size, a bottom plate common to several, a plate
+    // banded with its feed: each cut at the other's edges, so that where
+    // they overlap each is a piece of its own, its lines shared with the
+    // other's below and none crossing the rest of it. Left whole, their
+    // cells stayed misaligned and their C read as low as P28's did, with
+    // nothing said (the review of 26ff2805). (Only where the cells are 50
+    // times the gap or more, misaligned some 25 % low at 62 times: a line
+    // over a ground nearer than its cells keeps its cells.)
+    int stackedCut = 0;
+    {
+        const double sliver = 0.05 * size;
+        bool again = true;
+        for (int pass = 0; again && pass < 64; ++pass) {
+            again = false;
+            for (int a = 0; a < pieces.size(); ++a) {
+                if (!pieces.at(a).rectangle) continue;
+                for (int b = a + 1; b < pieces.size(); ++b) {
+                    if (!pieces.at(b).rectangle) continue;
+                    const double dz = gapBetween(a, b);
+                    if (!(dz > 0) || dz >= 0.1 * size || size < 50 * dz) continue;
+                    const QRectF overlap = pieces.at(a).box.intersected(pieces.at(b).box);
+                    if (!(overlap.width() > sliver && overlap.height() > sliver)) continue;
+                    const double larger = std::max(pieces.at(a).box.width() * pieces.at(a).box.height(),
+                                                   pieces.at(b).box.width() * pieces.at(b).box.height());
+                    if (overlap.width() * overlap.height() >= 0.5 * larger) continue;
+                    // (Its parts: the columns beside the overlap whole, the
+                    //  middle one cut above and below it; a part thinner
+                    //  than a twentieth of the cells left on the overlap's.)
+                    for (const int k : {a, b}) {
+                        const QRectF r = pieces.at(k).box;
+                        double x0 = r.left(), x1 = r.right(), y0 = r.top(), y1 = r.bottom();
+                        if (overlap.left() - r.left() > sliver) x0 = overlap.left();
+                        if (r.right() - overlap.right() > sliver) x1 = overlap.right();
+                        if (overlap.top() - r.top() > sliver) y0 = overlap.top();
+                        if (r.bottom() - overlap.bottom() > sliver) y1 = overlap.bottom();
+                        QList<QRectF> parts{QRectF(QPointF(x0, y0), QPointF(x1, y1))};
+                        if (x0 > r.left()) parts << QRectF(QPointF(r.left(), r.top()), QPointF(x0, r.bottom()));
+                        if (x1 < r.right()) parts << QRectF(QPointF(x1, r.top()), QPointF(r.right(), r.bottom()));
+                        if (y0 > r.top()) parts << QRectF(QPointF(x0, r.top()), QPointF(x1, y0));
+                        if (y1 < r.bottom()) parts << QRectF(QPointF(x0, y1), QPointF(x1, r.bottom()));
+                        if (parts.size() == 1) continue;
+                        const Piece whole = pieces.at(k);
+                        pieces[k].box = parts.at(0);
+                        for (int i = 1; i < parts.size(); ++i) {
+                            Piece part = whole;
+                            part.box = parts.at(i);
+                            pieces << part;
+                        }
+                        again = true;
+                        ++stackedCut;
+                    }
+                }
+            }
+        }
+    }
     // Which rectangles meet which, along which stretch; and a side wholly
     // met by others is no edge.
     struct Meeting {
@@ -883,26 +959,14 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         double dz;   // µm
     };
     QList<Facing> facingPairs;    // (each pair facing across such a gap)
+    QList<Facing> unaligned;      // (and those whose cells nothing aligns: said where they are coarse)
     {
-        QHash<QString, QPair<double, double>> span;   // (each metal's faces' heights, µm: a sheet's both its bottom)
-        double z = 0;
-        for (const Layer& l : stack.layers) {
-            if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) z += l.thickness / perUnit;
-            if (l.kind == Layer::Metal) span.insert(l.name, qMakePair(z, l.twoSheets ? z + l.thickness / perUnit : z));
-        }
         QRectF all;
         for (const Piece& p : std::as_const(pieces)) all = all.united(p.box);
         const double tol = 1e-9 * std::max(1.0, std::max(all.width(), all.height()));
         for (int a = 0; a < pieces.size(); ++a) {
-            if (!pieces.at(a).rectangle) continue;
-            const QString la = conductors.at(pieces.at(a).conductor).layer;
-            if (!span.contains(la)) continue;
             for (int b = a + 1; b < pieces.size(); ++b) {
-                if (!pieces.at(b).rectangle) continue;
-                const QString lb = conductors.at(pieces.at(b).conductor).layer;
-                if (lb == la || !span.contains(lb)) continue;
-                const QPair<double, double> sa = span.value(la), sb = span.value(lb);
-                const double dz = sa.first <= sb.first ? sb.first - sa.second : sa.first - sb.second;
+                const double dz = gapBetween(a, b);
                 if (!(dz > 0) || dz >= 0.1 * size) continue;
                 const QRectF& A = pieces.at(a).box;
                 const QRectF& B = pieces.at(b).box;
@@ -910,7 +974,12 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 const double yLo = std::max(A.top(), B.top()), yHi = std::min(A.bottom(), B.bottom());
                 if (xHi - xLo <= tol || yHi - yLo <= tol) continue;
                 const double larger = std::max(A.width() * A.height(), B.width() * B.height());
-                if ((xHi - xLo) * (yHi - yLo) < 0.5 * larger) continue;
+                // (A part of a slanted side, or a pair the cut above left
+                //  apart: its cells misaligned, said where they are coarse.)
+                if (!pieces.at(a).rectangle || !pieces.at(b).rectangle || (xHi - xLo) * (yHi - yLo) < 0.5 * larger) {
+                    unaligned << Facing{a, b, dz};
+                    continue;
+                }
                 meetings << Meeting{a, b, true, xLo, xHi} << Meeting{a, b, false, yLo, yHi};
                 ++stackedShared;
                 facingPairs << Facing{a, b, dz};
@@ -921,6 +990,10 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         mesh.lines << tr("%1 pair(s) of pieces on two metals face each other across a gap narrower than their cells: their "
                          "cells are cut alike where they overlap, so that their charges face cell for cell.")
                           .arg(stackedShared);
+    if (stackedCut > 0)
+        mesh.lines << tr("%1 piece(s) cut at the edges of a piece over or under them, a thin gap apart, so that where they "
+                         "overlap their cells face each other and no line of theirs crosses the rest.")
+                          .arg(stackedCut);
     if (cutFrom > 0)
         mesh.lines << tr("%1 shape(s) cut into the %2 rectangle(s) they are made of, each meshed as a strip of its own; "
                          "where two rectangles meet, their cells meet edge to edge.")
@@ -1301,6 +1374,28 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             narrowestFacing = pair.dz;
             facingCell = widest;
         }
+    }
+    // (Pieces whose cells nothing aligns - a slanted side's parts - coarse
+    //  against their gap: said, their C reading low as a MIM's did.)
+    double unalignedGap = 0, unalignedCell = 0;
+    for (const Facing& pair : std::as_const(unaligned)) {
+        double widest = 0;
+        for (const int k : {pair.a, pair.b})
+            for (const QList<double>* lines : {&pieces.at(k).xs, &pieces.at(k).ys})
+                for (int i = 1; i < lines->size(); ++i) widest = std::max(widest, lines->at(i) - lines->at(i - 1));
+        if (widest > 150 * pair.dz && (unalignedGap <= 0 || widest / pair.dz > unalignedCell / unalignedGap)) {
+            unalignedGap = pair.dz;
+            unalignedCell = widest;
+        }
+    }
+    if (unalignedGap > 0) {
+        const QString w = tr("Metals overlap across %1 µm where their cells cannot be aligned (a slanted side, or neither "
+                             "piece a plate of the other), under cells some %2 µm across - %3 times the gap: their "
+                             "capacitance there reads low. A largest cell under %4 µm brings it nearer.")
+                              .arg(unalignedGap, 0, 'g', 3).arg(unalignedCell, 0, 'g', 3).arg(int(std::round(unalignedCell / unalignedGap)))
+                              .arg(50 * unalignedGap, 0, 'g', 3);
+        mesh.warnings << w;
+        mesh.lines << w;
     }
     if (narrowestFacing > 0 && facingCell > 150 * narrowestFacing) {
         const QString w = tr("Metals face each other across %1 µm, under cells some %2 µm across - %3 times the gap: their "

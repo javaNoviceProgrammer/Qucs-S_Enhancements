@@ -114,6 +114,10 @@ struct CutRegion {
  */
 struct Cutout {
     QList<CutRegion> regions;
+    /// Each problem of a region left out, with that region's tag: found by
+    /// its tag, not by matching a translated text - "Cutout: R1" also began
+    /// R10's (the review of 26ff2805).
+    QList<std::pair<QString, QString>> problems;
     bool isEmpty() const { return regions.isEmpty(); }
 };
 /// \a model's Cutout read, its lengths in its parameters, in micrometres.
@@ -196,6 +200,9 @@ struct Processed {
     QMap<QString, QList<QPolygonF>> extents;
     LayoutReport report;
     QStringList problems;
+    /// Those of problems that are the Cutout's: a region left out, which
+    /// the solve warns of (C1 of the open items).
+    QStringList cutoutProblems;
     bool ok() const { return problems.isEmpty(); }
     /// How many conductors each layer has.
     QMap<QString, int> byLayer() const;

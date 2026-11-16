@@ -746,6 +746,7 @@ namespace {
 struct Sheet {
     QStringList components, wires;
     int r = 0, l = 0, c = 0;
+    QString resistorSymbol = QStringLiteral("european");
 
     void part(const QString& kind, double value, int x, int y, bool down)
     {
@@ -755,8 +756,8 @@ struct Sheet {
         const QString said = valueSaid(value, unit);
         const QString at = down ? QStringLiteral("%1 %2 15 -26 0 1").arg(x).arg(y) : QStringLiteral("%1 %2 -26 15 0 0").arg(x).arg(y);
         if (kind == QLatin1String("R"))
-            components << QStringLiteral("  <R R%1 1 %2 \"%3\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>")
-                              .arg(n).arg(at, said);
+            components << QStringLiteral("  <R R%1 1 %2 \"%3\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"%4\" 0>")
+                              .arg(n).arg(at, said, resistorSymbol);
         else if (kind == QLatin1String("L"))
             components << QStringLiteral("  <L L%1 1 %2 \"%3\" 1 \"\" 0>").arg(n).arg(at, said);
         else
@@ -846,9 +847,10 @@ void down(Sheet& sheet, const CircuitBranch& b, int x, int y, int side)
 
 } // namespace
 
-QString schematicOf(const EquivalentCircuit& circuit, const QStringList& comment, const QString& name)
+QString schematicOf(const EquivalentCircuit& circuit, const QStringList& comment, const QString& name, bool usSymbol)
 {
     Sheet sheet;
+    if (usSymbol) sheet.resistorSymbol = QStringLiteral("US");
     // Its first port at the left of the line at y 100; the branch between
     // the ports along it; each port's branch to the ground down from where
     // it meets the line, what goes beside it outward.

@@ -61,6 +61,7 @@
 #include "extsimkernels/spicecompat.h"
 #include "isolated_settings.h"
 #include "main.h"
+#include "symbolstyle.h"
 #include "misc.h"
 #include "module.h"
 #include "qucs.h"
@@ -1140,6 +1141,26 @@ private slots:
         // What it did, under the Cutout.
         panel()->selectNode(QStringLiteral("cutout"));
         QTRY_VERIFY2(reportText().contains(QStringLiteral("masked")), qPrintable(reportText()));
+        // A region beside it that cannot be read: among the solve's warnings,
+        // not only in the panel (C1 of the open items; kept apart from the
+        // processing's other problems since the review of 26ff2805).
+        {
+            rf::Model m = doc->model();
+            rf::Node unreadable = m.make(QStringLiteral("rf_region"));
+            unreadable.label = QStringLiteral("R10");
+            unreadable.props.insert(QStringLiteral("x1"), QStringLiteral("no_such_length"));
+            QVERIFY(m.add(QStringLiteral("cutout"), unreadable) != nullptr);
+            rf::SolveJob job;
+            RF25Doc::SolveRequest quasi;
+            quasi.solver = QStringLiteral("quasi_static");
+            const rf::ModelSolution solved = rf::solveModel(job, m, *doc->layout(), QFileInfo(rf::textOf(m.layout(), QStringLiteral("file"))).fileName(),
+                                                            QFileInfo(doc->getDocName()).absolutePath(), quasi);
+            QVERIFY2(solved.ok() && solved.extraction != nullptr, qPrintable(solved.problem));
+            QVERIFY2(solved.processed->cutoutProblems.join(' ').contains(QStringLiteral("R10's x1 is not a number")),
+                     qPrintable(solved.processed->problems.join(" | ")));
+            QVERIFY2(solved.extraction->warnings.join(' ').contains(QStringLiteral("R10's x1 is not a number")),
+                     qPrintable(solved.extraction->warnings.join(" | ")));
+        }
 
         // Not applied: the whole layout again, and nothing drawn of it.
         QVERIFY(doc->editNode(QStringLiteral("cutout"), [](rf::Node& n) { n.props.insert(QStringLiteral("apply"), false); },
@@ -3443,7 +3464,7 @@ private slots:
         QVERIFY(m.add(m.root.tag, m.make(QStringLiteral("rf_analyses"))) != nullptr);
         rf::Node sweep = m.make(QStringLiteral("rf_sweep"));
         sweep.props = QJsonObject{{"parameters", QJsonArray() << QJsonArray{"w", "", "", "", "", "30[um], 50[um], 80[um]"}},
-                                  {"quantities", QJsonArray{QJsonArray{"Z0"}, QJsonArray{"C11", "max"}}}};
+                                  {"quantities", QJsonArray{QJsonArray{"Z0"}, QJsonArray{"C11", "max"}, QJsonArray{"C11", "min"}, QJsonArray{"alpha_dB"}}}};
         const rf::Node* added = m.add(m.root.child(QStringLiteral("rf_analyses"))->tag, sweep);
         QVERIFY(added != nullptr);
         const QString tag = added->tag;
@@ -3474,8 +3495,15 @@ private slots:
         QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
         QCOMPARE(r.points.size(), 3);
         QCOMPARE(r.solved, 3);
-        QCOMPARE(r.columns, (QStringList{QStringLiteral("w"), QStringLiteral("Z0"), QStringLiteral("C11")}));
+        // (C11 read twice: each column named by how - alike, the second
+        //  overwrote the first where the points are kept by name, NF1.)
+        QCOMPARE(r.columns, (QStringList{QStringLiteral("w"), QStringLiteral("Z0"), QStringLiteral("C11 max"), QStringLiteral("C11 min"), QStringLiteral("alpha_dB")}));
         QCOMPARE(r.units.at(1), qucs_s::fem::dimName(qucs_s::fem::parseUnit(QStringLiteral("Ohm"))->dim));
+        // (alpha_dB in dB/m, not its dimension's 1/m; a quantity with no
+        //  window says the frequency it was read at - NF5.)
+        QCOMPARE(r.units.at(4), QStringLiteral("dB/m"));
+        QVERIFY2(r.notes.join(' ').contains(QStringLiteral("Z0 is read at the solution's last frequency")), qPrintable(r.notes.join(" | ")));
+        QCOMPARE(rf::SweepResult::fromJson(r.toJson()).notes, r.notes);
         const auto z0 = [&r](int i) { return r.points.at(i).measured.at(0); };
         const auto c11 = [&r](int i) { return r.points.at(i).measured.at(1); };
         QVERIFY2(z0(0) > z0(1) && z0(1) > z0(2), qPrintable(QStringLiteral("%1 %2 %3").arg(z0(0)).arg(z0(1)).arg(z0(2))));
@@ -3492,7 +3520,8 @@ private slots:
         rf::SweepPage* page = doc->sweepPage();
         QVERIFY(!page->isHidden());
         QCOMPARE(page->table()->rowCount(), 3);
-        QCOMPARE(page->quantityBox()->count(), 2);
+        QCOMPARE(page->quantityBox()->count(), 4);
+        QVERIFY(page->summaryLabel()->text().contains(QStringLiteral("Z0 is read at")));
         QCOMPARE(page->plot()->lines().size(), 1);
         QCOMPARE(page->plot()->lines().at(0).size(), 3);
         QVERIFY(page->summaryLabel()->text().contains(QStringLiteral("3 solved")));
@@ -4030,7 +4059,8 @@ private slots:
     // between the fixtures, solved with them: the pads' reflection taken out,
     // what is left a matched line whose phase is the calibration's own
     // gamma over 800 µm; the lines' effective permittivity what a microstrip
-    // of 50 µm on 100 µm of 9.8 has; said.
+    // of 50 µm on 100 µm of 9.8 has; said. The first line made of the
+    // model's own shapes, no file.
     void aTrlCalibrationTakesThePadsOut()
     {
         const QString base = fullWaveLine(QStringLiteral("trlbase.qrf25"));
@@ -4044,7 +4074,7 @@ private slots:
         // A pad at x0 to x0 + 150, its feed's line from 150 on: the fixtures
         // with a line of \a line between their feeds' ends (the feeds' 100 µm
         // each beside it); a gap of \a gap for the reflect, each fixture open.
-        const auto made = [&](const QString& name, double line, bool open, rf::Model* into = nullptr) {
+        const auto made = [&](const QString& name, double line, bool open, rf::Model* into = nullptr, bool own = false) {
             QList<QRectF> rects;
             const double inner = 200 + line;   // the feeds and the line
             rects << QRectF(0, -50, 150, 150);
@@ -4054,9 +4084,22 @@ private slots:
                 rects << QRectF(150, 0, inner, 50) << QRectF(150 + inner, -50, 150, 150);
             }
             const double end = open ? 650 : 300 + inner;
-            if (!writeRectangles(path(name + QStringLiteral(".gds")), rects)) return QString();
             rf::Model m = *read;
-            m.layout().props.insert(QStringLiteral("file"), name + QStringLiteral(".gds"));
+            if (own) {
+                // (Its own shapes alone, no file: NF2 of the open items, a
+                //  standard so made refused - "names no layout".)
+                m.layout().props.insert(QStringLiteral("file"), QString());
+                if (m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes"))) == nullptr) return QString();
+                for (const QRectF& r : std::as_const(rects)) {
+                    rf::Node shape = m.make(QStringLiteral("rf_shape"));
+                    shape.props = QJsonObject{{"layer", "M1"}, {"x", QStringLiteral("%1[um]").arg(r.x())}, {"y", QStringLiteral("%1[um]").arg(r.y())},
+                                              {"width", QStringLiteral("%1[um]").arg(r.width())}, {"height", QStringLiteral("%1[um]").arg(r.height())}};
+                    if (m.add(m.layout().child(QStringLiteral("rf_shapes"))->tag, shape) == nullptr) return QString();
+                }
+            } else {
+                if (!writeRectangles(path(name + QStringLiteral(".gds")), rects)) return QString();
+                m.layout().props.insert(QStringLiteral("file"), name + QStringLiteral(".gds"));
+            }
             m.ports().children.clear();
             for (const QPair<double, const char*>& at : {qMakePair(0.0, "P1"), qMakePair(end, "P2")}) {
                 rf::Node port = m.make(QStringLiteral("rf_edge_port"));
@@ -4080,7 +4123,7 @@ private slots:
             return out.fileName();
         };
         QVERIFY(!made(QStringLiteral("trl_thru"), 0, false).isEmpty());
-        QVERIFY(!made(QStringLiteral("trl_line1"), 500, false).isEmpty());
+        QVERIFY(!made(QStringLiteral("trl_line1"), 500, false, nullptr, true).isEmpty());
         QVERIFY(!made(QStringLiteral("trl_line2"), 1500, false).isEmpty());
         QVERIFY(!made(QStringLiteral("trl_open"), 0, true).isEmpty());
         rf::Model dut;
@@ -4447,6 +4490,10 @@ private slots:
         QVERIFY2(doc->waitForSolved(300000), "the solve ended");
         const std::shared_ptr<const rf::FullWave> dense = doc->fullWave();
         QVERIFY2(dense != nullptr && dense->ok() && !dense->compressed, qPrintable(doc->solveProblem()));
+        // (Said dense - the mesh's estimate held compressed not taken for
+        //  what was done, NF6.)
+        QVERIFY2(says(dense->lines, "The system held dense") && !says(dense->lines, "The system held compressed"), qPrintable(dense->lines.join(" | ")));
+        QVERIFY2(doc->mesh()->cost.said.contains(QStringLiteral("where they are held compressed")), qPrintable(doc->mesh()->cost.said));
         // Compressed, for one solve: the model left as it was.
         RF25Doc::SolveRequest held;
         held.matrix = QStringLiteral("compressed");
@@ -5144,11 +5191,48 @@ private slots:
         // (A millimetre of line at 1 to 5 GHz is short: a pi holds.)
         QVERIFY2(circuit->worst < 0.05, qPrintable(circuit->lines.join(" | ")));
         qWarning().noquote() << circuit->lines.join(QStringLiteral(" | "));
+        // Fitted to a window of its frequencies (NF7 of the open items): the
+        // one between 2 and 4 GHz alone; none in it, said; the node's From
+        // and To read by its export.
+        {
+            QCOMPARE(doc->fullWave()->frequencies, (QList<double>{1e9, 3e9, 5e9}));
+            const std::optional<rf::EquivalentCircuit> windowed = doc->equivalentCircuit(&why, 2e9, 4e9);
+            QVERIFY2(windowed.has_value() && windowed->frequencies == QList<double>{3e9}, qPrintable(why));
+            QVERIFY(!doc->equivalentCircuit(&why, 6e9).has_value());
+            QVERIFY2(why.contains(QStringLiteral("No frequency of the solve's")), qPrintable(why));
+            rf::Model m = doc->model();
+            m.find(tag)->props.insert(QStringLiteral("from"), QStringLiteral("6[GHz]"));
+            QVERIFY(doc->setModel(m, QStringLiteral("its window")));
+            QVERIFY(doc->waitForPrepared(60000));
+            QVERIFY(doc->exportText(tag, &why).isEmpty());
+            QVERIFY2(why.contains(QStringLiteral("from 6 to")), qPrintable(why));
+            m.find(tag)->props.remove(QStringLiteral("from"));
+            QVERIFY(doc->setModel(m, QStringLiteral("no window")));
+            QVERIFY(doc->waitForPrepared(60000));
+        }
 
         // A part beside the model, read by Qucs-S and netlisted: between its
-        // ports' nets, p1 and p2, the circuit's Y to its four figures.
+        // ports' nets, p1 and p2, the circuit's Y to its four figures. Its
+        // resistors the symbol the settings give a new one (every one was
+        // "european").
+        const int symbols = QucsSettings.ComponentSymbols;
+        QucsSettings.ComponentSymbols = qucs_s::symbols::US;
         const QString part = doc->writeExport(tag, &why);
+        QucsSettings.ComponentSymbols = symbols;
         QVERIFY2(part == path(QStringLiteral("circuit_%1.sch").arg(tag)), qPrintable(part + why));
+        {
+            QFile written(part);
+            QVERIFY(written.open(QIODevice::ReadOnly));
+            const QByteArray text = written.readAll();
+            QVERIFY2(!text.contains("\"european\"") && (!text.contains("<R ") || text.contains("\"US\" 0>")), text.constData());
+            // (A resistor to the ground, the circuit's own whatever it has.)
+            rf::EquivalentCircuit r;
+            r.ports = 1;
+            r.toGround[0].form = QStringLiteral("R");
+            r.toGround[0].values = {{QStringLiteral("R"), 50.0}};
+            QVERIFY(rf::schematicOf(r, {}, QStringLiteral("r"), true).contains(QStringLiteral("\"US\" 0>")));
+            QVERIFY(rf::schematicOf(r, {}, QStringLiteral("r"), false).contains(QStringLiteral("\"european\" 0>")));
+        }
         Schematic sch(nullptr, part);
         QVERIFY(sch.load());
         QVERIFY(QDir().mkpath(path(QStringLiteral("kernel"))));

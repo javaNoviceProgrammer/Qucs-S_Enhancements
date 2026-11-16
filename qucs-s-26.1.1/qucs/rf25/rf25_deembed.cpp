@@ -352,8 +352,8 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
     return calibrate(stack, how, top, feed, frequencies, micrometre, control, chosen);
 }
 
-Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, const Feed& feed,
-                      const QList<double>& frequencies, double micrometre, const FullWaveControl* control, double chosen)
+static Calibration calibrateOnce(const Stack& stack, const MeshSettings& how, double top, const Feed& feed,
+                                      const QList<double>& frequencies, double micrometre, const FullWaveControl* control, double chosen)
 {
     Calibration out;
     const QString& metal = feed.metal;
@@ -466,7 +466,11 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
     //  coplanar line's Zc 67 Ohm for 77, eps_eff 1.5 % low and false loss at
     //  100-110 GHz, its 1 and 2 mm strips half a wavelength apart, and
     //  nothing said - P15 of the open items. Within some 12 degrees of it.)
-    double halfFrom = 0, halfTo = 0, halfApart = 0;
+    // (Each band of them said: around pi and around 2 pi, the good
+    //  frequencies between, were one band - the review of 26ff2805.)
+    QList<std::pair<double, double>> halfBands;
+    double halfApart = 0;
+    bool halfLast = false;
     for (const double f : frequencies) {
         const int b = best(f);
         const Strips& s = sets.at(b);
@@ -478,19 +482,25 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
         out.stripAt << s.strip;
         if (b > 0 && (shorterFrom == 0 || f < shorterFrom)) shorterFrom = f;
         const double turn = s.gamma.at(k).imag() * s.between * micrometre;
-        if (turn > M_PI / 2 && std::abs(std::sin(turn)) < 0.2) {
-            if (halfFrom == 0 || f < halfFrom) halfFrom = f;
-            halfTo = std::max(halfTo, f);
+        const bool half = turn > M_PI / 2 && std::abs(std::sin(turn)) < 0.2;
+        if (half) {
+            if (!halfLast) halfBands << std::make_pair(f, f);
+            halfBands.last().second = f;
             halfApart = s.between;
         }
+        halfLast = half;
     }
-    if (halfFrom > 0)
-        out.warnings << tr("Its strips' lines differ by %1 µm, a whole number of half wavelengths from %2 to %3 GHz: what they "
-                           "read of the line there is ill-conditioned - its impedance and eps_eff, and the de-embedding of a "
-                           "port on it, not to be trusted in that band. Strips of another length (the port's own) move it.")
+    if (!halfBands.isEmpty()) {
+        QStringList bands;
+        for (const auto& [from, to] : std::as_const(halfBands))
+            bands << (from == to ? tr("at %1 GHz").arg(from / 1e9, 0, 'g', 4)
+                                 : tr("from %1 to %2 GHz").arg(from / 1e9, 0, 'g', 4).arg(to / 1e9, 0, 'g', 4));
+        out.warnings << tr("Its strips' lines differ by %1 µm, a whole number of half wavelengths %2: what they read of the "
+                           "line there is ill-conditioned - its impedance and eps_eff, and the de-embedding of a port on it, "
+                           "not to be trusted there. Strips of another length (the port's own) move it.")
                             .arg(halfApart, 0, 'g', 4)
-                            .arg(halfFrom / 1e9, 0, 'g', 4)
-                            .arg(halfTo / 1e9, 0, 'g', 4);
+                            .arg(bands.join(tr(", and ")));
+    }
     for (const Strips& s : std::as_const(sets)) out.warnings << s.warnings;
     if (base.leakFrom > 0)
         out.lines << tr("Nothing of the feed loses, but from %1 GHz the stack carries a second surface wave, into which its "
@@ -633,6 +643,28 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
                         "de-embedding is the less sure for it.")
                          .arg(base.gains.first() / 1e9, 0, 'g', 4);
     return out;
+}
+
+Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, const Feed& feed,
+                      const QList<double>& frequencies, double micrometre, const FullWaveControl* control, double chosen)
+{
+    Calibration out = calibrateOnce(stack, how, top, feed, frequencies, micrometre, control, chosen);
+    // Its strips' solve not converged - an 8.2 mm strip held compressed,
+    // past the dense bound -: tried once more with its cells twice as long
+    // along them, few enough to solve dense, and said (P14 of the open
+    // items: there was no retry). (Here, not in the solve alone: any caller
+    // has it, and a test reaches it - the review of 26ff2805.)
+    const bool stopped = control != nullptr && control->stop != nullptr && control->stop->load();
+    if (out.ok() || stopped || !out.problems.join(QLatin1Char(' ')).contains(QLatin1String("GMRES"))) return out;
+    MeshSettings longer = how;
+    longer.stretch = std::max(2 * how.stretch, 8.0);
+    Calibration again = calibrateOnce(stack, longer, top, feed, frequencies, micrometre, control, chosen);
+    if (!again.ok()) return out;
+    again.lines.prepend(tr("Its strips solved again with cells %1 times as long as wide along them: with cells as the "
+                           "structure's they did not converge (%2).")
+                            .arg(longer.stretch, 0, 'g', 3)
+                            .arg(out.problems.join(QLatin1Char(' '))));
+    return again;
 }
 
 FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports)

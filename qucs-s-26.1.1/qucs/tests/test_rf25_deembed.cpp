@@ -214,7 +214,13 @@ private slots:
         const rf::Calibration high = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {56e9, 58e9, 60e9}, 1e-6, nullptr, 1000);
         QVERIFY2(high.ok(), qPrintable(high.problems.join(" | ")));
         qWarning() << "strips" << high.stripAt << "line" << high.length << high.warnings;
-        QVERIFY2(high.warnings.join(' ').contains(QStringLiteral("a whole number of half wavelengths")), qPrintable(high.warnings.join(" | ")));
+        QVERIFY2(high.warnings.join(' ').contains(QStringLiteral("a whole number of half wavelengths from 56 to 60 GHz")), qPrintable(high.warnings.join(" | ")));
+        // Two bands, around pi and 2 pi (eps_eff rising, short of twice the
+        // first): each said, not the good frequencies between them (the
+        // review of 26ff2805).
+        const rf::Calibration two = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {58e9, 87e9, 104e9, 107e9, 110e9, 113e9}, 1e-6, nullptr, 1000);
+        QVERIFY2(two.ok(), qPrintable(two.problems.join(" | ")));
+        QVERIFY2(two.warnings.join(' ').contains(QStringLiteral("half wavelengths at 58 GHz, and from 110 to 113 GHz:")), qPrintable(two.warnings.join(" | ")));
         // A lossless feed's line is taken lossless only where it cannot leak
         // into a second surface wave of the stack (P13 of the open items: a
         // coplanar line on 500 µm of alumina leaked 15-38 dB/m at 80-100 GHz,
@@ -223,6 +229,31 @@ private slots:
         const rf::Calibration thick = rf::calibrate(grounded(9.8, 500e-6), how, 0, QStringLiteral("M1"), 100, {60e9}, 1e-6, nullptr, 1000);
         QVERIFY2(thick.ok() && thick.lines.join(' ').contains(QStringLiteral("second surface wave")), qPrintable((thick.problems + thick.lines).join(" | ")));
         QVERIFY2(!high.lines.join(' ').contains(QStringLiteral("second surface wave")), qPrintable(high.lines.join(" | ")));
+    }
+
+    // A calibration whose strips' solve does not converge (P14 of the open
+    // items, its retry tested at the review of 26ff2805): GMRES capped at
+    // one iteration, the strips past a dense bound that their cells twice
+    // as long fall within - solved again with those, and said.
+    void aCalibrationThatDidNotConvergeIsTriedAgain()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6);
+        const rf::MeshSettings how = meshing(4, 1000);
+        rf::FullWaveControl control;
+        control.mostIterations = 1;
+        control.mostUnknowns = 400;
+        const rf::Calibration again = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {20e9}, 1e-6, &control);
+        QVERIFY2(again.ok() && again.lines.value(0).startsWith(QStringLiteral("Its strips solved again with cells 8 times as long")),
+                 qPrintable((again.problems + again.lines).join(" | ")));
+        // (What it reads of the line: the uncapped calibration's, near.)
+        const rf::Calibration free = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {20e9});
+        QVERIFY2(free.ok() && !free.lines.value(0).startsWith(QStringLiteral("Its strips solved again")), qPrintable(free.lines.value(0)));
+        QVERIFY2(std::abs(again.impedance.at(0) / free.impedance.at(0) - 1.0) < 0.02,
+                 qPrintable(QStringLiteral("%1 against %2").arg(std::abs(again.impedance.at(0))).arg(std::abs(free.impedance.at(0)))));
+        // (Capped below what even longer cells hold: not converged, said.)
+        control.mostUnknowns = 100;
+        const rf::Calibration never = rf::calibrate(stack, how, 0, QStringLiteral("M1"), 100, {20e9}, 1e-6, &control);
+        QVERIFY2(!never.ok() && never.problems.join(' ').contains(QStringLiteral("GMRES")), qPrintable(never.problems.join(" | ")));
     }
 
     void aLineDeembeddedHalfWayIsAThru()

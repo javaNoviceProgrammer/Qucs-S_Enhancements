@@ -38,6 +38,7 @@
 
 #include <atomic>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 
@@ -420,7 +421,10 @@ public:
     QString exportText(const QString& tag, QString* error = nullptr) const;
     /// A lumped circuit fitted to the full-wave solve shown (rf25_circuit.h):
     /// its one or two ports'; none and why in \a error where it has none.
-    std::optional<qucs_s::rf25::EquivalentCircuit> equivalentCircuit(QString* error = nullptr) const;
+    /// (Fitted to its frequencies from \a from to \a to, Hz - NaN: its
+    /// first, its last.)
+    std::optional<qucs_s::rf25::EquivalentCircuit> equivalentCircuit(QString* error = nullptr, double from = std::numeric_limits<double>::quiet_NaN(),
+                                                                     double to = std::numeric_limits<double>::quiet_NaN()) const;
     /// \a circuit as \a path asks: a Qucs-S part for .sch, else a SPICE
     /// subcircuit named \a name (empty: the model's) - what it was fitted
     /// to, by what, and how well said with it.

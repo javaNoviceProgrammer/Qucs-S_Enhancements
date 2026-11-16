@@ -974,6 +974,58 @@ private slots:
         solved(80, 10, &warned);
         QVERIFY2(warned.join(' ').contains(QStringLiteral("times the gap")), qPrintable(warned.join(" | ")));
 
+        // Plates neither of which is a plate of the other (the review of
+        // 26ff2805): a 10 µm plate over a 30 µm one, two over one bottom
+        // plate, and a plate with its feed - each cut at the other's edges,
+        // their C at 5 µm cells within 2 % of 0.625 µm's, where misaligned
+        // they read as low as P28's.
+        const auto on2 = [](double x, double y, double w, double h) {
+            rf::Conductor c = strip(x, y, w, h);
+            c.layer = QStringLiteral("M2");
+            return c;
+        };
+        rf::Conductor fed = on2(0, 0, 10, 10);
+        fed.outline = QPolygonF({QPointF(0, 0), QPointF(10, 0), QPointF(10, 4), QPointF(30, 4), QPointF(30, 6), QPointF(10, 6), QPointF(10, 10), QPointF(0, 10)});
+        const QList<QList<rf::Conductor>> layouts{{strip(-7.3, -8.1, 31, 29.3), on2(0, 0, 10, 10)},
+                                                  {strip(-7.3, -8.1, 61, 29.3), on2(0, 0, 10, 10), on2(23.7, 0, 10, 10)},
+                                                  {strip(-0.6, -0.6, 11.2, 11.2), fed}};
+        for (const QList<rf::Conductor>& layout : layouts) {
+            const auto c = [&](double cell, QStringList* said) {
+                rf::MeshSettings how;
+                how.maximum = cell * 1e-6;
+                how.cellsAcross = 0;
+                const rf::Mesh mesh = rf::meshOf(layout, how, st, 1e9);
+                *said = mesh.lines + mesh.warnings;
+                const rf::Extraction e = rf::extract(mesh, layout, st);
+                double between = 0;
+                for (int j = 1; j < int(e.maxwell.size()); ++j) between -= e.maxwell.at(0).at(j);
+                return std::make_pair(e.ok() ? between : 0.0, int(mesh.cells.size()));
+            };
+            QStringList said;
+            const auto atFine = c(0.625, &said);
+            const auto atCoarse = c(5, &said);
+            qWarning("%d conductor(s): %g fF at 5 um, %d cells; %g at 0.625, %d cells", int(layout.size()), atCoarse.first * 1e15, atCoarse.second,
+                     atFine.first * 1e15, atFine.second);
+            QVERIFY2(std::abs(atCoarse.first / atFine.first - 1) < 0.02,
+                     qPrintable(QStringLiteral("%1 fF at 5 µm cells, %2 at 0.625 | %3").arg(atCoarse.first * 1e15).arg(atFine.first * 1e15).arg(said.join(" | "))));
+        }
+        // An octagonal plate's slanted parts, which nothing aligns: said where
+        // the cells are coarse against the gap; not at fine cells.
+        {
+            rf::Conductor octagon = on2(0, 0, 40, 40);
+            octagon.outline = QPolygonF({QPointF(12, 0), QPointF(28, 0), QPointF(40, 12), QPointF(40, 28), QPointF(28, 40), QPointF(12, 40),
+                                         QPointF(0, 28), QPointF(0, 12)});
+            const QList<rf::Conductor> layout{strip(-1, -1, 42, 42), octagon};
+            const auto said = [&](double cell) {
+                rf::MeshSettings how;
+                how.maximum = cell * 1e-6;
+                how.cellsAcross = 0;
+                return rf::meshOf(layout, how, st, 1e9).warnings.join(' ');
+            };
+            QVERIFY2(said(10).contains(QStringLiteral("cells cannot be aligned")), qPrintable(said(10)));
+            QVERIFY2(!said(1).contains(QStringLiteral("cells cannot be aligned")), qPrintable(said(1)));
+        }
+
         // Ordinary layouts with a lower metal near, which a plate's rule must
         // not reach (the review of f13694ea: shared there, each piece took
         // the others' lines across it): a coplanar line over a ground 2 µm
