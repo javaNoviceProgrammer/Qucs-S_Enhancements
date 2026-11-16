@@ -2053,8 +2053,11 @@ void sharedOut(int count, int threads, const std::function<void(int)>& job,
                std::atomic<long long>& counted = sharedColumns)
 {
     std::atomic_int next{0};
-    onThreads(std::clamp(threads, 1, std::max(1, count)), [&next, &job, &counted, count](int t) {
-        for (int i = next++; i < count; i = next++) {
+    const int n = std::clamp(threads, 1, std::max(1, count));
+    // (Dealt in turn where a test asks: sharesDealt().)
+    const bool dealt = sharesDealt();
+    onThreads(n, [&next, &job, &counted, count, n, dealt](int t) {
+        for (int i = dealt ? t : next++; i < count; i = dealt ? i + n : next++) {
             if (t > 0) ++counted;
             job(i);
         }
@@ -4656,18 +4659,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (control != nullptr && control->done != nullptr) ++*control->done;
         }
     };
-    QList<QThread*> pool;
-    for (int t = 1; t < side; ++t) {
-        QThread* thread = QThread::create(work);
-        thread->setStackSize(8u << 20);
-        thread->start();
-        pool << thread;
-    }
-    work();
-    for (QThread* thread : std::as_const(pool)) {
-        thread->wait();
-        delete thread;
-    }
+    onThreads(side, [&work](int) { work(); });
     if (control != nullptr && control->stop != nullptr && control->stop->load()) {
         int done = 0;
         for (const AtFrequency& a : std::as_const(solved)) done += a.z.size() > 0 ? 1 : 0;

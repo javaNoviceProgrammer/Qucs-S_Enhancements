@@ -37,6 +37,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <limits>
 #include <tuple>
 #include <complex>
 #include <thread>
@@ -286,6 +287,52 @@ struct LuOverridesAway {
 QString why(const rf::FullWave& fw)
 {
     return fw.problems.join(QStringLiteral(" | "));
+}
+
+/// How far one solve's Z, S or currents (\a x) are from another's (\a y):
+/// the largest difference over the largest value - rounding's some 1e-15,
+/// a term made from what was not there far more -, said where two solves
+/// are not the same to the last digit.
+double gapOf(const QList<QList<QList<Complex>>>& x, const QList<QList<QList<Complex>>>& y)
+{
+    if (x.size() != y.size()) return std::numeric_limits<double>::infinity();
+    double most = 0, gap = 0;
+    for (int k = 0; k < x.size(); ++k) {
+        if (x.at(k).size() != y.at(k).size()) return std::numeric_limits<double>::infinity();
+        for (int i = 0; i < x.at(k).size(); ++i) {
+            if (x.at(k).at(i).size() != y.at(k).at(i).size()) return std::numeric_limits<double>::infinity();
+            for (int j = 0; j < x.at(k).at(i).size(); ++j) {
+                most = std::max(most, std::abs(y.at(k).at(i).at(j)));
+                gap = std::max(gap, std::abs(x.at(k).at(i).at(j) - y.at(k).at(i).at(j)));
+            }
+        }
+    }
+    return most > 0 ? gap / most : gap;
+}
+
+/// The same of two solves' Z, S and currents, said.
+QString howFarApart(const rf::FullWave& a, const rf::FullWave& b)
+{
+    return QStringLiteral("Z %1, S %2, currents %3 apart")
+        .arg(gapOf(a.z, b.z), 0, 'g', 3)
+        .arg(gapOf(a.s, b.s), 0, 'g', 3)
+        .arg(gapOf(a.currents, b.currents), 0, 'g', 3);
+}
+
+/// For the tests of the fill on any number of threads: Eigen's LU, whose
+/// arithmetic is the same on any number (theStaticPartsAreTheSame...()),
+/// and the threads' work dealt in turn (rf::setSharesDealt()), so that the
+/// others have some however late a loaded machine starts them - both put
+/// back as they were when what this returns goes.
+auto fillAloneChecked()
+{
+    const rf::DenseLu lu = rf::denseLu();
+    rf::setDenseLu(rf::DenseLu::Eigen);
+    rf::setSharesDealt(true);
+    return qScopeGuard([lu] {
+        rf::setDenseLu(lu);
+        rf::setSharesDealt(false);
+    });
 }
 
 /// A ground plane, 100 µm of 9.8 with M1 on it, and 10 µm of 4 with M2 on
@@ -1342,6 +1389,10 @@ private slots:
             control.threads = threads;
             return rf::fullWaveOf(mesh, shorted, stack, ports, fs, 1e-6, &control);
         };
+        // (Their work dealt, which a loaded machine's late threads otherwise
+        //  missed - 0 columns made elsewhere -, and the LU Eigen's:
+        //  fillAloneChecked().)
+        const auto fillAlone = fillAloneChecked();
         const rf::FillShared before = rf::fillShared();
         const rf::FullWave alone = solve(1);
         QVERIFY2(alone.ok(), qPrintable(why(alone)));
@@ -1362,8 +1413,8 @@ private slots:
             QVERIFY2(rf::fillShared().greens > was.greens && rf::fillShared().columns > was.columns,
                      qPrintable(QStringLiteral("%1 of the tables' distances and %2 columns made on other threads")
                                     .arg(rf::fillShared().greens - was.greens).arg(rf::fillShared().columns - was.columns)));
-            QVERIFY2(shared.z == alone.z && shared.s == alone.s, qPrintable(QStringLiteral("on %1 threads").arg(threads)));
-            QVERIFY2(shared.currents == alone.currents, qPrintable(QStringLiteral("on %1 threads").arg(threads)));
+            QVERIFY2(shared.z == alone.z && shared.s == alone.s && shared.currents == alone.currents,
+                     qPrintable(QStringLiteral("on %1 threads: %2").arg(threads).arg(howFarApart(shared, alone))));
         }
         // What cannot be made is said as on one thread: of a metal right on
         // the ground plane, the first of its pairs of heights that cannot,
@@ -1412,10 +1463,18 @@ private slots:
     // frequencies, are the same to the last digit as on one thread, and a
     // compressed solve makes none: the compressed solve's strip at a slant,
     // whose runs between cells cut to its outline are oblique and whose
-    // cells differ in size - 517 runs over 306 cells, their static parts
-    // some 50 ms on one thread here, so that the other threads take their
-    // share however late a loaded machine starts them (the copper line of
-    // the test above has 1.6 ms of them).
+    // cells differ in size - 356 runs over 217 cells.
+    //
+    // What is checked is the fill, so the dense solve is Eigen's LU, whose
+    // arithmetic is the same on any number of threads (fillAloneChecked()).
+    // OpenBLAS's, where it is here, runs on one thread alone and on all of
+    // its threads on the lane (rf25_openblas.h), and splits its updates
+    // among them as their count says: where a machine's kernels round a
+    // part-filled block otherwise than a full one, its answer may move in
+    // the last digits. Linux's CI (its 0.3.26, its kernels picked by the
+    // CPU) failed here on some runners' CPUs and not on others', with no
+    // race in the fill under ThreadSanitizer and no entry read unmade; its
+    // two are held to its rounding, and how far apart they are said.
     void theStaticPartsAreTheSameOnAnyNumberOfThreads()
     {
         const QString m1 = QStringLiteral("M1");
@@ -1433,6 +1492,7 @@ private slots:
             control.matrix = matrix;
             return rf::fullWaveOf(mesh, one, stack, ports, {5e9}, 1e-6, &control);
         };
+        const auto fillAlone = fillAloneChecked();
         const rf::FillShared before = rf::fillShared();
         const rf::FullWave alone = solve(1, rf::FullWaveControl::Matrix::Dense);
         QVERIFY2(alone.ok() && !alone.compressed, qPrintable(why(alone)));
@@ -1448,8 +1508,24 @@ private slots:
         const long long others = rf::fillShared().statics - was.statics;
         qWarning("%d runs (%d oblique) over %d cells: %lld of the static parts' columns and blocks made on other threads",
                  alone.runs, oblique, alone.cells, others);
-        QVERIFY(others > 0);
-        QVERIFY(shared.z == alone.z && shared.s == alone.s && shared.currents == alone.currents);
+        // (Dealt, each thread's share is fixed: of each call's items all but
+        //  every fourth - the static parts' columns, then their mirrored
+        //  blocks of 16 columns, rf25_fullwave.cpp's kMirrorBlock. Taken as
+        //  the threads came free it was 435 to 463 here, and nought may be.)
+        const auto dealtOut = [](int items) { return items - (items + 3) / 4; };
+        QCOMPARE(others, (long long)(dealtOut(alone.runs + alone.cells) + dealtOut(2 * ((alone.runs + 15) / 16))));
+        QVERIFY2(shared.z == alone.z && shared.s == alone.s && shared.currents == alone.currents, qPrintable(howFarApart(shared, alone)));
+        if (rf::openBlasLuHere()) {
+            rf::setDenseLu(rf::DenseLu::OpenBlas);
+            const rf::FullWave oneThread = solve(1, rf::FullWaveControl::Matrix::Dense);
+            const rf::FullWave allThreads = solve(4, rf::FullWaveControl::Matrix::Dense);
+            rf::setDenseLu(rf::DenseLu::Eigen);
+            QVERIFY2(oneThread.ok() && allThreads.ok(), qPrintable(why(oneThread) + why(allThreads)));
+            qInfo("OpenBLAS's LU on one thread and on all of them: %s (%s)", qPrintable(howFarApart(allThreads, oneThread)),
+                  qPrintable(rf::openBlasLuAbout()));
+            QVERIFY2(gapOf(allThreads.z, oneThread.z) < 1e-11 && gapOf(allThreads.s, oneThread.s) < 1e-11,
+                     qPrintable(howFarApart(allThreads, oneThread)));
+        }
         const rf::FillShared held = rf::fillShared();
         const rf::FullWave compressed = solve(4, rf::FullWaveControl::Matrix::Compressed);
         QVERIFY2(compressed.ok() && compressed.compressed, qPrintable(why(compressed)));

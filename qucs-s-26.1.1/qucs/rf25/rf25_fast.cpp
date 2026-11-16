@@ -16,6 +16,7 @@
 #include <QThread>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <numeric>
@@ -40,9 +41,17 @@ namespace qucs_s::rf25 {
 
 void onThreads(int threads, const std::function<void(int)>& job)
 {
+    // (Each thread's end released, and acquired once all are waited for:
+    //  QThread::wait() orders the two, but inside Qt, which a sanitized
+    //  build's ThreadSanitizer does not see - it took everything the threads
+    //  wrote, read after, for a race.)
+    std::atomic_int ended{0};
     QList<QThread*> pool;
     for (int t = 1; t < threads; ++t) {
-        QThread* thread = QThread::create([&job, t] { job(t); });
+        QThread* thread = QThread::create([&job, &ended, t] {
+            job(t);
+            ended.fetch_add(1, std::memory_order_release);
+        });
         thread->setStackSize(8u << 20);
         thread->start();
         pool << thread;
@@ -52,6 +61,22 @@ void onThreads(int threads, const std::function<void(int)>& job)
         thread->wait();
         delete thread;
     }
+    [[maybe_unused]] const int all = ended.load(std::memory_order_acquire);
+    Q_ASSERT(all == std::max(0, threads - 1));
+}
+
+namespace {
+std::atomic_bool dealtShares{false};
+}
+
+void setSharesDealt(bool dealt)
+{
+    dealtShares = dealt;
+}
+
+bool sharesDealt()
+{
+    return dealtShares.load();
 }
 
 Box Box::of(double x0, double y0, double z0, double x1, double y1, double z1)

@@ -71,6 +71,14 @@ using VectorC = Eigen::VectorXcd;
 /// products, and the dense solve's fill, rf25_fullwave.cpp.)
 void onThreads(int threads, const std::function<void(int)>& job);
 
+/// For tests: the work the dense fill and the Green's functions' tables
+/// share out among their threads (rf25_fullwave.cpp's sharedOut(),
+/// rf25_wave.cpp's nodesOf()) dealt in turn - item i to thread i mod n -
+/// rather than taken as the threads come free, so that every thread has its
+/// share however late a loaded machine starts it. Off unless set.
+void setSharesDealt(bool dealt);
+bool sharesDealt();
+
 /// An axis-aligned box, m: what an unknown of the solve covers.
 struct Box {
     double lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};

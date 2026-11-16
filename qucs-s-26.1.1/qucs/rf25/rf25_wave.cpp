@@ -606,8 +606,11 @@ int nodesOf(const QList<double>& at, int from, int width, int threads, const std
     const int count = int(at.size()) - from;
     if (count <= 0) return 0;
     std::atomic_int next{0}, elsewhere{0};
-    onThreads(std::clamp(threads, 1, count), [&at, &node, &next, &elsewhere, from, width, out, count](int t) {
-        for (int k = next++; k < count; k = next++) {
+    const int n = std::clamp(threads, 1, count);
+    // (Dealt in turn where a test asks: sharesDealt().)
+    const bool dealt = sharesDealt();
+    onThreads(n, [&at, &node, &next, &elsewhere, from, width, out, count, n, dealt](int t) {
+        for (int k = dealt ? t : next++; k < count; k = dealt ? k + n : next++) {
             const int i = count - 1 - k;
             node(at.at(from + i), out + qsizetype(i) * width);
             if (t > 0) ++elsewhere;
