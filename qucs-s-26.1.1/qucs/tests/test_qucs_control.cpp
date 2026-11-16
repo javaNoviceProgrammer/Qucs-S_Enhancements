@@ -3723,6 +3723,56 @@ private slots:
     // rf25_optimize runs the Optimization to its width, reads it back, and
     // applies it - one step of Undo; rf25_stop stops one running; the
     // format's text tells the new kinds and the values they read.
+    // A layer hidden and the shapes written out through the tools:
+    // rf25_edit's 'visibility', one step of Undo
+    // named as the tree's; rf25_export with a Multiphysics 3D, GDSII or DXF
+    // node, no solve needed.
+    void anRf25ModelsShapesAreWrittenAndItsLayerHiddenThroughTheTools()
+    {
+        const QString shipped = QStringLiteral(QUCS_EXAMPLES_DIR "/rf25/microstrip_width_optimization.qrf25");
+        if (!QFileInfo::exists(shipped)) QSKIP("the example is not in this build");
+        const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
+        QVERIFY(QDir().mkpath(ws + "/rfx"));
+        const QString model = ws + "/rfx/strip.qrf25";
+        QFile::remove(model);
+        QVERIFY(QFile::copy(shipped, model));
+        QFile::setPermissions(model, QFile::ReadOwner | QFile::WriteOwner);
+
+        const QJsonObject hidden = call("rf25_edit", {{"path", model}, {"action", "set"}, {"node", "M1"}, {"visibility", "frame"}}, 60000);
+        QVERIFY2(!failed(hidden), qPrintable(text(hidden)));
+        auto* doc = qobject_cast<RF25Doc*>(app->DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        QCOMPARE(doc->visibility(QStringLiteral("m1")), RF25Doc::Visibility::Frame);
+        QCOMPARE(doc->undoStack()->undoText(), QStringLiteral("Frame Only M1"));
+        const QJsonObject again = call("rf25_edit", {{"path", model}, {"action", "set"}, {"node", "M1"}, {"visibility", "frame"}}, 60000);
+        QVERIFY2(!failed(again) && text(again).contains(QStringLiteral("already")), qPrintable(text(again)));
+        const QJsonObject notLayer = call("rf25_edit", {{"path", model}, {"action", "set"}, {"node", "layout"}, {"visibility", "hidden"}}, 60000);
+        QVERIFY2(failed(notLayer) && text(notLayer).contains(QStringLiteral("no layer of the stack")), qPrintable(text(notLayer)));
+        const QJsonObject badWord = call("rf25_edit", {{"path", model}, {"action", "set"}, {"node", "M1"}, {"visibility", "ghost"}}, 60000);
+        QVERIFY2(failed(badWord) && text(badWord).contains(QStringLiteral("shown, hidden or frame")), qPrintable(text(badWord)));
+
+        for (const char* type : {"rf_mp3d", "rf_gds", "rf_dxf"}) {
+            const QJsonObject added = call("rf25_edit", {{"path", model}, {"action", "add"}, {"type", QLatin1String(type)}, {"parent", "exports"}}, 60000);
+            QVERIFY2(!failed(added), qPrintable(text(added)));
+            const QString node = json(added).toObject().value("node").toString();
+            const QJsonObject written = call("rf25_export", {{"path", model}, {"node", node}}, 120000);
+            QVERIFY2(!failed(written), qPrintable(text(written)));
+            const QJsonArray files = json(written).toObject().value("written").toArray();
+            QCOMPARE(files.size(), QLatin1String(type) == QLatin1String("rf_mp3d") ? 2 : 1);
+            for (const QJsonValue& f : files) QVERIFY2(QFileInfo::exists(f.toString()), qPrintable(f.toString()));
+            if (QLatin1String(type) == QLatin1String("rf_mp3d")) {
+                QFile three(files.at(0).toString());
+                QVERIFY(three.open(QIODevice::ReadOnly));
+                const QByteArray bytes = three.readAll();
+                QVERIFY(bytes.contains("qucs-s multiphysics 3d 1"));
+                // M1 framed in the tab: framed there too.
+                QVERIFY(bytes.contains("\"visibility\": \"frame\""));
+            }
+            const QJsonObject elsewhere = call("rf25_export", {{"path", model}, {"node", node}, {"file", "x.gds"}}, 60000);
+            QVERIFY(failed(elsewhere));
+        }
+    }
+
     void anRf25ModelIsOptimizedThroughItsTools()
     {
         const QString shipped = QStringLiteral(QUCS_EXAMPLES_DIR "/rf25/microstrip_width_optimization.qrf25");

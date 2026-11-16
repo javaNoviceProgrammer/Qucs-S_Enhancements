@@ -303,6 +303,10 @@ void RF25Panel::addItems(QTreeWidgetItem* parent, const Node& node)
             f.setItalic(true);
             item->setFont(0, f);
             item->setForeground(0, QApplication::palette().color(QPalette::Disabled, QPalette::Text));
+        } else if (!c.visibility.isEmpty() && qucs_s::rf25::canHide(c)) {
+            // Hidden in the view, or its frame alone: dimmed, not slanted
+            // (slanted is disabled), as Multiphysics 3D marks its parts.
+            item->setForeground(0, QApplication::palette().color(QPalette::Disabled, QPalette::Text));
         }
         addItems(item, c);
     }
@@ -419,6 +423,11 @@ void RF25Panel::updateStatusColumn()
                 status = qucs_s::fem::formatQuantity(layer->z1 - layer->z0, qucs_s::fem::Dim::length());
             else if (layer->kind == Layer::Via)
                 status = tr("%1 to %2").arg(layer->from, layer->to);
+        }
+        // What the view draws of it, where not all of it.
+        if (n->enabled && qucs_s::rf25::canHide(*n) && !n->visibility.isEmpty()) {
+            const QString shown = n->visibility == QLatin1String("hidden") ? tr("hidden") : tr("frame only");
+            status = status.isEmpty() ? shown : tr("%1, %2").arg(status, shown);
         }
         item->setText(1, status);
         item->setForeground(1, colour);
@@ -537,6 +546,22 @@ QMenu* RF25Panel::menuFor(const QString& tag)
         });
         menu->addAction(tr("Duplicate"), this, [this, tag] { duplicateNode(tag); });
         menu->addAction(n->enabled ? tr("Disable") : tr("Enable"), this, [this, tag, on = !n->enabled] { setNodeEnabled(tag, on); });
+        // A layer of the stack: the two states of the view it is not in
+        // (Hide and Frame Only when shown...), as Multiphysics 3D's parts.
+        if (qucs_s::rf25::canHide(*n)) {
+            using V = RF25Doc::Visibility;
+            const V now = a_doc->visibility(tag);
+            const auto state = [&](const QString& text, const char* name, V v) {
+                if (now == v) return;
+                QAction* a = menu->addAction(text, this, [this, tag, v] {
+                    if (a_doc) a_doc->setVisibility(tag, v);
+                });
+                a->setObjectName(QLatin1String(name));
+            };
+            state(tr("Show"), "rfShowLayer", V::Shown);
+            state(tr("Hide"), "rfHideLayer", V::Hidden);
+            state(tr("Frame Only"), "rfFrameLayer", V::Frame);
+        }
         menu->addAction(tr("Move Up"), this, [this, tag] { moveNode(tag, -1); });
         menu->addAction(tr("Move Down"), this, [this, tag] { moveNode(tag, 1); });
         QAction* del = menu->addAction(tr("Delete"), this, [this, tag] { removeNode(tag); });
@@ -944,13 +969,18 @@ void RF25Panel::showSettings()
     }
     // An export writes: the button that does it, and what it said - an
     // equivalent circuit's values and how well it fits too.
-    if (n->type == QLatin1String("rf_touchstone") || n->type == QLatin1String("rf_circuit")) {
+    const bool shapesOut = n->type == QLatin1String("rf_mp3d") || n->type == QLatin1String("rf_gds") || n->type == QLatin1String("rf_dxf");
+    if (n->type == QLatin1String("rf_touchstone") || n->type == QLatin1String("rf_circuit") || shapesOut) {
         const bool circuit = n->type == QLatin1String("rf_circuit");
         auto* write = new QPushButton(tr("Write"), a_form);
         write->setObjectName(QStringLiteral("rfWriteExport"));
         write->setToolTip(circuit ? tr("Fits a lumped circuit to the full-wave solve of the ports and writes it. The model "
                                        "must be solved full-wave first.")
-                                  : tr("Writes the file at the study's own frequencies. The model must be solved first."));
+                          : n->type == QLatin1String("rf_mp3d")
+                              ? tr("Writes the model as a 3D model of Multiphysics 3D (.qfem3d), with the GDSII file of its shapes "
+                                   "beside it, and opens it there. No solve is needed: its shapes as processed.")
+                          : shapesOut ? tr("Writes the shapes as processed. No solve is needed.")
+                                      : tr("Writes the file at the study's own frequencies. The model must be solved first."));
         auto* said = new QLabel(a_form);
         said->setObjectName(QStringLiteral("rfExportSaid"));
         said->setWordWrap(true);
@@ -961,9 +991,27 @@ void RF25Panel::showSettings()
         said->setText(a_exportSaid);
         said->setVisible(!a_exportSaid.isEmpty());
         const QString tag = n->tag;
-        connect(write, &QPushButton::clicked, this, [this, tag, said, circuit] {
+        connect(write, &QPushButton::clicked, this, [this, tag, said, circuit, shapesOut] {
             if (a_doc == nullptr) return;
             QString why;
+            if (shapesOut) {
+                QStringList notes;
+                const QStringList written = a_doc->writeLayoutExport(tag, &notes, &why);
+                if (written.isEmpty()) {
+                    a_exportSaid = tr("It could not be written: %1").arg(why);
+                } else {
+                    QStringList names;
+                    for (const QString& w : written) names << QDir::toNativeSeparators(w);
+                    a_exportSaid = (written.size() > 1 ? tr("Written to %1, its shapes read from %2.").arg(names.at(0), QFileInfo(written.at(1)).fileName())
+                                                       : tr("Written to %1.").arg(names.at(0)))
+                                   + (notes.isEmpty() ? QString() : QLatin1Char(' ') + notes.join(QLatin1Char(' ')));
+                }
+                if (QPushButton* open = a_form->findChild<QPushButton*>(QStringLiteral("rfOpenExport")))
+                    open->setEnabled(QFileInfo::exists(a_doc->exportPath(tag)));
+                said->setText(a_exportSaid);
+                said->show();
+                return;
+            }
             const QString path = a_doc->writeExport(tag, &why);
             if (path.isEmpty()) {
                 a_exportSaid = tr("It could not be written: %1").arg(why);
@@ -977,6 +1025,17 @@ void RF25Panel::showSettings()
             said->show();
         });
         v->addWidget(write);
+        // A 3D model written: opened in Multiphysics 3D, to be looked at.
+        if (n->type == QLatin1String("rf_mp3d")) {
+            auto* open = new QPushButton(tr("Open in Multiphysics 3D"), a_form);
+            open->setObjectName(QStringLiteral("rfOpenExport"));
+            open->setToolTip(tr("Opens the 3D model written last in a Multiphysics 3D tab (one open already is reloaded from the file)"));
+            open->setEnabled(QFileInfo::exists(a_doc->exportPath(tag)));
+            connect(open, &QPushButton::clicked, this, [this, tag] {
+                if (a_doc) emit openFileRequested(a_doc->exportPath(tag));
+            });
+            v->addWidget(open);
+        }
         v->addWidget(said);
     }
     // What this node did, where it is one that does something: the
@@ -1276,8 +1335,19 @@ QWidget* RF25Panel::makeEditor(const Node& node, const PropertyDef& p)
         h->setContentsMargins(0, 0, 0, 0);
         auto* edit = new QLineEdit(textOf(node, key), w);
         edit->setObjectName(QStringLiteral("rfEdit_") + key);
-        const bool written = node.type == QLatin1String("rf_touchstone");
-        edit->setPlaceholderText(written ? tr("empty: model_%1 beside the model").arg(node.tag)
+        // (An export's file is written; the Layout's is read.)
+        const NodeKind* nk = kindOf(node);
+        const bool written = nk != nullptr && nk->group == QLatin1String("export");
+        const QString writtenFilter = node.type == QLatin1String("rf_mp3d") ? tr("3D multiphysics models (*.qfem3d)")
+                                      : node.type == QLatin1String("rf_gds")  ? tr("GDSII files (*.gds)")
+                                      : node.type == QLatin1String("rf_dxf")  ? tr("DXF drawings (*.dxf)")
+                                      : node.type == QLatin1String("rf_circuit")
+                                          ? tr("Qucs-S parts (*.sch);;SPICE subcircuits (*.cir *.sp *.lib)")
+                                          : tr("Touchstone files (*.s1p *.s2p *.s3p *.s4p)");
+        // (The file it writes when none is named, by its own name.)
+        const QString byDefault = written && a_doc ? QFileInfo(a_doc->exportPath(node.tag)).fileName() : QString();
+        edit->setPlaceholderText(written ? (byDefault.isEmpty() ? tr("empty: model_%1 beside the model").arg(node.tag)
+                                                                : tr("empty: %1 beside the model").arg(byDefault))
                                          : tr("a GDSII or OASIS layout, beside the model"));
         auto* browse = new QToolButton(w);
         browse->setText(QStringLiteral("…"));
@@ -1285,12 +1355,11 @@ QWidget* RF25Panel::makeEditor(const Node& node, const PropertyDef& p)
         h->addWidget(edit, 1);
         h->addWidget(browse);
         connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] { commit(key, edit->text().trimmed()); });
-        connect(browse, &QToolButton::clicked, this, [this, key, edit, written] {
+        connect(browse, &QToolButton::clicked, this, [this, key, edit, written, writtenFilter] {
             const QString model = a_doc ? a_doc->getDocName() : QString();
             const QDir dir = model.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(model).absoluteDir();
             const QString chosen =
-                written ? QFileDialog::getSaveFileName(this, tr("Export to"), dir.absolutePath(),
-                                                       tr("Touchstone files (*.s1p *.s2p *.s3p *.s4p);;All files (*)"))
+                written ? QFileDialog::getSaveFileName(this, tr("Export to"), dir.absolutePath(), writtenFilter + tr(";;All files (*)"))
                         : QFileDialog::getOpenFileName(this, tr("A Layout"), dir.absolutePath(),
                                                        tr("Layouts (*.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis);;All files (*)"));
             if (chosen.isEmpty()) return;

@@ -802,7 +802,9 @@ QList<NodeKind> makeKinds()
                        "ports' S at each frequency, whether it is reciprocal and passive, and the currents drawn on "
                        "the layout.")});
     add({QStringLiteral("rf_exports"), tr("Exports"), QString(), QStringLiteral("exports"), none, {},
-         {QStringLiteral("rf_touchstone"), QStringLiteral("rf_circuit")}, {}, true, true, QString(), tr("What is written out of a solution.")});
+         {QStringLiteral("rf_touchstone"), QStringLiteral("rf_circuit"), QStringLiteral("rf_mp3d"), QStringLiteral("rf_gds"),
+          QStringLiteral("rf_dxf")},
+         {}, true, true, QString(), tr("What is written out of the model: of a solution, or of its shapes and its stack.")});
     add({QStringLiteral("rf_touchstone"), tr("Touchstone"), QStringLiteral("export"), QStringLiteral("export"), none,
          {file(QStringLiteral("file"), tr("File")),
           choice(QStringLiteral("of"), tr("Of"), {QStringLiteral("line"), QStringLiteral("coupled")},
@@ -841,6 +843,29 @@ QList<NodeKind> makeKinds()
             "and from each to the ground - each branch the form that fits it best, written as a Qucs-S schematic to "
             "place as a part (.sch) or as a SPICE subcircuit (.cir, .sp, .lib), with how far its S is from the "
             "solve's: it holds only while what it stands for is short beside the wavelength.")});
+    // The model's shapes and stack written out, to be looked at or worked on
+    // elsewhere: no solve needed.
+    add({QStringLiteral("rf_mp3d"), tr("Multiphysics 3D"), QStringLiteral("export"), QStringLiteral("export"), none,
+         {file(QStringLiteral("file"), tr("File")),
+          expr(QStringLiteral("margin"), tr("Margin"), QStringLiteral("m"), QString(),
+               tr("How far the stack's slabs reach beyond the shapes on every side (empty: a tenth of the shapes' larger "
+                  "side; a lid's side walls, where it has them, give the box instead)"))},
+         {}, {}, false, false, QStringLiteral("mp3"),
+         tr("The model as a 3D model of Multiphysics 3D (.qfem3d), to open and look at in its panel: a Layer Stack of the "
+            "stack's slabs across a window round the shapes, each metal and via drawn up from its shapes as processed - "
+            "read from a GDSII file of the same name written beside it -, each with its material (permittivity, loss "
+            "tangent, conductivity). The air above is drawn as its frame alone; what is hidden in this tab is hidden there.")});
+    add({QStringLiteral("rf_gds"), tr("GDSII"), QStringLiteral("export"), QStringLiteral("export"), none,
+         {file(QStringLiteral("file"), tr("File"))},
+         {}, {}, false, false, QStringLiteral("gds"),
+         tr("The shapes as processed - the layout's and the model's own, cut by the Cutout - as a GDSII file of one cell, "
+            "each on the layer and datatype the layer map gives its layer of the stack (a layer it gives none, the next "
+            "free number).")});
+    add({QStringLiteral("rf_dxf"), tr("DXF"), QStringLiteral("export"), QStringLiteral("export"), none,
+         {file(QStringLiteral("file"), tr("File"))},
+         {}, {}, false, false, QStringLiteral("dxf"),
+         tr("The shapes as processed as a DXF drawing (AutoCAD R12, in µm): each a closed polyline on a DXF layer named "
+            "after its layer of the stack, coloured as this tab draws it.")});
     return k;
 }
 
@@ -893,6 +918,9 @@ QJsonObject nodeToJson(const Node& node)
     if (!node.label.isEmpty()) o.insert(QStringLiteral("label"), node.label);
     if (!node.enabled) o.insert(QStringLiteral("enabled"), false);
     if (!node.props.isEmpty()) o.insert(QStringLiteral("properties"), node.props);
+    // (Only where it is not shown: a model with nothing hidden is written as
+    //  it was before there was any.)
+    if (!node.visibility.isEmpty()) o.insert(QStringLiteral("visibility"), node.visibility);
     if (!node.children.empty()) {
         QJsonArray children;
         for (const Node& c : node.children) children.append(nodeToJson(c));
@@ -918,11 +946,16 @@ Node nodeFromJson(const QJsonObject& o, QStringList* notes)
     n.label = o.value(QLatin1String("label")).toString();
     n.enabled = o.value(QLatin1String("enabled")).toBool(true);
     n.props = o.value(QLatin1String("properties")).toObject();
+    {
+        const QString v = o.value(QLatin1String("visibility")).toString();
+        if (v == QLatin1String("hidden") || v == QLatin1String("frame")) n.visibility = v;
+    }
     const NodeKind* kind = nodeKind(n.type);
     const QString who = !n.label.isEmpty() ? n.label : !n.tag.isEmpty() ? n.tag : n.type;
     if (notes != nullptr) {
         static const QStringList keys{QStringLiteral("type"), QStringLiteral("tag"), QStringLiteral("label"),
-                                      QStringLiteral("enabled"), QStringLiteral("properties"), QStringLiteral("children")};
+                                      QStringLiteral("enabled"), QStringLiteral("properties"), QStringLiteral("children"),
+                                      QStringLiteral("visibility")};
         for (auto it = o.constBegin(); it != o.constEnd(); ++it) {
             if (keys.contains(it.key())) continue;
             *notes << (it.key() == QLatin1String("props")
@@ -1897,6 +1930,37 @@ void Model::renamePort(const QString& from, const QString& to)
             if (r == from) r = to;
         p.props.insert(QStringLiteral("returns"), QJsonArray::fromStringList(returns));
     }
+}
+
+bool canHide(const Node& node)
+{
+    const NodeKind* k = kindOf(node);
+    return k != nullptr && k->group == QLatin1String("stack");
+}
+
+namespace {
+
+void clearVisibility(Node& node)
+{
+    node.visibility.clear();
+    for (Node& c : node.children) clearVisibility(c);
+}
+
+} // namespace
+
+Model withoutVisibility(const Model& model)
+{
+    Model m = model;
+    clearVisibility(m.root);
+    return m;
+}
+
+QHash<QString, QString> layerVisibility(const Model& model)
+{
+    QHash<QString, QString> out;
+    for (const Node& n : model.stackNode().children)
+        if (!n.visibility.isEmpty() && canHide(n)) out.insert(nameOf(n), n.visibility);
+    return out;
 }
 
 } // namespace qucs_s::rf25

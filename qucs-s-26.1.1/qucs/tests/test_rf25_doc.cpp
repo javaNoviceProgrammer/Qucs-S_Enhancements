@@ -55,6 +55,8 @@
 #include <QUndoStack>
 
 #include "config.h"
+#include "apptheme.h"
+#include "view3d.h"
 #include "dialogs/qucssettingsdialog.h"
 #include "gpurendering.h"
 #include "extsimkernels/ngspice.h"
@@ -67,6 +69,8 @@
 #include "qucs.h"
 #include "layoutdoc.h"
 #include "markup.h"
+#include "multiphysics3ddoc.h"
+#include "multiphysics/fem_import.h"
 #include "rf25doc.h"
 #include "rf25analysis.h"
 #include "multiphysicsoptimization.h"
@@ -4977,6 +4981,321 @@ private slots:
         }
         doc->setDocChanged(false);
         app->closeAllFiles();
+    }
+
+    // A layer of the stack hidden, or drawn as its outlines alone (as
+    // Multiphysics 3D's Visibility): from the tree's
+    // menu and the view's drop-down alike, each a step of Undo, kept in the
+    // file - and nothing processed, meshed or solved again for it.
+    void aLayerIsHiddenOrFramedInTheView()
+    {
+        const QString file = fullWaveLine(QStringLiteral("hidden.qrf25"));
+        QVERIFY(!file.isEmpty());
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->setProcessedShown(true);
+        doc->setMeshShown(true);
+        const auto processed = doc->processed();
+        const auto mesh = doc->mesh();
+        QVERIFY(processed != nullptr && mesh != nullptr);
+        const QByteArray stamp = rf::solveStampOf(doc->model());
+        const int steps = doc->undoStack()->count();
+        const auto m1Styles = [doc] {
+            QList<qucs_s::layout::LayerStyle> out;
+            for (const qucs_s::layout::LayerStyle& st : doc->view()->styles())
+                if (st.name.contains(QStringLiteral("(M1)"))) out << st;
+            return out;
+        };
+        const auto overlaid = [doc](const QString& name) {
+            for (const LayoutView::Overlay& o : doc->view()->overlays())
+                if (o.name == name && !o.shapes.isEmpty()) return true;
+            return false;
+        };
+        const auto statusOf = [this](const QString& name) {
+            QTreeWidgetItemIterator it(panel()->tree());
+            for (; *it; ++it)
+                if ((*it)->text(0) == name) return (*it)->text(1);
+            return QString();
+        };
+        QCOMPARE(int(m1Styles().size()), 1);
+        QVERIFY(m1Styles().front().visible);
+        QVERIFY(overlaid(QStringLiteral("M1, processed")));
+        QVERIFY(overlaid(QStringLiteral("M1, the cells")));
+        QVERIFY(doc->canHide(QStringLiteral("m1")));
+        QVERIFY(!doc->canHide(doc->model().layout().tag));
+
+        // Hidden from the tree's menu: Show and Frame Only offered then, not
+        // Hide.
+        QMenu* menu = panel()->menuFor(QStringLiteral("m1"));
+        QVERIFY(menu != nullptr);
+        QAction* hide = menu->findChild<QAction*>(QStringLiteral("rfHideLayer"));
+        QVERIFY(hide != nullptr && menu->findChild<QAction*>(QStringLiteral("rfFrameLayer")) != nullptr);
+        QVERIFY(menu->findChild<QAction*>(QStringLiteral("rfShowLayer")) == nullptr);
+        hide->trigger();
+        menu->deleteLater();
+        QCOMPARE(doc->visibility(QStringLiteral("m1")), RF25Doc::Visibility::Hidden);
+        QCOMPARE(doc->undoStack()->count(), steps + 1);
+        QCOMPARE(doc->undoStack()->undoText(), QStringLiteral("Hide M1"));
+        QVERIFY(!m1Styles().front().visible);
+        QVERIFY(!overlaid(QStringLiteral("M1, processed")));
+        QVERIFY(!overlaid(QStringLiteral("M1, the cells")));
+        QVERIFY2(statusOf(QStringLiteral("M1")).endsWith(QStringLiteral("hidden")), qPrintable(statusOf(QStringLiteral("M1"))));
+        menu = panel()->menuFor(QStringLiteral("m1"));
+        QVERIFY(menu->findChild<QAction*>(QStringLiteral("rfShowLayer")) != nullptr);
+        QVERIFY(menu->findChild<QAction*>(QStringLiteral("rfHideLayer")) == nullptr);
+        menu->deleteLater();
+        // Nothing made again: the same shapes and cells, the same stamp a
+        // solution is held to.
+        QTest::qWait(600);
+        QVERIFY(doc->waitForPrepared(60000));
+        QVERIFY(doc->processed() == processed);
+        QVERIFY(doc->mesh() == mesh);
+        QCOMPARE(rf::solveStampOf(doc->model()), stamp);
+
+        // The drop-down: on the layer chosen in the tree, its state checked.
+        doc->focusNode(QStringLiteral("m1"));
+        QToolButton* button = doc->visibilityButton();
+        QVERIFY(button != nullptr && button->menu() != nullptr);
+        QVERIFY(button->text().startsWith(QStringLiteral("Visibility")));
+        emit button->menu()->aboutToShow();
+        const auto item = [button](const QString& name) { return button->menu()->findChild<QAction*>(name); };
+        QVERIFY(item(QStringLiteral("rfVisibilityHide")) != nullptr && item(QStringLiteral("rfVisibilityHide"))->isChecked());
+        QVERIFY(item(QStringLiteral("rfVisibilityShowAll"))->isEnabled());
+        QVERIFY(item(QStringLiteral("rfVisibilityLayer_m1")) != nullptr && !item(QStringLiteral("rfVisibilityLayer_m1"))->isChecked());
+        item(QStringLiteral("rfVisibilityFrame"))->trigger();
+        QCOMPARE(doc->visibility(QStringLiteral("m1")), RF25Doc::Visibility::Frame);
+        QVERIFY(m1Styles().front().visible);
+        QCOMPARE(m1Styles().front().pattern, Qt::NoBrush);
+        QVERIFY(overlaid(QStringLiteral("M1, processed")));
+        QVERIFY2(statusOf(QStringLiteral("M1")).endsWith(QStringLiteral("frame only")), qPrintable(statusOf(QStringLiteral("M1"))));
+        emit button->menu()->aboutToShow();
+        QVERIFY(item(QStringLiteral("rfVisibilityFrame"))->isChecked());
+        QCOMPARE(item(QStringLiteral("rfVisibilityLayer_m1"))->text(), QStringLiteral("M1 (frame only)"));
+        // Kept in the file.
+        QVERIFY(doc->save() >= 0);
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QVERIFY(f.readAll().contains("\"visibility\": \"frame\""));
+        }
+        // Show All, and Undo of it.
+        item(QStringLiteral("rfVisibilityShowAll"))->trigger();
+        QVERIFY(!doc->anyHidden());
+        QCOMPARE(doc->undoStack()->undoText(), QStringLiteral("Show All"));
+        QVERIFY(m1Styles().front().visible && m1Styles().front().pattern == Qt::SolidPattern);
+        doc->undo();
+        QCOMPARE(doc->visibility(QStringLiteral("m1")), RF25Doc::Visibility::Frame);
+        // A node that is no layer: the three greyed, Show All still there.
+        doc->focusNode(doc->model().layout().tag);
+        emit button->menu()->aboutToShow();
+        QVERIFY(!item(QStringLiteral("rfVisibilityShow"))->isEnabled());
+        QVERIFY(item(QStringLiteral("rfVisibilityShowAll"))->isEnabled());
+        // A layer's own item in the list hides it, and shows it again.
+        item(QStringLiteral("rfVisibilityLayer_m1"))->trigger();
+        QCOMPARE(doc->visibility(QStringLiteral("m1")), RF25Doc::Visibility::Hidden);
+        emit button->menu()->aboutToShow();
+        item(QStringLiteral("rfVisibilityLayer_m1"))->trigger();
+        QCOMPARE(doc->visibility(QStringLiteral("m1")), RF25Doc::Visibility::Shown);
+        QVERIFY(doc->processed() == processed);
+    }
+
+    // Exports > Multiphysics 3D, GDSII and DXF: added from the menu, written
+    // by Write without a solve, the 3D model opened in Multiphysics 3D.
+    void theShapesAreWrittenAsA3DModelAGdsAndADxf()
+    {
+        const QString file = fullWaveLine(QStringLiteral("shapes.qrf25"));
+        QVERIFY(!file.isEmpty());
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        QMenu* exports = panel()->menuFor(doc->model().root.child(QStringLiteral("rf_exports"))->tag);
+        QVERIFY(exports != nullptr);
+        for (const char* name : {"rfAdd_rf_mp3d", "rfAdd_rf_gds", "rfAdd_rf_dxf", "rfAdd_rf_touchstone", "rfAdd_rf_circuit"})
+            QVERIFY2(exports->findChild<QAction*>(QLatin1String(name)) != nullptr, name);
+        exports->deleteLater();
+        const QString exportsTag = doc->model().root.child(QStringLiteral("rf_exports"))->tag;
+        const QString mp3 = panel()->addNode(exportsTag, QStringLiteral("rf_mp3d"));
+        const QString gds = panel()->addNode(exportsTag, QStringLiteral("rf_gds"));
+        const QString dxf = panel()->addNode(exportsTag, QStringLiteral("rf_dxf"));
+        QVERIFY(!mp3.isEmpty() && !gds.isEmpty() && !dxf.isEmpty());
+        QVERIFY(doc->fullWave() == nullptr);   // (nothing solved)
+        for (const QString& tag : {gds, dxf, mp3}) {
+            const QString where = doc->exportPath(tag);
+            QVERIFY2(where.startsWith(QFileInfo(file).absolutePath() + QStringLiteral("/shapes_") + tag), qPrintable(where));
+            panel()->selectNode(tag);
+            auto* write = panel()->findChild<QPushButton*>(QStringLiteral("rfWriteExport"));
+            QVERIFY(write != nullptr);
+            write->click();
+            auto* said = panel()->findChild<QLabel*>(QStringLiteral("rfExportSaid"));
+            QVERIFY(said != nullptr);
+            QVERIFY2(said->text().startsWith(QStringLiteral("Written to")), qPrintable(said->text()));
+            QVERIFY2(QFile::exists(where), qPrintable(where));
+        }
+        QVERIFY(doc->exportPath(gds).endsWith(QStringLiteral(".gds")));
+        QVERIFY(doc->exportPath(dxf).endsWith(QStringLiteral(".dxf")));
+        const QString qfem3d = doc->exportPath(mp3);
+        QVERIFY(qfem3d.endsWith(QStringLiteral(".qfem3d")));
+        QVERIFY(QFile::exists(QFileInfo(qfem3d).absoluteDir().filePath(QFileInfo(qfem3d).completeBaseName() + QStringLiteral(".gds"))));
+        // The strip on 1/0, as the layer map sends it.
+        const qucs_s::fem::LayoutShapes read = qucs_s::fem::readLayoutShapes(doc->exportPath(gds));
+        QVERIFY2(read.error.isEmpty(), qPrintable(read.error));
+        QVERIFY(read.layer(qucs_s::fem::LayoutLayer{1, 0}) != nullptr);
+        // The 3D model opened in Multiphysics 3D, its geometry built.
+        auto* openIt = panel()->findChild<QPushButton*>(QStringLiteral("rfOpenExport"));
+        QVERIFY(openIt != nullptr && openIt->isEnabled());
+        openIt->click();
+        auto* three = qobject_cast<Multiphysics3DDoc*>(app->DocumentTab->currentWidget());
+        QVERIFY(three != nullptr);
+        QCOMPARE(QFileInfo(three->getDocName()).absoluteFilePath(), QFileInfo(qfem3d).absoluteFilePath());
+        QVERIFY2(three->readNotes().isEmpty(), qPrintable(three->readNotes()));
+        QVERIFY(three->waitForIdle());
+        QVERIFY2(three->geometry().ok(), qPrintable(three->messages().join(QLatin1Char(' '))));
+        // A model that cannot be written: said, nothing written.
+        QString why;
+        QVERIFY(doc->writeLayoutExport(QStringLiteral("no such export"), nullptr, &why).isEmpty());
+        QVERIFY(!why.isEmpty());
+    }
+
+    // Pictures: opt in with QUCS_RF25_PICTURES=<folder>.
+    // A capacitor of three metals over silicon, its shapes the model's own:
+    // the tab with its top metal hidden and framed, the drop-down, the tree's
+    // menu, and the model written to Multiphysics 3D and opened there.
+    void exportAndVisibilityPictures()
+    {
+        const QString folder = qEnvironmentVariable("QUCS_RF25_PICTURES");
+        if (folder.isEmpty()) QSKIP("QUCS_RF25_PICTURES names a folder for the pictures");
+        QDir().mkpath(folder);
+        rf::Model m = rf::Model::blank();
+        m.stackNode().children.clear();
+        const auto layer = [&m](const char* type, const char* label, QList<std::pair<const char*, const char*>> props) {
+            rf::Node n = m.make(QLatin1String(type));
+            n.label = QLatin1String(label);
+            for (const auto& [k, v] : props) n.props.insert(QLatin1String(k), QLatin1String(v));
+            return m.add(QStringLiteral("stack"), n) != nullptr;
+        };
+        QVERIFY(layer("rf_ground", "Ground", {}));
+        QVERIFY(layer("rf_substrate", "Silicon", {{"thickness", "40[um]"}, {"epsr", "11.9"}, {"sigma", "10"}}));
+        QVERIFY(layer("rf_dielectric", "Oxide1", {{"thickness", "3[um]"}, {"epsr", "4.1"}}));
+        QVERIFY(layer("rf_metal", "M1", {{"thickness", "1[um]"}}));
+        QVERIFY(layer("rf_dielectric", "Oxide2", {{"thickness", "2[um]"}, {"epsr", "4.1"}}));
+        QVERIFY(layer("rf_metal", "Plate", {{"thickness", "0.5[um]"}}));
+        QVERIFY(layer("rf_dielectric", "Oxide3", {{"thickness", "2[um]"}, {"epsr", "4.1"}}));
+        QVERIFY(layer("rf_via", "Via", {{"from", "Plate"}, {"to", "M3"}}));
+        QVERIFY(layer("rf_metal", "M3", {{"thickness", "3[um]"}}));
+        QVERIFY(layer("rf_dielectric", "Passivation", {{"thickness", "1[um]"}, {"epsr", "6"}}));
+        QVERIFY(layer("rf_cover", "Air", {{"height", "60[um]"}}));
+        QVERIFY(m.stack().ok());
+        QVERIFY(m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes"))) != nullptr);
+        const QString shapes = m.layout().child(QStringLiteral("rf_shapes"))->tag;
+        const auto shape = [&](const char* on, double x, double y, double w, double h) {
+            rf::Node n = m.make(QStringLiteral("rf_shape"));
+            n.props = QJsonObject{{"layer", QLatin1String(on)},
+                                  {"x", QStringLiteral("%1[um]").arg(x)},
+                                  {"y", QStringLiteral("%1[um]").arg(y)},
+                                  {"width", QStringLiteral("%1[um]").arg(w)},
+                                  {"height", QStringLiteral("%1[um]").arg(h)}};
+            return m.add(shapes, n) != nullptr;
+        };
+        QVERIFY(shape("M1", 0, 0, 60, 60));
+        QVERIFY(shape("M1", -60, 25, 60, 10));
+        QVERIFY(shape("Plate", 5, 5, 50, 50));
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j) QVERIFY(shape("Via", 10 + 11 * i, 10 + 11 * j, 6, 6));
+        QVERIFY(shape("M3", 3, 3, 54, 54));
+        QVERIFY(shape("M3", 57, 25, 60, 10));
+        rf::Node port = m.make(QStringLiteral("rf_edge_port"));
+        port.label = QStringLiteral("P1");
+        port.props = QJsonObject{{"conductor", "M1"}, {"x", "-60[um]"}, {"y", "30[um]"}};
+        QVERIFY(m.add(QStringLiteral("ports"), port) != nullptr);
+        QVERIFY(m.add(QStringLiteral("exports"), m.make(QStringLiteral("rf_mp3d"))) != nullptr);
+        const QString file = path(QStringLiteral("capacitor.qrf25"));
+        {
+            QFile f(file);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForPrepared(60000));
+        QString top;
+        for (const rf::Node& n : doc->model().stackNode().children)
+            if (rf::nameOf(n) == QLatin1String("M3")) top = n.tag;
+        const QString mp3 = doc->model().root.child(QStringLiteral("rf_exports"))->children.front().tag;
+        const auto settle = [] {
+            for (int i = 0; i < 6; ++i) {
+                QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+                QCoreApplication::processEvents();
+                QTest::qWait(30);
+            }
+        };
+        const auto save = [&folder](QWidget* w, const QString& name) { QVERIFY(w->grab().save(QDir(folder).filePath(name + QStringLiteral(".png")))); };
+        const int before = qucs_s::apptheme::current();
+        for (const auto& [theme, name] : {std::pair{int(qucs_s::apptheme::Light), "light"}, std::pair{int(qucs_s::apptheme::Dark), "dark"}}) {
+            qucs_s::apptheme::apply(theme);
+            app->resize(1300, 860);
+            QVERIFY(open(file) == doc);
+            doc->showAllLayers();
+            doc->showAll();
+            panel()->selectNode(top);
+            settle();
+            save(app, QStringLiteral("rf25-%1-shown").arg(QLatin1String(name)));
+            QMenu* menu = panel()->menuFor(top);
+            menu->popup(panel()->tree()->viewport()->mapToGlobal(QPoint(40, 40)));
+            settle();
+            save(menu, QStringLiteral("rf25-%1-tree-menu").arg(QLatin1String(name)));
+            menu->close();
+            delete menu;
+            QVERIFY(doc->setVisibility(top, RF25Doc::Visibility::Hidden));
+            settle();
+            save(app, QStringLiteral("rf25-%1-top-hidden").arg(QLatin1String(name)));
+            QVERIFY(doc->setVisibility(top, RF25Doc::Visibility::Frame));
+            settle();
+            save(app, QStringLiteral("rf25-%1-top-frame").arg(QLatin1String(name)));
+            QMenu* drop = doc->visibilityButton()->menu();
+            drop->popup(doc->visibilityButton()->mapToGlobal(QPoint(0, doc->visibilityButton()->height())));
+            settle();
+            save(drop, QStringLiteral("rf25-%1-visibility-menu").arg(QLatin1String(name)));
+            drop->close();
+            // The export's form, written, and the 3D model opened.
+            QVERIFY(doc->setVisibility(top, RF25Doc::Visibility::Shown));
+            panel()->selectNode(mp3);
+            panel()->findChild<QPushButton*>(QStringLiteral("rfWriteExport"))->click();
+            settle();
+            save(panel(), QStringLiteral("rf25-%1-export-form").arg(QLatin1String(name)));
+            panel()->findChild<QPushButton*>(QStringLiteral("rfOpenExport"))->click();
+            auto* three = qobject_cast<Multiphysics3DDoc*>(app->DocumentTab->currentWidget());
+            QVERIFY(three != nullptr);
+            QVERIFY(three->waitForIdle());
+            QVERIFY2(three->geometry().ok(), qPrintable(three->messages().join(QLatin1Char(' '))));
+            three->view()->viewFrom(View3D::Preset::Iso);
+            settle();
+            save(app, QStringLiteral("mp3-%1-exported").arg(QLatin1String(name)));
+            // The dielectrics framed in the RF 2.5D tab, written again: the
+            // 3D tab open already read again, its metals seen through them.
+            QVERIFY(open(file) == doc);
+            for (const rf::Node& n : doc->model().stackNode().children)
+                if (n.type == QLatin1String("rf_substrate") || n.type == QLatin1String("rf_dielectric"))
+                    QVERIFY(doc->setVisibility(n.tag, RF25Doc::Visibility::Frame));
+            panel()->selectNode(mp3);
+            panel()->findChild<QPushButton*>(QStringLiteral("rfWriteExport"))->click();
+            panel()->findChild<QPushButton*>(QStringLiteral("rfOpenExport"))->click();
+            QCOMPARE(qobject_cast<Multiphysics3DDoc*>(app->DocumentTab->currentWidget()), three);
+            QVERIFY(three->waitForIdle());
+            QVERIFY(three->geometry().ok());
+            int framed = 0;
+            for (const qucs_s::fem::Node& mat : three->model().component().child(QStringLiteral("materials"))->children)
+                framed += mat.visibility == QLatin1String("frame") ? 1 : 0;
+            QCOMPARE(framed, 6);   // (the five dielectrics and the air)
+            three->view()->viewFrom(View3D::Preset::Iso);
+            settle();
+            save(app, QStringLiteral("mp3-%1-dielectrics-framed").arg(QLatin1String(name)));
+            QVERIFY(open(file) == doc);
+            doc->showAllLayers();
+        }
+        qucs_s::apptheme::apply(before);
     }
 
     void aMeshConvergenceCheckSaysHowFarTheMeshIsFromTheLimit()

@@ -22,6 +22,7 @@
 
 #include "multiphysics/fem_model.h"
 
+#include <QHash>
 #include <QJsonObject>
 #include <QList>
 #include <QRectF>
@@ -275,6 +276,20 @@ QString portName(const Node& node);
 /// \a node read as a stack (its children in order). Numbers are
 /// expressions of \a parameters, as everywhere else in a model.
 Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters);
+
+/*!
+ * What the tab's view draws of a layer of the stack (its Visibility, as
+ * Multiphysics 3D's parts have it): shown, hidden, or its frame alone -
+ * Node::visibility, "hidden" or "frame", empty where it is shown. It changes
+ * what is drawn alone: nothing is processed, meshed or solved again for it.
+ */
+/// Whether \a node may be hidden: a layer of the stack.
+bool canHide(const Node& node);
+/// \a model with every node shown: what the solver, and a solution's stamp,
+/// are given.
+Model withoutVisibility(const Model& model);
+/// The layers of the stack not shown, by name: "hidden" or "frame".
+QHash<QString, QString> layerVisibility(const Model& model);
 
 } // namespace qucs_s::rf25
 

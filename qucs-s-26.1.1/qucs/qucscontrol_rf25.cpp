@@ -1352,8 +1352,20 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
     if (model->closedWhenFree()) return closedWhileWaited(heldName);
     if (!prepared)
         return errorResult(tr("Its shapes and its mesh are still being made after %1 s.").arg(300));
-    // (An equivalent circuit is fitted, not written as S: its own tool.)
     const QString node = args.value(QLatin1String("node")).toString().trimmed();
+    // The model's shapes - a Multiphysics 3D, GDSII or DXF export node -:
+    // written as the tab's Write writes them, no solve needed.
+    if (!node.isEmpty() && model->isLayoutExport(node)) {
+        if (args.contains(QLatin1String("file")))
+            return errorResult(tr("%1 writes where its own File says (else beside the model): set that with rf25_edit.").arg(node));
+        QStringList notes;
+        QString why;
+        const QStringList written = model->writeLayoutExport(node, &notes, &why);
+        if (written.isEmpty()) return errorResult(why);
+        return jsonResult(QJsonObject{{QStringLiteral("written"), QJsonArray::fromStringList(written)},
+                                      {QStringLiteral("notes"), QJsonArray::fromStringList(notes)}});
+    }
+    // (An equivalent circuit is fitted, not written as S: its own tool.)
     if (const Node* n = model->model().root.find(node); !node.isEmpty() && n != nullptr && n->type == QLatin1String("rf_circuit"))
         return errorResult(tr("%1 is an Equivalent circuit export: rf25_circuit fits and writes it (its 'node').").arg(node));
     const std::shared_ptr<const FullWave> wave = model->fullWave();
@@ -1939,6 +1951,26 @@ QJsonObject QucsControl::rf25Edit(const QJsonObject& args)
             rf::Node* n = m.find(tag);
             if (args.contains(QLatin1String("label"))) n->label = args.value(QLatin1String("label")).toString();
             if (args.contains(QLatin1String("enabled"))) n->enabled = args.value(QLatin1String("enabled")).toBool(true);
+            // What the view draws of a layer of the stack, as its tree's Hide,
+            // Frame Only and Show set it.
+            if (args.contains(QLatin1String("visibility"))) {
+                const QString v = args.value(QLatin1String("visibility")).toString().trimmed();
+                if (v != QLatin1String("shown") && v != QLatin1String("hidden") && v != QLatin1String("frame"))
+                    return errorResult(tr("'visibility' is shown, hidden or frame (its outlines alone), not \"%1\".").arg(v));
+                if (!rf::canHide(*n))
+                    return errorResult(tr("%1 is no layer of the stack: only a layer is hidden or drawn as its frame (its 'visibility').").arg(tag));
+                // (That alone: one step of Undo named as the tree's.)
+                const bool alone = !args.contains(QLatin1String("label")) && !args.contains(QLatin1String("enabled"))
+                                   && args.value(QLatin1String("properties")).toObject().isEmpty();
+                if (alone) {
+                    const RF25Doc::Visibility wanted = RF25Doc::visibilityOf(v);
+                    did = doc->setVisibility(tag, wanted) ? tr("set %1's visibility to %2").arg(tag, v)
+                                                          : tr("%1's visibility is %2 already: nothing changed").arg(tag, v);
+                    return jsonResult(QJsonObject{{QStringLiteral("node"), tag}, {QStringLiteral("did"), did},
+                                                  {QStringLiteral("problems"), QJsonArray::fromStringList(doc->model().problems())}});
+                }
+                n->visibility = RF25Doc::visibilityName(RF25Doc::visibilityOf(v));
+            }
             if (!setProperties(*n)) return errorResult(why);
             did = tr("set %1").arg(tag);
         }
