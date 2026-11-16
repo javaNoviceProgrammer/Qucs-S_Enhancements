@@ -543,9 +543,10 @@ private slots:
             //  rectangles graded to the point:
             //  its own answer, which 25 µm cells read before as well - 2.4013
             //  where 100 µm cells read 2.4008, the remainder along a ground's
-            //  100 µm cells taken by eight points.)
+            //  100 µm cells taken by eight points. Held to a band about its
+            //  own +0.83, +0.79 and +0.75 %, so that a drift is caught.)
             QVERIFY2(std::abs(z / mid - 1) < 0.01, qPrintable(QStringLiteral("Z0 %1 Ohm at %2 GHz").arg(z).arg(ref[k].ghz)));
-            QVERIFY2(std::abs(eps / midEps - 1) < 0.01, qPrintable(QStringLiteral("eps_eff %1 at %2 GHz").arg(eps).arg(ref[k].ghz)));
+            QVERIFY2(eps / midEps - 1 > 0.006 && eps / midEps - 1 < 0.010, qPrintable(QStringLiteral("eps_eff %1 at %2 GHz").arg(eps).arg(ref[k].ghz)));
         }
     }
 
