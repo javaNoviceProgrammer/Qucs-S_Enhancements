@@ -339,11 +339,14 @@ QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved =
                     const double steep = drop / std::max(tol, std::hypot(next.x() - at.x(), next.y() - at.y()));
                     if (steep <= steepest) continue;
                     // (A slide far along a side tilts the other by its turn:
-                    //  half the merge off the outline at most - the 24
-                    //  segments a turn spiral's 15-degree corners took it
-                    //  0.56 µm off its 8 µm.)
+                    //  the curves' tolerance off the outline at most, as a
+                    //  drop straight across. Half the merge - a twentieth
+                    //  of the whole shape's width - took a disc of 100 µm
+                    //  drawn of 36 segments 1.5 µm off, of 1 mm 15 µm (the
+                    //  review of 10b60005), and the 24 segments a turn
+                    //  spiral's 15-degree corners 0.56 µm off its 8 µm.)
                     const QPointF slid = at + (next - at) * ((c - level) / drop);
-                    if (offBy(i, slid) > 0.5 * merge) continue;
+                    if (offBy(i, slid) > across) continue;
                     steepest = steep;
                     to = slid;
                 }
