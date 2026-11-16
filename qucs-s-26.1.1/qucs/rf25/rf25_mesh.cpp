@@ -98,6 +98,10 @@ constexpr double kFacesApart = 0.02;
 /// a tenth, 4.8 % (Palace: 73.72 Ohm thin, 70.3 at 2 µm) - against B2's
 /// quarter, where its capacitance across the gap goes visibly wrong.
 constexpr double kAutomaticFaces = 1.0 / 40;
+/// A conductor over or under another metal by half itself or more, this
+/// much of its own height over the ground apart or less, is a plate of it:
+/// its charge the other's, and its thickness over the ground not said.
+constexpr double kPlateGap = 0.1;
 
 /// Lines of two pieces that meet nearer than this share of the finest space
 /// of any piece's own grid are one line (shareLines(), meshOf()).
@@ -1563,8 +1567,60 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         //  the whole's, which it did not. And
         //  none that faces another metal across a thin gap, whose charge
         //  is the plates'.)
+        //
+        // (Which metals the solvers take as their two faces: those asked
+        //  to be, and an Automatic one at least a fortieth as thick as the
+        //  narrowest gap beside it, as thickened() decides - which the mesh,
+        //  of the stack as the model has it, takes for a sheet: warned of
+        //  "as a sheet", walls and all, where it was solved as its faces -
+        //  the review of d7afd2df.)
+        const auto asFaces = [&](const Layer& l) {
+            if (l.kind != Layer::Metal || !(l.thickness > 0)) return false;
+            if (l.twoSheets) return true;
+            const double gap = mesh.gapByLayer.value(l.name, 0);
+            return l.automatic && gap > 0 && l.thickness / perUnit >= kAutomaticFaces * gap;
+        };
+        // (Each metal's faces' heights over the ground, µm, as the solvers
+        //  place them: a metal solved as its faces raises those over it by
+        //  its thickness, as the plates' heights above do - left out, a
+        //  sheet over such a metal was said to stand that much lower.)
+        QHash<QString, QPair<double, double>> standing;
+        {
+            double z = 0;
+            for (const Layer& l : stack.layers) {
+                if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) z += l.thickness / perUnit;
+                if (l.kind != Layer::Metal) continue;
+                const double room = asFaces(l) ? l.thickness / perUnit : 0;
+                standing.insert(l.name, qMakePair(z, z + room));
+                z += room;
+            }
+        }
+        // (A plate: a conductor overlapping one on another metal by half
+        //  itself or more, a tenth of its own height over the ground apart
+        //  or less - its charge that metal's, not the ground's. By its own
+        //  height, not the cells: by the plates' rule of a tenth of the
+        //  cells, a strip 2 µm over another metal was a plate at 50 µm cells
+        //  and was warned of at 10 µm - the review of d7afd2df.)
         QSet<int> plates;
-        for (const Facing& pair : std::as_const(facingPairs)) plates << pieces.at(pair.a).conductor << pieces.at(pair.b).conductor;
+        {
+            QList<double> areas;
+            for (const Conductor& c : conductors) areas << std::abs(areaOf(c.outline));
+            for (int i = 0; i < conductors.size(); ++i)
+                for (int j = i + 1; j < conductors.size(); ++j) {
+                    const Conductor& a = conductors.at(i);
+                    const Conductor& b = conductors.at(j);
+                    if (a.layer == b.layer || !standing.contains(a.layer) || !standing.contains(b.layer)) continue;
+                    if (!a.outline.boundingRect().intersects(b.outline.boundingRect())) continue;
+                    const QPair<double, double> sa = standing.value(a.layer), sb = standing.value(b.layer);
+                    const double gap = sa.first <= sb.first ? sb.first - sa.second : sa.first - sb.second;
+                    if (!(gap > 0)) continue;
+                    const bool nearA = gap <= kPlateGap * sa.first, nearB = gap <= kPlateGap * sb.first;
+                    if (!nearA && !nearB) continue;
+                    const double overlap = std::abs(areaOf(a.outline.intersected(b.outline)));
+                    if (nearA && overlap >= 0.5 * areas.at(i)) plates << i;
+                    if (nearB && overlap >= 0.5 * areas.at(j)) plates << j;
+                }
+        }
         struct Trace {
             double width, length;
         };
@@ -1594,10 +1650,9 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         const auto widening = [](double w, double h, double t) {
             return std::max(0.0, t / M_PI * (1 + std::log(w / h >= 1 / (2 * M_PI) ? 2 * h / t : 4 * M_PI * w / t)));
         };
-        double h = 0;   // (what a metal stands on: the dielectrics below it, µm)
         for (const Layer& l : stack.layers) {
-            if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) h += l.thickness / perUnit;
-            if (l.kind != Layer::Metal || l.twoSheets || !(l.thickness > 0) || l.roundWire || !narrowestOn.contains(l.name)) continue;
+            if (l.kind != Layer::Metal || asFaces(l) || !(l.thickness > 0) || l.roundWire || !narrowestOn.contains(l.name)) continue;
+            const double h = standing.value(l.name).first;   // (what it stands on, µm)
             // (A layer whose walls beside its gaps were said: the same want,
             //  the same remedy - two of each on an inductor's two metals were
             //  four warnings where two say it.)

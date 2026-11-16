@@ -1304,6 +1304,69 @@ private slots:
             QVERIFY2(mim(false).contains(QStringLiteral("Wheeler")), qPrintable(mim(false)));
             QVERIFY2(!mim(true).contains(QStringLiteral("Wheeler")), qPrintable(mim(true)));
         }
+        // An Automatic metal (a new metal's Solved as): two of the laminate
+        // strips 300 µm apart are solved as their faces - 15 µm is past a
+        // fortieth of the gap - and not warned of as sheets; one alone,
+        // with no gap beside it, is a sheet and is (the review of d7afd2df).
+        {
+            const auto automatic = [](const QList<rf::Conductor>& trace) {
+                rf::Stack st = layered({{3.5, 60e-6}});
+                for (rf::Layer& l : st.layers)
+                    if (l.kind == rf::Layer::Metal) {
+                        l.thickness = 15e-6;
+                        l.sigma = 5.8e7;
+                        l.automatic = true;
+                    }
+                rf::MeshSettings how;
+                how.maximum = 50e-6;
+                return rf::meshOf(trace, how, st, 1e9).warnings.join(QLatin1Char(' '));
+            };
+            const QString pair = automatic({strip(0, 0, 600, 120), strip(0, 420, 600, 120)});
+            QVERIFY2(!pair.contains(QStringLiteral("Wheeler")) && !pair.contains(QStringLiteral("beside gaps")), qPrintable(pair));
+            QVERIFY2(automatic({strip(0, 0, 600, 120)}).contains(QStringLiteral("Wheeler")), qPrintable(automatic({strip(0, 0, 600, 120)})));
+        }
+        // Over a metal solved as its faces, its height is raised by that
+        // metal's thickness, as the solvers have it: 30 µm, 10 µm of faces
+        // and 30 µm more stand it 70 µm up, not 60 (the review of d7afd2df).
+        // And a strip 2 µm over another metal is a plate of it at 50 µm cells
+        // and at 10 - a tenth of its own height over the ground, not of the
+        // cells: by the cells it was warned of at 10 µm.
+        {
+            const auto over = [](double lowerThickness, bool lowerFaces, double between, double cell, bool plane) {
+                rf::Stack st;
+                const auto add = [&st](rf::Layer::Kind kind, const QString& name, double thickness, double epsr) {
+                    rf::Layer l;
+                    l.kind = kind;
+                    l.name = name;
+                    l.tag = name.toLower();
+                    l.thickness = thickness;
+                    l.epsr = epsr;
+                    l.sigma = 5.8e7;
+                    st.layers << l;
+                    return &st.layers.last();
+                };
+                add(rf::Layer::Ground, QStringLiteral("GND"), 0, 1);
+                add(rf::Layer::Substrate, QStringLiteral("SUB"), 30e-6, 3.5);
+                add(rf::Layer::Metal, QStringLiteral("M0"), lowerThickness, 1)->twoSheets = lowerFaces;
+                add(rf::Layer::Dielectric, QStringLiteral("ILD"), between, 3.5);
+                add(rf::Layer::Metal, QStringLiteral("M1"), 15e-6, 1);
+                rf::Conductor below = strip(-100, -1000, 800, 400);
+                below.layer = QStringLiteral("M0");
+                if (plane) below.outline = QPolygonF(QRectF(-100, -140, 800, 400));
+                rf::MeshSettings how;
+                how.maximum = cell * 1e-6;
+                return rf::meshOf({strip(0, 0, 600, 120), below}, how, st, 1e9).warnings.join(QLatin1Char(' '));
+            };
+            const QString raised = over(10e-6, true, 30e-6, 50, false);
+            QVERIFY2(raised.contains(QStringLiteral("M1 is 15 µm thick as a sheet 70 µm over the ground")), qPrintable(raised));
+            QVERIFY2(over(10e-6, false, 30e-6, 50, false).contains(QStringLiteral("M1 is 15 µm thick as a sheet 60 µm over the ground")),
+                     qPrintable(over(10e-6, false, 30e-6, 50, false)));
+            for (const double cell : {50.0, 10.0}) {
+                const QString plate = over(0, false, 2e-6, cell, true);
+                QVERIFY2(!plate.contains(QStringLiteral("M1 is 15 µm thick as a sheet")), qPrintable(QStringLiteral("%1 µm cells: %2").arg(cell).arg(plate)));
+            }
+            QVERIFY2(over(0, false, 2e-6, 10, false).contains(QStringLiteral("M1 is 15 µm thick as a sheet")), qPrintable(over(0, false, 2e-6, 10, false)));
+        }
         // Two strips 20 µm apart, 15 µm thick: its walls beside the gap said,
         // and its thickness over the ground not again.
         const QString walls = warned({strip(0, 0, 600, 120), strip(0, 140, 600, 120)}, 15e-6, false);
@@ -2209,10 +2272,12 @@ private slots:
                  spectralEps, lp.z0, lp.g);
         QVERIFY2(std::abs(lp.c0 / conformal - 1) < 0.02, qPrintable(QStringLiteral("C0 %1 pF/m, the conformal mapping's %2").arg(lp.c0 * 1e12).arg(conformal * 1e12)));
         QVERIFY2(std::abs(lp.c / spectral - 1) < 0.02, qPrintable(QStringLiteral("C %1 pF/m, the spectral solve's 165.22").arg(lp.c * 1e12)));
-        // (eps_eff within a per cent: +0.60 %, the images near a cell taken
+        // (eps_eff +0.60 %, the images near a cell taken
         //  over it - +0.48 % before, taken at its centre; eight cells across read +0.76 %, and +0.66 % before,
-        //  so that much is the sheets' and the mesh's, not the images'.)
-        QVERIFY2(std::abs(lp.epsilonEff / spectralEps - 1) < 0.01, qPrintable(QStringLiteral("eps_eff %1, the spectral solve's 4.0791").arg(lp.epsilonEff)));
+        //  so that much is the sheets' and the mesh's, not the images'. Held
+        //  to a band about its own +0.60 %, so that a drift is caught.)
+        QVERIFY2(lp.epsilonEff / spectralEps - 1 > 0.003 && lp.epsilonEff / spectralEps - 1 < 0.009,
+                 qPrintable(QStringLiteral("eps_eff %1, the spectral solve's 4.0791").arg(lp.epsilonEff)));
         // Its losses, each lossy layer solved again on the cross-section
         // alone: the whole line's is the cross-section's over its length,
         // and the whole is solved twice, with the stack and in vacuum.
