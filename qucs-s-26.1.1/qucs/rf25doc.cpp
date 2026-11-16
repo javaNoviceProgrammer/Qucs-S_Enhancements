@@ -656,6 +656,11 @@ void RF25Doc::buildUi()
         if (a_status != nullptr) a_status->setText(why);
         showProblems();
     });
+    // (Kept again - Save As into a folder that can be written: no longer so.)
+    connect(a_view, &LayoutView::drawingKept, this, [this] {
+        a_drawingSaid.clear();
+        showProblems();
+    });
     // The canvas went light or dark: the outlines and the cells' ink are
     // told against it, so they are taken again.
     connect(a_view, &LayoutView::colorsChanged, this, &RF25Doc::showOverlays);
@@ -1160,6 +1165,9 @@ void RF25Doc::readingDone()
         a_layoutRead = job->path;
         a_layoutProblem.clear();
     }
+    // (Its stamp with it, before anything asks for layoutStamp(); what V3's
+    //  Read the Layout Again compares was taken when it was asked.)
+    a_readStamp = job->result ? job->stamp : QByteArray();
     a_rulersKept = a_rulersDropped = 0;
     showLayout();
     // Read the Layout Again: what it found, said (V3 of the open items: no
@@ -1186,7 +1194,6 @@ void RF25Doc::readingDone()
         if (a_status != nullptr) a_status->setText(a_rereadSaid);
         showProblems();
     }
-    if (job->result) a_readStamp = job->stamp;
     showProblems();
     emit stateChanged();
     // What the solver would be given, of the layout as it has just been
@@ -2519,8 +2526,16 @@ QByteArray RF25Doc::layoutStamp() const
 {
     const QString path = layoutFile();
     if (path.isEmpty()) return QByteArray();
+    // The layout as it was read - what was meshed and solved -, its stamp
+    // taken on the reading thread: read whole again on the GUI thread at
+    // each call (a solve's start, the solution's checks), a large GDS held
+    // the window and was a second copy in memory (the review of 4b723ea9).
+    if (!a_readStamp.isEmpty() && a_layoutRead == path) return a_readStamp;
+    // (Before a read: the file on disk, hashed as it is read - the same
+    //  SHA-1 as stampOf().)
     QFile file(path);
-    return file.open(QIODevice::ReadOnly) ? stampOf(file.readAll()) : QByteArray();
+    QCryptographicHash hash(QCryptographicHash::Sha1);
+    return file.open(QIODevice::ReadOnly) && hash.addData(&file) ? hash.result() : QByteArray();
 }
 
 void RF25Doc::readKeptSolution()

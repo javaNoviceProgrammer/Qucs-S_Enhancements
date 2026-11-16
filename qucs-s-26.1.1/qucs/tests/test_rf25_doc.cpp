@@ -4958,7 +4958,22 @@ private slots:
             doc->view()->addStroke(stroke);
             QCOMPARE(said.size(), 1);
             QTRY_VERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral("cannot be kept")), qPrintable(doc->problemsText()->toPlainText()));
+            // Kept again (a folder that can be written): no longer said (the
+            // review of 4b723ea9: the notes went on saying it).
+            QSignalSpy keptAgain(doc->view(), &LayoutView::drawingKept);
+            doc->view()->keepDrawingIn(path(QStringLiteral("viewother.qrf25.drawings")), false);
+            QCOMPARE(keptAgain.size(), 1);
+            QTRY_VERIFY2(!doc->problemsText()->toPlainText().contains(QStringLiteral("cannot be kept")), qPrintable(doc->problemsText()->toPlainText()));
             doc->view()->clearDrawing(true);
+        }
+        // The layout's stamp: the one taken as it was read, not the file on
+        // disk read whole again (the review of 4b723ea9) - changed on disk
+        // since, the stamp is still the read's.
+        {
+            const QByteArray read = doc->layoutStamp();
+            QVERIFY(!read.isEmpty());
+            QVERIFY(writeStrip(path(QStringLiteral("strip.gds")), 600, 50));
+            QCOMPARE(doc->layoutStamp(), read);
         }
         doc->setDocChanged(false);
         app->closeAllFiles();
