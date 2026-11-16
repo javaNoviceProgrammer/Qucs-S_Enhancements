@@ -1137,7 +1137,10 @@ private slots:
             const QString said = QStringLiteral("%1: %2 cells, the narrowest conductor %3 µm, the narrowest gap %4 µm")
                                      .arg(sp.name).arg(mesh.cells.size()).arg(mesh.narrowest).arg(mesh.narrowestGap);
             QVERIFY2(mesh.cells.size() < sp.most, qPrintable(said));
-            QVERIFY2(std::abs(mesh.narrowestGap / sp.s - 1) < 0.01, qPrintable(said));
+            // (Within 0.2 %: a polygon's corners are its own and stay, where a
+            //  curve's are put on one cut - moved too, the dodecagon's gaps read
+            //  2.988 µm; straight across by a twentieth of its width, 2.85.)
+            QVERIFY2(std::abs(mesh.narrowestGap / sp.s - 1) < 0.002, qPrintable(said));
             QVERIFY2(mesh.narrowest > 0.2 * sp.w, qPrintable(said));
             const rf::Inductance loop = rf::inductanceOf(mesh, {spiral}, stack, line.first(), line.last());
             QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));

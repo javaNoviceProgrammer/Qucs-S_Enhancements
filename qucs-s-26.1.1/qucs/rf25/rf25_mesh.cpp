@@ -253,7 +253,7 @@ struct Slab {
  * µm wide had one or two cells across it. Empty where the pieces' areas do not add up to the outline's
  * (it crosses itself, or is no simple outline).
  */
-QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved = nullptr)
+QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved = nullptr, double across = 0)
 {
     if (moved != nullptr) *moved = 0;
     QList<QPointF> given(outline.begin(), outline.end());
@@ -265,9 +265,9 @@ QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved =
     struct Cut {
         QList<Slab> slabs;
         double area = 0;    // the outline's, its corners snapped as the cuts have them
-        double moved = 0;   // the furthest a corner moved
+        double moved = 0;   // the furthest the outline moved off itself
     };
-    const auto cut = [&given, m, tol, merge](bool acrossY) {
+    const auto cut = [&given, m, tol, merge, across](bool acrossY) {
         // (u: along the slab; c: across it, the corners' coordinates.)
         const auto cOf = [acrossY](QPointF p) { return acrossY ? p.y() : p.x(); };
         const auto uOf = [acrossY](QPointF p) { return acrossY ? p.x() : p.y(); };
@@ -288,7 +288,30 @@ QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved =
         // its sides run near the cuts' way. And a curve's corners alone, those
         // turning under 20 degrees: a polygon's - a dodecagon's turn 30 - are
         // its own, its gaps between them as drawn.
+        //
+        // Straight across \a across at most - the curves' tolerance -, else
+        // not moved: near a curve's cap, where neither side reaches the
+        // level, a corner dropped by up to \a merge flattened the cap into a
+        // step, a disc of 100 µm 4.9 µm off its outline and a plane's round
+        // opening 15 µm (the review of 2c232022). And how far the outline
+        // moved is said as how far it is off the drawn one, not how far a
+        // corner slid along its side: on the 8 µm spiral they slid 6.4 µm
+        // where its outline moved 0.37 (the same review).
         Cut out;
+        QList<int> moving;
+        const auto offSegment = [](QPointF p, QPointF a, QPointF b) {
+            const QPointF d = b - a;
+            const double len2 = d.x() * d.x() + d.y() * d.y();
+            const double t = len2 > 0 ? std::clamp(((p.x() - a.x()) * d.x() + (p.y() - a.y()) * d.y()) / len2, 0.0, 1.0) : 0.0;
+            return std::hypot(p.x() - a.x() - t * d.x(), p.y() - a.y() - t * d.y());
+        };
+        // (How far a corner of \a i moved to \a to takes the outline off
+        //  itself, its neighbours as drawn: the corner from the drawn sides,
+        //  the drawn corner from the sides it now makes.)
+        const auto offBy = [&](int i, QPointF to) {
+            const QPointF a = given.at((i + m - 1) % m), at = given.at(i), b = given.at((i + 1) % m);
+            return std::max(std::min(offSegment(to, a, at), offSegment(to, at, b)), std::min(offSegment(at, a, to), offSegment(at, to, b)));
+        };
         QList<QPointF> points = given;
         if (merge > 0) {
             QList<std::pair<double, int>> order;
@@ -307,6 +330,7 @@ QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved =
                     if (!(la > 0) || !(lb > 0) || (a.x() * b.x() + a.y() * b.y()) / (la * lb) < std::cos(20 * M_PI / 180)) continue;
                 }
                 QPointF to = acrossY ? QPointF(at.x(), level) : QPointF(level, at.y());
+                if (c - level > across) to = at;   // (straight across too far: it stays unless a side slides it)
                 double steepest = 0;
                 for (const int j : {(i + m - 1) % m, (i + 1) % m}) {
                     const QPointF next = given.at(j);
@@ -314,11 +338,27 @@ QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved =
                     if (!(drop >= c - level)) continue;   // (it does not reach the level)
                     const double steep = drop / std::max(tol, std::hypot(next.x() - at.x(), next.y() - at.y()));
                     if (steep <= steepest) continue;
+                    // (A slide far along a side tilts the other by its turn:
+                    //  half the merge off the outline at most - the 24
+                    //  segments a turn spiral's 15-degree corners took it
+                    //  0.56 µm off its 8 µm.)
+                    const QPointF slid = at + (next - at) * ((c - level) / drop);
+                    if (offBy(i, slid) > 0.5 * merge) continue;
                     steepest = steep;
-                    to = at + (next - at) * ((c - level) / drop);
+                    to = slid;
                 }
-                out.moved = std::max(out.moved, std::hypot(to.x() - at.x(), to.y() - at.y()));
+                if (to == at) continue;
                 points[i] = to;
+                moving << i;
+            }
+            // (How far off the drawn outline: each corner moved from the
+            //  sides it now has, and the drawn corner from the sides it now
+            //  makes, the furthest of either.)
+            for (const int i : std::as_const(moving)) {
+                const int a = (i + m - 1) % m, b = (i + 1) % m;
+                const double newOff = std::min(offSegment(points.at(i), given.at(a), given.at(i)), offSegment(points.at(i), given.at(i), given.at(b)));
+                const double oldOff = std::min(offSegment(given.at(i), points.at(a), points.at(i)), offSegment(given.at(i), points.at(i), points.at(b)));
+                out.moved = std::max({out.moved, newOff, oldOff});
             }
         }
         const QPolygonF whole(QList<QPointF>(points.begin(), points.end()));
@@ -817,7 +857,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             //  across the cuts one: piecesOf().)
             const double around = perimeterOf(outline), wide = around > 0 ? 2 * area / around : 0;
             double moved = 0;
-            const QList<Slab> slabs = piecesOf(outline, kCornersMerged * wide, &moved);
+            const QList<Slab> slabs = piecesOf(outline, kCornersMerged * wide, &moved, std::min(0.1e-6 / perUnit, 0.01 * wide));
             if (moved > 0) {
                 ++snappedShapes;
                 snappedMost = std::max(snappedMost, moved);
@@ -1099,8 +1139,8 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                           .arg(slantedFrom).arg(slantedRectangles).arg(slantedParts);
     if (snappedShapes > 0)
         mesh.lines << tr("%1 of them with a curve's corners nearer each other across the cuts than a twentieth of the shape's "
-                         "width, put on one cut, each moved along a side of its own %2 µm at most: no part is a sliver between two "
-                         "corners a hair apart.")
+                         "width, put on one cut, each slid along a side of its own or moved across by the curves' tolerance, the "
+                         "outline %2 µm at most off itself: no part is a sliver between two corners a hair apart.")
                           .arg(snappedShapes).arg(snappedMost, 0, 'g', 3);
     // Where each side faces another conductor of its layer, and how far
     // across: the charge crowds on both edges of a narrow gap, and halving
