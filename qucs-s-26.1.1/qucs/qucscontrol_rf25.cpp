@@ -1182,6 +1182,8 @@ QJsonObject QucsControl::rf25Circuit(const QJsonObject& args)
     out.insert(QStringLiteral("frequencies"), int(c->frequencies.size()));
     out.insert(QStringLiteral("what it did"), QJsonArray::fromStringList(c->lines));
     if (!where.isEmpty()) {
+        // (Never over the model's own layout, or the model.)
+        if (const QString no = model->overOwnFile(where); !no.isEmpty()) return errorResult(no);
         const QString text = model->circuitText(*c, where, name);
         QFile file(where);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
@@ -1440,6 +1442,9 @@ QJsonObject QucsControl::rf25Export(const QJsonObject& args)
         const QDir dir = name.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(name).absoluteDir();
         where = QDir::cleanPath(dir.absoluteFilePath(where));
     }
+    // (Never over the model's own layout, or the model: the tab's Write
+    //  refuses the same, RF25Doc::overOwnFile().)
+    if (const QString no = model->overOwnFile(where); !no.isEmpty()) return errorResult(no);
     QFile file(where);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
         return errorResult(tr("%1 could not be written: %2.").arg(where, file.errorString()));
@@ -1838,6 +1843,7 @@ QJsonObject QucsControl::rf25Compare(const QJsonObject& args)
     if (!table.isEmpty()) {
         const QString where = QDir::cleanPath(dir.absoluteFilePath(table));
         if (const QString no = aboutToWrite(where); !no.isEmpty()) return errorResult(no);
+        if (const QString no = model->overOwnFile(where); !no.isEmpty()) return errorResult(no);
         QFile out(where);
         if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
             return errorResult(tr("%1 could not be written: %2.").arg(QDir::toNativeSeparators(where), out.errorString()));

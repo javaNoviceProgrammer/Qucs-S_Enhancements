@@ -3264,6 +3264,13 @@ private slots:
         QVERIFY2(failed(unsolved) && text(unsolved).contains(QLatin1String("rf25_solve")), qPrintable(text(unsolved)));
         QVERIFY(!failed(call("rf25_solve", {{"path", model}, {"solver", "full_wave"}, {"frequency", "3[GHz]"}}, 300000)));
         QVERIFY(!failed(call("rf25_export", {{"path", model}, {"file", "hf.s2p"}}, 120000)));
+        // Its table never over the model itself (the review of 342589eb).
+        {
+            const QByteArray itself = contents(model);
+            const QJsonObject over = call("rf25_compare", {{"path", model}, {"file", "hf.s2p"}, {"table", "line.qrf25"}}, 60000);
+            QVERIFY2(failed(over) && text(over).contains(QStringLiteral("write over it")), qPrintable(text(over)));
+            QCOMPARE(contents(model), itself);
+        }
         const QJsonObject same = call("rf25_compare", {{"path", model}, {"file", "hf.s2p"}, {"table", "both.csv"}}, 60000);
         QVERIFY2(!failed(same), qPrintable(text(same)));
         const QJsonObject compared = json(same).toObject();
@@ -4046,6 +4053,24 @@ private slots:
             const bool together = fit.value("fitted").toString().startsWith(QStringLiteral("every value together, to the solve's S"));
             QVERIFY(together || fit.value("fitted").toString().startsWith(QStringLiteral("each branch to its own share")));
             QCOMPARE(fit.value("S rms, each branch on its own").isDouble(), together);
+            // Never over the model's own layout or the model, as the tab's
+            // Write: rf25_circuit's and rf25_export's own 'file' refused, the
+            // files as they were (the review of 342589eb).
+            {
+                const auto contents = [](const QString& p) {
+                    QFile f(p);
+                    return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+                };
+                const QByteArray layout = contents(ws + "/rf/strip.gds"), itself = contents(ws + "/rf/wave.qrf25");
+                QVERIFY(!layout.isEmpty());
+                for (const auto& [tool, named] : {std::pair{"rf25_circuit", "strip.gds"}, std::pair{"rf25_circuit", "./x/../wave.qrf25"},
+                                                   std::pair{"rf25_export", "strip.gds"}, std::pair{"rf25_export", "wave.qrf25"}}) {
+                    const QJsonObject over = call(QLatin1String(tool), {{"path", ws + "/rf/wave.qrf25"}, {"file", QLatin1String(named)}}, 120000);
+                    QVERIFY2(failed(over) && text(over).contains(QStringLiteral("write over it")), qPrintable(QLatin1String(tool) + QStringLiteral(": ") + text(over)));
+                }
+                QCOMPARE(contents(ws + "/rf/strip.gds"), layout);
+                QCOMPARE(contents(ws + "/rf/wave.qrf25"), itself);
+            }
             const QJsonObject part = json(call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}, {"file", "wave_part.sch"}}, 120000)).toObject();
             QCOMPARE(part.value("file").toString(), ws + "/rf/wave_part.sch");
             QFile sch(ws + "/rf/wave_part.sch");
