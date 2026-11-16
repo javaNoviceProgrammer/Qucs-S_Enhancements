@@ -76,8 +76,8 @@ struct MeshSettings {
     /// calibration strips are meshed so too; not read from the node.
     bool gaps = false;
     /// How wide, as a share of the gap, the outermost cells facing it are
-    /// halved down to (\a gaps); not read from the node: a convergence
-    /// check's meshes refine it with the rest (refinedBy()).
+    /// halved down to (\a gaps): the Mesh node's Gap share, which a
+    /// convergence check's meshes refine with the rest (refinedBy()).
     double gapShare = 0.25;
     /// The layout's plane of symmetry (Processing), whose half the
     /// conductors are: 1 x = symmetryAt, 2 y = it (µm, the conductors'

@@ -3068,6 +3068,21 @@ private slots:
                     }
             QCOMPARE(m.wave->lines.value(0), tab->lines.value(0));   // (the mesh's note first)
         }
+        // Its Most cells too few for its cells across: fewer across, and a
+        // warning among the full wave's (D2 of the open items: said in the
+        // tab's notes alone) - the mesh's warnings are the full wave's.
+        {
+            rf::Model few = doc->model();
+            few.mesh().props.insert(QStringLiteral("most_cells"), 40);
+            // (Its ports not calibrated: their strips' meshes, as few, would
+            //  say it among the calibration's warnings.)
+            for (rf::Node& port : few.ports().children) port.props.insert(QStringLiteral("calibrate"), false);
+            rf::SolveJob job;
+            const rf::ModelSolution m = rf::solveModel(job, few, *read, QStringLiteral("strip.gds"), folder, wave);
+            QVERIFY2(m.ok() && m.wave != nullptr, qPrintable(m.problem));
+            QVERIFY2(m.wave->warnings.filter(QStringLiteral("across instead")).size() == 1,
+                     qPrintable(m.wave->warnings.join(" | ") + QStringLiteral(" || ") + m.mesh->lines.join(" | ")));
+        }
         RF25Doc::SolveRequest quasi;
         quasi.solver = QStringLiteral("quasi_static");
         doc->solveWith(quasi);
@@ -4766,8 +4781,9 @@ private slots:
     // The study's "Add points where it changes": a sweep of 41 points over a
     // line a third of a wavelength long at its top, its ports calibrated by
     // strips of their feeds, solved at a few of them and read at the rest -
-    // the strips solved at those few alone -, within the tolerance of the
-    // whole sweep solved; kept beside the model with which it solved; the
+    // the strips solved at every one (D3 of the open items: read from a fit
+    // of their few, a calibration that changes strips missed by 4.5 to 12
+    // times the tolerance) -, within the tolerance of the whole sweep solved; kept beside the model with which it solved; the
     // mesh said first; a sweep of 12 points or fewer solved whole.
     void anAdaptiveSweepSolvesFewOfItsFrequencies()
     {
@@ -4809,7 +4825,7 @@ private slots:
         QVERIFY2(adapted.lines.first().startsWith(QStringLiteral("Solved on ")), qPrintable(adapted.lines.first()));
         QVERIFY2(adapted.lines.first().contains(QStringLiteral("3 across the narrowest conductor, 50 µm")), qPrintable(adapted.lines.first()));
         QVERIFY2(says(adapted.lines, "Adding points where the answer changes: "), qPrintable(adapted.lines.join('\n')));
-        QVERIFY2(says(adapted.lines, "Its strips solved at the "), qPrintable(adapted.lines.join('\n')));
+        QVERIFY2(says(adapted.lines, "Its strips solved at every one of the sweep's 41 frequencies"), qPrintable(adapted.lines.join('\n')));
         QVERIFY(adapted.deembedding.value(0).calibrated);
         // The whole sweep, solved for this solve alone: the same S within a
         // little of the tolerance, at every frequency.
@@ -4825,7 +4841,7 @@ private slots:
         for (int k = 0; k < full.frequencies.size(); ++k)
             for (int r = 0; r < 2; ++r)
                 for (int c = 0; c < 2; ++c) worst = std::max(worst, std::abs(full.s[k][r][c] - adapted.s[k][r][c]));
-        QVERIFY2(worst < 5e-3, qPrintable(QString::number(worst)));
+        QVERIFY2(worst < 2e-3, qPrintable(QString::number(worst)));   // (the tolerance; 5e-3 allowed before D3)
         qInfo("41 points: %d solved, S within %.2g of the whole sweep", int(adapted.solvedFrequencies.size()), worst);
         // Solved again as the study says, kept, and opened again: shown with
         // what it solved.
@@ -4880,9 +4896,10 @@ private slots:
         QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { n.props.insert(QStringLiteral("stretch"), QStringLiteral("20")); },
                               QStringLiteral("stretch")));
         QVERIFY(doc->waitForPrepared(60000));
-        // What it checks unasked: a quarter, a half and all of the model's 3.
-        QCOMPARE(doc->convergenceLevels(), (QList<int>{1, 2, 3}));
-        QCOMPARE(rf::defaultLevels(10), (QList<int>{3, 5, 10}));
+        // What it checks unasked: a quarter, a half, all and twice the
+        // model's 3 - one finer than its own (D1 of the open items).
+        QCOMPARE(doc->convergenceLevels(), (QList<int>{1, 2, 3, 6}));
+        QCOMPARE(rf::defaultLevels(10), (QList<int>{3, 5, 10, 20}));
         QCOMPARE(rf::defaultLevels(2), (QList<int>{2, 4, 8}));
         QCOMPARE(rf::defaultLevels(0), (QList<int>{1, 2, 4}));
         doc->solve();
@@ -4930,6 +4947,10 @@ private slots:
         QVERIFY2(c->lines.first().startsWith(QStringLiteral("Mesh convergence over 3 mesh(es) of 2, 4 and 8 cells across the narrowest conductor, each the model's own refined as a whole - 0.667, 1.33 and 2.67 times as fine, its largest cells, cells per wavelength and cells at the gaps with it, at 5 GHz: of 3 value(s), ")),
                  qPrintable(c->lines.first()));
         QVERIFY2(c->lines.at(1).startsWith(QStringLiteral("Mesh 1: 2 across, ")), qPrintable(c->lines.at(1)));
+        // (Each mesh as the Mesh node would make it: D2.)
+        QVERIFY2(c->lines.at(3).contains(QStringLiteral("As the Mesh node: Cells across a conductor 8, Cells per wavelength ")) && c->levels.at(2).perWavelength > 0
+                     && c->levels.at(2).gapShare > 0 && c->levels.at(2).gapShare < 0.25,
+                 qPrintable(c->lines.at(3)));
         QVERIFY2(c->lines.at(4).startsWith(QStringLiteral("S11 at 5 GHz: ")), qPrintable(c->lines.at(4)));
         QVERIFY2(doc->problemsText()->toPlainText().contains(QStringLiteral("Its mesh convergence:\n  • Mesh convergence over 3 mesh(es) of 2, 4 and 8")),
                  qPrintable(doc->problemsText()->toPlainText()));

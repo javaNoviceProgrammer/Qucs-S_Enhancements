@@ -688,6 +688,10 @@ QList<NodeKind> makeKinds()
                   "changes along it")),
           integer(QStringLiteral("skin"), tr("Layers through the skin depth"), 0,
                   tr("0: the surface impedance alone, which is right above a few skin depths")),
+          expr(QStringLiteral("gap_share"), tr("Gap share"), QString(), QStringLiteral("0.25"),
+               tr("Where a conductor faces another across a gap, its outermost cells are halved until they are no wider "
+                  "than this share of the gap - where the charge and the current crowd. A convergence check refines it "
+                  "with the rest, and says each of its meshes' value")),
           integer(QStringLiteral("most_cells"), tr("Most cells"), 0,
                   tr("How many cells the mesh may have before fewer are put across a conductor (0: the solver's own - "
                      "8000 for the quasi-static, 40 000 for the full wave held compressed)"))},

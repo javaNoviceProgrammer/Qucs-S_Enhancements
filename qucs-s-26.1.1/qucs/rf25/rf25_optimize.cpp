@@ -273,7 +273,21 @@ bool readingValue(const SolutionValues& values, const fem::ParameterScope& param
     case Reading::Over::MostAt: {
         // (Where it falls: its frequency, Hz.)
         const auto it = reading.over == Reading::Over::LeastAt ? std::min_element(ys.cbegin(), ys.cend()) : std::max_element(ys.cbegin(), ys.cend());
-        *value = fs.at(int(it - ys.cbegin()));
+        const int i = int(it - ys.cbegin());
+        *value = fs.at(i);
+        // (Inside the window, the vertex of the parabola through it and its
+        //  two neighbours: the nearest frequency alone stepped as a notch
+        //  moved between them, an optimizer's objective with it - the review
+        //  of 2b157c78.)
+        if (i > 0 && i + 1 < fs.size()) {
+            const double x1 = fs.at(i - 1), x2 = fs.at(i), x3 = fs.at(i + 1);
+            const double y1 = ys.at(i - 1), y2 = ys.at(i), y3 = ys.at(i + 1);
+            const double den = (x2 - x1) * (y2 - y3) - (x2 - x3) * (y2 - y1);
+            if (den != 0 && std::isfinite(den)) {
+                const double vertex = x2 - 0.5 * ((x2 - x1) * (x2 - x1) * (y2 - y3) - (x2 - x3) * (x2 - x3) * (y2 - y1)) / den;
+                if (std::isfinite(vertex)) *value = std::clamp(vertex, x1, x3);
+            }
+        }
         *dim = fem::Dim::of(0, 0, -1);
         return true;
     }

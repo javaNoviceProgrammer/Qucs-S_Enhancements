@@ -3682,15 +3682,18 @@ private slots:
         QVERIFY2(c.value("said").toArray().first().toString().startsWith(QStringLiteral("Mesh convergence over 3 mesh(es) of 2, 4 and 8 cells across")),
                  qPrintable(text(checked)));
         QVERIFY(c.value("note").toString().contains(QStringLiteral("are as they were")));
-        // Quasi-statically, the meshes unasked: a quarter, a half and all of
-        // the model's 3 across.
+        // Quasi-statically, the meshes unasked: a quarter, a half, all and
+        // twice the model's 3 across (D1), its own said against the limits;
+        // each mesh as the Mesh node makes it (D2).
         const QJsonObject statics = call("rf25_converge", {{"path", model}}, 600000);
         QVERIFY2(!failed(statics), qPrintable(text(statics)));
         const QJsonObject q = json(statics).toObject();
         QCOMPARE(q.value("solver").toString(), QStringLiteral("quasi-static"));
         QVERIFY(!q.contains("frequencies"));
-        QCOMPARE(q.value("meshes").toArray().size(), 3);
+        QCOMPARE(q.value("meshes").toArray().size(), 4);
         QCOMPARE(q.value("meshes").toArray().at(0).toObject().value("cells across asked").toInt(), 1);
+        QCOMPARE(q.value("meshes").toArray().at(3).toObject().value("mesh node").toObject().value("cells_across").toInt(), 6);
+        QVERIFY(q.value("meshes").toArray().at(3).toObject().value("mesh node").toObject().contains("gap_share"));
         QVERIFY(q.value("values").toArray().first().toObject().value("name").toString().startsWith(QStringLiteral("C of ")));
         QCOMPARE(q.value("values").toArray().first().toObject().value("unit").toString(), QStringLiteral("fF"));
         // What it does not take.

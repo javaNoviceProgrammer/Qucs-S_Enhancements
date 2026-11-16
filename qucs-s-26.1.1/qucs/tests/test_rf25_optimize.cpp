@@ -135,6 +135,26 @@ private slots:
         QCOMPARE(dim, fem::parseUnit(QStringLiteral("Hz"))->dim);
         QVERIFY(std::abs(read(QStringLiteral("S21_deg"), Over::MostAt, G::Monitor) - 1e9) < 1e-3);
         QCOMPARE(dim, fem::parseUnit(QStringLiteral("Hz"))->dim);
+        // Inside the window, between the frequencies: the parabola's vertex
+        // through the least and its neighbours, not the nearest frequency (the
+        // review of 2b157c78: a notch's frequency stepped as it moved).
+        {
+            rf::SolutionValues notch;
+            notch.names = {QStringLiteral("y")};
+            notch.dims = {fem::Dim()};
+            for (const double f : {1e9, 2e9, 3e9, 4e9, 5e9}) {
+                notch.frequencies << f;
+                notch.at << QVector<double>{std::pow(f / 1e9 - 2.7, 2) - 3};
+            }
+            rf::Reading r;
+            r.expression = QStringLiteral("y");
+            r.over = Over::LeastAt;
+            double where = 0;
+            QVERIFY2(rf::readingValue(notch, ps, r, optimization::Goal(), &where, &dim, &why), qPrintable(why));
+            QVERIFY2(std::abs(where - 2.7e9) < 1, qPrintable(QString::number(where)));
+            r.over = Over::MostAt;   // (at the window's end: the end itself)
+            QVERIFY(rf::readingValue(notch, ps, r, optimization::Goal(), &where, &dim, &why) && where == 5e9);
+        }
         // Refused: no frequency for At, one outside, a name it has not.
         rf::Reading r;
         r.expression = QStringLiteral("S21_deg");

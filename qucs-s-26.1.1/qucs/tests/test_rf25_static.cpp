@@ -1009,8 +1009,8 @@ private slots:
             QVERIFY2(std::abs(atCoarse.first / atFine.first - 1) < 0.02,
                      qPrintable(QStringLiteral("%1 fF at 5 µm cells, %2 at 0.625 | %3").arg(atCoarse.first * 1e15).arg(atFine.first * 1e15).arg(said.join(" | "))));
         }
-        // An octagonal plate's slanted parts, which nothing aligns: said where
-        // the cells are coarse against the gap; not at fine cells.
+        // An octagonal plate's slanted parts, which nothing aligns: said, with
+        // how coarse its cells are against the gap.
         {
             rf::Conductor octagon = on2(0, 0, 40, 40);
             octagon.outline = QPolygonF({QPointF(12, 0), QPointF(28, 0), QPointF(40, 12), QPointF(40, 28), QPointF(28, 40), QPointF(12, 40),
@@ -1022,15 +1022,20 @@ private slots:
                 how.cellsAcross = 0;
                 return rf::meshOf(layout, how, st, 1e9).warnings.join(' ');
             };
-            QVERIFY2(said(10).contains(QStringLiteral("cells cannot be aligned")), qPrintable(said(10)));
-            QVERIFY2(!said(1).contains(QStringLiteral("cells cannot be aligned")), qPrintable(said(1)));
+            QVERIFY2(said(10).contains(QStringLiteral("cells cannot be aligned")) && said(10).contains(QStringLiteral("250 times the gap")), qPrintable(said(10)));
+            // (At 50 times too: misaligned cells cost there what aligned ones
+            //  do at 500 - the review of 2b157c78, where 150 times was asked.)
+            QVERIFY2(said(2).contains(QStringLiteral("cells cannot be aligned")), qPrintable(said(2)));
         }
 
-        // Ordinary layouts with a lower metal near, which a plate's rule must
-        // not reach (the review of f13694ea: shared there, each piece took
-        // the others' lines across it): a coplanar line over a ground 2 µm
-        // below, and three tracks over a shield, at 50 µm cells - meshed as
-        // with the lower metal far away, cell for cell.
+        // Ordinary layouts with a lower metal near: a coplanar line over a
+        // ground 2 µm below, and three tracks over a shield, at 50 µm cells.
+        // Shared lines across whole pieces made a tartan of each (the review
+        // of f13694ea: 7976 cells where far it is 2076); left misaligned, the
+        // signal over its ground read its C 32 % low, 0.638 pF against 0.931
+        // at 25 µm cells (the review of 2b157c78). Cut at each other's edges,
+        // the C at 50 µm cells is within 2 % of 25 µm's, on cells at most
+        // three times the far case's.
         const auto cellsOf = [](double gap) {
             rf::Stack lower = layered({{4.1, 5e-6}});
             rf::Layer between;
@@ -1053,13 +1058,28 @@ private slots:
             QList<rf::Conductor> shield{strip(-200, -200, 1400, 600), on2(0, 0, 1000, 20), on2(0, 90, 1000, 20), on2(0, 180, 1000, 20)};
             rf::MeshSettings how;
             how.maximum = 50e-6;
+            if (gap < 1e-5) {
+                double signal[2] = {0, 0};
+                for (int k = 0; k < 2; ++k) {
+                    rf::MeshSettings at = how;
+                    at.maximum = (k == 0 ? 50e-6 : 25e-6);
+                    const rf::Mesh mesh = rf::meshOf(cpw, at, lower, 1e9);
+                    const rf::Extraction e = rf::extract(mesh, cpw, lower);
+                    if (e.ok()) signal[k] = e.maxwell.at(1).at(1);
+                }
+                qWarning("the signal 2 µm over its ground: %g pF at 50 µm cells, %g at 25", signal[0] * 1e12, signal[1] * 1e12);
+                if (!(signal[1] > 0) || std::abs(signal[0] / signal[1] - 1) > 0.02) return std::make_pair(-1, -1);
+            }
             return std::make_pair(int(rf::meshOf(cpw, how, lower, 1e9).cells.size()), int(rf::meshOf(shield, how, lower, 1e9).cells.size()));
         };
-        const auto nearby = cellsOf(2e-6), apart = cellsOf(200e-6);
+        const auto nearby = cellsOf(2e-6), apart = cellsOf(200e-6), between = cellsOf(10e-6);
+        // (A fifth of the cells apart: past the plates' rule - neither cut
+        //  nor its lines shared, as far.)
+        QCOMPARE(between, apart);
         qWarning("a coplanar line over a ground 2 µm down: %d cells (%d far); tracks over a shield: %d (%d far)", nearby.first, apart.first,
                  nearby.second, apart.second);
-        QCOMPARE(nearby.first, apart.first);
-        QCOMPARE(nearby.second, apart.second);
+        QVERIFY2(nearby.first > 0, "the signal's C at 50 µm cells more than 2 % from 25 µm's");
+        QVERIFY(nearby.first <= 3 * apart.first && nearby.second <= 3 * apart.second);
     }
 
     void aCapacitanceMatrixThatIsNoMaxwellMatrixIsSaid()

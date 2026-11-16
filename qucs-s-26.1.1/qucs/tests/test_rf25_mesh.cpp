@@ -102,6 +102,18 @@ private slots:
         set(node, "maximum", QStringLiteral("2[um"));
         rf::meshSettingsOf(node, m.parameters(), &problems);
         QVERIFY2(says(problems, "is not a number"), qPrintable(problems.join(" | ")));
+        // The share of a gap its outermost cells come down to (D2: a
+        // convergence check's mesh written back): read, and none above one.
+        set(node, "maximum", QStringLiteral("0"));
+        set(node, "per_wavelength", 20);
+        QCOMPARE(fresh.gapShare, 0.25);
+        set(node, "gap_share", QStringLiteral("0.1"));
+        problems.clear();
+        QCOMPARE(rf::meshSettingsOf(node, m.parameters(), &problems).gapShare, 0.1);
+        QVERIFY2(problems.isEmpty(), qPrintable(problems.join(" | ")));
+        set(node, "gap_share", QStringLiteral("1.5"));
+        QCOMPARE(rf::meshSettingsOf(node, m.parameters(), &problems).gapShare, 0.25);
+        QVERIFY2(says(problems, "share of a gap"), qPrintable(problems.join(" | ")));
     }
 
     // The cell size comes from the wavelength at the study's top frequency,
@@ -816,6 +828,8 @@ private slots:
         QVERIFY2(mesh.cells.size() > rf::kMostCharges / 4, qPrintable(QString::number(mesh.cells.size())));
         QVERIFY2(says(mesh.lines, "10 cells across a conductor would be more than the 8000"), qPrintable(mesh.lines.join(" | ")));
         QVERIFY2(says(mesh.lines, "across instead"), qPrintable(mesh.lines.join(" | ")));
+        // (A warning too, which the solve's answer carries: D2.)
+        QVERIFY2(says(mesh.warnings, "across instead"), qPrintable(mesh.warnings.join(" | ")));
         // One that fits is not touched.
         const rf::Mesh one = rf::meshOf({many.first()}, how, m.stack(), 10e9);
         QVERIFY(!says(one.lines, "across instead"));

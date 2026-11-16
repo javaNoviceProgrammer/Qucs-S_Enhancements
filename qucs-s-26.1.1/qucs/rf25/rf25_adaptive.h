@@ -152,6 +152,13 @@ struct Convergence {
     /// What that ratio would be at most for a value converging as the root
     /// of the cells' size, of these sizes: 0.71 where they halve.
     double slowest = 0;
+    /// Converging faster than as h^2.5 - faster than the edges' singular
+    /// charge lets a method of moments converge, as h to h^2: three coarse
+    /// readings that happen to lie on a steep curve, not yet the asymptote.
+    /// Its error then taken at first order, the limit not trusted until a
+    /// finer mesh agrees (D1 of the open items: a C "within 0.59 %" at
+    /// h^2.2 on 1, 2 and 3 across, 5 % past it at 8).
+    bool fast = false;
 };
 
 /*!
@@ -194,6 +201,12 @@ struct MeshLevel {
     double smallest = 0, largest = 0;   ///< µm: its smallest and largest cells
     int cells = 0, unknowns = 0;
     double seconds = 0;            ///< its mesh and solve
+    /// The Mesh node's settings that make it (D2 of the open items: its
+    /// share at the gaps had no property, so a check's mesh could not be
+    /// written back): cells per wavelength, the largest cell (µm; 0 none),
+    /// the share at the gaps.
+    int perWavelength = 0;
+    double maximum = 0, gapShare = 0;
 };
 
 /// A mesh convergence check of an RF 2.5D model: the same solve on meshes
