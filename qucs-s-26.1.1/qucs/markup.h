@@ -17,6 +17,7 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QList>
 #include <QPolygonF>
 #include <QString>
@@ -102,6 +103,10 @@ public:
     bool clear(const QString& part = QString());
     /// The last change undone; whether there was one.
     bool undo();
+    /// \a strokes put back as they were kept (a file beside a document),
+    /// their numbers as they were - the next on each part after its last -,
+    /// nothing to undo.
+    void restore(const QList<Stroke>& strokes);
     bool canUndo() const { return !a_undo.isEmpty(); }
     /// Moves on at each change, to a number no drawing has had (nought
     /// before the first): whatever was told of the drawing at one revision
@@ -117,6 +122,12 @@ private:
     QHash<QString, int> a_lastId;  // each part's last number given
     quint64 a_revision = 0;
 };
+
+/// \a strokes as JSON, to keep them beside what they are drawn on (V1 of
+/// the RF 2.5D open items: a tab closed, its strokes were lost), and read
+/// back - what cannot be read left out.
+QJsonArray strokesJson(const QList<Stroke>& strokes);
+QList<Stroke> strokesOf(const QJsonArray& json);
 
 /// Draws \a strokes: \a toPixel takes a point of theirs to the painter's,
 /// \a pixelsPerUnit pixels a measure of theirs. None under a pixel broad.

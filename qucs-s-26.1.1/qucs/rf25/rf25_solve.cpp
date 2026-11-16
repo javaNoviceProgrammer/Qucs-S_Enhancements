@@ -949,14 +949,32 @@ void convergeOn(SolveJob& job)
         MeshSettings how = refinedBy(job.how, factor);
         how.cellsAcross = job.levels.at(i);
         const Mesh mesh = meshOf(job.conductors, how, job.stack, job.top);
+        // (A finer mesh that cannot be had, once three are: left out and
+        //  said, the verdict the three's - failed, it failed the check.)
+        const auto fail = [&check](const QString& why) {
+            if (check->levels.size() >= 3) check->leftOut << why;
+            else check->problems << why;
+        };
         if (!mesh.ok() || mesh.cells.isEmpty()) {
-            check->problems << tr("The mesh of %1 cells across could not be made: %2")
-                                   .arg(job.levels.at(i)).arg(mesh.problems.join(QLatin1Char(' ')));
+            fail(tr("The mesh of %1 cells across could not be made: %2").arg(job.levels.at(i)).arg(mesh.problems.join(QLatin1Char(' '))));
             break;
+        }
+        // (Fewer across than asked - the solver's bound on cells -: not the
+        //  size asked, which the extrapolation takes it at. Left out once
+        //  three are; else sized by what it got.)
+        double got = factor;
+        if (mesh.across > 0 && mesh.across < job.levels.at(i)) {
+            if (check->levels.size() >= 3) {
+                check->leftOut << tr("The mesh of %1 cells across came out at %2 across, under the bound on cells (Most cells on "
+                                     "the Mesh node raises it): left out, its size not what was asked.")
+                                      .arg(job.levels.at(i)).arg(mesh.across);
+                break;
+            }
+            got = factor * double(mesh.across) / job.levels.at(i);
         }
         MeshLevel level;
         level.asked = job.levels.at(i);
-        level.factor = factor;
+        level.factor = got;
         level.across = mesh.across;
         level.cell = mesh.acrossCell;
         level.smallest = mesh.smallest;
@@ -972,7 +990,7 @@ void convergeOn(SolveJob& job)
             const std::shared_ptr<FullWave> wave = solveWaveOn(job, mesh, how, job.frequencies, false, 0, &notes);
             if (job.stop.load()) break;
             if (!wave->ok()) {
-                check->problems << tr("At %1 cells across: %2").arg(level.asked).arg(wave->problems.join(QLatin1Char(' ')));
+                fail(tr("At %1 cells across: %2").arg(level.asked).arg(wave->problems.join(QLatin1Char(' '))));
                 break;
             }
             watched = watchedOf(*wave, job.frequencies);
@@ -987,7 +1005,7 @@ void convergeOn(SolveJob& job)
             const Extraction e = extract(mesh, job.conductors, job.stack, 1e-6, job.returns, &control);
             if (job.stop.load()) break;
             if (!e.ok()) {
-                check->problems << tr("At %1 cells across: %2").arg(level.asked).arg(e.problems.join(QLatin1Char(' ')));
+                fail(tr("At %1 cells across: %2").arg(level.asked).arg(e.problems.join(QLatin1Char(' '))));
                 break;
             }
             watched = watchedOf(e);

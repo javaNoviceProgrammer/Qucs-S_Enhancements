@@ -217,6 +217,12 @@ struct MeshConvergence {
     QList<MeshLevel> levels;
     QList<Watched> values;
     QStringList lines;             ///< the report: its verdict, then each value's
+    /// The finer meshes left out, and why: one that came out with fewer
+    /// cells across than asked (the solver's bound), or did not solve, once
+    /// three are solved - its size not what was asked, it would have skewed
+    /// the extrapolation, and failing it failed the whole check (the review
+    /// of 6a962a9a, of D1's extra mesh). Said, not a problem.
+    QStringList leftOut;
     QStringList problems;
     bool ok() const { return problems.isEmpty() && levels.size() >= 2 && !values.isEmpty(); }
 };

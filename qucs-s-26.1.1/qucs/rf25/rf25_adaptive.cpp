@@ -786,6 +786,7 @@ void judge(MeshConvergence& check)
                        "not to be trusted until a finer mesh agrees.", nullptr, fast);
     }
     check.lines << head;
+    check.lines += check.leftOut;
     for (int i = 0; i < check.levels.size(); ++i) {
         const MeshLevel& l = check.levels.at(i);
         QString line = tr("Mesh %1: %2 across").arg(i + 1).arg(l.across);

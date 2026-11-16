@@ -804,12 +804,15 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         if (model != nullptr) {
             // Which cell, and which layers, are the model's to say - its
             // Layout node and its layer map - and are not set from here.
-            for (const char* key : {"cell", "layers", "depth", "overlay", "select", "rulers", "colours",
+            // (Its rulers are its own, as a layout's tab's: V4 of the open
+            //  items, refused here, so that a measurement asked could not be
+            //  checked.)
+            for (const char* key : {"cell", "layers", "depth", "overlay", "select", "colours",
                                     "layer_properties", "layer_look", "theme", "contrast", "grid_style", "reload"})
                 if (args.contains(QLatin1String(key))) {
                     done(errorResult(tr("'%1' is of a layout's own tab: an RF 2.5D model's cell is its Layout node's and "
                                         "its layers are its layer map's. 'region', 'texts', 'grid', 'processed' and "
-                                        "'mesh' frame what it shows; 'pen', 'drawings' and 'addressed' are its pen's.").arg(QLatin1String(key))));
+                                        "'mesh' frame what it shows; 'rulers' measure on it; 'pen', 'drawings' and 'addressed' are its pen's.").arg(QLatin1String(key))));
                     return;
                 }
             // (Held while it waits: closed meanwhile, it is not deleted under
@@ -866,6 +869,10 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
             if (region.size() == 4)
                 view->showRegion(QRectF(QPointF(region.at(0).toDouble(), region.at(1).toDouble()),
                                         QPointF(region.at(2).toDouble(), region.at(3).toDouble())).normalized());
+            // Its rulers, as a layout's tab's: each end snapped as the ruler's
+            // drag snaps it, at the zoom shown; or cleared.
+            if (clearRulers) view->clearRulers();
+            for (const QLineF& r : newRulers) view->addRuler(QLineF(view->snapped(r.p1()), view->snapped(r.p2())));
             view->repaint();
             const int shown = view->cell();
             QJsonObject result{{QStringLiteral("model"), titleOf(model)},
@@ -900,6 +907,9 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
                 over.append(o);
             }
             if (!over.isEmpty()) result.insert(QStringLiteral("overlays"), over);
+            // Its rulers, the user's or Claude's, and what is selected.
+            insertSelectionAndRulers(result, *layout, view);
+            if (!model->rereadSaid().isEmpty()) result.insert(QStringLiteral("read again"), model->rereadSaid());
             // What the user drew with the pen, read as on a layout's tab.
             if (!view->drawing().isEmpty()) insertDrawings(result, view->readDrawing(false));
             if (view->mode() == LayoutView::Mode::Draw) result.insert(QStringLiteral("pen"), tr("taken up: a drag draws on the cell shown"));

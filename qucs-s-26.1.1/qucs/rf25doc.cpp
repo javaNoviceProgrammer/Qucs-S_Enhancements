@@ -284,6 +284,7 @@ void StackView::mousePressEvent(QMouseEvent* event)
 /// reads it, so that a large GDSII file never holds the window.
 struct RF25Doc::Job {
     QString path;
+    QByteArray stamp;   ///< of the file's bytes, as read (V3)
     std::shared_ptr<Layout> result;
     QString error;
     std::atomic_bool cancelled{false};
@@ -541,7 +542,7 @@ void RF25Doc::buildUi()
     a_rulerButton->setCheckable(true);
     a_reread = tool(LayoutDoc::ToolIcon::Reload, tr("Read the Layout Again: read the layout file the model names once more"),
                     "rfReread");
-    connect(a_reread, &QToolButton::clicked, this, &RF25Doc::refreshLayout);
+    connect(a_reread, &QToolButton::clicked, this, &RF25Doc::rereadLayout);
     a_tools = {a_penButton, a_fit, a_rulerButton, a_reread};
     restyleTools();
     all->addWidget(bar);
@@ -757,6 +758,9 @@ bool RF25Doc::load()
     applyModel(*m, true);
     a_undo->setClean();
     setDocChanged(false);
+    // The pen's strokes on its view, kept beside it (V1 of the open items:
+    // saved nowhere, a tab closed lost them).
+    a_view->keepDrawingIn(a_DocName + QStringLiteral(".drawings"));
     stampedAs(asRead);
     readKeptSolution();
     if (const Node* analyses = a_model.root.child(QStringLiteral("rf_analyses")))
@@ -812,8 +816,10 @@ int RF25Doc::save()
     a_undo->setClean();
     setDocChanged(false);
     emit signalFileChanged(false);
-    // The solution shown, where it is of the model as saved, beside it.
+    // The solution shown, where it is of the model as saved, beside it; and
+    // the pen's strokes (an untitled model's, or Save As: there now).
     keepSolution();
+    a_view->keepDrawingIn(a_DocName + QStringLiteral(".drawings"));
     // The date and size the file itself has, not the clock's reading of
     // this moment: the two differ by a little, and changedOnDisk() would
     // then take the file this just wrote for another program's.
@@ -989,8 +995,10 @@ void RF25Doc::showProblems()
         for (const QString& line : a_convergence->lines) lines << QStringLiteral("  • ") + line;
         for (const QString& line : a_convergence->problems) lines << QStringLiteral("  • ") + line;
     }
-    // What became of the solution kept beside the model: shown, or why not.
+    // What became of the solution kept beside the model: shown, or why not;
+    // and what the last Read the Layout Again found (V3).
     if (!a_keptSaid.isEmpty()) lines << a_keptSaid;
+    if (!a_rereadSaid.isEmpty()) lines << a_rereadSaid;
     QStringList cannot;
     if (a_processed) cannot += a_processed->problems;
     if (a_mesh) cannot += a_mesh->problems;
@@ -1103,6 +1111,8 @@ void RF25Doc::refreshLayout()
     a_job = job;
     QThread* thread = QThread::create([job] {
         job->result = qucs_s::layout::read(job->path, &job->error, &job->cancelled, &job->progress);
+        QFile bytes(job->path);
+        if (job->result && bytes.open(QIODevice::ReadOnly)) job->stamp = qucs_s::rf25::stampOf(bytes.readAll());
     });
     // (A main thread's stack is 8 MB and a thread's 512 kB on macOS, where
     // a layout's hierarchy is walked by recursion: layoutdoc.cpp's note.)
@@ -1114,6 +1124,15 @@ void RF25Doc::refreshLayout()
     thread->start();
     showLayout();
     emit stateChanged();
+}
+
+void RF25Doc::rereadLayout()
+{
+    // (What was read before, to say what this read found: V3.)
+    a_rereadAsked = true;
+    a_rereadShapes = a_layout ? a_layout->shapeCount : 0;
+    a_rereadStamp = a_readStamp;
+    refreshLayout();
 }
 
 void RF25Doc::readingDone()
@@ -1129,7 +1148,33 @@ void RF25Doc::readingDone()
         a_layoutRead = job->path;
         a_layoutProblem.clear();
     }
+    a_rulersKept = a_rulersDropped = 0;
     showLayout();
+    // Read the Layout Again: what it found, said (V3 of the open items: no
+    // word, so that a user could not tell it did anything).
+    if (a_rereadAsked) {
+        a_rereadAsked = false;
+        if (!a_layout) {
+            a_rereadSaid = tr("Read again: %1").arg(a_layoutProblem);
+        } else {
+            const bool same = !a_rereadStamp.isEmpty() && a_rereadStamp == job->stamp;
+            a_rereadSaid = same ? tr("Read again: %1, as it was - %n shape(s).", nullptr, int(a_layout->shapeCount)).arg(QFileInfo(job->path).fileName())
+                                : tr("Read again: %1 changed - %2 shape(s), where there were %3.")
+                                      .arg(QFileInfo(job->path).fileName())
+                                      .arg(QLocale().toString(qlonglong(a_layout->shapeCount)))
+                                      .arg(QLocale().toString(qlonglong(a_rereadShapes)));
+            if (a_rulersKept + a_rulersDropped > 0)
+                a_rereadSaid += QLatin1Char(' ')
+                                + (a_rulersDropped > 0 ? tr("%1 ruler(s) kept; %2 dropped, an end of each no longer on the corner or edge "
+                                                            "it was snapped to.")
+                                                             .arg(a_rulersKept)
+                                                             .arg(a_rulersDropped)
+                                                       : tr("Its %n ruler(s) kept.", nullptr, a_rulersKept));
+        }
+        if (a_status != nullptr) a_status->setText(a_rereadSaid);
+        showProblems();
+    }
+    if (job->result) a_readStamp = job->stamp;
     showProblems();
     emit stateChanged();
     // What the solver would be given, of the layout as it has just been
@@ -1260,17 +1305,62 @@ void RF25Doc::showLayout()
     // (The rulers measure what is still there where it is shown in place: a
     //  drawing read again, another map or colour.)
     const QList<QLineF> rulers = again || a_keepView ? a_view->rulers() : QList<QLineF>();
+    // The same file read again (Read the Layout Again): its rulers kept,
+    // but for one an end of which was snapped to a corner or an edge that is
+    // no longer there - cleared, every one went (V2 of the open items).
+    const bool reread = !again && !a_keepView && a_view->layout() && a_view->layout()->file == a_layout->file
+                        && a_view->cell() >= 0 && a_layout->cellIndex(a_view->layout()->cells.at(a_view->cell()).name) >= 0;
+    QList<std::pair<QLineF, std::pair<bool, bool>>> held;   // (each ruler, and whether each end was snapped)
+    // (An end on a shape's corner or edge: nudged off it by half the snap's
+    //  reach, across or up, it snaps back. Where no shape is near, a point
+    //  snaps to the database grid, which is no corner.)
+    const auto onShape = [this](QPointF p) {
+        const double nudge = 0.5 * 4.0 / std::max(1e-12, a_view->scale());
+        for (const QPointF d : {QPointF(nudge, 0), QPointF(0, nudge)}) {
+            const QPointF s = a_view->snapped(p + d);
+            if (std::abs(s.x() - p.x()) + std::abs(s.y() - p.y()) <= 1e-9 * std::max(1.0, std::abs(p.x()) + std::abs(p.y()))) return true;
+        }
+        return false;
+    };
+    if (reread)
+        for (const QLineF& r : a_view->rulers()) {
+            if (!(r.length() > 0)) continue;
+            held.append({r, {onShape(r.p1()), onShape(r.p2())}});
+        }
+    const QString heldCell = reread ? a_view->layout()->cells.at(a_view->cell()).name : QString();
     a_view->setLayout(a_layout);
     for (const QLineF& r : rulers) a_view->addRuler(r);
     a_view->setStyles(stylesFor(*a_layout));
+    // The stack's names for the file's layers, by the layer map: a stroke's
+    // reading says "V2 (12/0)" where it said "12/0" (V5 of the open items).
+    {
+        const qucs_s::rf25::LayerMap map = qucs_s::rf25::layerMapOf(a_model);
+        QHash<int, QString> names;
+        for (int i = 0; i < a_layout->layers.size(); ++i) {
+            const QString to = map.toLayer.value(a_layout->layers.at(i).key.text());
+            if (!to.isEmpty()) names.insert(i, to);
+        }
+        a_view->setLayerNames(names);
+    }
     const QString cell = textOf(a_model.layout(), QStringLiteral("cell")).trimmed();
     const int at = cell.isEmpty() ? a_layout->mainCell() : a_layout->cellIndex(cell);
     a_view->setCell(at >= 0 ? at : a_layout->mainCell());
     // The same layout with another map or another colour: the view stays
     // where the user left it; a layout just read is fitted - but for one
     // read again after a drawing, which stays as drawn on.
-    if (again || a_keepView) a_view->setView(center, scale);
+    if (again || a_keepView || reread) a_view->setView(center, scale);
     else fitView();
+    if (reread && !held.isEmpty()) {
+        a_view->setCell(a_layout->cellIndex(heldCell));
+        for (const auto& [r, ends] : std::as_const(held)) {
+            if ((ends.first && !onShape(r.p1())) || (ends.second && !onShape(r.p2()))) {
+                ++a_rulersDropped;
+                continue;
+            }
+            a_view->addRuler(r);
+            ++a_rulersKept;
+        }
+    }
     if (!again) a_keepView = false;
     updatePen();
 }

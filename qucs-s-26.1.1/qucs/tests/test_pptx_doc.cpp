@@ -2875,7 +2875,9 @@ private slots:
         QCOMPARE(markup::currentPen().color, QColor(10, 20, 30));
         {
             const QucsSettingsFile settings;
-            QCOMPARE(settings.value(QStringLiteral("Viewers/penTool")).toString(), QStringLiteral("highlighter"));
+            // (The tool is the session's alone: kept, a pen taken up the next
+            //  day began as an eraser - V7 of the RF 2.5D open items.)
+            QVERIFY(!settings.contains(QStringLiteral("Viewers/penTool")));
             QCOMPARE(settings.value(QStringLiteral("Viewers/penColor")).toString(), QStringLiteral("#0a141e"));
             QCOMPARE(settings.value(QStringLiteral("Viewers/highlighterWidth")).toDouble(), 24.0);
         }

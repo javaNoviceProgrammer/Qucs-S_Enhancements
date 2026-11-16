@@ -44,6 +44,8 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
+#include <QJsonDocument>
+#include <QSaveFile>
 #include <QHeaderView>
 #include <QIconEngine>
 #include <QKeyEvent>
@@ -325,6 +327,7 @@ namespace qucs_s::layout {
 
 LayoutView::LayoutView(QWidget* parent, gpu::Viewer gpuViewer) : QWidget(parent), a_gpuViewer(gpuViewer)
 {
+    connect(this, &LayoutView::drawingChanged, this, [this] { saveDrawing(); });
     setMouseTracking(true);
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_OpaquePaintEvent);
@@ -819,9 +822,44 @@ QJsonArray LayoutView::readDrawing(bool points) const
         base.depth = a_depth;
         base.layers = layers;
         base.labels = a_labels;
-        for (const QJsonValue& v : readStrokes(layout, base, a_drawing.on(part), points)) out.append(v);
+        for (const QJsonValue& v : readStrokes(layout, base, a_drawing.on(part), points, a_layerNames.isEmpty() ? nullptr : &a_layerNames)) out.append(v);
     }
     return out;
+}
+
+void LayoutView::keepDrawingIn(const QString& path)
+{
+    a_drawingFile = path;
+    if (path.isEmpty()) return;
+    if (a_drawing.isEmpty()) {
+        QFile file(path);
+        if (file.open(QIODevice::ReadOnly)) {
+            const QJsonObject o = QJsonDocument::fromJson(file.readAll()).object();
+            const QList<markup::Stroke> kept = markup::strokesOf(o.value(QLatin1String("strokes")).toArray());
+            if (!kept.isEmpty()) {
+                a_drawing.restore(kept);
+                update();
+                emit drawingChanged();
+            }
+        }
+    } else {
+        saveDrawing();   // (drawn before it had a file: kept there now)
+    }
+}
+
+void LayoutView::saveDrawing() const
+{
+    if (a_drawingFile.isEmpty()) return;
+    if (a_drawing.isEmpty()) {
+        QFile::remove(a_drawingFile);
+        return;
+    }
+    QSaveFile file(a_drawingFile);
+    if (!file.open(QIODevice::WriteOnly)) return;
+    file.write(QJsonDocument(QJsonObject{{QStringLiteral("format"), QStringLiteral("qucs-s pen strokes 1")},
+                                         {QStringLiteral("strokes"), markup::strokesJson(a_drawing.strokes())}})
+                   .toJson(QJsonDocument::Indented));
+    file.commit();
 }
 
 void LayoutView::clearRulers()
@@ -2142,6 +2180,7 @@ int LayoutDoc::save()
     }
     a_source = a_DocName;
     a_watcher->addPath(a_DocName);
+    a_view->keepDrawingIn(a_DocName + QStringLiteral(".drawings"));   // (with the copy)
     return 0;
 }
 
@@ -2161,6 +2200,9 @@ bool LayoutDoc::load()
         if (a_lyp.isEmpty()) a_lypFile.clear();
     }
     a_keepView = false;
+    // The pen's strokes on it, kept beside it (V1 of the RF 2.5D open items:
+    // a tab closed, they were lost).
+    a_view->keepDrawingIn(a_DocName + QStringLiteral(".drawings"));
     startReading();
     return true;
 }
