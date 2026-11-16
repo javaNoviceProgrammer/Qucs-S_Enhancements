@@ -37,7 +37,10 @@ namespace qucs_s::layout {
 /// "tip", "tail" and "comes from" (an arrow), "follows" (a line or a mark
 /// along a path or an edge), "polyline" (a line, a corner, a mark or a
 /// ring that is a few straight runs); \a points, its points simplified.
-QJsonArray readStrokes(const Layout& layout, const Query& base, const QList<markup::Stroke>& strokes, bool points);
+/// (\a layerNames, given: a tab's names for the file's layers, by index -
+/// each layer said as "V2 (12/0)", V5 of the RF 2.5D open items.)
+QJsonArray readStrokes(const Layout& layout, const Query& base, const QList<markup::Stroke>& strokes, bool points,
+                       const QHash<int, QString>* layerNames = nullptr);
 
 /// The most shapes and texts a reading of one stroke looks at.
 constexpr int MostRead = 200000;

@@ -17,6 +17,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  */
+#include <QDirIterator>
 #include <QtTest>
 #include <QAbstractEventDispatcher>
 #include <ctime>
@@ -505,6 +506,10 @@ private slots:
     void cleanup()
     {
         closeAll();
+        // (The strokes kept beside a layout - V1 of the RF 2.5D open items -
+        //  taken away: each test's tab begins with none.)
+        QDirIterator kept(dir.filePath("workspace"), {QStringLiteral("*.drawings")}, QDir::Files, QDirIterator::Subdirectories);
+        while (kept.hasNext()) QFile::remove(kept.next());
         // The canvas as it is at first, whatever a test left.
         QucsSettingsFile settings;
         for (const char* key : {"LayoutViewer/background", "LayoutViewer/contrast", "LayoutViewer/grid", "LayoutViewer/gridStyle", "LayoutViewer/lypLook",

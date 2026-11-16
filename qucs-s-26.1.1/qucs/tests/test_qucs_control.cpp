@@ -3053,6 +3053,15 @@ private slots:
         QVERIFY2(terminals.value("labels").toArray() == QJsonArray::fromStringList({"T1", "T2", "T3", "T4"}) && terminals.value("shapes").toInt() == 4
                      && lines.value("shapes").toInt() == 4,
                  qPrintable(QString::fromUtf8(QJsonDocument(shown).toJson(QJsonDocument::Compact))));
+        // Its rulers, as a layout's tab's: placed, said, cleared (V4 of the
+        // RF 2.5D open items: refused for a model).
+        {
+            const QJsonObject measured = call("show_layout", {{"path", ws + "/rf/gsg.qrf25"}, {"rulers", QJsonArray() << QJsonArray{0, 0, 100, 0}}}, 60000);
+            QVERIFY2(!failed(measured), qPrintable(text(measured)));
+            QCOMPARE(json(measured).toObject().value("rulers").toArray().size(), 1);
+            const QJsonObject cleared = json(call("show_layout", {{"path", ws + "/rf/gsg.qrf25"}, {"rulers", "clear"}}, 60000)).toObject();
+            QVERIFY(!cleared.contains("rulers"));
+        }
         // And on the first call on a model just opened: the overlays too,
         // once its shapes and cells are made (they came back missing on the
         // first call, present on the second).

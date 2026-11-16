@@ -57,23 +57,6 @@ constexpr double BroadestPixels = 1e4;
 constexpr double kPenWidths[3] = {2, 4, 8};
 constexpr double kHighlighterWidths[3] = {10, 16, 24};
 
-QString nameOf(Tool tool)
-{
-    switch (tool) {
-    case Tool::Highlighter: return QStringLiteral("highlighter");
-    case Tool::Eraser: return QStringLiteral("eraser");
-    case Tool::Pen: break;
-    }
-    return QStringLiteral("pen");
-}
-
-Tool toolNamed(const QString& name)
-{
-    if (name == QLatin1String("highlighter")) return Tool::Highlighter;
-    if (name == QLatin1String("eraser")) return Tool::Eraser;
-    return Tool::Pen;
-}
-
 /// The distance from \a p to the segment from \a a to \a b.
 double distance(QPointF p, QPointF a, QPointF b)
 {
@@ -248,6 +231,51 @@ void Drawing::changed(const QList<Stroke>& before)
 {
     a_undo << before;
     if (a_undo.size() > MostUndone) a_undo.removeFirst();
+}
+
+void Drawing::restore(const QList<Stroke>& strokes)
+{
+    a_strokes = strokes;
+    a_undo.clear();
+    a_lastId.clear();
+    for (const Stroke& s : strokes) a_lastId[s.on] = std::max(a_lastId.value(s.on), s.id);
+    a_revision = nextRevision();
+}
+
+QJsonArray strokesJson(const QList<Stroke>& strokes)
+{
+    QJsonArray out;
+    for (const Stroke& s : strokes) {
+        QJsonArray points;
+        for (const QPointF& p : s.points) points << p.x() << p.y();
+        QJsonObject o{{QStringLiteral("on"), s.on},         {QStringLiteral("id"), s.id},
+                      {QStringLiteral("color"), s.color.name(QColor::HexArgb)}, {QStringLiteral("width"), s.width},
+                      {QStringLiteral("points"), points}};
+        if (s.highlighter) o.insert(QStringLiteral("highlighter"), true);
+        if (s.addressed) o.insert(QStringLiteral("addressed"), true);
+        out << o;
+    }
+    return out;
+}
+
+QList<Stroke> strokesOf(const QJsonArray& json)
+{
+    QList<Stroke> out;
+    for (const QJsonValue& v : json) {
+        const QJsonObject o = v.toObject();
+        Stroke s;
+        s.on = o.value(QLatin1String("on")).toString();
+        s.id = o.value(QLatin1String("id")).toInt();
+        s.color = QColor::fromString(o.value(QLatin1String("color")).toString());
+        s.width = o.value(QLatin1String("width")).toDouble();
+        s.highlighter = o.value(QLatin1String("highlighter")).toBool();
+        s.addressed = o.value(QLatin1String("addressed")).toBool();
+        const QJsonArray points = o.value(QLatin1String("points")).toArray();
+        for (int i = 0; i + 1 < points.size(); i += 2) s.points << QPointF(points.at(i).toDouble(), points.at(i + 1).toDouble());
+        if (s.id <= 0 || s.points.isEmpty() || !s.color.isValid() || !(s.width > 0)) continue;
+        out << s;
+    }
+    return out;
 }
 
 bool Drawing::clear(const QString& part)
@@ -924,11 +952,20 @@ QList<std::pair<QColor, QString>> colors()
             {QColor(0xff, 0xff, 0xff), QApplication::translate("Markup", "White")}};
 }
 
+// The tool in hand, for this session alone: kept with the colour and the
+// widths, a pen taken up the next day began as an eraser (V7 of the RF 2.5D
+// open items). Each session begins with the pen.
+Tool& sessionTool()
+{
+    static Tool tool = Tool::Pen;
+    return tool;
+}
+
 Pen currentPen()
 {
     const QucsSettingsFile settings;
     Pen pen;
-    pen.tool = toolNamed(settings.value(QLatin1String(kToolKey)).toString());
+    pen.tool = sessionTool();
     const QColor color(settings.value(QLatin1String(kColorKey)).toString());
     if (color.isValid()) pen.color = color;
     pen.width = std::clamp(settings.value(QLatin1String(kWidthKey), pen.width).toDouble(), 1.0, 64.0);
@@ -939,7 +976,8 @@ Pen currentPen()
 void setCurrentPen(const Pen& pen)
 {
     QucsSettingsFile settings;
-    settings.setValue(QLatin1String(kToolKey), nameOf(pen.tool));
+    sessionTool() = pen.tool;
+    settings.remove(QLatin1String(kToolKey));   // (as an older build kept it)
     settings.setValue(QLatin1String(kColorKey), pen.color.name(QColor::HexRgb));
     settings.setValue(QLatin1String(kWidthKey), pen.width);
     settings.setValue(QLatin1String(kHighlighterKey), pen.highlighterWidth);

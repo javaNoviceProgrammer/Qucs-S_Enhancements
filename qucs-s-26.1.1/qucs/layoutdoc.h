@@ -170,6 +170,16 @@ public:
     QString drawingPart() const;
     /// A stroke added as though it was drawn (Claude's tools, the tests).
     void addStroke(const qucs_s::markup::Stroke& stroke);
+    /// The strokes kept in \a path, a file beside the document (its own name
+    /// and ".drawings"): read from it where the drawing is empty, and written
+    /// at each change - removed when none is left. Empty: kept nowhere (V1
+    /// of the RF 2.5D open items: a tab closed, its strokes were lost).
+    void keepDrawingIn(const QString& path);
+    QString drawingFile() const { return a_drawingFile; }
+    /// The names a tab gives the file's layers (an RF 2.5D model's: its
+    /// stack's, by its layer map), by layer index: a stroke's reading says
+    /// "V2 (12/0)" where it said "12/0" (V5).
+    void setLayerNames(const QHash<int, QString>& names) { a_layerNames = names; }
     /// The last change to the drawing undone; whether there was one.
     bool undoDrawing();
     /// The strokes on the cell shown taken away, or (\a all) every one;
@@ -395,6 +405,9 @@ private:
     QList<QLineF> a_rulers;
     bool a_measuring = false;
     qucs_s::markup::Drawing a_drawing;
+    QString a_drawingFile;
+    QHash<int, QString> a_layerNames;
+    void saveDrawing() const;
     qucs_s::markup::Stroke a_stroke;               // the one being drawn
     QList<qucs_s::markup::Stroke> a_beforeErase;  // the strokes as an eraser's drag found them
     bool a_erased = false;

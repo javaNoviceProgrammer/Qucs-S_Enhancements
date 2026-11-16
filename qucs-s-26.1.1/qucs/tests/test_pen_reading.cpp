@@ -13,6 +13,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  */
+#include <QDirIterator>
 #include <QtTest>
 #include <QFontDatabase>
 #include <QJsonArray>
@@ -418,11 +419,14 @@ private slots:
     }
 
     // Each test with the demo opened afresh: a tab's strokes, and their
-    // numbers, are its own.
+    // numbers, are its own - the strokes kept beside a layout (V1 of the RF
+    // 2.5D open items) taken away with it.
     void cleanup()
     {
         app->closeAllFiles();
         waitForReads();
+        QDirIterator kept(dir.filePath("workspace"), {QStringLiteral("*.drawings")}, QDir::Files, QDirIterator::Subdirectories);
+        while (kept.hasNext()) QFile::remove(kept.next());
     }
 
     void cleanupTestCase()
@@ -1259,6 +1263,35 @@ private slots:
 
     // Strokes of every shape, as a hand might draw or a fuzzer might, never
     // break the reading: none is asserted but that it reads.
+    // A highlighter along a strip's middle (V6 of the RF 2.5D open items: a
+    // strip drawn as a rectangle had no centre line to snap to, and its
+    // reading snapped to a small square's edge beside it): it snaps to the
+    // strip's centre line.
+    void aStripsMiddleIsACentreLine()
+    {
+        {
+            gdstk::Library lib = {};
+            lib.init("LIB", 1e-6, 1e-9);
+            gdstk::Cell* top = newCell(lib, "TOP");
+            addRectangle(top, gdstk::Vec2{0, 0}, gdstk::Vec2{400, 20}, 1);
+            addRectangle(top, gdstk::Vec2{180, 5}, gdstk::Vec2{200, 15}, 10);
+            QVERIFY(lib.write_gds(QFile::encodeName(path("layout/stripmiddle.gds")).constData(), 0, nullptr) == gdstk::ErrorCode::NoError);
+            lib.free_all();
+        }
+        LayoutDoc* doc = open(path("layout/stripmiddle.gds"));
+        QVERIFY(doc != nullptr);
+        doc->showCell(doc->layout()->cellIndex("TOP"));
+        doc->view()->clearDrawing(true);
+        QPolygonF along;
+        for (int k = 0; k <= 60; ++k) along << QPointF(20 + 6 * k, 10.3 + 0.2 * std::sin(k));
+        markup::Stroke s = stroke(along, 4);
+        s.highlighter = true;
+        doc->view()->addStroke(s);
+        const QString said = told(doc);
+        QVERIFY2(said.contains(QStringLiteral("snaps to 10: the 1/0 polygon's centre line")), qPrintable(said));
+        doc->view()->clearDrawing(true);
+    }
+
     void anyStrokeIsRead()
     {
         LayoutDoc* doc = demo();

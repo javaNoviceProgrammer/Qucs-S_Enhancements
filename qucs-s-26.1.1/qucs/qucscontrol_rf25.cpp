@@ -1010,6 +1010,7 @@ QJsonObject QucsControl::rf25Converge(const QJsonObject& args)
     }
     out.insert(QStringLiteral("values"), values);
     out.insert(QStringLiteral("said"), QJsonArray::fromStringList(check->lines));
+    if (!check->leftOut.isEmpty()) out.insert(QStringLiteral("meshes left out"), QJsonArray::fromStringList(check->leftOut));
     if (!check->problems.isEmpty()) out.insert(QStringLiteral("problems"), QJsonArray::fromStringList(check->problems));
     out.insert(QStringLiteral("note"), tr("The model's own mesh and its solution are as they were: Solve on its tab, or rf25_solve, solves on the Mesh node's settings."));
     return jsonResult(out);

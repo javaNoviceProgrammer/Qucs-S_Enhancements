@@ -66,6 +66,7 @@
 #include "module.h"
 #include "qucs.h"
 #include "layoutdoc.h"
+#include "markup.h"
 #include "rf25doc.h"
 #include "rf25analysis.h"
 #include "multiphysicsoptimization.h"
@@ -4884,6 +4885,60 @@ private slots:
     // 8 cells across, full-wave at the top of its sweep and quasi-statically,
     // each value's reading and verdict said; the solution shown left as it
     // was; counted on the bar as it goes; gone with an edit of the model.
+    // The view's pen and rulers (V1-V5 of the open items): a stroke kept
+    // beside the model and there when it is opened again; read with the
+    // stack's names for the file's layers; a ruler kept when the layout is
+    // read again, dropped when the corner it was snapped to is gone; what the
+    // read found said.
+    void theViewKeepsItsStrokesAndRulers()
+    {
+        const QString file = fullWaveLine(QStringLiteral("viewkept.qrf25"));
+        QVERIFY(!file.isEmpty());
+        const QString kept = file + QStringLiteral(".drawings");
+        QFile::remove(kept);
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        LayoutView* view = doc->view();
+        qucs_s::markup::Stroke stroke;
+        stroke.on = view->drawingPart();
+        stroke.points = QPolygonF({QPointF(100, 25), QPointF(500, 25), QPointF(900, 25)});
+        stroke.color = QColor(255, 220, 0, 120);
+        stroke.width = 10;
+        stroke.highlighter = true;
+        view->addStroke(stroke);
+        QVERIFY2(QFileInfo::exists(kept), "the strokes are kept beside the model");
+        // (Read with the stack's name for 1/0: V5.)
+        const QByteArray read = QJsonDocument(view->readDrawing(false)).toJson(QJsonDocument::Compact);
+        QVERIFY2(read.contains("M1 (1/0)"), read.constData());
+        // A ruler from corner to corner; read again unchanged: kept, said.
+        view->addRuler(QLineF(view->snapped(QPointF(0, 0)), view->snapped(QPointF(1000, 0))));
+        QToolButton* reread = doc->findChild<QToolButton*>(QStringLiteral("rfReread"));
+        QVERIFY(reread != nullptr);
+        reread->click();
+        QVERIFY(doc->waitForLayout(60000));
+        QTRY_VERIFY(!doc->rereadSaid().isEmpty());
+        QCOMPARE(view->rulers().size(), 1);
+        QVERIFY2(doc->rereadSaid().contains(QStringLiteral("as it was")) && doc->rereadSaid().contains(QStringLiteral("Its 1 ruler(s) kept")),
+                 qPrintable(doc->rereadSaid()));
+        QTRY_VERIFY2(doc->problemsText()->toPlainText().contains(doc->rereadSaid()), qPrintable(doc->problemsText()->toPlainText()));
+        // Shorter: its end's corner gone, the ruler dropped and said.
+        QVERIFY(writeStrip(path(QStringLiteral("strip.gds")), 800, 50));
+        reread->click();
+        QVERIFY(doc->waitForLayout(60000));
+        QTRY_VERIFY(doc->rereadSaid().contains(QStringLiteral("changed")));
+        QVERIFY(view->rulers().isEmpty());
+        QVERIFY2(doc->rereadSaid().contains(QStringLiteral("0 ruler(s) kept; 1 dropped")), qPrintable(doc->rereadSaid()));
+        // Closed and opened again: the stroke there (V1).
+        app->closeAllFiles();
+        doc = open(file);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000));
+        QCOMPARE(doc->view()->drawing().strokes().size(), 1);
+        QCOMPARE(doc->view()->drawing().strokes().first().points.size(), 3);
+        QVERIFY(doc->view()->clearDrawing(true));
+        QVERIFY2(!QFileInfo::exists(kept), "none left: the file goes");
+        app->closeAllFiles();
+    }
+
     void aMeshConvergenceCheckSaysHowFarTheMeshIsFromTheLimit()
     {
         const QString file = fullWaveLine(QStringLiteral("converge.qrf25"));
@@ -4979,6 +5034,26 @@ private slots:
                      || (verdict.kind == rf::Convergence::Kind::NotYet && verdict.error < 5e-3 * std::abs(verdict.limit)),
                  qPrintable(q->lines.join(" | ")));
         QCOMPARE(doc->fullWave(), before);
+        // Its own meshes, unasked, the finest past Most cells: left out and
+        // said, the check the three's (the review of 6a962a9a: sized as
+        // asked, a capped mesh skewed the limit; failed, the check failed).
+        {
+            const int own = int(doc->mesh()->cells.size());
+            QVERIFY(doc->editNode(doc->model().mesh().tag, [own](rf::Node& n) { n.props.insert(QStringLiteral("most_cells"), int(own * 1.3)); },
+                                  QStringLiteral("most")));
+            QVERIFY(doc->waitForPrepared(60000));
+            RF25Doc::SolveRequest unasked;
+            unasked.solver = QStringLiteral("quasi_static");
+            unasked.levels = doc->convergenceLevels();
+            QCOMPARE(unasked.levels, (QList<int>{1, 2, 3, 6}));
+            doc->solveWith(unasked);
+            QVERIFY(doc->waitForSolved(600000));
+            const std::shared_ptr<const rf::MeshConvergence> capped = doc->convergence();
+            QVERIFY2(capped != nullptr && capped->ok(), capped ? qPrintable(capped->problems.join(' ')) : "none");
+            QCOMPARE(capped->levels.size(), 3);
+            QVERIFY2(capped->leftOut.join(' ').contains(QStringLiteral("The mesh of 6 cells across came out at")), qPrintable(capped->leftOut.join(" | ")));
+            QVERIFY(capped->lines.join(' ').contains(QStringLiteral("left out, its size not what was asked")));
+        }
         // An edit of the mesh: the check is of another model, and goes.
         QVERIFY(doc->editNode(doc->model().mesh().tag, [](rf::Node& n) { n.props.insert(QStringLiteral("cells_across"), 4); },
                               QStringLiteral("across")));

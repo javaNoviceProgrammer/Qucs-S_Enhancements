@@ -9,6 +9,7 @@
 #include <QtTest>
 
 #include "rf25/rf25_dielectric.h"
+#include "rf25/rf25_fast.h"
 
 #include <Eigen/Dense>
 
@@ -403,12 +404,23 @@ private slots:
         // items: thousands of them built one after another with nothing said,
         // the tab at the stack's "20 of 20" through twenty minutes). The
         // answer is the one without the count to the last digit.
+        // (Told by whichever thread built one: from the caller's alone, the
+        //  count stood at nought where the helpers took every one, and this
+        //  failed under ctest -j4 - the review of 6a962a9a. The work dealt in
+        //  turn, the helpers surely build some, and say so.)
         {
             QList<QPair<int, int>> told;
-            const rf::DielectricCorrection counted
-                = rf::dielectricCorrection(flush, cells, false, nullptr, 0, [&told](int done, int all) { told << qMakePair(done, all); });
+            bool elsewhere = false;
+            QThread* mine = QThread::currentThread();
+            rf::setSharesDealt(true);
+            const rf::DielectricCorrection counted = rf::dielectricCorrection(flush, cells, false, nullptr, 0, [&](int done, int all) {
+                told << qMakePair(done, all);
+                elsewhere = elsewhere || QThread::currentThread() != mine;
+            });
+            rf::setSharesDealt(false);
             QVERIFY(counted.ok() && counted.delta == whole.delta);
             QVERIFY2(told.size() >= 3, qPrintable(QString::number(told.size())));
+            if (QThread::idealThreadCount() > 1) QVERIFY2(elsewhere, "told only from the caller's thread");
             const int all = told.first().second;
             QVERIFY(all > 1);
             QCOMPARE(told.at(told.size() - 2), qMakePair(all, all));

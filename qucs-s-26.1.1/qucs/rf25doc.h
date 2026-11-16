@@ -134,6 +134,10 @@ public:
     bool reload();
     /// What reading its file last noted, or why it could not be read.
     QString readNotes() const { return a_readNotes; }
+    /// What Read the Layout Again found: the file as it was or changed, its
+    /// shapes, the rulers kept and dropped (V3 of the open items: it said
+    /// nothing); empty before one.
+    QString rereadSaid() const { return a_rereadSaid; }
 
     // The model.
     const qucs_s::rf25::Model& model() const { return a_model; }
@@ -764,6 +768,14 @@ private:
     QMenu* a_drawMenu = nullptr;
     QObject* a_drawMenuParts = nullptr;          ///< what the menu's last filling made beside its actions
     QString a_drawnSaid;                         ///< what the last drawing did, said till the pointer moves
+    // Read the Layout Again (V2, V3): asked, what was read before it, and
+    // what it found; each read's stamp of the file's bytes.
+    bool a_rereadAsked = false;
+    quint64 a_rereadShapes = 0;
+    QByteArray a_readStamp, a_rereadStamp;
+    QString a_rereadSaid;
+    int a_rulersKept = 0, a_rulersDropped = 0;
+    void rereadLayout();
     bool a_keepView = false;                     ///< the layout read next is shown where the view is: a drawing's
     QList<qucs_s::layout::LayoutView::Overlay> a_overlaysShown;   ///< showOverlays()' own, under what is being drawn
     /// The overlays shown again: showOverlays()' and what is being drawn.

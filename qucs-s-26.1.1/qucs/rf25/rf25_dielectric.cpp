@@ -24,6 +24,7 @@
 #include <QThread>
 
 #include <algorithm>
+#include <mutex>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -304,7 +305,10 @@ public:
         if (a_greens.count(k) == 0) a_greens.emplace(k, Green(a_layers, std::min(zf, zs), std::max(zf, zs)));
     }
     /// Built, each, on as many threads as the machine has, \a progress told
-    /// how many of all are as they go (from the caller's thread); false and
+    /// how many of all are as they go - by whichever thread built one, one
+    /// call at a time, the count only rising (told from the caller's thread
+    /// alone, it stood at nought where the helpers took every one, and a test
+    /// counting the calls failed under load: the review of 6a962a9a); false and
     /// why where one could not be. (One after another they were thousands of
     /// some milliseconds each - 8664 of a flip chip's bump, its pad solved as
     /// its two faces and its die's layers ending at the die -, a minute or
@@ -316,13 +320,24 @@ public:
         for (auto& entry : a_fields) all.push_back(&entry.second);
         const int count = int(all.size());
         std::atomic_int next{0}, done{0};
-        onThreads(std::clamp(QThread::idealThreadCount(), 1, std::max(1, count)), [&](int t) {
-            for (int i = next++; i < count; i = next++) {
+        std::mutex telling;
+        int told = 0;
+        // (Dealt in turn where a test asks: sharesDealt().)
+        const bool dealt = sharesDealt();
+        const int n = std::clamp(QThread::idealThreadCount(), 1, std::max(1, count));
+        onThreads(n, [&](int t) {
+            for (int i = dealt ? t : next++; i < count; i = dealt ? i + n : next++) {
                 if (stop != nullptr && stop->load()) return;
                 all[std::size_t(i)]->stopWith(stop);
                 (void)all[std::size_t(i)]->images();
                 const int now = ++done;
-                if (t == 0 && progress) progress(now, count);
+                if (progress) {
+                    const std::lock_guard<std::mutex> lock(telling);
+                    if (now > told) {
+                        told = now;
+                        progress(now, count);
+                    }
+                }
             }
         });
         if (progress) progress(done.load(), count);

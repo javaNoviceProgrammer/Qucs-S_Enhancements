@@ -30,6 +30,19 @@ namespace {
 constexpr double Degrees = 180.0 / M_PI;
 
 double dot(QPointF a, QPointF b) { return a.x() * b.x() + a.y() * b.y(); }
+
+/// The tab's names for the layers while a reading is made (readStrokes()'s
+/// own: the GUI thread's, one reading at a time).
+thread_local const QHash<int, QString>* t_layerNames = nullptr;
+
+/// Layer \a index as a reading says it: "12/0", or "V2 (12/0)" where the tab
+/// names it.
+QString layerText(const Layout& layout, int index)
+{
+    const QString key = layout.layers.at(index).key.text();
+    const QString name = t_layerNames != nullptr ? t_layerNames->value(index) : QString();
+    return name.isEmpty() ? key : QStringLiteral("%1 (%2)").arg(name, key);
+}
 double cross(QPointF a, QPointF b) { return a.x() * b.y() - a.y() * b.x(); }
 
 /// The point of the segment from \a a to \a b nearest \a p.
@@ -117,7 +130,7 @@ struct Gathered {
             if (!texts.contains(text)) texts << text;
             return;
         }
-        ++shapes[layout.layers.at(layout.cells.at(f.cell).shapes.at(f.shape).layer).key.text()];
+        ++shapes[layerText(layout, layout.cells.at(f.cell).shapes.at(f.shape).layer)];
     }
 };
 
@@ -292,7 +305,7 @@ QString cellsOf(const Layout& layout, const Query& base, const Found& f)
 
 QJsonObject shapeRef(const Layout& layout, const Query& base, const Found& f)
 {
-    QJsonObject o{{QStringLiteral("layer"), layout.layers.at(layout.cells.at(f.cell).shapes.at(f.shape).layer).key.text()},
+    QJsonObject o{{QStringLiteral("layer"), layerText(layout, layout.cells.at(f.cell).shapes.at(f.shape).layer)},
                   {QStringLiteral("kind"), kindOf(layout, f)}};
     if (const QString in = cellsOf(layout, base, f); !in.isEmpty()) o.insert(QStringLiteral("in"), in);
     return o;
@@ -613,7 +626,7 @@ markup::Snaps snapsNear(const Layout& layout, const Query& base, const QList<Nea
             }
             const Lines l = linesOf(layout, n.found);
             if (l.points.size() > 2000) continue;
-            const QString layer = layout.layers.at(layout.cells.at(n.found.cell).shapes.at(n.found.shape).layer).key.text();
+            const QString layer = layerText(layout, layout.cells.at(n.found.cell).shapes.at(n.found.shape).layer);
             const QString kind = kindOf(layout, n.found);
             const QString in = cellsOf(layout, base, n.found);
             const QString name = QStringLiteral("the %1 %2's").arg(layer, kind);
@@ -626,6 +639,20 @@ markup::Snaps snapsNear(const Layout& layout, const Query& base, const QList<Nea
                     if (std::abs(a.y() - b.y()) < 1e-9) add(false, a.y(), name + QStringLiteral(" centre line"), pass);
                     if (std::abs(a.x() - b.x()) < 1e-9) add(true, a.x(), name + QStringLiteral(" centre line"), pass);
                 }
+            // (A strip drawn as a rectangle has a centre line too, along its
+            //  length: a highlighter along a 20 µm strip's middle snapped to
+            //  a small square's edge beside it - V6 of the RF 2.5D open
+            //  items.)
+            if (pass == 0 && !l.path && n.outline.size() == 4) {
+                const QRectF box = n.box;
+                double twice = 0;
+                for (int k = 0; k < 4; ++k) twice += cross(n.outline.at(k), n.outline.at((k + 1) % 4));
+                const double area = std::abs(twice) / 2;
+                if (box.width() > 0 && box.height() > 0 && std::abs(area - box.width() * box.height()) <= 1e-9 * box.width() * box.height()) {
+                    if (box.width() >= 2 * box.height()) add(false, box.center().y(), name + QStringLiteral(" centre line"), pass);
+                    else if (box.height() >= 2 * box.width()) add(true, box.center().x(), name + QStringLiteral(" centre line"), pass);
+                }
+            }
             if (pass == 1 && l.path)
                 for (int k = 0; k < count; ++k) {
                     const QString what = (k == 0 || k == count - 1 ? name + QStringLiteral(" end") : name + QStringLiteral(" vertex"))
@@ -675,7 +702,7 @@ markup::Snaps snapsNear(const Layout& layout, const Query& base, const QList<Nea
         const Lines l = linesOf(layout, n.found);
         if (!l.path) continue;
         const QRectF spine = l.points.boundingRect();
-        const QString what = QStringLiteral("the %1 path's middle").arg(layout.layers.at(layout.cells.at(n.found.cell).shapes.at(n.found.shape).layer).key.text());
+        const QString what = QStringLiteral("the %1 path's middle").arg(layerText(layout, layout.cells.at(n.found.cell).shapes.at(n.found.shape).layer));
         if (spine.left() < stroke.right() && spine.right() > stroke.left() && spine.width() > 0) snaps.uprights << markup::Snap{spine.center().x(), what, 0};
         if (spine.top() < stroke.bottom() && spine.bottom() > stroke.top() && spine.height() > 0) snaps.levels << markup::Snap{spine.center().y(), what, 0};
     }
@@ -793,8 +820,14 @@ QJsonObject readOne(const Layout& layout, const Query& base, const markup::Strok
 
 } // namespace
 
-QJsonArray readStrokes(const Layout& layout, const Query& base, const QList<markup::Stroke>& strokes, bool points)
+QJsonArray readStrokes(const Layout& layout, const Query& base, const QList<markup::Stroke>& strokes, bool points,
+                       const QHash<int, QString>* layerNames)
 {
+    // (The names for the layers while this reading is made, and none after.)
+    struct Names {
+        explicit Names(const QHash<int, QString>* n) { t_layerNames = n; }
+        ~Names() { t_layerNames = nullptr; }
+    } names(layerNames);
     QJsonArray out;
     if (base.cell < 0 || base.cell >= layout.cells.size()) return out;
     const QString part = layout.cells.at(base.cell).name;
