@@ -823,12 +823,22 @@ private slots:
         const rf::Stack stack = grounded(9.8, 100e-6, 3e-6, 5.8e7);
         const auto both = [&stack](const QList<rf::Conductor>& shapes, const rf::Stack& on, double cell, QPointF from, QPointF to) {
             const rf::Mesh mesh = meshed(shapes, cell);
-            const rf::Inductance dense = rf::inductanceOf(mesh, shapes, on, from, to);
+            rf::LoopProgress sizedDense;
+            const rf::Inductance dense = rf::inductanceOf(mesh, shapes, on, from, to, 1e-6, 0, nullptr, QString(), QString(), &sizedDense);
             rf::setLoopDenseLimit(50);
-            const rf::Inductance compressed = rf::inductanceOf(mesh, shapes, on, from, to);
+            // (How far it has got, for what is said while it runs: its runs
+            //  and cells, compressed, and its GMRES's last iteration and
+            //  residual - P26 of the open items.)
+            rf::LoopProgress progress;
+            const rf::Inductance compressed = rf::inductanceOf(mesh, shapes, on, from, to, 1e-6, 0, nullptr, QString(), QString(), &progress);
             rf::setLoopDenseLimit(0);
             Q_UNUSED(stack);
             QString said;
+            if (progress.runs.load() != compressed.branches || !progress.compressed.load() || progress.iterations.load() != compressed.iterations
+                || !(progress.residual.load() > 0 && progress.residual.load() < 1e-9) || sizedDense.compressed.load() || sizedDense.iterations.load() != 0)
+                said += QStringLiteral("progress: %1 runs (%2), compressed %3, iteration %4 (%5), residual %6; dense said compressed %7; ")
+                            .arg(progress.runs.load()).arg(compressed.branches).arg(progress.compressed.load()).arg(progress.iterations.load())
+                            .arg(compressed.iterations).arg(progress.residual.load()).arg(sizedDense.compressed.load());
             if (!dense.ok() || dense.compressed) said += QStringLiteral("dense: %1; ").arg(dense.problems.join(" | "));
             if (!compressed.ok() || !compressed.compressed) said += QStringLiteral("compressed: %1; ").arg(compressed.problems.join(" | "));
             if (!said.isEmpty()) return said;

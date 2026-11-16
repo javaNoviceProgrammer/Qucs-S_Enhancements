@@ -615,9 +615,13 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         nets.append(net);
     }
     out.insert(QStringLiteral("nets"), nets);
-    // (What makes it doubtful, as the full wave's warnings: the mesh's.)
-    if (const std::shared_ptr<const Mesh> mesh = model->mesh(); mesh && !mesh->warnings.isEmpty())
-        out.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(mesh->warnings));
+    // (What makes it doubtful, as the full wave's warnings: the mesh's, and
+    //  the extraction's own - a capacitance matrix that is no Maxwell matrix.)
+    {
+        QStringList warned = e->warnings;
+        if (const std::shared_ptr<const Mesh> mesh = model->mesh(); mesh) warned = mesh->warnings + warned;
+        if (!warned.isEmpty()) out.insert(QStringLiteral("warnings"), QJsonArray::fromStringList(warned));
+    }
     // Several conductors are coupled lines, whose modes are what a
     // designer of a pair actually asks after.
     double slowest = 0;   // m/s: the slowest mode's, for where the S parameters first turn over

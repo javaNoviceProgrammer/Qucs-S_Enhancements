@@ -864,7 +864,7 @@ int loopDenseLimit()
 
 Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, QPointF from, QPointF to,
                         double micrometre, double frequency, const std::atomic_bool* stop, const QString& fromLayer,
-                        const QString& toLayer)
+                        const QString& toLayer, LoopProgress* progress)
 {
     Inductance out;
     if (mesh.cells.isEmpty()) {
@@ -1143,6 +1143,11 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         if (c != drop) incidence.emplace_back(row(c) - nb, b, -1.0);
     }
     const bool dense = nb + nn <= loopDenseLimit();
+    if (progress != nullptr) {
+        progress->runs = nb;
+        progress->cells = nn;
+        progress->compressed = !dense;
+    }
     // L applied to a current: of the dense matrix, or the compressed one.
     QList<QList<double>> lp;
     std::unique_ptr<LoopL> compressed;
@@ -1313,7 +1318,12 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         const Operator precondition = [&lu](const VectorC& x, VectorC& y) { y = lu.solve(x); };
         VectorC rhs = VectorC::Zero(rows), x = VectorC::Zero(rows);
         rhs(row(in)) = 1.0;
-        const Gmres solved = gmres(system, precondition, rhs, x, kLoopResidual, kLoopRestart, kLoopMostIterations, stop);
+        const Gmres solved = gmres(system, precondition, rhs, x, kLoopResidual, kLoopRestart, kLoopMostIterations, stop,
+                                   [progress](int iterations, double residual) {
+                                       if (progress == nullptr) return;
+                                       progress->iterations = iterations;
+                                       progress->residual = residual;
+                                   });
         if (solved.stopped) {
             out.problems << tr("The inductance was stopped.");
             return out;

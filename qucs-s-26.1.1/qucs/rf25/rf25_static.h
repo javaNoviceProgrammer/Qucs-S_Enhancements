@@ -239,6 +239,9 @@ struct Extraction {
     double groundValue = 0;
     QStringList problems;
     QStringList lines;                ///< what it did, for the panel
+    /// What makes it doubtful, among the lines too: a capacitance matrix
+    /// that is no Maxwell matrix (maxwellDoubts()).
+    QStringList warnings;
     bool ok() const { return problems.isEmpty() && !c.isEmpty(); }
     /// The self capacitance of net \a i to everything else, F.
     double selfCapacitance(int i) const;
@@ -301,6 +304,15 @@ struct ExtractControl {
 /// \a done of \a all are and the images of the Green's function built last:
 /// what the tab's bar and rf25_solve say while it is at work.
 QString extractStepSaid(int step, int done, int all, int images);
+
+/// What makes \a maxwell (F, nets in the order of \a names) no Maxwell
+/// matrix: a self capacitance not above nought, a mutual one above it, or a
+/// row summing to less than nothing - a conductor's capacitance to the
+/// ground and to infinity below nought -, each beyond a part in 1e6 of the
+/// largest self capacitance. Empty where it is one. (P27 of the open items:
+/// silicon beside a metal's walls through a thin film read C12 positive, and
+/// nothing said so.)
+QStringList maxwellDoubts(const QList<QList<double>>& maxwell, const QStringList& names);
 
 /*!
  * \a mesh (cells in the layout's micrometres) solved on \a stack: the

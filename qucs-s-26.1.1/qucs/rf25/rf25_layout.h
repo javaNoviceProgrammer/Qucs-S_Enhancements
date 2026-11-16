@@ -219,6 +219,9 @@ struct LayerMap {
     QMap<QString, QString> toLayer;   ///< "31/0" to "M1"
     QSet<QString> fill;               ///< the stack layers whose shapes are fill
     QStringList problems;
+    /// What it does that is worth saying but stands in no solve's way: a
+    /// layer sent to two layers of the stack, the later row taking it.
+    QStringList notes;
 };
 LayerMap layerMapOf(const Model& model);
 

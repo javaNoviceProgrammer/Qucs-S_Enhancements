@@ -2264,6 +2264,18 @@ RF25Doc::Count RF25Doc::countNow() const
         // where it cannot, a matrix being filled and factored.
         const int step = job->step.load(), done = job->stepDone.load(), all = job->stepAll.load();
         c.said = tr("Solving quasi-statically: %1…").arg(extractStepSaid(step, done, all, job->images.load()));
+        // The loop: how large, and how far its GMRES has got where it is held
+        // compressed (P26 of the open items).
+        if (step == ExtractControl::Loop) {
+            const LoopProgress& lp = job->loopProgress;
+            if (const int runs = lp.runs.load(); runs > 0)
+                c.said += lp.compressed.load() ? tr(" %1 runs over %2 cells, held compressed").arg(runs).arg(lp.cells.load())
+                                               : tr(" %1 runs over %2 cells, dense").arg(runs).arg(lp.cells.load());
+            if (const int iterations = lp.iterations.load(); iterations > 0)
+                c.said += tr("; GMRES at iteration %1, residual %2.").arg(iterations).arg(lp.residual.load(), 0, 'g', 2);
+            else if (lp.runs.load() > 0)
+                c.said += QLatin1Char('.');
+        }
         if (all > 0) {
             c.of = all;
             c.done = std::min(done, all);

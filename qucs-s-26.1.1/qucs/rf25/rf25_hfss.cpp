@@ -795,7 +795,7 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
             d.of = l.name;
             d.z0 = z;
             d.thickness = l.thickness;
-            d.material = addMaterial(d.name, l.epsr, l.tand, l.kind == Layer::Substrate ? l.sigma : 0);
+            d.material = addMaterial(d.name, l.epsr, l.tand, std::max(0.0, l.sigma));
             materials.last().mur = l.mur > 0 ? l.mur : 1;
             materials.last().mtand = std::max(0.0, l.mtand);
             materialOf.insert(i, d.material);

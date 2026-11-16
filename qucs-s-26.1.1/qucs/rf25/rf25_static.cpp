@@ -559,6 +559,32 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
 
 } // namespace
 
+QStringList maxwellDoubts(const QList<QList<double>>& maxwell, const QStringList& names)
+{
+    QStringList out;
+    const int n = int(maxwell.size());
+    double largest = 0;
+    for (int i = 0; i < n; ++i)
+        if (i < maxwell.at(i).size()) largest = std::max(largest, std::abs(maxwell.at(i).at(i)));
+    const double tol = 1e-6 * largest;
+    const auto nameOf = [&names](int i) { return i < names.size() ? names.at(i) : QString::number(i + 1); };
+    for (int i = 0; i < n; ++i) {
+        if (maxwell.at(i).size() != n) return {QObject::tr("The capacitance matrix is not square.")};
+        double sum = 0;
+        for (int j = 0; j < n; ++j) sum += maxwell.at(i).at(j);
+        if (!(maxwell.at(i).at(i) > tol))
+            out << QObject::tr("%1's self capacitance is %2 fF, not above nought").arg(nameOf(i)).arg(maxwell.at(i).at(i) * 1e15, 0, 'g', 4);
+        for (int j = i + 1; j < n; ++j)
+            if (maxwell.at(i).at(j) > tol)
+                out << QObject::tr("the mutual capacitance of %1 and %2 is +%3 fF, where it can only be below nought")
+                           .arg(nameOf(i), nameOf(j)).arg(maxwell.at(i).at(j) * 1e15, 0, 'g', 4);
+        if (sum < -tol)
+            out << QObject::tr("%1's row sums to %2 fF, its capacitance to the ground and to infinity below nought")
+                       .arg(nameOf(i)).arg(sum * 1e15, 0, 'g', 4);
+    }
+    return out;
+}
+
 QString extractStepSaid(int step, int done, int all, int images)
 {
     switch (step) {
@@ -1554,6 +1580,16 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     out.c = mutualOf(out.maxwell);
     out.c0 = mutualOf(out.maxwell0);
     for (const Net& net : nets) out.names << net.name;
+    // Physical, or said: a matrix no Maxwell matrix is not to be trusted
+    // (P27 of the open items).
+    if (const QStringList doubts = maxwellDoubts(out.maxwell, out.names); !doubts.isEmpty()) {
+        const QString w = tr("The capacitance matrix is no Maxwell matrix - %1: it is not physical, and its values are not "
+                             "to be trusted. A finer mesh across the narrowest gaps, or the metals as sheets, may solve it "
+                             "cleanly.")
+                              .arg(doubts.join(QStringLiteral("; ")));
+        out.warnings << w;
+        out.lines << w;
+    }
 
     // (The charge's own count, as the mesh's line gives it - "unknowns"
     // there are a full-wave solve's edges, a second number the phase B

@@ -669,7 +669,8 @@ void runSolve(SolveJob& job)
         job.stepAll = 0;
         job.step = ExtractControl::Loop;
         job.inductance = std::make_shared<Inductance>(
-            inductanceOf(job.mesh, job.conductors, job.stack, job.in, job.out, 1e-6, job.frequency, &job.stop, job.inLayer, job.outLayer));
+            inductanceOf(job.mesh, job.conductors, job.stack, job.in, job.out, 1e-6, job.frequency, &job.stop, job.inLayer, job.outLayer,
+                         &job.loopProgress));
     }
 }
 

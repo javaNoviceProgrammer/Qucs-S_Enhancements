@@ -906,9 +906,12 @@ LayerMap layerMapOf(const Model& model)
         const QString note = cells.size() > 3 ? cells.at(3).toString().trimmed() : QString();
         if (layer.isEmpty() || to.isEmpty()) continue;
         const QString key = QStringLiteral("%1/%2").arg(layer, datatype.isEmpty() ? QStringLiteral("0") : datatype);
-        if (map.toLayer.contains(key))
-            map.problems << tr("The layer map sends %1 to two layers of the stack (%2 and %3).")
-                                .arg(key, map.toLayer.value(key), to);
+        // (Two rows of one layer: the later takes its shapes, and the solve
+        //  goes on - said as a note, where it was listed as standing in the
+        //  way of a solve that ran: a minor point of the review of the MIMs.)
+        if (map.toLayer.contains(key) && map.toLayer.value(key) != to)
+            map.notes << tr("The layer map sends %1 to two layers of the stack (%2 and %3): its shapes go to %3, the later row.")
+                             .arg(key, map.toLayer.value(key), to);
         map.toLayer.insert(key, to);
         if (stack.named(to) == nullptr)
             map.problems << tr("The layer map sends %1 to %2, which is no layer of the stack.").arg(key, to);
@@ -1208,6 +1211,7 @@ Processed processRead(const Model& model, const layout::Layout& read, const QStr
     if (ignored > 0)
         out.report.lines << tr("%1 shape(s) are on layers the map does not name.").arg(ignored);
     out.problems += map.problems;
+    out.report.lines += map.notes;
     out.problems += said;
     return out;
 }

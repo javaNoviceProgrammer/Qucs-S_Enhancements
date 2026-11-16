@@ -534,7 +534,7 @@ Layers layersOf(const Stack& stack)
                 // (Read by the retarded Green's functions alone: a static
                 // charge sees the real permittivity.)
                 s.tand = std::max(0.0, l.tand);
-                s.sigma = l.kind == Layer::Substrate ? std::max(0.0, l.sigma) : 0.0;
+                s.sigma = std::max(0.0, l.sigma);   // (a dielectric's too: F7 of the open items)
                 s.name = l.name;
                 s.dispersive = !l.dispersion.isEmpty();
                 s.dispersionAt = l.dispersionAt;

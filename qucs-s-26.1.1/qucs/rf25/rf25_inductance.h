@@ -249,9 +249,20 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
  * solve's H-matrices - and the system solved by GMRES, preconditioned by
  * the near field's LU; \a stop, given, is heeded there.
  */
+/// How far a loop's solve has got, for what is said while it runs: its runs
+/// and cells once it has them, and its GMRES's iteration and residual where
+/// it is held compressed (P26 of the open items: eight minutes of "finding
+/// the loop's inductance…" and nothing more).
+struct LoopProgress {
+    std::atomic_int runs{0}, cells{0}, iterations{0};
+    std::atomic<double> residual{0};
+    std::atomic_bool compressed{false};
+};
+
 Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, QPointF from, QPointF to,
                         double micrometre = 1e-6, double frequency = 0, const std::atomic_bool* stop = nullptr,
-                        const QString& fromLayer = QString(), const QString& toLayer = QString());
+                        const QString& fromLayer = QString(), const QString& toLayer = QString(),
+                        LoopProgress* progress = nullptr);
 // (\a fromLayer and \a toLayer, given, are the metals the two ends are on:
 //  where another conductor lies under the point too - a ground plate both
 //  of a model's via ports start from -, the end is the face on this one.)

@@ -802,6 +802,94 @@ private slots:
     // spread the more evenly across the strip the more resistive its surface,
     // its edges' crowding the less (measured x1.865 for Huray's 1.939, x1.748
     // for Hammerstad's 1.807; a perfect metal's 0.02 Np/m against 2.24).
+    // A dielectric conducts as a substrate does (F7 of the open items: a
+    // stack had one conducting layer at most, the substrate - no epi on bulk,
+    // no SOI device layer, no trap-rich layer): 200 µm of silicon at 2 S/m
+    // solved whole, and as 150 µm of substrate and 50 µm of a dielectric of
+    // the same, the same Z to the tables' rounding; the dielectric at 20 S/m,
+    // an epi on bulk, the line's loss the more. And the model reads it.
+    // A MIM's full-wave C at 1 GHz is its quasi-static one (P30 of the open
+    // items: 4-6.5 % under it, and slow to converge - its plates' cells under
+    // each other misaligned, as P28's were): a 10 µm square over an 11.2 µm
+    // one, 40 nm of 6.892 between, driven between them, within 2 % at cells
+    // of 1.25 and 0.625 µm (+1.2 and +1.0 %; at 2.5 µm it reads 8.6 % over).
+    void aMimsFullWaveCapacitanceIsItsQuasiStaticOne()
+    {
+        rf::Stack st = grounded(4.1, 5e-6);
+        rf::Layer gap;
+        gap.kind = rf::Layer::Dielectric;
+        gap.name = QStringLiteral("MIM");
+        gap.tag = QStringLiteral("mim");
+        gap.thickness = 40e-9;
+        gap.epsr = 6.892;
+        rf::Layer top = st.layers.at(2);
+        top.name = QStringLiteral("M2");
+        top.tag = QStringLiteral("m2");
+        rf::Layer over;
+        over.kind = rf::Layer::Dielectric;
+        over.name = QStringLiteral("OX");
+        over.tag = QStringLiteral("ox");
+        over.thickness = 2e-6;
+        over.epsr = 4.1;
+        st.layers << gap << top << over;
+        rf::Conductor plate = strip(0, 0, 10, 10);
+        plate.layer = QStringLiteral("M2");
+        const QList<rf::Conductor> both{strip(-0.6, -0.6, 11.2, 11.2), plate};
+        for (const double cell : {1.25, 0.625}) {
+            rf::MeshSettings how;
+            how.maximum = cell * 1e-6;
+            how.cellsAcross = 0;
+            const rf::Mesh mesh = rf::meshOf(both, how, st, 1e9);
+            const rf::Extraction e = rf::extract(mesh, both, st);
+            const rf::FullWave w = rf::fullWaveOf(mesh, both, st, {internalPort(QPointF(5, 5), QStringLiteral("M2"), QStringLiteral("M1"))}, {1e9});
+            QVERIFY2(w.ok() && e.ok(), qPrintable(why(w) + e.problems.join(" | ")));
+            const Complex z = w.z.at(0).at(0).at(0);
+            const double full = -1.0 / (2 * M_PI * 1e9 * z.imag()), quasi = -e.maxwell.at(0).at(1);
+            qWarning("a MIM at %g µm cells: quasi-static %.2f fF, full wave %.2f fF", cell, quasi * 1e15, full * 1e15);
+            QVERIFY2(std::abs(full / quasi - 1) < 0.02, qPrintable(QStringLiteral("%1 against %2 fF").arg(full * 1e15).arg(quasi * 1e15)));
+        }
+    }
+
+    void aDielectricConductsAsTheSubstrateDoes()
+    {
+        const rf::Stack whole = [] {
+            rf::Stack s = grounded(11.9, 200e-6);
+            s.layers[1].sigma = 2;
+            return s;
+        }();
+        const auto split = [](double sigma) {
+            rf::Stack s = grounded(11.9, 150e-6);
+            s.layers[1].sigma = 2;
+            rf::Layer epi;
+            epi.kind = rf::Layer::Dielectric;
+            epi.name = QStringLiteral("EPI");
+            epi.tag = QStringLiteral("epi");
+            epi.thickness = 50e-6;
+            epi.epsr = 11.9;
+            epi.sigma = sigma;
+            s.layers.insert(2, epi);
+            return s;
+        };
+        const rf::FullWave a = line(whole, 1000, 100, 2, 100e-6, 4, {2e9});
+        const rf::FullWave b = line(split(2), 1000, 100, 2, 100e-6, 4, {2e9});
+        const rf::FullWave c = line(split(20), 1000, 100, 2, 100e-6, 4, {2e9});
+        QVERIFY2(a.ok() && b.ok() && c.ok(), qPrintable(why(a) + why(b) + why(c)));
+        const double apart = std::abs(b.z.at(0).at(1).at(0) - a.z.at(0).at(1).at(0)) / std::abs(a.z.at(0).at(1).at(0));
+        QVERIFY2(apart < 1e-6, qPrintable(QStringLiteral("Z21 %1 apart").arg(apart)));
+        const double lossA = 1 - std::norm(a.s.at(0).at(1).at(0)) - std::norm(a.s.at(0).at(0).at(0));
+        const double lossC = 1 - std::norm(c.s.at(0).at(1).at(0)) - std::norm(c.s.at(0).at(0).at(0));
+        QVERIFY2(lossC > 1.5 * lossA && lossA > 0, qPrintable(QStringLiteral("lost %1 with the epi at 20 S/m, %2 at 2").arg(lossC).arg(lossA)));
+        // Read from the model's node.
+        rf::Model m = rf::Model::blank();
+        rf::Node d = m.make(QStringLiteral("rf_dielectric"));
+        d.props.insert(QStringLiteral("sigma"), QStringLiteral("5[S/m]"));
+        QVERIFY(m.add(m.stackNode().tag, d) != nullptr);
+        bool found = false;
+        for (const rf::Layer& l : m.stack().layers)
+            if (l.kind == rf::Layer::Dielectric && l.sigma == 5) found = true;
+        QVERIFY(found);
+    }
+
     void aMetalsRoughnessIsInItsFullWaveLoss()
     {
         for (const auto& [f, huray, hammerstad] : {std::tuple{1e8, 1.0295383317, 1.0204007997}, std::tuple{1e9, 1.2156071030, 1.1974890999},

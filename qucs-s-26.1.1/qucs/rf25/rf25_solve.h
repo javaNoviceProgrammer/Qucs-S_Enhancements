@@ -103,6 +103,8 @@ struct SolveJob {
     /// Its loop alone, no charge solve first (SolveRequest::loopOnly).
     bool loopOnly = false;
     QPointF in, out;
+    /// How far its loop has got (rf25_inductance.h), for what is said.
+    LoopProgress loopProgress;
     /// The metals the loop's two ends are on, where the ports say (an edge
     /// port's conductor; an internal port's metal not the one both share).
     QString inLayer, outLayer;

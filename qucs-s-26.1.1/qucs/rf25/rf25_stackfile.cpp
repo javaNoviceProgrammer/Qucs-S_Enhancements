@@ -219,7 +219,7 @@ StackWritten hfssStackupOf(const Model& model, const QString& name, const QStrin
             d.of = l.name;
             d.z0 = z;
             d.thickness = l.thickness;
-            d.material = material(d.name, l.epsr, l.tand, l.kind == Layer::Substrate ? l.sigma : 0);
+            d.material = material(d.name, l.epsr, l.tand, std::max(0.0, l.sigma));
             z += l.thickness;
             rows << d;
         } else if (l.kind == Layer::Metal) {
@@ -485,7 +485,9 @@ StackWritten emxProcessOf(const Model& model, const QString& name, const QString
             break;
         }
         case Layer::Dielectric: {
-            QString line = QStringLiteral("layer %1 %2 name %3").arg(um(l.thickness), num(l.epsr), id);
+            QString line = QStringLiteral("layer %1 %2").arg(um(l.thickness), num(l.epsr));
+            if (l.sigma > 0) line += QStringLiteral(" 1 %1").arg(num(l.sigma));
+            line += QStringLiteral(" name %1").arg(id);
             if (l.tand > 0) line += QStringLiteral(" tan delta %1").arg(num(l.tand));
             layers << line;
             ++out.layers;

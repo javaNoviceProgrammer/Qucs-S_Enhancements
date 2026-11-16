@@ -117,13 +117,18 @@ private slots:
         QVERIFY(map.fill.contains(QStringLiteral("M1")));
         QVERIFY(!map.fill.contains(QStringLiteral("M2")));
 
-        // A datatype left empty is 0; a layer sent twice, and one sent
-        // where the stack has nothing, are said.
+        // A datatype left empty is 0; a layer sent twice is noted, the later
+        // row taking it - it stands in no solve's way, where it was listed
+        // as standing in the way of one that ran (the review of the MIMs) -;
+        // one sent where the stack has nothing is a problem.
         rows.append(QJsonArray{QStringLiteral("31"), QString(), QStringLiteral("M2")});
         rows.append(QJsonArray{QStringLiteral("50"), QStringLiteral("0"), QStringLiteral("M9")});
         set(*m.layout().child(QStringLiteral("rf_layer_map")), "rows", rows);
         const rf::LayerMap again = rf::layerMapOf(m);
-        QVERIFY2(says(again.problems, "two layers of the stack"), qPrintable(again.problems.join(" | ")));
+        QVERIFY2(!says(again.problems, "two layers of the stack"), qPrintable(again.problems.join(" | ")));
+        QVERIFY2(says(again.notes, "two layers of the stack") && says(again.notes, "its shapes go to M2"),
+                 qPrintable(again.notes.join(" | ")));
+        QCOMPARE(again.toLayer.value(QStringLiteral("31/0")), QStringLiteral("M2"));
         QVERIFY2(says(again.problems, "no layer of the stack"), qPrintable(again.problems.join(" | ")));
     }
 

@@ -865,6 +865,53 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 }
             }
     }
+    // Pieces on two metals one over the other, a thin dielectric apart -
+    // nearer than their cells are wide -: their lines shared where they
+    // overlap, both ways, so that their cells face cell for cell. Their
+    // charges must mirror across the gap, which uniform cells on two grids
+    // cannot: a MIM's plates 40 nm apart read their C 52 % low at cells of
+    // 5 µm, 25 % at 2.5, the bottom plate's cells under the top's
+    // misaligned (P28 of the open items).
+    int stackedShared = 0;
+    double narrowestFacing = 0;   // (the narrowest such gap, µm)
+    QSet<int> stackedPieces;      // (and the pieces facing across one)
+    {
+        QHash<QString, QPair<double, double>> span;   // (each metal's faces' heights, µm: a sheet's both its bottom)
+        double z = 0;
+        for (const Layer& l : stack.layers) {
+            if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) z += l.thickness / perUnit;
+            if (l.kind == Layer::Metal) span.insert(l.name, qMakePair(z, l.twoSheets ? z + l.thickness / perUnit : z));
+        }
+        QRectF all;
+        for (const Piece& p : std::as_const(pieces)) all = all.united(p.box);
+        const double tol = 1e-9 * std::max(1.0, std::max(all.width(), all.height()));
+        for (int a = 0; a < pieces.size(); ++a) {
+            if (!pieces.at(a).rectangle) continue;
+            const QString la = conductors.at(pieces.at(a).conductor).layer;
+            if (!span.contains(la)) continue;
+            for (int b = a + 1; b < pieces.size(); ++b) {
+                if (!pieces.at(b).rectangle) continue;
+                const QString lb = conductors.at(pieces.at(b).conductor).layer;
+                if (lb == la || !span.contains(lb)) continue;
+                const QPair<double, double> sa = span.value(la), sb = span.value(lb);
+                const double dz = sa.first <= sb.first ? sb.first - sa.second : sa.first - sb.second;
+                if (!(dz > 0) || dz >= size) continue;
+                const QRectF& A = pieces.at(a).box;
+                const QRectF& B = pieces.at(b).box;
+                const double xLo = std::max(A.left(), B.left()), xHi = std::min(A.right(), B.right());
+                const double yLo = std::max(A.top(), B.top()), yHi = std::min(A.bottom(), B.bottom());
+                if (xHi - xLo <= tol || yHi - yLo <= tol) continue;
+                meetings << Meeting{a, b, true, xLo, xHi} << Meeting{a, b, false, yLo, yHi};
+                ++stackedShared;
+                narrowestFacing = narrowestFacing > 0 ? std::min(narrowestFacing, dz) : dz;
+                stackedPieces << a << b;
+            }
+        }
+    }
+    if (stackedShared > 0)
+        mesh.lines << tr("%1 pair(s) of pieces on two metals face each other across a gap narrower than their cells: their "
+                         "cells are cut alike where they overlap, so that their charges face cell for cell.")
+                          .arg(stackedShared);
     if (cutFrom > 0)
         mesh.lines << tr("%1 shape(s) cut into the %2 rectangle(s) they are made of, each meshed as a strip of its own; "
                          "where two rectangles meet, their cells meet edge to edge.")
@@ -1230,6 +1277,21 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     if (how.edges) mesh.lines << tr("The outermost cells of each conductor's sides are half as wide, where its charge "
                                     "crowds.");
     mesh.facing = facing;
+    // (Aligned, a MIM's C at cells 125 times its gap is within 1 %, at 250
+    //  times some 5 % low: past 150 times, said.)
+    double facingCell = 0;   // (the widest cell of a piece facing another across such a gap, µm)
+    for (const int k : std::as_const(stackedPieces))
+        for (const QList<double>* lines : {&pieces.at(k).xs, &pieces.at(k).ys})
+            for (int i = 1; i < lines->size(); ++i) facingCell = std::max(facingCell, lines->at(i) - lines->at(i - 1));
+    if (narrowestFacing > 0 && facingCell > 150 * narrowestFacing) {
+        const QString w = tr("Metals face each other across %1 µm, under cells some %2 µm across - %3 times the gap: their "
+                             "capacitance reads low, by some 5 % at 250 times. A largest cell under %4 µm brings it within a "
+                             "per cent.")
+                              .arg(narrowestFacing, 0, 'g', 3).arg(facingCell, 0, 'g', 3).arg(int(std::round(facingCell / narrowestFacing)))
+                              .arg(125 * narrowestFacing, 0, 'g', 3);
+        mesh.warnings << w;
+        mesh.lines << w;
+    }
     if (facing > 0)
         mesh.lines << tr("%1 side(s) face another conductor across a gap: their outermost cells are halved until they are no "
                          "wider than a quarter of it, where the charge and the current crowd on both edges.")
