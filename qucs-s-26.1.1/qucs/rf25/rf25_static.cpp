@@ -427,14 +427,14 @@ Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& whi
         for (int j = 0; j < n; ++j) {
             const MeshCell& cj = cells.at(which.at(j));
             const double side = longestSide(ci, cj) * unit;
-            const QRectF rect = scaled(cj.outline.boundingRect(), unit);
+            const QRectF rect = scaled(cj.charged(), unit);
             const Green& g = greenOf(ci.layer, cj.layer);
             p(i, j) = cellPotential(at, rect, g, side, i == j);
             const auto ki = charges.constFind(which.at(i)), kj = charges.constFind(which.at(j));
             if ((ki != charges.constEnd() || kj != charges.constEnd())
                 && std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y()) < kNearWidths * side * (1 + 1e-6)) {   // (a margin, as the full wave's)
                 const double zi = zOf(which.at(i)), zj = zOf(which.at(j));
-                const QList<ChargePart> pi = ki != charges.constEnd() ? ki.value() : QList<ChargePart>{wholeCell(scaled(ci.outline.boundingRect(), unit), zi)};
+                const QList<ChargePart> pi = ki != charges.constEnd() ? ki.value() : QList<ChargePart>{wholeCell(scaled(ci.charged(), unit), zi)};
                 const QList<ChargePart> pj = kj != charges.constEnd() ? kj.value() : QList<ChargePart>{wholeCell(rect, zj)};
                 const auto correction = [&](const Green& h) { return partsCorrection(h, pi, pj, rect, at, std::abs(zi - zj)); };
                 p(i, j) += local ? local(g, which.at(i), which.at(j), correction) : correction(g);
@@ -867,7 +867,7 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         QList<ChargedCell> charged;
         for (const int k : std::as_const(which)) {
             ChargedCell c;
-            c.rect = scaled(mesh.cells.at(k).outline.boundingRect(), micrometre);
+            c.rect = scaled(mesh.cells.at(k).charged(), micrometre);
             c.z = height.value(mesh.cells.at(k).layer);
             charged << c;
         }
@@ -1110,7 +1110,7 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         QList<ChargedCell> charged;
         for (const int k : std::as_const(which)) {
             ChargedCell c;
-            c.rect = scaled(mesh.cells.at(k).outline.boundingRect(), micrometre);
+            c.rect = scaled(mesh.cells.at(k).charged(), micrometre);
             c.z = height.value(mesh.cells.at(k).layer);
             charged << c;
         }

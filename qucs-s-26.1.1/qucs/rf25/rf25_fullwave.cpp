@@ -4386,7 +4386,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     QRectF extent;   // (of every cell, for how far the Green's tables go)
     for (int i = 0; i < nc; ++i) {
         const MeshCell& cell = mesh.cells.at(cellOf.at(i));
-        c.rect[i] = scaledBy(cell.outline.boundingRect(), micrometre);
+        c.rect[i] = scaledBy(cell.charged(), micrometre);
         c.centre[i] = cell.centre * micrometre;
         extent = i == 0 ? c.rect.at(i) : extent.united(c.rect.at(i));
         zOf[i] = metalHeight(stack, cell.layer);

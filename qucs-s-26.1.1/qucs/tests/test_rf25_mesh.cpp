@@ -9,6 +9,8 @@
 
 #include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_mesh.h"
+#include "rf25/rf25_inductance.h"
+#include "rf25/rf25_layout.h"
 
 namespace rf = qucs_s::rf25;
 
@@ -53,6 +55,39 @@ rf::Conductor on(const QString& layer, double x, double y, double w, double h)
     return c;
 }
 
+/// A circular spiral drawn as a path of \a perTurn segments a turn: its
+/// centreline from \a outer inward by \a pitch a turn for \a turns
+/// turns, starting at (0, -outer) and turning anticlockwise, \a width wide,
+/// mitred at its corners and flush at its ends (as a path is outlined).
+QPolygonF spiralOutline(int perTurn, double outer = 100, double pitch = 12, double turns = 2.5, double width = 8)
+{
+    QList<QPointF> spine;
+    const int n = int(std::lround(perTurn * turns));
+    for (int i = 0; i <= n; ++i) {
+        const double a = 2 * M_PI * i / perTurn - M_PI / 2, r = outer - pitch * double(i) / perTurn;
+        spine << QPointF(r * std::cos(a), r * std::sin(a));
+    }
+    const auto unit = [](QPointF d) { return d / std::hypot(d.x(), d.y()); };
+    const auto left = [](QPointF t) { return QPointF(-t.y(), t.x()); };
+    QList<QPointF> inner, outerSide;
+    for (int i = 0; i <= n; ++i) {
+        QPointF offset;
+        if (i == 0 || i == n) {
+            offset = left(unit(i == 0 ? spine.at(1) - spine.at(0) : spine.at(n) - spine.at(n - 1)));
+        } else {
+            const QPointF t1 = unit(spine.at(i) - spine.at(i - 1)), t2 = unit(spine.at(i + 1) - spine.at(i));
+            const QPointF nrm = left(unit(t1 + t2));
+            offset = nrm / (nrm.x() * left(t1).x() + nrm.y() * left(t1).y());
+        }
+        inner << spine.at(i) + offset * (width / 2);
+        outerSide << spine.at(i) - offset * (width / 2);
+    }
+    QPolygonF outline;
+    for (const QPointF& p : std::as_const(inner)) outline << p;
+    for (qsizetype i = outerSide.size() - 1; i >= 0; --i) outline << outerSide.at(i);
+    return outline;
+}
+
 bool says(const QStringList& lines, const char* words)
 {
     for (const QString& l : lines)
@@ -67,6 +102,67 @@ class TestRf25Mesh : public QObject
     Q_OBJECT
 
 private slots:
+    // A circular spiral drawn of many segments a turn: at 180 a turn its parts between an inner corner and
+    // an outer one a hair higher were slivers 0.0098 µm deep, and the mesh
+    // 170,381 cells where 24 a turn made 7,495 - refused, past what is
+    // solved. Its curves thinned in Processing - corners within a hundredth
+    // of its width of the line between their neighbours dropped -, and the
+    // curve's corners within a twentieth of its width of each other across
+    // the cuts put on one cut, at 24, 72 and 180 a turn its cells are within
+    // five times each other - 6,692, 15,912 and 26,538; not thinned, 180 a
+    // turn is 43,000 - and its loop's L within 1 %. (A rectangle and an
+    // octagon keep every corner; a circle of 360 segments becomes one of
+    // fewer, no point of it moved more than the tolerance.)
+    void aCurveDrawnOfManySegmentsMeshesAsOfFew()
+    {
+        const QPolygonF box(QRectF(0, 0, 10, 4));
+        QCOMPARE(rf::simplifiedOutline(box, 0.1).size(), box.size());
+        QPolygonF octagon;
+        for (int k = 0; k < 8; ++k) octagon << QPointF(50 * std::cos(M_PI / 8 + k * M_PI / 4), 50 * std::sin(M_PI / 8 + k * M_PI / 4));
+        QCOMPARE(rf::simplifiedOutline(octagon, 0.1).size(), octagon.size());
+        QPolygonF circle;
+        for (int k = 0; k < 360; ++k) circle << QPointF(100 * std::cos(k * M_PI / 180), 100 * std::sin(k * M_PI / 180));
+        double moved = 0;
+        const QPolygonF thinner = rf::simplifiedOutline(circle, 0.08, &moved);
+        QVERIFY2(thinner.size() < 180 && thinner.size() > 40, qPrintable(QString::number(thinner.size())));
+        QVERIFY(moved > 0 && moved <= 0.08);
+        QVERIFY(std::abs(rf::areaOf(thinner) / rf::areaOf(circle) - 1) < 0.002);
+
+        const rf::Model m = stacked();
+        const rf::Stack stack = m.stack();
+        QList<int> cells;
+        QList<double> loops;
+        for (const int n : {24, 72, 180}) {
+            const rf::Processed processed = rf::processShapes({{QStringLiteral("M1"), {spiralOutline(n)}}}, {}, rf::Processing(), stack);
+            QVERIFY2(processed.ok() && processed.conductors.size() == 1, qPrintable(processed.problems.join(" | ")));
+            if (n == 180) {
+                QVERIFY2(processed.report.lines.join(' ').contains(QStringLiteral("Simplified 1 shape(s)' curves")),
+                         qPrintable(processed.report.lines.join(" | ")));
+                // (No point of it moved more than a hundredth of its 8 µm.)
+                QVERIFY2(processed.report.simplifiedMost > 0 && processed.report.simplifiedMost <= 0.08 + 1e-9,
+                         qPrintable(QString::number(processed.report.simplifiedMost)));
+            }
+            rf::MeshSettings how;
+            how.cellsAcross = 4;
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, how, stack, 14e9);
+            QVERIFY2(says(mesh.lines, "put on one cut"), qPrintable(mesh.lines.join(" | ")));
+            const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, QPointF(0, -100), QPointF(0, 70), 1e-6, 2e9);
+            QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+            qWarning("%d a turn: %d cells, L %.4f nH", n, int(mesh.cells.size()), loop.l * 1e9);
+            cells << int(mesh.cells.size());
+            loops << loop.l;
+        }
+        QVERIFY2(*std::max_element(cells.begin(), cells.end()) <= 5 * *std::min_element(cells.begin(), cells.end()),
+                 qPrintable(QStringLiteral("%1, %2, %3 cells").arg(cells.at(0)).arg(cells.at(1)).arg(cells.at(2))));
+        for (const double l : std::as_const(loops))
+            QVERIFY2(std::abs(l / loops.first() - 1) < 0.01, qPrintable(QStringLiteral("%1 nH against %2").arg(l * 1e9).arg(loops.first() * 1e9)));
+        // (Not thinned, 180 a turn is as many cells as its corners make.)
+        rf::Processing asDrawn;
+        asDrawn.simplify = false;
+        const rf::Processed drawn = rf::processShapes({{QStringLiteral("M1"), {spiralOutline(180)}}}, {}, asDrawn, stack);
+        QCOMPARE(int(drawn.conductors.first().outline.size()), int(spiralOutline(180).size()));
+    }
+
     // The settings: what the node says, and what it cannot say.
     void theMeshSettingsAreReadAndChecked()
     {

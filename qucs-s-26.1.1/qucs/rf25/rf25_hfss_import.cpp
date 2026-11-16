@@ -511,7 +511,7 @@ bool readScript(const QString& path, HfssImport* out, QString* error)
         if (map != nullptr) map->props.insert(QStringLiteral("rows"), rows);
         model->layout().props.insert(QStringLiteral("cell"), QString());
         if (Node* processing = model->layout().child(QStringLiteral("rf_processing"))) {
-            for (const char* off : {"merge", "merge_vias", "drop_slivers", "snap", "heal", "remove_fill"})
+            for (const char* off : {"merge", "merge_vias", "drop_slivers", "snap", "heal", "simplify", "remove_fill"})
                 processing->props.insert(QLatin1String(off), false);
         }
         const QString beside = info.absoluteDir().absoluteFilePath(info.completeBaseName() + QStringLiteral(".gds"));

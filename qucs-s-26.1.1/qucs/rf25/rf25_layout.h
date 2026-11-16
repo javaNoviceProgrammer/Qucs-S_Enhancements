@@ -60,6 +60,13 @@ QList<QPolygonF> unitedOf(const QList<QPolygonF>& shapes);
 /// points merged would slant them). How many were taken out added to
 /// \a removed.
 QPolygonF withoutJogs(const QPolygonF& polygon, double under, int* removed = nullptr);
+/// \a polygon (a closed outline) thinned by Douglas and Peucker: every
+/// corner within \a tolerance of the line between the corners kept either
+/// side of it dropped, so that no point of the outline moves further than
+/// that. How far the furthest dropped corner was from its line in \a moved.
+/// As it was where \a tolerance is not above nought or it has four corners
+/// or fewer.
+QPolygonF simplifiedOutline(const QPolygonF& polygon, double tolerance, double* moved = nullptr);
 /// The part of \a shapes that is inside \a within: a cut, which is how a
 /// cell of the mesh is taken out of a conductor.
 QList<QPolygonF> clipTo(const QList<QPolygonF>& shapes, const QPolygonF& within);
@@ -92,6 +99,9 @@ struct LayoutReport {
     int fill = 0;           ///< dummy fill shapes dropped
     int cut = 0;            ///< shapes the Cutout cut along a region's edge...
     int masked = 0;         ///< ...and those it dropped, wholly outside what it keeps
+    int simplified = 0;     ///< shapes whose curves were thinned (Processing::simplify)...
+    int cornersDropped = 0; ///< ...the corners that went...
+    double simplifiedMost = 0; ///< ...and the furthest the outline moved, µm
     QString summary() const;   ///< the lines joined, for a status bar or a tooltip
 };
 
@@ -176,6 +186,13 @@ struct Processing {
     double viaDistance = 1e-6;
     double sliverWidth = 1e-7;
     double grid = 5e-9;
+    /// Curves thinned (Douglas-Peucker): corners within \a curveTolerance
+    /// of the line between their neighbours dropped - a circle of 180
+    /// segments a turn as one of some 80. \a curveTolerance 0: a hundredth
+    /// of each shape's width (twice its area over its perimeter), at most
+    /// 0.1 µm. m.
+    bool simplify = true;
+    double curveTolerance = 0;
     /// The part of the layout to solve, in the polygons' own units
     /// (processRead() reads it with cutoutOf(); processingOf() leaves it
     /// empty).

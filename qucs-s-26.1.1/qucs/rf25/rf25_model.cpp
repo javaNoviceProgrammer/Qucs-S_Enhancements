@@ -359,6 +359,12 @@ QList<NodeKind> makeKinds()
           shownIf(expr(QStringLiteral("grid"), tr("Grid"), QStringLiteral("m"), QStringLiteral("5[nm]")), "snap=true"),
           boolean(QStringLiteral("heal"), tr("Heal polygons"), true,
                   tr("Self-intersections, repeated points and zero-width necks")),
+          boolean(QStringLiteral("simplify"), tr("Simplify curves"), true,
+                  tr("Corners nearer the line between their neighbours than the tolerance dropped: a circle drawn of "
+                     "many segments meshed as one of fewer")),
+          shownIf(expr(QStringLiteral("curve_tolerance"), tr("Tolerance"), QStringLiteral("m"), QStringLiteral("0"),
+                       tr("How far the outline may move; 0: a hundredth of each shape's width, at most 0.1 µm")),
+                  "simplify=true"),
           boolean(QStringLiteral("remove_fill"), tr("Remove dummy fill"), false),
           choice(QStringLiteral("symmetry"), tr("Symmetry"), {QStringLiteral("none"), QStringLiteral("x"), QStringLiteral("y")},
                  {tr("None"), tr("A plane x = constant"), tr("A plane y = constant")}, QStringLiteral("none"),
