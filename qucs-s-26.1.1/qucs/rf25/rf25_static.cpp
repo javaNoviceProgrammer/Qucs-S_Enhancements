@@ -16,6 +16,7 @@
 
 #include <QCoreApplication>
 #include <QHash>
+#include <QSet>
 
 #include <functional>
 
@@ -305,6 +306,18 @@ namespace {
 /// the strongest few dozen are so far away that their field hardly
 /// changes across a cell.
 constexpr int kMostNear = 64;
+/// And on a cell's own pair and the pairs beside it - their centres within
+/// one and a half of their longest side -, every other image nearer than
+/// this many of that side, integrated over the cell too: taken at its
+/// centre, an image a part of a cell away is a point charge where the
+/// charge is spread across the cell. A deep stack over a MIM - 823 images,
+/// among them its 40 nm gap's reflections ten and more deep - left beyond
+/// the 64 strongest those that set its plates' C, and 5 µm cells read it
+/// 13 % high (172.7 fF where finer cells read
+/// 152.6). (Every near pair's, out to four sides, took a coplanar line's
+/// solve 2.3 times as long.)
+constexpr double kNearImages = 4;
+constexpr double kBesideWidths = 1.5;
 
 /// The potential coefficients of \a which (indices into \a cells):
 /// P(i, j) is the potential at cell i's centre of a unit charge spread
@@ -328,10 +341,11 @@ double cellPotential(const QPointF& at, const QRectF& rect, const Green& g, doub
 {
     const double distance = std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y());
     if (self || distance < kNearWidths * side) {
-        const QList<Green::Image> terms = g.strongestTerms(kMostNear);
+        const double within = self || distance < kBesideWidths * side ? kNearImages * side : 0;
+        const QList<Green::Image> terms = g.strongestTerms(kMostNear, within);
         double sum = 0;
         for (const Green::Image& t : terms) sum += t.a * rectanglePotential(rect, at, t.z);
-        return sum / (4 * M_PI * g.epsilon()) + g.beyondStrongest(distance, int(terms.size()));
+        return sum / (4 * M_PI * g.epsilon()) + g.beyondStrongest(distance, kMostNear, within);
     }
     return g.potential(distance);
 }
@@ -992,10 +1006,15 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         return section;
     };
     // A uniform line: every net there and the same across a quarter, half
-    // and three quarters of the way along, of rectangles, and nowhere wider
-    // than its middle - an L's other arm is at none of the three. A pad, a
-    // stub, a taper or a bend is no line, and its per-metre values are the
-    // whole over its length, said as such.
+    // and three quarters of the way along, of rectangles, nowhere wider
+    // than its middle - an L's other arm is at none of the three - and on no
+    // layer its middle is not on. A pad, a stub, a taper or a bend is no
+    // line, and its per-metre values are the whole over its length, said as
+    // such. (Its ends may differ - a heater shorter than the line under it
+    // is a pair. But a trace ending in a bump and a die pad over it, a flip
+    // chip's transition in the last seventh of its length, was a line where
+    // its metals were solved as their faces, its per-metre values said, and
+    // as sheets was not, for want of the dielectric's ends.)
     QList<int> column;   // (into `which')
     // (In a box, no line is the same along its length as a cross-section
     //  without end: the walls across it are its ends.)
@@ -1026,10 +1045,14 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                 first = false;
             }
             const auto& mid = middleSection.at(net);
+            QSet<QString> midLayers;
             for (int i = 0; i < mid.size(); ++i) {
                 midLo = i == 0 ? std::get<1>(mid.at(i)) : std::min(midLo, std::get<1>(mid.at(i)));
                 midHi = i == 0 ? std::get<2>(mid.at(i)) : std::max(midHi, std::get<2>(mid.at(i)));
+                midLayers << std::get<0>(mid.at(i));
             }
+            for (int k = 0; k < n && uniform; ++k)
+                if (netOf.at(k) == net && !midLayers.contains(mesh.cells.at(which.at(k)).layer)) uniform = false;
             if (first || mid.isEmpty() || std::abs(lo - midLo) > eps || std::abs(hi - midHi) > eps) uniform = false;
         }
         for (int k = 0; k < n && uniform; ++k) {

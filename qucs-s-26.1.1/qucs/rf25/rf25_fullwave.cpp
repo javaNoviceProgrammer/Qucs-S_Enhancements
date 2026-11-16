@@ -193,13 +193,12 @@ Complex retardation(Complex k, double r)
     return (std::exp(x) - 1.0) / r;
 }
 
-/// The stack's scalar remainder averaged over \a rect (m) at \a at, by
-/// Gauss's rule with as many points as a remainder changing over \a scale
-/// wants.
-Complex remainderOver(const WaveGreen& g, const QRectF& rect, const QPointF& at, double scale)
+/// The stack's scalar remainder averaged over \a rect (m) at \a at by
+/// Gauss's rule, \a nx by \a ny points.
+Complex gaussOver(const WaveGreen& g, const QRectF& rect, const QPointF& at, int nx, int ny)
 {
-    const Rule& rx = gaussRule(pointsAlong(rect.width(), scale));
-    const Rule& ry = gaussRule(pointsAlong(rect.height(), scale));
+    const Rule& rx = gaussRule(nx);
+    const Rule& ry = gaussRule(ny);
     const QPointF centre = rect.center();
     Complex sum(0, 0);
     for (int i = 0; i < rx.at.size(); ++i)
@@ -209,6 +208,62 @@ Complex remainderOver(const WaveGreen& g, const QRectF& rect, const QPointF& at,
             sum += rx.weight.at(i) * ry.weight.at(j) * g.scalarRemainder(std::hypot(x, y));
         }
     return sum;
+}
+
+/// The remainder's integral over \a rect at \a at - not its average - on
+/// rectangles graded toward \a at: each one Gauss's rule takes where its
+/// points resolve the remainder there, changing over the distance from \a at
+/// or over \a reach, whichever is the longer; else its four quarters.
+Complex gradedOver(const WaveGreen& g, const QRectF& rect, const QPointF& at, double reach, int depth)
+{
+    const double dx = std::max({rect.left() - at.x(), 0.0, at.x() - rect.right()});
+    const double dy = std::max({rect.top() - at.y(), 0.0, at.y() - rect.bottom()});
+    const double local = std::hypot(std::hypot(dx, dy), reach);
+    const double longest = std::max(rect.width(), rect.height());
+    const double area = rect.width() * rect.height();
+    if (depth >= 40 || 1 + std::ceil(4 * longest / local) <= kMostGauss || longest <= 1e-3 * reach)
+        return area * gaussOver(g, rect, at, pointsAlong(rect.width(), local), pointsAlong(rect.height(), local));
+    // (Halved across its long side alone where it is long and thin.)
+    const QPointF c = rect.center();
+    if (rect.width() > 2 * rect.height())
+        return gradedOver(g, QRectF(rect.topLeft(), QPointF(c.x(), rect.bottom())), at, reach, depth + 1)
+             + gradedOver(g, QRectF(QPointF(c.x(), rect.top()), rect.bottomRight()), at, reach, depth + 1);
+    if (rect.height() > 2 * rect.width())
+        return gradedOver(g, QRectF(rect.topLeft(), QPointF(rect.right(), c.y())), at, reach, depth + 1)
+             + gradedOver(g, QRectF(QPointF(rect.left(), c.y()), rect.bottomRight()), at, reach, depth + 1);
+    Complex sum(0, 0);
+    for (const QRectF& q : {QRectF(rect.topLeft(), c), QRectF(QPointF(c.x(), rect.top()), QPointF(rect.right(), c.y())),
+                            QRectF(QPointF(rect.left(), c.y()), QPointF(c.x(), rect.bottom())), QRectF(c, rect.bottomRight())})
+        sum += gradedOver(g, q, at, reach, depth + 1);
+    return sum;
+}
+
+/// The stack's scalar remainder averaged over \a rect (m) at \a at, by
+/// Gauss's rule with as many points as a remainder changing over \a scale
+/// wants - or, where that is more than its rule has, on rectangles graded
+/// toward \a at (gradedOver()), each of its quarters split at \a at where it
+/// is over it. A thin slab over a metal - 1 nm under a MIM's 39 nm - leaves
+/// a remainder that changes over nanometres at its own cells' centres, where
+/// eight points a side on 0.625 µm cells took 35 % too little of it: their
+/// own potentials 2 % low, and the C between the plates 11 % low.
+Complex remainderOver(const WaveGreen& g, const QRectF& rect, const QPointF& at, double scale)
+{
+    const double longest = std::max(rect.width(), rect.height());
+    if (!(scale > 0) || 1 + std::ceil(4 * longest / scale) <= kMostGauss)
+        return gaussOver(g, rect, at, pointsAlong(rect.width(), scale), pointsAlong(rect.height(), scale));
+    const double area = rect.width() * rect.height();
+    if (!(area > 0)) return gaussOver(g, rect, at, kMostGauss, kMostGauss);
+    const double reach = std::max(g.reach(), 1e-6 * longest);
+    QList<double> xs{rect.left()}, ys{rect.top()};
+    if (at.x() > rect.left() && at.x() < rect.right()) xs << at.x();
+    if (at.y() > rect.top() && at.y() < rect.bottom()) ys << at.y();
+    xs << rect.right();
+    ys << rect.bottom();
+    Complex sum(0, 0);
+    for (int i = 0; i + 1 < xs.size(); ++i)
+        for (int j = 0; j + 1 < ys.size(); ++j)
+            sum += gradedOver(g, QRectF(QPointF(xs.at(i), ys.at(j)), QPointF(xs.at(i + 1), ys.at(j + 1))), at, reach, 0);
+    return sum / area;
 }
 
 /// Each of a port's cells' share of the face it drives: the length of its

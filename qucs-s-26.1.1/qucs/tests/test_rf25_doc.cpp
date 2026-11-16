@@ -1981,7 +1981,7 @@ private slots:
     // Green's function did not end, held a core and gigabytes until Qucs-S
     // was killed, and a second solve ran beside it. And the status line counts the charges the solve has: a
     // metal solved as its two faces has each cell twice (it said 924 to
-    // solve the charge on, where the solve had 1848).
+    // solve the charge on, where the solve had 1848), its count and its cost.
     void aQuasiStaticSolveSaysWhatItDoesAndStops()
     {
         const QString model = slowLine(QStringLiteral("slowline"));
@@ -1997,8 +1997,11 @@ private slots:
         // its capacitance is (test_rf25_mesh, test_rf25_static).
         QVERIFY2(doc->mesh()->lines.join(' ').contains(QStringLiteral("face another conductor across a gap")),
                  qPrintable(doc->mesh()->lines.join(" | ")));
-        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("%1 cell(s), %2").arg(cells).arg(rf::chargeCostOf(2 * cells))),
+        // (Its count the charges' too, as the Mesh's notes give it: it gave
+        //  the mesh's own cells beside them.)
+        QVERIFY2(doc->statusLabel()->text().contains(QStringLiteral("%1 cell(s), %2").arg(2 * cells).arg(rf::chargeCostOf(2 * cells))),
                  qPrintable(doc->statusLabel()->text()));
+        QVERIFY2(doc->mesh()->lines.join(' ').contains(QStringLiteral("%1 cell(s) on").arg(2 * cells)), qPrintable(doc->mesh()->lines.join(" | ")));
         const int begun = doc->solvesBegun();
         doc->solve();
         QVERIFY(doc->isSolving());

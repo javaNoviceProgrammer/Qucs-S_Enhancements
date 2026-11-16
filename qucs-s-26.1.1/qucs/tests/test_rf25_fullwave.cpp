@@ -812,7 +812,9 @@ private slots:
     // items: 4-6.5 % under it, and slow to converge - its plates' cells under
     // each other misaligned, as P28's were): a 10 µm square over an 11.2 µm
     // one, 40 nm of 6.892 between, driven between them, within 2 % at cells
-    // of 1.25 and 0.625 µm (+1.2 and +1.0 %; at 2.5 µm it reads 8.6 % over).
+    // of 2.5, 1.25 and 0.625 µm (+0.3, +0.3 and +0.2 %; +8.6, +1.2 and +1.0 %
+    // before each cell's own remainder was taken on rectangles graded to its
+    // centre). And with a thin slab between them, below.
     void aMimsFullWaveCapacitanceIsItsQuasiStaticOne()
     {
         rf::Stack st = grounded(4.1, 5e-6);
@@ -835,7 +837,7 @@ private slots:
         rf::Conductor plate = strip(0, 0, 10, 10);
         plate.layer = QStringLiteral("M2");
         const QList<rf::Conductor> both{strip(-0.6, -0.6, 11.2, 11.2), plate};
-        for (const double cell : {1.25, 0.625}) {
+        for (const double cell : {2.5, 1.25, 0.625}) {
             rf::MeshSettings how;
             how.maximum = cell * 1e-6;
             how.cellsAcross = 0;
@@ -846,6 +848,39 @@ private slots:
             const Complex z = w.z.at(0).at(0).at(0);
             const double full = -1.0 / (2 * M_PI * 1e9 * z.imag()), quasi = -e.maxwell.at(0).at(1);
             qWarning("a MIM at %g µm cells: quasi-static %.2f fF, full wave %.2f fF", cell, quasi * 1e15, full * 1e15);
+            QVERIFY2(std::abs(full / quasi - 1) < 0.02, qPrintable(QStringLiteral("%1 against %2 fF").arg(full * 1e15).arg(quasi * 1e15)));
+        }
+        // With 1 nm of oxide under the 39 nm of its dielectric, on the lower
+        // plate (11 % low, 136.5 fF where
+        // the quasi-static solve has 153.0): the lower plate's charge 1 nm
+        // under a face leaves the remainder of its kernel changing over
+        // nanometres at its own cells' centres, where eight Gauss points a
+        // side on 0.625 µm cells took a third too little of it. Within 2 %,
+        // the plates' own cells' remainders taken on rectangles graded to
+        // their centres.
+        {
+            rf::Stack thin = st;
+            rf::Layer oxide = gap;
+            oxide.name = QStringLiteral("THIN");
+            oxide.tag = QStringLiteral("thin");
+            oxide.thickness = 1e-9;
+            oxide.epsr = 4.1;
+            for (int i = 0; i < thin.layers.size(); ++i)
+                if (thin.layers.at(i).name == QLatin1String("MIM")) {
+                    thin.layers[i].thickness = 39e-9;
+                    thin.layers.insert(i, oxide);
+                    break;
+                }
+            rf::MeshSettings how;
+            how.maximum = 0.625e-6;
+            how.cellsAcross = 0;
+            const rf::Mesh mesh = rf::meshOf(both, how, thin, 1e9);
+            const rf::Extraction e = rf::extract(mesh, both, thin);
+            const rf::FullWave w = rf::fullWaveOf(mesh, both, thin, {internalPort(QPointF(5, 5), QStringLiteral("M2"), QStringLiteral("M1"))}, {1e9});
+            QVERIFY2(w.ok() && e.ok(), qPrintable(why(w) + e.problems.join(" | ")));
+            const Complex z = w.z.at(0).at(0).at(0);
+            const double full = -1.0 / (2 * M_PI * 1e9 * z.imag()), quasi = -e.maxwell.at(0).at(1);
+            qWarning("a MIM 1 nm over its lower plate: quasi-static %.2f fF, full wave %.2f fF", quasi * 1e15, full * 1e15);
             QVERIFY2(std::abs(full / quasi - 1) < 0.02, qPrintable(QStringLiteral("%1 against %2 fF").arg(full * 1e15).arg(quasi * 1e15)));
         }
     }

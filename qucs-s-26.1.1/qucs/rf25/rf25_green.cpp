@@ -991,15 +991,18 @@ double Green::reflectedByTable(double rho) const
     return product / rho;
 }
 
-QList<Green::Image> Green::strongestTerms(int most) const
+QList<Green::Image> Green::strongestTerms(int most, double within) const
 {
     QList<Image> all = allTerms();
     if (all.size() <= most) return all;
-    all.erase(all.begin() + most, all.end());
-    return all;
+    QList<Image> out(all.begin(), all.begin() + most);
+    if (within > 0)
+        for (qsizetype i = most; i < all.size(); ++i)
+            if (std::abs(all.at(i).z) < within) out << all.at(i);
+    return out;
 }
 
-double Green::beyondStrongest(double rho, int most) const
+double Green::beyondStrongest(double rho, int most, double within) const
 {
     if (!ok()) return 0;
     build();
@@ -1022,6 +1025,7 @@ double Green::beyondStrongest(double rho, int most) const
     for (int i = std::max(0, from); i < a_images.size(); ++i) {
         const Image& t = a_images.at(i);
         if (rho <= near && std::abs(t.z) <= 1e-9 * a_zRef) continue;
+        if (std::abs(t.z) < within) continue;   // (strongestTerms() has it)
         sum += t.a / std::sqrt(rho * rho + t.z * t.z);
     }
     return sum / (4 * M_PI * epsilon());

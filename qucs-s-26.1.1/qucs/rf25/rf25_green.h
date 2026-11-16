@@ -302,10 +302,13 @@ public:
     /// once and far too slow to sum for every pair of cells a method of
     /// moments has; these are the ones worth integrating over a cell, and
     /// the rest are smooth over one and come from the table.
-    QList<Image> strongestTerms(int most) const;
+    /// And with them, where \a within is above nought, every other image
+    /// nearer than it: one a cell's centre would take as a point charge
+    /// at all but its own distance, where across the cell it is not.
+    QList<Image> strongestTerms(int most, double within = 0) const;
     /// What those leave out, as a potential at \a rho: the whole of it
     /// less the terms strongestTerms() returned.
-    double beyondStrongest(double rho, int most) const;
+    double beyondStrongest(double rho, int most, double within = 0) const;
 
     /// The normal field's (isField()): E_z at \a rho, V/m per coulomb, read
     /// from its table; summed over the images exactly; what the \a most
