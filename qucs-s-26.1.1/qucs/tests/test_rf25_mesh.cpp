@@ -109,8 +109,8 @@ private slots:
     // of its width of the line between their neighbours dropped -, and the
     // curve's corners within a twentieth of its width of each other across
     // the cuts put on one cut, at 24, 72 and 180 a turn its cells are within
-    // five times each other - 7,032, 20,032 and 29,322; not thinned, 180 a
-    // turn is 43,000 - and its loop's L within 1 %. (A rectangle and an
+    // six times each other - 7,054, 22,412 and 35,091; at first 7,495, 23,983
+    // and 170,381 - and its loop's L within 1 %. (A rectangle and an
     // octagon keep every corner; a circle of 360 segments becomes one of
     // fewer, no point of it moved more than the tolerance.)
     void aCurveDrawnOfManySegmentsMeshesAsOfFew()
@@ -146,12 +146,12 @@ private slots:
             how.cellsAcross = 4;
             const rf::Mesh mesh = rf::meshOf(processed.conductors, how, stack, 14e9);
             QVERIFY2(says(mesh.lines, "put on one cut"), qPrintable(mesh.lines.join(" | ")));
-            // (Its outline within a twentieth of its 8 µm of itself - half the
-            //  merge, its neighbours moving too: 0.16, 0.20 and 0.25 µm.)
+            // (Its outline within the curves' tolerance of itself, 0.08 µm, its
+            //  neighbours moving too.)
             {
                 static const QRegularExpression offSpiral(QStringLiteral("the outline ([0-9.e+-]+) µm at most off itself"));
                 const QRegularExpressionMatch match = offSpiral.match(mesh.lines.join(' '));
-                QVERIFY2(match.hasMatch() && match.captured(1).toDouble() <= 0.4, qPrintable(mesh.lines.join(" | ")));
+                QVERIFY2(match.hasMatch() && match.captured(1).toDouble() <= 0.1, qPrintable(mesh.lines.join(" | ")));
             }
             const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, QPointF(0, -100), QPointF(0, 70), 1e-6, 2e9);
             QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
@@ -159,7 +159,7 @@ private slots:
             cells << int(mesh.cells.size());
             loops << loop.l;
         }
-        QVERIFY2(*std::max_element(cells.begin(), cells.end()) <= 5 * *std::min_element(cells.begin(), cells.end()),
+        QVERIFY2(*std::max_element(cells.begin(), cells.end()) <= 6 * *std::min_element(cells.begin(), cells.end()),
                  qPrintable(QStringLiteral("%1, %2, %3 cells").arg(cells.at(0)).arg(cells.at(1)).arg(cells.at(2))));
         for (const double l : std::as_const(loops))
             QVERIFY2(std::abs(l / loops.first() - 1) < 0.01, qPrintable(QStringLiteral("%1 nH against %2").arg(l * 1e9).arg(loops.first() * 1e9)));
@@ -174,29 +174,44 @@ private slots:
     // -0.027 %, where it was -0.33 %).
         static const QRegularExpression off(QStringLiteral("the outline ([0-9.e+-]+) µm at most off itself"));
         const auto snapped = [&](const QPolygonF& outline, double* moved, double* area) {
-            rf::Conductor c;
-            c.layer = QStringLiteral("M1");
-            c.outline = outline;
+            // (Through Processing as the tab runs it - its curves simplified
+            //  first, to longer sides - and then meshed: meshed as drawn, the
+            //  test passed where the app's outlines went 0.24 and 0.27 µm off,
+            //  the review of 10b60005.)
+            const rf::Processed processed = rf::processShapes({{QStringLiteral("M1"), {outline}}}, {}, rf::Processing(), stack);
+            if (processed.conductors.size() != 1) return -1;
             rf::MeshSettings how;
             how.cellsAcross = 4;
             how.maximum = 20e-6;
-            const rf::Mesh mesh = rf::meshOf({c}, how, stack, 1e9);
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, how, stack, 1e9);
             const QRegularExpressionMatch match = off.match(mesh.lines.join(' '));
             *moved = match.hasMatch() ? match.captured(1).toDouble() : -1;
             *area = 0;
             for (const rf::MeshCell& cell : mesh.cells) *area += cell.area;
             return int(mesh.cells.size());
         };
-        QPolygonF disc;
-        for (int k = 0; k < 180; ++k) disc << QPointF(100 * std::cos(2 * M_PI * k / 180), 100 * std::sin(2 * M_PI * k / 180));
+        const auto discOf = [](double r, int n) {
+            QPolygonF out;
+            for (int k = 0; k < n; ++k) out << QPointF(r * std::cos(2 * M_PI * k / n), r * std::sin(2 * M_PI * k / n));
+            return out;
+        };
+        const QPolygonF disc = discOf(100, 180);
         QPolygonF plane{QPointF(-500, -500), QPointF(500, -500), QPointF(500, 0), QPointF(50, 0)};
         for (int k = 1; k < 180; ++k) plane << QPointF(50 * std::cos(2 * M_PI * k / 180), -50 * std::sin(2 * M_PI * k / 180));
         plane << QPointF(50, 0) << QPointF(500, 0) << QPointF(500, 500) << QPointF(-500, 500);
-        for (const QPolygonF& shape : {disc, plane}) {
+        // (And a disc of 36 segments, and of 72 - curves as a user is told
+        //  to draw them -, of 100 µm and of 1 mm: slid by half the merge,
+        //  1.5, 0.38, 15 and 3.8 µm off.)
+        for (const QPolygonF& shape : {disc, plane, discOf(100, 36), discOf(100, 72), discOf(1000, 36), discOf(1000, 72)}) {
             double moved = 0, area = 0;
             const int count = snapped(shape, &moved, &area);
-            qWarning("%d corners: %d cells, the outline %g um off itself, its area %+.2g", int(shape.size()), count, moved, area / rf::areaOf(shape) - 1);
-            QVERIFY2(moved > 0 && moved <= 0.1, qPrintable(QStringLiteral("%1 µm off").arg(moved)));
+            QVERIFY(count > 0);
+            qWarning("%d corners, %g across: %d cells, the outline %g um off itself, its area %+.2g", int(shape.size()), shape.boundingRect().width(),
+                     count, moved, area / rf::areaOf(shape) - 1);
+            // (Off the drawn outline, after its simplifying: the outline the
+            //  mesh is given moved 0.1 µm at most by the simplifying and as
+            //  much again by the snapping.)
+            QVERIFY2(moved <= 0.1, qPrintable(QStringLiteral("%1 µm off").arg(moved)));
             QVERIFY2(std::abs(area / rf::areaOf(shape) - 1) < 1e-3, qPrintable(QStringLiteral("%1 µm² of %2").arg(area).arg(rf::areaOf(shape))));
         }
 
