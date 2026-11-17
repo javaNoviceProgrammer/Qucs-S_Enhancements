@@ -96,6 +96,11 @@ Poly polyOf(const Box& b)
 
 void boxesOf(const Poly& poly, Coord slab, std::vector<Box>* outer, std::vector<Box>* inner)
 {
+    boxesOf(std::vector<Poly>{poly}, slab, outer, inner);
+}
+
+void boxesOf(const std::vector<Poly>& rings, Coord slab, std::vector<Box>* outer, std::vector<Box>* inner)
+{
     struct Edge {
         double xa, ya, xb, yb;   // ya < yb
         int dir;
@@ -104,20 +109,21 @@ void boxesOf(const Poly& poly, Coord slab, std::vector<Box>* outer, std::vector<
     };
     std::vector<Edge> edges;
     std::vector<Coord> ys;
-    const std::size_t n = poly.size();
-    if (n < 3) return;
-    edges.reserve(n);
-    ys.reserve(n);
-    for (std::size_t i = 0; i < n; ++i) {
-        const Pt& a = poly[i];
-        const Pt& b = poly[(i + 1) % n];
-        ys.push_back(a.y);
-        if (a.y == b.y) continue;
-        Edge e;
-        if (a.y < b.y) e = {double(a.x), double(a.y), double(b.x), double(b.y), 1, a.y, b.y, a.x != b.x};
-        else e = {double(b.x), double(b.y), double(a.x), double(a.y), -1, b.y, a.y, a.x != b.x};
-        edges.push_back(e);
+    for (const Poly& poly : rings) {
+        const std::size_t n = poly.size();
+        if (n < 3) continue;
+        for (std::size_t i = 0; i < n; ++i) {
+            const Pt& a = poly[i];
+            const Pt& b = poly[(i + 1) % n];
+            ys.push_back(a.y);
+            if (a.y == b.y) continue;
+            Edge e;
+            if (a.y < b.y) e = {double(a.x), double(a.y), double(b.x), double(b.y), 1, a.y, b.y, a.x != b.x};
+            else e = {double(b.x), double(b.y), double(a.x), double(a.y), -1, b.y, a.y, a.x != b.x};
+            edges.push_back(e);
+        }
     }
+    if (edges.empty()) return;
     std::sort(ys.begin(), ys.end());
     ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
     std::sort(edges.begin(), edges.end(), [](const Edge& a, const Edge& b) { return a.ylo < b.ylo; });

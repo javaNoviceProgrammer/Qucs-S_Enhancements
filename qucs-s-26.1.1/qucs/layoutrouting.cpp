@@ -21,6 +21,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QSaveFile>
@@ -58,7 +59,7 @@ bool buildProblem(const layout::Layout& layout, int cell, const Job& job, const 
 
     // Which layout layer is which: a metal, a cut, an obstacle rule.
     struct Role {
-        int kind = -1;   // 0 metal, 1 cut, 2 obstacle
+        int kind = -1;   // 0 metal, 1 cut, 2 obstacle, 3 an inclusion rule's region
         int index = -1;
     };
     QHash<int, QVector<Role>> roles;
@@ -70,10 +71,18 @@ bool buildProblem(const layout::Layout& layout, int cell, const Job& job, const 
     for (int m = 0; m < tech.metals.size(); ++m)
         if (!role(tech.metals.at(m).layer, 0, m))
             warnings->append(QStringLiteral("The layout has nothing on %1 (%2)").arg(tech.metals.at(m).name, tech.metals.at(m).layer.text()));
-    for (int v = 0; v < tech.vias.size(); ++v) role(tech.vias.at(v).layer, 1, v);
+    for (int v = 0; v < tech.vias.size(); ++v) {
+        bool first = true;   // (vias of one cut layer: its cuts read once, as the first's)
+        for (int u = 0; u < v; ++u) first = first && !(tech.vias.at(u).layer == tech.vias.at(v).layer);
+        if (first) role(tech.vias.at(v).layer, 1, v);
+    }
     for (int o = 0; o < tech.obstacles.size(); ++o)
         if (!role(tech.obstacles.at(o).layer, 2, o))
             warnings->append(QStringLiteral("The layout has nothing on the obstacle layer %1 (%2)").arg(tech.obstacles.at(o).name, tech.obstacles.at(o).layer.text()));
+    for (int r = 0; r < tech.inclusions.size(); ++r)
+        if (!role(tech.inclusions.at(r).of, 3, r))
+            warnings->append(QStringLiteral("The layout has nothing on %1, the layer the rule %2 keeps lines on %3 inside: no line can run there")
+                                 .arg(tech.inclusions.at(r).of.text(), tech.inclusions.at(r).name, tech.metals.at(tech.inclusions.at(r).metal).name));
     const int routeCell = layout.cellIndex(job.routeCell);
     if (routeCell == cell) {
         *error = QStringLiteral("The cell routed is the route cell %1: route its parent.").arg(job.routeCell);
@@ -104,7 +113,8 @@ bool buildProblem(const layout::Layout& layout, int cell, const Job& job, const 
         for (const Role& r : roles.value(layer)) {
             if (r.kind == 0) p.metal.append({poly, r.index});
             else if (r.kind == 1) p.cuts.append({poly, r.index});
-            else p.obstacles.append({poly, r.index});
+            else if (r.kind == 2) p.obstacles.append({poly, r.index});
+            else p.regions.append({poly, r.index});
         }
         return true;
     });
@@ -183,6 +193,8 @@ bool buildProblem(const layout::Layout& layout, int cell, const Job& job, const 
         }
         for (const QPointF& g : jn.guide) n.guide.push_back(toUnits(g));
         n.band = p.units(jn.band);
+        if (!jn.vias.isEmpty() && !readViaChoice(tech, QJsonArray::fromStringList(jn.vias), &n.vias, QStringLiteral("Net %1").arg(jn.name), error))
+            return false;
         p.nets.append(n);
     }
     for (const JobKeepOut& jk : job.keepOuts) {

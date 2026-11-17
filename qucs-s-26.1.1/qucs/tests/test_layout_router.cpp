@@ -1259,6 +1259,416 @@ private slots:
         QVERIFY(read > 0);
     }
 
+    void eachClassAndNetTakesItsOwnVia()
+    {
+        // Two vias between M1 and M2: one cut (the pair's default, listed
+        // first) and a 2 x 2 array. The wide class takes the array; a signal
+        // net may ask for it too.
+        QJsonObject o = techJson();
+        o.insert("vias", QJsonArray{QJsonObject{{"name", "V1"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 2}, {"enclosure", 1}, {"spacing", 2}},
+                                    QJsonObject{{"name", "V1x2"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 1}, {"cuts", QJsonArray{2, 2}},
+                                                {"cut_spacing", 1}, {"enclosure", 1}, {"spacing", 2}}});
+        QJsonArray classes = o.value("classes").toArray();
+        QJsonObject wide = classes[1].toObject();
+        QJsonArray array;
+        array.append("V1x2");
+        wide.insert("vias", array);
+        classes[1] = wide;
+        o.insert("classes", classes);
+        Problem p = problemOf(tech(o));
+        QCOMPARE(p.tech.vias.size(), 2);
+        QCOMPARE(p.tech.defaultVias, QVector<int>{0});
+        QCOMPARE(p.tech.viaFor(0, {}, 0), 0);
+        QCOMPARE(p.tech.viaFor(1, {}, 0), 1);
+        QCOMPARE(p.tech.viaFor(0, {1}, 0), 1);
+        // Each net from an M1 pad to an M2 pad: a via each, at least.
+        for (int i = 0; i < 3; ++i) {
+            pad(p, 0, 0, 30.0 * i, 8);
+            pad(p, 1, 100, 30.0 * i, 8);
+        }
+        p.nets = {net("signal", at(p, 0, 0), at(p, 100, 0)), net("power", at(p, 0, 30), at(p, 100, 30), 1),
+                  net("chosen", at(p, 0, 60), at(p, 100, 60))};
+        p.nets[2].vias = {1};
+        Router router(p);
+        QVERIFY(router.prepare());
+        const Result r = router.run();
+        const Verification v = verify(router.problem(), r);
+        QCOMPARE(r.routed(), 3);
+        QVERIFY2(v.clean(), qPrintable(describe(v)));
+        for (int n = 0; n < 3; ++n) {
+            QVERIFY(!r.nets[n].vias.isEmpty());
+            int cuts = 0;
+            for (const ViaPlaced& x : r.nets[n].vias) QCOMPARE(x.via, n == 0 ? 0 : 1);
+            for (const DrawnShape& d : drawnShapes(router.problem(), r.nets[n], n)) cuts += d.layer.layer == 3;
+            QCOMPARE(cuts, (n == 0 ? 1 : 4) * int(r.nets[n].vias.size()));
+        }
+        // The class's vias and a net's by name; refused when unknown or two
+        // between one pair of metals.
+        QVector<int> choice;
+        QString e;
+        QJsonArray names;
+        names.append("V1x2");
+        QVERIFY(readViaChoice(p.tech, names, &choice, "Net x", &e));
+        QCOMPARE(choice, QVector<int>{1});
+        names.append("V1");
+        QVERIFY(!readViaChoice(p.tech, names, &choice, "Net x", &e));
+        QVERIFY2(e.contains("Net x"), qPrintable(e));
+        QJsonArray unknown;
+        unknown.append("V9");
+        QVERIFY(!readViaChoice(p.tech, unknown, &choice, "Net x", &e));
+        QVERIFY2(e.contains("V9"), qPrintable(e));
+        // Read back as written.
+        const Technology again = readTechnology(technologyJson(p.tech), &e);
+        QVERIFY2(e.isEmpty(), qPrintable(e));
+        QCOMPARE(again.classes[1].vias, QVector<int>{1});
+        QCOMPARE(again.vias.size(), 2);
+        // Two vias with one name are refused.
+        QJsonObject twice = o;
+        QJsonArray vs = twice.value("vias").toArray();
+        QJsonObject second = vs[1].toObject();
+        second.insert("name", "V1");
+        vs[1] = second;
+        twice.insert("vias", vs);
+        readTechnology(twice, &e);
+        QVERIFY2(e.contains("V1"), qPrintable(e));
+    }
+
+    void aWidthRuleKeepsNarrowLinesOffAMetal()
+    {
+        // M2 at least 5 µm wide: the 2 µm signal never runs on it (it may
+        // land there, 5 µm square); the 6 µm class does - so of two nets
+        // crossing, the wide one takes M2.
+        QJsonObject o = techJson();
+        o.insert("rules", QJsonArray{QJsonObject{{"name", "M2.W.1"}, {"type", "width"}, {"layer", "M2"}, {"min", 5}}});
+        Problem p = problemOf(tech(o));
+        QCOMPARE(p.tech.minWidth[1], 5.0);
+        QVERIFY(!p.tech.classOn(0, 1));
+        QVERIFY(p.tech.classOn(1, 1));
+        QCOMPARE(p.tech.landing(0, 1, 2), 5.0);
+        QCOMPARE(p.tech.landing(0, 0, 2), 4.0);
+        pad(p, 0, 0, 50, 8);
+        pad(p, 0, 100, 50, 8);
+        pad(p, 0, 50, 0, 8);
+        pad(p, 0, 50, 100, 8);
+        p.nets = {net("h", at(p, 0, 50), at(p, 100, 50)), net("v", at(p, 50, 0), at(p, 50, 100), 1)};
+        Router router(p);
+        QVERIFY(router.prepare());
+        const Result r = router.run();
+        const Verification v = verify(router.problem(), r);
+        QCOMPARE(r.routed(), 2);
+        QVERIFY2(v.clean(), qPrintable(describe(v)));
+        QVERIFY(!usesMetal(r.nets[0], 1));
+        QVERIFY(usesMetal(r.nets[1], 1));
+        // The signal drawn on M2 by hand: found, with the rule.
+        Result bad = r;
+        bad.nets[0].runs = {Run{0, {0, p.units(50)}, {p.units(20), p.units(50)}, p.units(2)}, Run{1, {p.units(20), p.units(50)}, {p.units(80), p.units(50)}, p.units(2)},
+                            Run{0, {p.units(80), p.units(50)}, {p.units(100), p.units(50)}, p.units(2)}};
+        bad.nets[0].vias = {ViaPlaced{0, {p.units(20), p.units(50)}}, ViaPlaced{0, {p.units(80), p.units(50)}}};
+        bool found = false;
+        for (const Finding& f : verify(router.problem(), bad).findings)
+            found = found || (f.kind == QLatin1String("width") && f.rule == QLatin1String("M2.W.1") && f.metal == 1);
+        QVERIFY2(found, qPrintable(describe(verify(router.problem(), bad))));
+        // A wall of M1 across the whole way: the signal cannot get over it
+        // (on M2 it may only land, not run), the wide class can.
+        for (const int cls : {0, 1}) {
+            Problem wall = problemOf(tech(o));
+            pad(wall, 0, 0, 50, 8);
+            pad(wall, 0, 100, 50, 8);
+            wall.metal.append({rect(wall, 48, -100, 52, 200), 0});
+            wall.nets = {net("h", at(wall, 0, 50), at(wall, 100, 50), cls)};
+            Verification wv;
+            const Result wr = routeAndCheck(wall, &wv);
+            QCOMPARE(wr.routed(), cls);
+            if (cls == 1) QVERIFY2(wv.clean(), qPrintable(describe(wv)));
+        }
+    }
+
+    void aMetalSpacingRuleIsKept()
+    {
+        // Metal of no net 3 µm beside the straight way (2 µm would do): with
+        // M1's spacing rule at 6 the line keeps 6 from it, and the check
+        // names the rule when it does not.
+        QJsonObject o = techJson();
+        o.insert("rules", QJsonArray{QJsonObject{{"name", "M1.S.1"}, {"type", "spacing"}, {"layer", "M1"}, {"min", 6}}});
+        Problem p = problemOf(tech(o));
+        QCOMPARE(p.tech.metalSpacing[0], 6.0);
+        pad(p, 0, 0, 0);
+        pad(p, 0, 100, 0);
+        p.metal.append({rect(p, 40, 4, 60, 10), 0});
+        p.nets = {net("a", at(p, 0, 0), at(p, 100, 0))};
+        Router router(p);
+        QVERIFY(router.prepare());
+        const Result r = router.run();
+        const Verification v = verify(router.problem(), r);
+        QCOMPARE(r.routed(), 1);
+        QVERIFY2(v.clean(), qPrintable(describe(v)));
+        Result bad = r;
+        bad.nets[0].runs = {Run{0, {0, 0}, {p.units(100), 0}, p.units(2)}};
+        bad.nets[0].vias.clear();
+        const Verification w = verify(router.problem(), bad);
+        QCOMPARE(w.findings.size(), 1);
+        QCOMPARE(w.findings[0].kind, QStringLiteral("metal"));
+        QCOMPARE(w.findings[0].rule, QStringLiteral("M1.S.1"));
+        QCOMPARE(w.findings[0].required, 6.0);
+        // Between two nets' lines too.
+        Problem two = problemOf(tech(o));
+        pad(two, 0, 0, 0);
+        pad(two, 0, 100, 0);
+        pad(two, 0, 0, 20);
+        pad(two, 0, 100, 20);
+        two.nets = {net("a", at(two, 0, 0), at(two, 100, 0)), net("b", at(two, 0, 20), at(two, 100, 20))};
+        Router pair(two);
+        QVERIFY(pair.prepare());
+        Result lines;
+        lines.nets.resize(2);
+        for (int n = 0; n < 2; ++n) lines.nets[n].status = NetResult::Status::Routed;
+        lines.nets[0].runs = {Run{0, {0, 0}, {two.units(100), 0}, two.units(2)}};
+        lines.nets[1].runs = {Run{0, {0, two.units(20)}, {0, two.units(6)}, two.units(2)}, Run{0, {0, two.units(6)}, {two.units(100), two.units(6)}, two.units(2)},
+                              Run{0, {two.units(100), two.units(6)}, {two.units(100), two.units(20)}, two.units(2)}};
+        bool named = false;
+        for (const Finding& f : verify(pair.problem(), lines).findings) named = named || (f.kind == QLatin1String("spacing") && f.rule == QLatin1String("M1.S.1"));
+        QVERIFY(named);
+        // Routed: two nets from pads on M2 (where M2's width rule lets no
+        // line run) 1 µm apart, their lines and landings on M1 kept 6 apart
+        // (from the pads' middles their landings would be 5).
+        QJsonObject o2 = techJson();
+        o2.insert("rules", QJsonArray{QJsonObject{{"name", "M1.S.1"}, {"type", "spacing"}, {"layer", "M1"}, {"min", 6}},
+                                      QJsonObject{{"name", "M2.W.1"}, {"type", "width"}, {"layer", "M2"}, {"min", 5}}});
+        Problem near = problemOf(tech(o2));
+        for (const double x : {0.0, 100.0}) {
+            pad(near, 1, x, 0, 8);
+            pad(near, 1, x, 9, 8);
+        }
+        near.nets = {net("a", at(near, 0, 0), at(near, 100, 0)), net("b", at(near, 0, 9), at(near, 100, 9))};
+        Verification nv;
+        const Result nr = routeAndCheck(near, &nv);
+        QCOMPARE(nr.routed(), 2);
+        QVERIFY2(nv.clean(), qPrintable(describe(nv)));
+        QVERIFY(usesMetal(nr.nets[0], 0) && usesMetal(nr.nets[1], 0));
+    }
+
+    void anExclusionRuleKeepsLinesFromALayer()
+    {
+        QJsonObject o = techJson();
+        o.insert("rules", QJsonArray{QJsonObject{{"name", "M1.EX.1"}, {"type", "exclusion"}, {"layer", "M1"}, {"to", "40/0"}, {"min", 5}}});
+        Problem p = problemOf(tech(o));
+        QCOMPARE(p.tech.obstacles.size(), 1);
+        QCOMPARE(p.tech.obstacles[0].metals, QVector<int>{0});
+        pad(p, 0, 0, 0);
+        pad(p, 0, 100, 0);
+        p.obstacles.append({rect(p, 45, 3, 55, 20), 0});
+        p.nets = {net("a", at(p, 0, 0), at(p, 100, 0))};
+        Router router(p);
+        QVERIFY(router.prepare());
+        const Result r = router.run();
+        QCOMPARE(r.routed(), 1);
+        QVERIFY2(verify(router.problem(), r).clean(), qPrintable(describe(verify(router.problem(), r))));
+        Result bad = r;
+        bad.nets[0].runs = {Run{0, {0, 0}, {p.units(100), 0}, p.units(2)}};
+        bad.nets[0].vias.clear();
+        const Verification v = verify(router.problem(), bad);
+        QCOMPARE(v.findings.size(), 1);
+        QCOMPARE(v.findings[0].kind, QStringLiteral("obstacle"));
+        QCOMPARE(v.findings[0].rule, QStringLiteral("M1.EX.1"));
+        // Written back as a rule, not as an obstacle too.
+        const QJsonObject j = technologyJson(p.tech);
+        QVERIFY(!j.contains("obstacles") || j.value("obstacles").toArray().isEmpty());
+        QCOMPARE(j.value("rules").toArray().size(), 1);
+    }
+
+    void linesStayInsideAnInclusionRegion()
+    {
+        // Lines on both metals inside a corridor's shapes by 2 µm (within
+        // the lattice's 40 µm margin round the pads): the way
+        // straight across is outside it, so the line goes round by the
+        // corridor - up, across and down.
+        QJsonObject o = techJson();
+        o.insert("rules", QJsonArray{QJsonObject{{"name", "M1.IN.1"}, {"type", "inclusion"}, {"layer", "M1"}, {"of", "50/0"}, {"min", 2}},
+                                     QJsonObject{{"name", "M2.IN.1"}, {"type", "inclusion"}, {"layer", "M2"}, {"of", "50/0"}, {"min", 2}}});
+        Problem p = problemOf(tech(o));
+        QCOMPARE(p.tech.inclusions.size(), 2);
+        pad(p, 0, 0, 0);
+        pad(p, 0, 100, 0);
+        for (const Box& b : {Box{-10, -6, 22, 6}, Box{10, -6, 22, 36}, Box{10, 24, 90, 36}, Box{78, -6, 90, 36}, Box{78, -6, 110, 6}})
+            for (int r = 0; r < 2; ++r) p.regions.append({rect(p, double(b.x0), double(b.y0), double(b.x1), double(b.y1)), r});
+        p.nets = {net("a", at(p, 0, 0), at(p, 100, 0))};
+        Router router(p);
+        QVERIFY(router.prepare());
+        const Result r = router.run();
+        const Verification v = verify(router.problem(), r);
+        QCOMPARE(r.routed(), 1);
+        QVERIFY2(v.clean(), qPrintable(describe(v)));
+        QVERIFY2(r.nets[0].length > p.units(150), qPrintable(QString::number(p.um(r.nets[0].length))));
+        // Straight across: outside, found by the rule's name.
+        Result bad = r;
+        bad.nets[0].runs = {Run{0, {0, 0}, {p.units(100), 0}, p.units(2)}};
+        bad.nets[0].vias.clear();
+        const Verification w = verify(router.problem(), bad);
+        QVERIFY(!w.findings.isEmpty());
+        QCOMPARE(w.findings[0].kind, QStringLiteral("inclusion"));
+        QCOMPARE(w.findings[0].rule, QStringLiteral("M1.IN.1"));
+        // No region at all: no line can run on that metal.
+        Problem none = p;
+        none.regions.clear();
+        Router nowhere(none);
+        QVERIFY(nowhere.prepare());
+        QCOMPARE(nowhere.run().failed(), 1);
+    }
+
+    void areaAndEnclosureRulesGrowTheLandings()
+    {
+        // M1's metal at least 49 µm² a piece: its landings 7 µm square; V1
+        // enclosed by M2 by 2 µm: its 2 µm cut in a 6 µm landing there.
+        QJsonObject o = techJson();
+        o.insert("rules", QJsonArray{QJsonObject{{"name", "M1.A.1"}, {"type", "area"}, {"layer", "M1"}, {"min", 49}},
+                                     QJsonObject{{"name", "V1.EN.2"}, {"type", "enclosure"}, {"layer", "V1"}, {"by", "M2"}, {"min", 2}}});
+        Problem p = problemOf(tech(o));
+        QCOMPARE(p.tech.vias[0].landingUpper, 6.0);
+        QCOMPARE(p.tech.landing(0, 0, 2), 7.0);
+        QCOMPARE(p.tech.landing(0, 1, 2), 6.0);
+        pad(p, 0, 0, 50, 8);
+        pad(p, 0, 100, 50, 8);
+        pad(p, 0, 50, 0, 8);
+        pad(p, 0, 50, 100, 8);
+        p.nets = {net("h", at(p, 0, 50), at(p, 100, 50)), net("v", at(p, 50, 0), at(p, 50, 100))};
+        Router router(p);
+        QVERIFY(router.prepare());
+        const Result r = router.run();
+        const Verification v = verify(router.problem(), r);
+        QCOMPARE(r.routed(), 2);
+        QVERIFY2(v.clean(), qPrintable(describe(v)));
+        QVERIFY(viaCount(r) >= 2);
+        for (int n = 0; n < 2; ++n)
+            for (const DrawnShape& d : drawnShapes(router.problem(), r.nets[n], n)) {
+                if (r.nets[n].vias.isEmpty() || d.layer.layer == 3) continue;
+                const double side = d.points[1].x() - d.points[0].x(), tall = d.points[2].y() - d.points[1].y();
+                if (std::abs(side - tall) < 1e-9 && side > 2.5) QCOMPARE(side, d.layer.layer == 1 ? 7.0 : 6.0);   // the landings
+            }
+        // A landing narrower than the enclosure asks: found by the rule.
+        Problem thin = router.problem();
+        thin.tech.vias[0].landingUpper = 4;
+        bool enclosure = false;
+        for (const Finding& f : verify(thin, r).findings) enclosure = enclosure || (f.kind == QLatin1String("enclosure") && f.rule == QLatin1String("V1.EN.2"));
+        QVERIFY2(enclosure, qPrintable(describe(verify(thin, r))));
+        // A scrap of M1 less than 49 µm²: found.
+        Result scrap = r;
+        scrap.nets[0].runs.append(Run{0, {p.units(30), p.units(80)}, {p.units(33), p.units(80)}, p.units(2)});
+        bool area = false;
+        for (const Finding& f : verify(router.problem(), scrap).findings) area = area || (f.kind == QLatin1String("area") && f.rule == QLatin1String("M1.A.1"));
+        QVERIFY2(area, qPrintable(describe(verify(router.problem(), scrap))));
+    }
+
+    void aMetalsOwnNotchRuleIsFilled()
+    {
+        // The notch scene, the rule M1's own (no notch in 'spacing').
+        QJsonObject o = techJson();
+        o.insert("rules", QJsonArray{QJsonObject{{"name", "M1.N.1"}, {"type", "notch"}, {"layer", "M1"}, {"min", 5}}});
+        Problem p = problemOf(tech(o));
+        QCOMPARE(p.tech.notch, 0.0);
+        QCOMPARE(p.tech.notchOn(0), 5.0);
+        QCOMPARE(p.tech.notchOn(1), 0.0);
+        p.metal.append({rect(p, 0, 0, 100, 4), 0});
+        p.nets = {net("n", at(p, 95, 2, -1, Terminal::Mode::Exact), at(p, 10, 9, 0, Terminal::Mode::Exact))};
+        Router router(p);
+        QVERIFY(router.prepare());
+        Result r;
+        NetResult x;
+        x.status = NetResult::Status::Routed;
+        x.runs = {Run{0, {p.units(95), p.units(2)}, {p.units(95), p.units(9)}, p.units(2)}, Run{0, {p.units(95), p.units(9)}, {p.units(10), p.units(9)}, p.units(2)}};
+        r.nets = {x};
+        const Verification before = verify(router.problem(), r);
+        QCOMPARE(before.findings.size(), 1);
+        QCOMPARE(before.findings[0].kind, QStringLiteral("notch"));
+        QCOMPARE(before.findings[0].rule, QStringLiteral("M1.N.1"));
+        fillNotches(router.problem(), &r);
+        QCOMPARE(r.nets[0].fills.size(), 1);
+        QVERIFY2(verify(router.problem(), r).clean(), qPrintable(describe(verify(router.problem(), r))));
+    }
+
+    void designRulesAreReadAndRefusedByName()
+    {
+        QJsonObject o = techJson();
+        const QJsonArray rules{QJsonObject{{"name", "M1.W"}, {"type", "width"}, {"layer", "M1"}, {"min", 1}},
+                               QJsonObject{{"name", "M2.S"}, {"type", "spacing"}, {"layer", "M2"}, {"min", 3}},
+                               QJsonObject{{"name", "V1.S"}, {"type", "spacing"}, {"layer", "V1"}, {"min", 4}},
+                               QJsonObject{{"name", "M1.X"}, {"type", "spacing"}, {"layer", "M1"}, {"to", "40/0"}, {"min", 2}},
+                               QJsonObject{{"name", "M2.I"}, {"type", "inclusion"}, {"layer", "M2"}, {"of", "50/0"}, {"min", 1}},
+                               QJsonObject{{"name", "V1.E"}, {"type", "enclosure"}, {"layer", "3/0"}, {"by", "M1"}, {"min", 1.5}},
+                               QJsonObject{{"name", "M2.A"}, {"type", "area"}, {"layer", "M2"}, {"min", 20}},
+                               QJsonObject{{"name", "M2.N"}, {"type", "notch"}, {"layer", "M2"}, {"min", 3}}};
+        o.insert("rules", rules);
+        QString e;
+        const Technology t = readTechnology(o, &e);
+        QVERIFY2(e.isEmpty(), qPrintable(e));
+        QCOMPARE(t.rules.size(), 8);
+        QCOMPARE(t.minWidth[0], 1.0);
+        QCOMPARE(t.metalSpacing[1], 3.0);
+        QCOMPARE(t.vias[0].spacing, 4.0);
+        QCOMPARE(t.obstacles.size(), 1);
+        QCOMPARE(t.inclusions.size(), 1);
+        QCOMPARE(t.vias[0].landingLower, 5.0);
+        QCOMPARE(t.minArea[1], 20.0);
+        QCOMPARE(t.notchOn(1), 3.0);
+        // Read back as written, the rules as given.
+        const Technology again = readTechnology(technologyJson(t), &e);
+        QVERIFY2(e.isEmpty(), qPrintable(e));
+        QCOMPARE(QJsonDocument(technologyJson(again)).toJson(), QJsonDocument(technologyJson(t)).toJson());
+        QCOMPARE(again.obstacles.size(), 1);
+        QCOMPARE(again.vias[0].spacing, 4.0);
+        const auto refused = [&](const QJsonObject& rule, const char* word) {
+            QJsonObject x = techJson();
+            x.insert("rules", QJsonArray{rule});
+            QString why;
+            readTechnology(x, &why);
+            return why.contains(QLatin1String(word)) ? QString() : why + QStringLiteral(" [wanted ") + QLatin1String(word) + QLatin1Char(']');
+        };
+        QCOMPARE(refused({{"name", "r"}, {"type", "density"}, {"layer", "M1"}, {"min", 1}}, "'type'"), QString());
+        QCOMPARE(refused({{"name", "r"}, {"type", "width"}, {"layer", "M1"}, {"min", 0}}, "'min'"), QString());
+        QCOMPARE(refused({{"name", "r"}, {"type", "width"}, {"layer", "M9"}, {"min", 1}}, "routing metal"), QString());
+        QCOMPARE(refused({{"name", "r"}, {"type", "width"}, {"layer", "M1"}, {"min", 1}, {"mni", 1}}, "'mni'"), QString());
+        QCOMPARE(refused({{"name", "r"}, {"type", "width"}, {"layer", "M1"}, {"min", 1}, {"to", "40/0"}}, "'to'"), QString());
+        QCOMPARE(refused({{"name", "r"}, {"type", "exclusion"}, {"layer", "M1"}, {"to", "2/0"}, {"min", 1}}, "metals do not meet"), QString());
+        QCOMPARE(refused({{"name", "r"}, {"type", "inclusion"}, {"layer", "M1"}, {"min", 1}}, "'of'"), QString());
+        QCOMPARE(refused({{"name", "r"}, {"type", "enclosure"}, {"layer", "M1"}, {"by", "M2"}, {"min", 1}}, "enclosure"), QString());
+        QCOMPARE(refused({{"name", "r"}, {"type", "spacing"}, {"layer", "9/9"}, {"min", 1}}, "spacing rule"), QString());
+        // A class asking for a via the technology has not.
+        QJsonObject x = techJson();
+        QJsonArray classes = x.value("classes").toArray();
+        QJsonObject c0 = classes[0].toObject();
+        QJsonArray v9;
+        v9.append("V9");
+        c0.insert("vias", v9);
+        classes[0] = c0;
+        x.insert("classes", classes);
+        readTechnology(x, &e);
+        QVERIFY2(e.contains("V9"), qPrintable(e));
+    }
+
+    void cutsOfOneLayerKeepTheirSpacingWhicheverVia()
+    {
+        // V1 and its array on one cut layer: a cut of one 1 µm from the
+        // other's (2 needed) is found, whichever via each is.
+        QJsonObject o = techJson();
+        o.insert("vias", QJsonArray{QJsonObject{{"name", "V1"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 2}, {"enclosure", 1}, {"spacing", 2}},
+                                    QJsonObject{{"name", "V1x2"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 1}, {"cuts", QJsonArray{2, 2}},
+                                                {"cut_spacing", 1}, {"enclosure", 1}, {"spacing", 2}}});
+        Problem p = problemOf(tech(o));
+        pad(p, 0, 0, 0);
+        pad(p, 0, 100, 0);
+        p.nets = {net("a", at(p, 0, 0), at(p, 100, 0))};
+        p.cuts.append({rect(p, 49, 2, 51, 4), 1});   // a cut already there, of the array's layer
+        Router router(p);
+        QVERIFY(router.prepare());
+        Result r;
+        r.nets.resize(1);
+        r.nets[0].status = NetResult::Status::Routed;
+        r.nets[0].runs = {Run{0, {0, 0}, {p.units(100), 0}, p.units(2)}};
+        r.nets[0].vias = {ViaPlaced{0, {p.units(50), 0}}};
+        bool near = false;
+        for (const Finding& f : verify(router.problem(), r).findings) near = near || f.kind == QLatin1String("via_spacing");
+        QVERIFY2(near, qPrintable(describe(verify(router.problem(), r))));
+    }
+
     void padsArePairedByLeastDistance()
     {
         const QVector<Pt> starts = {{0, 0}, {0, 10}, {0, 20}};

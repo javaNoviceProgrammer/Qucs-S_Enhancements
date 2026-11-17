@@ -74,6 +74,7 @@ QJsonObject passJson(const PassRow& r)
 QJsonObject findingJson(const Problem& p, const Finding& f)
 {
     QJsonObject o{{"kind", f.kind}, {"net", f.net}, {"at", pointJson(p, f.at)}, {"text", f.text}};
+    if (!f.rule.isEmpty()) o.insert(QStringLiteral("rule"), f.rule);
     if (!f.other.isEmpty()) o.insert(QStringLiteral("other"), f.other);
     if (f.metal >= 0 && f.metal < p.tech.metals.size()) o.insert(QStringLiteral("metal"), p.tech.metals.at(f.metal).name);
     if (f.required > 0) {
@@ -126,18 +127,27 @@ QJsonObject formatReference()
         {"grid", "µm, the lattice's pitch (> 0); finer routes closer, coarser runs faster"},
         {"metals", "[{name, layer \"1/0\", direction h|v|any}], bottom first, 1 to 8"},
         {"vias", "[{name, layer, between [lower, upper metal], size (a cut's side), cuts [columns, rows] (1 x 1), cut_spacing (inside an array), "
-                 "enclosure | landing | landing_lower + landing_upper, spacing (via to via)}], one between each pair of neighbouring metals"},
-        {"classes", "[{name, width, spacing (to another net's line; the larger of the two classes')}], 1 to 32"},
+                 "enclosure | landing | landing_lower + landing_upper, spacing (via to via)}]: one at least between each pair of neighbouring metals; "
+                 "several between a pair (a 2 x 2 array for power, one cut for signals; names unique, 64 at most) - the first listed is the pair's default"},
+        {"classes", "[{name, width, spacing (to another net's line; the larger of the two classes'), vias [names: the class's own via between those metals]}], 1 to 32"},
         {"default_class", "a class's name (the first)"},
         {"spacing", "{same_layer, to_metal (metal of no net, and a net's metal that is not its terminal's shape), to_terminal (the shape another net's terminal is on), "
                     "notch (optional: narrower slots against a net's own metal filled, else found)}"},
         {"obstacles", "[{name, layer, clearance (0: no metal over it), metals (all), landings (a via may sit on a net's own contact in it)}]"},
+        {"rules", "[{name (as the deck has it: findings name it), type, layer, min, to | of | by}], 1000 at most; each honoured where lines are drawn and checked on them: "
+                  "width (layer a metal: a class narrower never runs on it - it only lands there -, landings never narrower), "
+                  "spacing (a metal: least distance from new metal to all other metal there, other nets' lines too; a via, by name or layer \"3/0\": cut to cut; "
+                  "with 'to' a layer: as exclusion), exclusion (a metal, 'to' a layer: kept that far from its shapes), "
+                  "inclusion (a metal, 'of' a layer: lines stay inside its shapes by min; a net's own metal is never in the way), "
+                  "enclosure (a via, 'by' a metal it joins: its cuts inside that metal by min - the landing grown), "
+                  "area (a metal, µm²: each piece of a net's metal at least this - landings grown to it), notch (a metal: its own notch rule)"},
         {"costs", "{bend 2, via 10, wrong_way 2} in lattice steps"},
         {"area", "{margin µm round the terminals (100), or box [x0, y0, x1, y1]}"},
         {"refused", "any key it does not know, by name; a length that is not a positive number in range"}};
     const QJsonObject net{
         {"name", "unique"},
         {"class", "a class's name (the technology's default)"},
+        {"vias", "[via names]: its own via between those metals, one at most a pair (its class's, else the pair's default, elsewhere)"},
         {"start", "a terminal"},
         {"pads", "[terminal, ...]: one or more; several make a tree"},
         {"guide", "[[x, y], ...] µm: the line keeps within 'band' of it as far as its last point, then is free"},
@@ -164,9 +174,18 @@ QJsonObject formatReference()
         {"name", "two metals"},
         {"grid", 1},
         {"metals", QJsonArray{QJsonObject{{"name", "M1"}, {"layer", "1/0"}, {"direction", "h"}}, QJsonObject{{"name", "M2"}, {"layer", "2/0"}, {"direction", "v"}}}},
-        {"vias", QJsonArray{QJsonObject{{"name", "V1"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 2}, {"enclosure", 1}, {"spacing", 2}}}},
-        {"classes", QJsonArray{QJsonObject{{"name", "signal"}, {"width", 4}}, QJsonObject{{"name", "power"}, {"width", 10}, {"spacing", 4}}}},
-        {"spacing", QJsonObject{{"same_layer", 3}, {"to_metal", 3}, {"to_terminal", 4}}}};
+        {"vias", QJsonArray{QJsonObject{{"name", "V1"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 2}, {"enclosure", 1}, {"spacing", 2}},
+                            QJsonObject{{"name", "V1x2"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 2}, {"cuts", QJsonArray{2, 2}},
+                                        {"cut_spacing", 2}, {"enclosure", 1}, {"spacing", 2}}}},
+        {"classes", QJsonArray{QJsonObject{{"name", "signal"}, {"width", 4}},
+                               QJsonObject{{"name", "power"}, {"width", 10}, {"spacing", 4}, {"vias", QJsonArray{"V1x2"}}}}},
+        {"spacing", QJsonObject{{"same_layer", 3}, {"to_metal", 3}, {"to_terminal", 4}}},
+        {"rules", QJsonArray{QJsonObject{{"name", "M2.W.1"}, {"type", "width"}, {"layer", "M2"}, {"min", 5}},
+                             QJsonObject{{"name", "M1.S.1"}, {"type", "spacing"}, {"layer", "M1"}, {"min", 4}},
+                             QJsonObject{{"name", "M1.EX.1"}, {"type", "exclusion"}, {"layer", "M1"}, {"to", "20/0"}, {"min", 5}},
+                             QJsonObject{{"name", "M2.IN.1"}, {"type", "inclusion"}, {"layer", "M2"}, {"of", "40/0"}, {"min", 2}},
+                             QJsonObject{{"name", "V1.EN.1"}, {"type", "enclosure"}, {"layer", "V1"}, {"by", "M2"}, {"min", 2}},
+                             QJsonObject{{"name", "M1.A.1"}, {"type", "area"}, {"layer", "M1"}, {"min", 64}}}}};
     return QJsonObject{{"technology", technology}, {"net", net}, {"terminal", terminal}, {"keep_out", keepOut},
                        {"guide (route_setup)", "{net, points [[x, y], ...] | from_stroke n, band}; points [] takes it away"},
                        {"options", options}, {"nets_csv", csv}, {"example technology", example},

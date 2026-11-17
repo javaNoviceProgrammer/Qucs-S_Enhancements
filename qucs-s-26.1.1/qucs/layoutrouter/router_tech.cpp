@@ -26,6 +26,22 @@ int Technology::metalIndex(const QString& name) const
     return -1;
 }
 
+int Technology::viaFor(int cls, const QVector<int>& netVias, int pair) const
+{
+    if (pair < netVias.size() && netVias.at(pair) >= 0) return netVias.at(pair);
+    if (cls >= 0 && cls < classes.size() && pair < classes.at(cls).vias.size() && classes.at(cls).vias.at(pair) >= 0) return classes.at(cls).vias.at(pair);
+    return pair >= 0 && pair < defaultVias.size() ? defaultVias.at(pair) : -1;
+}
+
+double Technology::landing(int via, int metal, double lineWidth) const
+{
+    const Via& v = vias.at(via);
+    double side = std::max(metal == v.lower ? v.landingLower : v.landingUpper, lineWidth);
+    if (metal < minWidth.size()) side = std::max(side, minWidth.at(metal));
+    if (metal < minArea.size() && minArea.at(metal) > 0) side = std::max(side, std::ceil(std::sqrt(minArea.at(metal)) * 1000 - 1e-9) / 1000);   // (to a nanometre over)
+    return side;
+}
+
 int Technology::classIndex(const QString& name) const
 {
     for (int i = 0; i < classes.size(); ++i)
@@ -99,7 +115,186 @@ bool name(const QJsonObject& o, QString* out, QString* error, const QString& whe
     return true;
 }
 
+// The vias a class or a net chooses, by name: one at most between each pair
+// of metals; into \a choice by the pair's lower metal (-1: its default).
+bool readViaChoiceOf(const Technology& t, const QJsonValue& v, QVector<int>* choice, const QString& who, QString* error)
+{
+    choice->fill(-1, t.defaultVias.size());
+    if (v.isUndefined()) return true;
+    if (!v.isArray() || v.toArray().size() > 64) {
+        *error = who + QStringLiteral(": 'vias' names the vias it uses, one between a pair of metals");
+        return false;
+    }
+    for (const QJsonValue& x : v.toArray()) {
+        int found = -1;
+        for (int i = 0; i < t.vias.size(); ++i)
+            if (x.isString() && t.vias.at(i).name.compare(x.toString(), Qt::CaseInsensitive) == 0) found = i;
+        if (found < 0) {
+            *error = who + QStringLiteral(": 'vias' names %1, which the technology has not").arg(x.toString());
+            return false;
+        }
+        const int pair = t.vias.at(found).lower;
+        if ((*choice)[pair] >= 0) {
+            *error = who + QStringLiteral(": 'vias' names two vias between %1 and %2").arg(t.metals.at(pair).name, t.metals.at(pair + 1).name);
+            return false;
+        }
+        (*choice)[pair] = found;
+    }
+    return true;
+}
+
+// The vias a rule's 'layer' names: one by its name, or every via on a layer
+// given as "3/0".
+QVector<int> viasNamed(const Technology& t, const QJsonValue& v)
+{
+    QVector<int> out;
+    for (int i = 0; i < t.vias.size(); ++i)
+        if (v.isString() && t.vias.at(i).name.compare(v.toString(), Qt::CaseInsensitive) == 0) out << i;
+    if (!out.isEmpty()) return out;
+    LayerId id;
+    QString ignored;
+    if (readLayerId(v, &id, &ignored, QString()))
+        for (int i = 0; i < t.vias.size(); ++i)
+            if (t.vias.at(i).layer == id) out << i;
+    return out;
+}
+
+// The design rules, each made part of what the router keeps to:
+//  width     a metal's least width: a class narrower never runs on it;
+//            a landing there is never narrower
+//  spacing   a metal's least distance to any other metal on it (lines of
+//            other nets, metal already there, pads), or a via layer's
+//            least distance between cuts
+//  exclusion a metal's least distance to another layer's shapes (an
+//            obstacle rule on that metal)
+//  inclusion lines on a metal stay inside another layer's shapes, by min
+//  enclosure a via's cuts enclosed by a metal, by min: its landing grown
+//  area      a metal's least area of a net's metal: landings grown to it
+//  notch     a metal's own notch rule
+bool readRules(const QJsonValue& v, Technology* t, QString* error)
+{
+    const int planes = int(t->metals.size());
+    t->metalSpacing.fill(0, planes);
+    t->minWidth.fill(0, planes);
+    t->minArea.fill(0, planes);
+    t->metalNotch.fill(0, planes);
+    if (v.isUndefined()) return true;
+    if (!v.isArray() || v.toArray().size() > 1000) {
+        *error = QStringLiteral("The technology: 'rules' is a list of design rules (1000 at most)");
+        return false;
+    }
+    for (const QJsonValue& rv : v.toArray()) {
+        const QString where = QStringLiteral("Rule %1").arg(t->rules.size() + 1);
+        if (!rv.isObject()) {
+            *error = where + QStringLiteral(": an object, {\"name\", \"type\", \"layer\", \"min\"}");
+            return false;
+        }
+        const QJsonObject r = rv.toObject();
+        if (!onlyKeys(r, {"name", "type", "layer", "min", "to", "of", "by", "comment"}, where, error)) return false;
+        DesignRule rule;
+        rule.type = r.value(QLatin1String("type")).toString();
+        rule.layer = r.value(QLatin1String("layer")).toVariant().toString();
+        rule.name = r.value(QLatin1String("name")).toString(QStringLiteral("%1 on %2").arg(rule.type, rule.layer));
+        static const QStringList types{"width", "spacing", "exclusion", "inclusion", "enclosure", "area", "notch"};
+        if (!types.contains(rule.type)) {
+            *error = QStringLiteral("%1: 'type' is one of %2").arg(rule.name, types.join(QStringLiteral(", ")));
+            return false;
+        }
+        const QJsonValue minimum = r.value(QLatin1String("min"));
+        if (!minimum.isDouble() || !std::isfinite(minimum.toDouble()) || minimum.toDouble() <= 0 || minimum.toDouble() > 1e12) {
+            *error = QStringLiteral("%1: 'min' is a positive number (µm, or µm² for area)").arg(rule.name);
+            return false;
+        }
+        rule.min = minimum.toDouble();
+        const int metal = t->metalIndex(rule.layer);
+        const QVector<int> vias = viasNamed(*t, r.value(QLatin1String("layer")));
+        const auto needMetal = [&] {
+            if (metal >= 0) return true;
+            *error = QStringLiteral("%1: a %2 rule's 'layer' is a routing metal's name").arg(rule.name, rule.type);
+            return false;
+        };
+        const auto otherLayer = [&](const char* key, LayerId* id) {
+            const QJsonValue x = r.value(QLatin1String(key));
+            if (!readLayerId(x, id, error, rule.name)) {
+                *error = QStringLiteral("%1: '%2' is a layer, \"30/0\"").arg(rule.name, QLatin1String(key));
+                return false;
+            }
+            for (const Metal& m : std::as_const(t->metals))
+                if (m.layer == *id) {
+                    *error = QStringLiteral("%1: '%2' is a routing metal's layer: metals do not meet").arg(rule.name, QLatin1String(key));
+                    return false;
+                }
+            rule.other = id->text();
+            return true;
+        };
+        const auto onlyFor = [&](std::initializer_list<const char*> keys) {
+            for (const char* k : {"to", "of", "by"}) {
+                bool allowed = false;
+                for (const char* a : keys) allowed = allowed || QLatin1String(a) == QLatin1String(k);
+                if (!allowed && r.contains(QLatin1String(k))) {
+                    *error = QStringLiteral("%1: a %2 rule takes no '%3'").arg(rule.name, rule.type, QLatin1String(k));
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (rule.type == QLatin1String("width") || rule.type == QLatin1String("area") || rule.type == QLatin1String("notch")) {
+            if (!onlyFor({}) || !needMetal()) return false;
+            double& slot = rule.type == QLatin1String("width") ? t->minWidth[metal] : (rule.type == QLatin1String("area") ? t->minArea[metal] : t->metalNotch[metal]);
+            slot = std::max(slot, rule.min);
+        } else if (rule.type == QLatin1String("spacing") && !r.contains(QLatin1String("to"))) {
+            if (!onlyFor({})) return false;
+            if (metal >= 0) {
+                t->metalSpacing[metal] = std::max(t->metalSpacing[metal], rule.min);
+            } else if (!vias.isEmpty()) {
+                for (int i : vias) t->vias[i].spacing = std::max(t->vias[i].spacing, rule.min);
+            } else {
+                *error = QStringLiteral("%1: a spacing rule's 'layer' is a metal's or a via's name (or a via layer, \"3/0\")").arg(rule.name);
+                return false;
+            }
+        } else if (rule.type == QLatin1String("exclusion") || rule.type == QLatin1String("spacing")) {
+            // (spacing with 'to': the distance to another layer's shapes)
+            LayerId to;
+            if (!onlyFor({"to"}) || !needMetal() || !otherLayer("to", &to)) return false;
+            ObstacleRule o;
+            o.name = rule.name;
+            o.layer = to;
+            o.clearance = rule.min;
+            o.metals = {metal};
+            t->obstacles.append(o);
+        } else if (rule.type == QLatin1String("inclusion")) {
+            LayerId of;
+            if (!onlyFor({"of"}) || !needMetal() || !otherLayer("of", &of)) return false;
+            t->inclusions.append({rule.name, of, metal, rule.min});
+        } else if (rule.type == QLatin1String("enclosure")) {
+            if (!onlyFor({"by"})) return false;
+            const int by = t->metalIndex(r.value(QLatin1String("by")).toString());
+            if (vias.isEmpty() || by < 0) {
+                *error = QStringLiteral("%1: an enclosure rule's 'layer' is a via (by name, or its layer \"3/0\"), and 'by' a metal it joins").arg(rule.name);
+                return false;
+            }
+            rule.other = t->metals.at(by).name;
+            for (int i : vias) {
+                Via& via = t->vias[i];
+                if (by != via.lower && by != via.lower + 1) {
+                    *error = QStringLiteral("%1: %2 does not join %3").arg(rule.name, via.name, t->metals.at(by).name);
+                    return false;
+                }
+                double& landing = by == via.lower ? via.landingLower : via.landingUpper;
+                landing = std::max(landing, via.outline() + 2 * rule.min);
+            }
+        }
+        t->rules.append(rule);
+    }
+    return true;
+}
+
 } // namespace
+
+bool readViaChoice(const Technology& t, const QJsonValue& names, QVector<int>* choice, const QString& who, QString* error)
+{
+    return readViaChoiceOf(t, names, choice, who, error);
+}
 
 Technology readTechnology(const QJsonObject& o, QString* error)
 {
@@ -109,7 +304,7 @@ Technology readTechnology(const QJsonObject& o, QString* error)
         *error = why;
         return Technology();
     };
-    if (!onlyKeys(o, {"name", "grid", "metals", "vias", "classes", "default_class", "spacing", "obstacles", "costs", "area", "comment"},
+    if (!onlyKeys(o, {"name", "grid", "metals", "vias", "classes", "default_class", "spacing", "obstacles", "rules", "costs", "area", "comment"},
                   QStringLiteral("The technology"), &e))
         return fail(e);
     t.name = o.value(QLatin1String("name")).toString(QStringLiteral("technology"));
@@ -140,8 +335,9 @@ Technology readTechnology(const QJsonObject& o, QString* error)
             if (t.metals.at(i).layer == t.metals.at(j).layer)
                 return fail(QStringLiteral("%1 and %2 are both on %3").arg(t.metals.at(i).name, t.metals.at(j).name, t.metals.at(i).layer.text()));
 
-    t.vias.resize(t.metals.size() - 1);
-    QVector<bool> viaGiven(t.vias.size(), false);
+    // Several vias may join a pair of metals (a class's or a net's own cuts);
+    // the first listed for a pair is its default.
+    t.defaultVias.fill(-1, t.metals.size() - 1);
     const QJsonValue vias = o.value(QLatin1String("vias"));
     if (!vias.isUndefined() && !vias.isArray()) return fail(QStringLiteral("The technology: 'vias' is a list"));
     for (const QJsonValue& vv : vias.toArray()) {
@@ -153,6 +349,9 @@ Technology readTechnology(const QJsonObject& o, QString* error)
             return fail(e);
         Via via;
         if (!name(v, &via.name, &e, where)) return fail(e);
+        for (const Via& other : std::as_const(t.vias))
+            if (other.name.compare(via.name, Qt::CaseInsensitive) == 0) return fail(QStringLiteral("Two vias are named %1").arg(via.name));
+        if (t.vias.size() >= 64) return fail(QStringLiteral("The technology: 64 vias at most"));
         if (!readLayerId(v.value(QLatin1String("layer")), &via.layer, &e, via.name)) return fail(e);
         const QJsonArray between = v.value(QLatin1String("between")).toArray();
         if (between.size() != 2 || !between.at(0).isString() || !between.at(1).isString())
@@ -161,7 +360,6 @@ Technology readTechnology(const QJsonObject& o, QString* error)
         if (a < 0 || b < 0) return fail(via.name + QStringLiteral(": 'between' names a metal the technology has not"));
         if (a > b) std::swap(a, b);
         if (b != a + 1) return fail(via.name + QStringLiteral(": a via joins two neighbouring metals"));
-        if (viaGiven.at(a)) return fail(QStringLiteral("Two vias join %1 and %2").arg(t.metals.at(a).name, t.metals.at(b).name));
         via.lower = a;
         if (!length(v, "size", &via.size, &e, via.name, true, true)) return fail(e);
         if (v.contains(QLatin1String("cuts"))) {
@@ -187,11 +385,11 @@ Technology readTechnology(const QJsonObject& o, QString* error)
         if (via.landingLower < via.outline() || via.landingUpper < via.outline())
             return fail(via.name + QStringLiteral(": a landing is as large as its cuts at least (%1 µm)").arg(via.outline()));
         if (!length(v, "spacing", &via.spacing, &e, via.name, false, false)) return fail(e);
-        t.vias[a] = via;
-        viaGiven[a] = true;
+        if (t.defaultVias[a] < 0) t.defaultVias[a] = int(t.vias.size());
+        t.vias.append(via);
     }
-    for (int i = 0; i < viaGiven.size(); ++i)
-        if (!viaGiven.at(i)) return fail(QStringLiteral("No via joins %1 and %2").arg(t.metals.at(i).name, t.metals.at(i + 1).name));
+    for (int i = 0; i < t.defaultVias.size(); ++i)
+        if (t.defaultVias.at(i) < 0) return fail(QStringLiteral("No via joins %1 and %2").arg(t.metals.at(i).name, t.metals.at(i + 1).name));
 
     const QJsonValue spacing = o.value(QLatin1String("spacing"));
     if (!spacing.isObject()) return fail(QStringLiteral("The technology: 'spacing' is needed: {\"same_layer\", \"to_metal\", \"to_terminal\"}"));
@@ -213,7 +411,7 @@ Technology readTechnology(const QJsonObject& o, QString* error)
         const QString where = QStringLiteral("Class %1").arg(t.classes.size() + 1);
         if (!cv.isObject()) return fail(where + QStringLiteral(": an object"));
         const QJsonObject c = cv.toObject();
-        if (!onlyKeys(c, {"name", "width", "spacing"}, where, &e)) return fail(e);
+        if (!onlyKeys(c, {"name", "width", "spacing", "vias"}, where, &e)) return fail(e);
         NetClass k;
         if (!name(c, &k.name, &e, where)) return fail(e);
         if (t.classIndex(k.name) >= 0) return fail(QStringLiteral("Two classes are named %1").arg(k.name));
@@ -221,6 +419,7 @@ Technology readTechnology(const QJsonObject& o, QString* error)
         k.spacing = t.sameLayer;
         if (!length(c, "spacing", &k.spacing, &e, k.name, false, false)) return fail(e);
         if (k.width < t.grid / 1000) return fail(k.name + QStringLiteral(": its width is too small for the grid"));
+        if (!readViaChoiceOf(t, c.value(QLatin1String("vias")), &k.vias, k.name, &e)) return fail(e);
         t.classes.append(k);
     }
     if (o.contains(QLatin1String("default_class"))) {
@@ -258,6 +457,8 @@ Technology readTechnology(const QJsonObject& o, QString* error)
         r.landings = landings.toBool(false);
         t.obstacles.append(r);
     }
+
+    if (!readRules(o.value(QLatin1String("rules")), &t, &e)) return fail(e);
 
     if (o.contains(QLatin1String("costs"))) {
         if (!o.value(QLatin1String("costs")).isObject()) return fail(QStringLiteral("The technology: 'costs' is an object"));
@@ -331,8 +532,25 @@ QJsonObject technologyJson(const Technology& t)
                                 {"between", QJsonArray{t.metals.at(v.lower).name, t.metals.at(v.lower + 1).name}},
                                 {"size", v.size}, {"cuts", QJsonArray{v.cols, v.rows}}, {"cut_spacing", v.cutSpacing},
                                 {"landing_lower", v.landingLower}, {"landing_upper", v.landingUpper}, {"spacing", v.spacing}});
-    for (const NetClass& c : t.classes) classes.append(QJsonObject{{"name", c.name}, {"width", c.width}, {"spacing", c.spacing}});
+    for (const NetClass& c : t.classes) {
+        QJsonObject o{{"name", c.name}, {"width", c.width}, {"spacing", c.spacing}};
+        QJsonArray own;
+        for (int v : c.vias)
+            if (v >= 0) own.append(t.vias.at(v).name);
+        if (!own.isEmpty()) o.insert(QStringLiteral("vias"), own);
+        classes.append(o);
+    }
+    QJsonArray rules;
+    for (const DesignRule& r : t.rules) {
+        QJsonObject o{{"name", r.name}, {"type", r.type}, {"layer", r.layer}, {"min", r.min}};
+        if (!r.other.isEmpty()) o.insert(r.type == QLatin1String("inclusion") ? QStringLiteral("of") : (r.type == QLatin1String("enclosure") ? QStringLiteral("by") : QStringLiteral("to")), r.other);
+        rules.append(o);
+    }
     for (const ObstacleRule& r : t.obstacles) {
+        // (one a rule made is written as that rule)
+        bool fromRule = false;
+        for (const DesignRule& d : t.rules) fromRule = fromRule || (d.name == r.name && !d.other.isEmpty() && d.type != QLatin1String("inclusion") && d.type != QLatin1String("enclosure"));
+        if (fromRule) continue;
         QJsonArray ms;
         for (int m : r.metals) ms.append(t.metals.at(m).name);
         obstacles.append(QJsonObject{{"name", r.name}, {"layer", layer(r.layer)}, {"clearance", r.clearance}, {"metals", ms}, {"landings", r.landings}});
@@ -347,6 +565,7 @@ QJsonObject technologyJson(const Technology& t)
                        {"default_class", t.classes.isEmpty() ? QString() : t.classes.at(t.defaultClass).name},
                        {"spacing", QJsonObject{{"same_layer", t.sameLayer}, {"to_metal", t.toMetal}, {"to_terminal", t.toTerminal}, {"notch", t.notch}}},
                        {"obstacles", obstacles},
+                       {"rules", rules},
                        {"costs", QJsonObject{{"bend", t.bendCost}, {"via", t.viaCost}, {"wrong_way", t.wrongWayCost}}},
                        {"area", area}};
 }

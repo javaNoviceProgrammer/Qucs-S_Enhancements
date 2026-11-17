@@ -176,7 +176,7 @@ bool readNet(const QJsonValue& v, JobNet* net, QString* error)
     }
     const QJsonObject o = v.toObject();
     const QString where = QStringLiteral("Net %1").arg(o.value(QLatin1String("name")).toString());
-    if (!onlyKeys(o, {"name", "class", "start", "pads", "guide", "band", "fixed"}, where, error)) return false;
+    if (!onlyKeys(o, {"name", "class", "vias", "start", "pads", "guide", "band", "fixed"}, where, error)) return false;
     if (!o.value(QLatin1String("name")).isString() || o.value(QLatin1String("name")).toString().trimmed().isEmpty()
         || o.value(QLatin1String("name")).toString().size() > 200) {
         *error = QStringLiteral("A net needs a 'name'");
@@ -189,6 +189,17 @@ bool readNet(const QJsonValue& v, JobNet* net, QString* error)
             return false;
         }
         net->netClass = o.value(QLatin1String("class")).toString();
+    }
+    if (o.contains(QLatin1String("vias"))) {
+        // (names: the technology checks them when the job is routed)
+        const QJsonValue vias = o.value(QLatin1String("vias"));
+        bool ok = vias.isArray() && vias.toArray().size() <= 16;
+        for (const QJsonValue& x : vias.toArray()) ok = ok && x.isString() && !x.toString().isEmpty();
+        if (!ok) {
+            *error = where + QStringLiteral(": 'vias' lists the vias it takes by name, one at most between two metals");
+            return false;
+        }
+        for (const QJsonValue& x : vias.toArray()) net->vias << x.toString();
     }
     JobTerminal start;
     if (!readTerminal(o.value(QLatin1String("start")), &start, where + QStringLiteral(": 'start'"), error)) return false;
@@ -225,6 +236,7 @@ QJsonObject netJson(const JobNet& net)
 {
     QJsonObject o{{"name", net.name}};
     if (!net.netClass.isEmpty()) o.insert(QStringLiteral("class"), net.netClass);
+    if (!net.vias.isEmpty()) o.insert(QStringLiteral("vias"), QJsonArray::fromStringList(net.vias));
     if (!net.terminals.isEmpty()) o.insert(QStringLiteral("start"), terminalJson(net.terminals.first()));
     QJsonArray pads;
     for (int i = 1; i < net.terminals.size(); ++i) pads.append(terminalJson(net.terminals.at(i)));

@@ -75,6 +75,29 @@ struct NetClass {
     QString name;
     double width = 0;           ///< µm
     double spacing = 0;         ///< to another net's line on its metal, µm (the pair: the larger)
+    /// Its via between each pair of neighbouring metals (Technology::vias'
+    /// index), by the pair's lower metal; -1: the pair's default.
+    QVector<int> vias;
+};
+
+/// A design rule as the technology names it (a deck's "M1.S.1"), kept for
+/// the check's findings and reports. Each is honoured where the router
+/// draws (router_tech.cpp says how) and checked on the shapes drawn.
+struct DesignRule {
+    /// width, spacing, exclusion, inclusion, enclosure, area, notch
+    QString type;
+    QString name;
+    QString layer;              ///< the metal or via it is of, by name
+    QString other;              ///< exclusion's 'to', inclusion's 'of', enclosure's 'by'
+    double min = 0;             ///< µm, or µm² for area
+};
+
+/// Lines on a metal must lie inside a layer's shapes, by 'min' at least.
+struct InclusionRule {
+    QString name;
+    LayerId of;
+    int metal = 0;
+    double min = 0;
 };
 
 /// Shapes on a layer of the layout that lines keep away from: an etched
@@ -95,7 +118,11 @@ struct Technology {
     QString file;               ///< where it was read from, if from a file
     double grid = 1;            ///< the lattice's pitch, µm
     QVector<Metal> metals;
-    QVector<Via> vias;          ///< vias[i] joins metals i and i + 1
+    /// Every via: between neighbouring metals, several between a pair when
+    /// classes or nets use different cuts; the first listed for a pair is
+    /// its default (defaultVias).
+    QVector<Via> vias;
+    QVector<int> defaultVias;   ///< [pair (its lower metal)]: Technology::vias' index
     QVector<NetClass> classes;
     int defaultClass = 0;
     double sameLayer = 0;       ///< line to line of another net, µm (a class may ask more)
@@ -106,6 +133,13 @@ struct Technology {
     /// where it cannot be; 0: neither.
     double notch = 0;
     QVector<ObstacleRule> obstacles;
+    /// The design rules as given, and what they come to by metal (index):
+    /// the least distance from new metal to any other metal there, the least
+    /// width, the least area of a net's metal (µm²), the notch rule (else
+    /// 'notch'), the regions lines must keep inside.
+    QVector<DesignRule> rules;
+    QVector<double> metalSpacing, minWidth, minArea, metalNotch;
+    QVector<InclusionRule> inclusions;
     double bendCost = 2;        ///< in lattice steps
     double viaCost = 10;
     double wrongWayCost = 2;    ///< a step against a metal's direction costs this many
@@ -116,14 +150,30 @@ struct Technology {
 
     int metalIndex(const QString& name) const;
     int classIndex(const QString& name) const;
-    /// The via between metals \a m and \a m + 1, or null.
-    const Via* viaAbove(int m) const { return m >= 0 && m < vias.size() ? &vias.at(m) : nullptr; }
+    /// The default via between metals \a m and \a m + 1, or null.
+    const Via* viaAbove(int m) const { return m >= 0 && m < defaultVias.size() ? &vias.at(defaultVias.at(m)) : nullptr; }
+    /// The via a net of class \a cls uses between metals \a pair and
+    /// \a pair + 1: the net's own (\a netVias), else its class's, else the
+    /// pair's default (an index of vias).
+    int viaFor(int cls, const QVector<int>& netVias, int pair) const;
+    /// The square a via lands on \a metal (its lower or upper one) under a
+    /// line \a lineWidth wide: its landing, the line's width, the metal's
+    /// least width and the side its least area needs - the largest. µm.
+    double landing(int via, int metal, double lineWidth) const;
+    /// The notch rule on \a metal: its own, else 'notch'. µm.
+    double notchOn(int metal) const { return metal < metalNotch.size() && metalNotch.at(metal) > 0 ? metalNotch.at(metal) : notch; }
+    /// Whether a line of class \a cls may run on \a metal (the metal's least width).
+    bool classOn(int cls, int metal) const { return metal >= minWidth.size() || classes.at(cls).width >= minWidth.at(metal) - 1e-9; }
 };
 
 /// Reads a technology, refusing a key it does not know by name. Empty
 /// name and why in \a error when it cannot.
 Technology readTechnology(const QJsonObject& o, QString* error);
 Technology readTechnologyFile(const QString& path, QString* error);
+/// The vias \a names (a JSON list of names) chooses - one at most between a
+/// pair of metals - into \a choice by the pair's lower metal (-1 the rest):
+/// a class's 'vias' and a net's. False, and why, naming \a who.
+bool readViaChoice(const Technology& t, const QJsonValue& names, QVector<int>* choice, const QString& who, QString* error);
 QJsonObject technologyJson(const Technology& t);
 
 // ----------------------------------------------------------------------
@@ -152,6 +202,9 @@ struct Net {
     Coord band = 0;
     /// Already drawn: not routed, its terminals kept for it.
     bool fixed = false;
+    /// Its own via between each pair of metals (by the pair's lower metal;
+    /// Technology::vias' index), -1 (or none): its class's.
+    QVector<int> vias;
 };
 
 /// A region lines keep out of, on the metals given (all when empty). A net
@@ -199,6 +252,7 @@ struct Problem {
     QVector<Shape> metal;       ///< every metal shape on a routing metal
     QVector<Shape> cuts;        ///< via cuts already there (they join metal)
     QVector<Shape> obstacles;   ///< shapes on the obstacle rules' layers
+    QVector<Shape> regions;     ///< shapes on the inclusion rules' layers (layer: Technology::inclusions' index)
     QVector<KeepOut> keepOuts;
     QVector<Net> nets;
     Options options;

@@ -1532,10 +1532,11 @@ void TestFemOptimize::anotherModelsPlanRunsByItsOwnSolve()
         return plan;
     };
     // (A population of 20: DE's run is the same on every platform since its
-    // numbers are the engine's own, 16 November, and of seeds 1 to 8 six
-    // reach the limit's optimum within 0.02 with 20, five with the default.
-    // Its random numbers were each library's before: CI's Linux job ended
-    // at (1.33, -1.76), f 0.169 against the optimum's 0.125.)
+    // numbers are the engine's own, 16 November - before, each library's,
+    // and CI's Linux job ended at (1.33, -1.76), f 0.169 against the
+    // optimum's 0.125. Seeds 1 to 16 with 20, alike in a clang tree that
+    // contracts multiply-adds and a GCC one that does not: each feasible,
+    // f at most 0.134, x and y within 0.057 of the optimum.)
     const Node node = nodeOf(R"({"method": "de", "seed": 3, "maxiter": 60, "population": 20, "parallel": 4,
         "variables": [["x", "", "-3[m]", "3[m]"], ["y", "", "-3[m]", "3[m]"]],
         "objectives": [["f", "MIN"], ["s", "GE", "-0.5[m]"], ["", "MIN"]]})");
@@ -1569,7 +1570,13 @@ void TestFemOptimize::anotherModelsPlanRunsByItsOwnSolve()
     };
     const OptimizationResult r = runOptimizationPlan(*plan, ps, solve, {}, {}, [] { return QStringList{QStringLiteral("the solver's last word")}; });
     QVERIFY2(r.error.isEmpty() && r.hasBest(), qPrintable(said(r)));
-    QVERIFY2(std::abs(value(r, QStringLiteral("x")) - 1.25) < 0.02 && std::abs(value(r, QStringLiteral("y")) + 1.75) < 0.02, qPrintable(said(r)));
+    // Near the optimum on the limit, whatever run DE made: f within 15 % of
+    // its 0.125, x and y within 0.08 - not one seed's own path (0.02 held
+    // seed 3 alone, 6 of seeds 1 to 8).
+    const double x = value(r, QStringLiteral("x")), y = value(r, QStringLiteral("y"));
+    const double f = (x - 1) * (x - 1) + (y + 2) * (y + 2);
+    QVERIFY2(f < 1.15 * 0.125 && std::abs(x - 1.25) < 0.08 && std::abs(y + 1.75) < 0.08,
+             qPrintable(QStringLiteral("(%1, %2), f %3: ").arg(x).arg(y).arg(f) + said(r)));
     QVERIFY2(value(r, QStringLiteral("s")) >= -0.5 - 1e-3, qPrintable(said(r)));
     QCOMPARE(r.solves, calls.load());
     QCOMPARE(int(r.notes.count(QStringLiteral("a word from the solver"))), 1);

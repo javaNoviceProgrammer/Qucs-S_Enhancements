@@ -76,6 +76,28 @@ double overlapArea(const Poly& a, const Poly& b)
     return std::abs(area);
 }
 
+Paths shrunkPaths(const std::vector<Poly>& polys, Coord by)
+{
+    ClipperLib::Clipper c;
+    for (const Poly& q : polys) c.AddPath(pathOf(q), ClipperLib::ptSubject, true);
+    Paths joined;
+    c.Execute(ClipperLib::ctUnion, joined, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+    if (by <= 0 || joined.empty()) return joined;
+    ClipperLib::ClipperOffset o;
+    o.AddPaths(joined, ClipperLib::jtMiter, ClipperLib::etClosedPolygon);
+    Paths out;
+    o.Execute(out, -double(by));
+    return out;
+}
+
+std::vector<Poly> polysOf(const Paths& paths)
+{
+    std::vector<Poly> out;
+    out.reserve(paths.size());
+    for (const Path& q : paths) out.push_back(polyOfPath(q));
+    return out;
+}
+
 QString micro(double um)
 {
     return QString::number(um, 'f', 3).remove(QRegularExpression(QStringLiteral("\\.?0+$")));
@@ -170,19 +192,67 @@ int ownerOf(const MetalMap& m, int shape)
     return m.owner[std::size_t(m.root[std::size_t(shape)])];
 }
 
+// The design rule of \a type a value comes from, by name: the one on \a layer
+// (a metal's or a via's name, or a via's layer) whose minimum it is; empty
+// when none is (the value is the technology's own).
+QString ruleOf(const Technology& t, const QString& type, const QStringList& layers, double value)
+{
+    for (const DesignRule& r : t.rules)
+        if (r.type == type && r.other.isEmpty() == (type != QLatin1String("enclosure") && type != QLatin1String("inclusion")) && std::abs(r.min - value) <= 1e-9
+            && layers.contains(r.layer, Qt::CaseInsensitive))
+            return r.name;
+    return {};
+}
+
+QStringList namesOf(const Via& v)
+{
+    return {v.name, v.layer.text()};
+}
+
+// A metal's spacing to other metal there: the rule's, else the technology's \a base.
+Coord spacingOn(const Problem& p, int l, Coord base)
+{
+    return l < p.tech.metalSpacing.size() ? std::max(base, p.units(p.tech.metalSpacing.at(l))) : base;
+}
+
+// Each inclusion rule's region, shrunk by its minimum, as Clipper paths.
+std::vector<Paths> regionsOf(const Problem& p)
+{
+    std::vector<Paths> out;
+    for (int r = 0; r < p.tech.inclusions.size(); ++r) {
+        std::vector<Poly> in;
+        for (const Shape& sh : p.regions)
+            if (sh.layer == r) in.push_back(sh.outline);
+        out.push_back(shrunkPaths(in, p.units(p.tech.inclusions.at(r).min)));
+    }
+    return out;
+}
+
+// What of \a q lies outside \a region (each piece with some area).
+Paths outsidePart(const Poly& q, const Paths& region)
+{
+    ClipperLib::Clipper c;
+    c.AddPath(pathOf(q), ClipperLib::ptSubject, true);
+    c.AddPaths(region, ClipperLib::ptClip, true);
+    Paths out;
+    c.Execute(ClipperLib::ctDifference, out, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+    out.erase(std::remove_if(out.begin(), out.end(), [](const Path& x) { return std::abs(ClipperLib::Area(x)) <= 1; }), out.end());
+    return out;
+}
+
 // A net's drawn metal: its runs, and each via's landings, by plane; its cuts.
 void drawn(const Problem& p, const NetResult& r, int net, std::vector<std::vector<Box>>* byPlane, std::vector<std::pair<int, Box>>* cuts,
            std::vector<std::pair<int, Box>>* landings)
 {
     const int planes = int(p.tech.metals.size());
     byPlane->assign(std::size_t(planes), {});
-    const Coord w = p.units(p.tech.classes.at(p.nets.at(net).netClass).width);
+    const double w = p.tech.classes.at(p.nets.at(net).netClass).width;
     for (const Run& run : r.runs)
         if (run.metal >= 0 && run.metal < planes) (*byPlane)[std::size_t(run.metal)].push_back(run.box());
     for (const ViaPlaced& v : r.vias) {
         if (v.via < 0 || v.via >= p.tech.vias.size()) continue;
         const Via& via = p.tech.vias.at(v.via);
-        const Coord lo = std::max(p.units(via.landingLower), w), up = std::max(p.units(via.landingUpper), w);
+        const Coord lo = p.units(p.tech.landing(v.via, via.lower, w)), up = p.units(p.tech.landing(v.via, via.lower + 1, w));
         // The cut, or an array's outline: what vias keep 'spacing' between.
         const Coord cw = p.units(via.outlineWidth()), ch = p.units(via.outlineHeight());
         const Box bl{v.at.x - lo / 2, v.at.y - lo / 2, v.at.x - lo / 2 + lo, v.at.y - lo / 2 + lo};
@@ -282,10 +352,12 @@ std::vector<Poly> slotsOf(const Problem& p, const MetalMap& m, int net, int l, c
 // Whether metal \a q of \a net on plane \a l keeps clear of everything not
 // its own: other metal, other nets' \a lines, obstacles and keep-outs.
 bool clearOfOthers(const Problem& p, const MetalMap& m, int net, int l, const Poly& q,
-                   const std::vector<std::vector<std::pair<int, Poly>>>& lines)
+                   const std::vector<std::vector<std::pair<int, Poly>>>& lines, const std::vector<Paths>& regions)
 {
     const Box qb = boundsOf(q);
-    const Coord toMetal = p.units(p.tech.toMetal), toTerminal = p.units(p.tech.toTerminal);
+    for (int r = 0; r < p.tech.inclusions.size(); ++r)
+        if (p.tech.inclusions.at(r).metal == l && !outsidePart(q, regions[std::size_t(r)]).empty()) return false;
+    const Coord toMetal = spacingOn(p, l, p.units(p.tech.toMetal)), toTerminal = spacingOn(p, l, p.units(p.tech.toTerminal));
     bool ok = true;
     m.index[std::size_t(l)].query(qb.grown(std::max(toMetal, toTerminal) + 1), [&](int j) {
         const int s = m.onPlane[std::size_t(l)][std::size_t(j)];
@@ -299,7 +371,7 @@ bool clearOfOthers(const Problem& p, const MetalMap& m, int net, int l, const Po
     for (const auto& [other, poly] : lines[std::size_t(l)]) {
         if (other == net) continue;
         const NetClass& theirs = p.tech.classes.at(p.nets.at(other).netClass);
-        const Coord need = p.units(std::max({mine.spacing, theirs.spacing, p.tech.sameLayer}));
+        const Coord need = spacingOn(p, l, p.units(std::max({mine.spacing, theirs.spacing, p.tech.sameLayer})));
         if (boxDistance2(qb, boundsOf(poly)) >= double(need) * double(need)) continue;
         if (polyDistance(q, poly) < double(need)) return false;
     }
@@ -319,11 +391,13 @@ bool clearOfOthers(const Problem& p, const MetalMap& m, int net, int l, const Po
 
 void fillNotches(const Problem& p, Result* result)
 {
-    const Coord notch = p.units(p.tech.notch);
     for (NetResult& r : result->nets) r.fills.clear();
-    if (notch <= 0) return;
-    const MetalMap m = readMetal(p);
     const int planes = int(p.tech.metals.size());
+    bool any = false;
+    for (int l = 0; l < planes; ++l) any = any || p.tech.notchOn(l) > 0;
+    if (!any) return;
+    const MetalMap m = readMetal(p);
+    const std::vector<Paths> regions = regionsOf(p);
     // Every net's lines, by plane, as the fills are added.
     std::vector<std::vector<std::pair<int, Poly>>> lines(static_cast<std::size_t>(planes));
     std::vector<std::vector<std::vector<Box>>> drawnOf(static_cast<std::size_t>(result->nets.size()));
@@ -338,12 +412,27 @@ void fillNotches(const Problem& p, Result* result)
         if (drawnOf[std::size_t(n)].empty()) continue;
         NetResult& r = result->nets[n];
         for (int l = 0; l < planes; ++l)
-            for (const Poly& q : slotsOf(p, m, n, l, drawnOf[std::size_t(n)][std::size_t(l)], r.fills, notch)) {
-                if (!clearOfOthers(p, m, n, l, q, lines)) continue;
+            for (const Poly& q : slotsOf(p, m, n, l, drawnOf[std::size_t(n)][std::size_t(l)], r.fills, p.units(p.tech.notchOn(l)))) {
+                if (!clearOfOthers(p, m, n, l, q, lines, regions)) continue;
                 r.fills.append({l, q});
                 lines[std::size_t(l)].push_back({n, q});
             }
     }
+}
+
+std::vector<Poly> shrunkUnion(const std::vector<Poly>& polys, Coord by)
+{
+    return polysOf(shrunkPaths(polys, by));
+}
+
+std::vector<Poly> outsideOf(const Box& area, const std::vector<Poly>& in, Coord by)
+{
+    ClipperLib::Clipper c;
+    c.AddPath(pathOf(polyOf(area)), ClipperLib::ptSubject, true);
+    c.AddPaths(shrunkPaths(in, by), ClipperLib::ptClip, true);
+    Paths out;
+    c.Execute(ClipperLib::ctDifference, out, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+    return polysOf(out);
 }
 
 QVector<QVector<Poly>> newMetal(const Problem& problem, const NetResult& route, int net)
@@ -375,6 +464,7 @@ Verification verify(const Problem& p, const Result& result)
         Poly poly;
         Box bounds;
     };
+    const std::vector<Paths> regions = regionsOf(p);
     std::vector<Piece> pieces;                  // every net's new metal
     std::vector<std::pair<int, std::pair<int, Box>>> cuts;   // net, via, cut
     for (int n = 0; n < result.nets.size() && n < p.nets.size(); ++n) {
@@ -528,6 +618,8 @@ Verification verify(const Problem& p, const Result& result)
                     f.kind = QStringLiteral("obstacle");
                     f.net = net.name;
                     f.other = rule.name;
+                    for (const DesignRule& d : p.tech.rules)
+                        if (d.name == rule.name && (d.type == QLatin1String("exclusion") || d.type == QLatin1String("spacing"))) f.rule = d.name;
                     f.metal = l;
                     f.at = where;
                     f.box = boundsOf(piece).united(ob).intersected(Box{where.x, where.y, where.x, where.y}.grown(std::max<Coord>(clearance * 4, p.units(20))));
@@ -544,9 +636,8 @@ Verification verify(const Problem& p, const Result& result)
         // Notches: slots under the rule between its lines and its own metal
         // that are still open (no fill fitted). One with metal of another in
         // it is no notch: the spacing checks have it.
-        const Coord notch = p.units(p.tech.notch);
-        for (int l = 0; l < planes && notch > 0; ++l)
-            for (const Poly& q : slotsOf(p, m, n, l, byPlane[std::size_t(l)], r.fills, notch)) {
+        for (int l = 0; l < planes; ++l)
+            for (const Poly& q : slotsOf(p, m, n, l, byPlane[std::size_t(l)], r.fills, p.units(p.tech.notchOn(l)))) {
                 bool foreign = false;
                 m.index[std::size_t(l)].query(boundsOf(q), [&](int j) {
                     const int s = m.onPlane[std::size_t(l)][std::size_t(j)];
@@ -562,11 +653,197 @@ Verification verify(const Problem& p, const Result& result)
                 f.box = b;
                 f.at = b.centre();
                 f.measured = um(double(std::min(b.width(), b.height())));
-                f.required = p.tech.notch;
-                f.text = QStringLiteral("%1 on %2 leaves a slot %3 µm wide against its own metal at %4 (the notch rule %5 µm), and no fill fits there")
-                             .arg(net.name, metalName(l), micro(f.measured), at(f.at), micro(f.required));
+                f.required = p.tech.notchOn(l);
+                f.rule = ruleOf(p.tech, QStringLiteral("notch"), {metalName(l)}, f.required);
+                f.text = QStringLiteral("%1 on %2 leaves a slot %3 µm wide against its own metal at %4 (the notch rule%5 %6 µm), and no fill fits there")
+                             .arg(net.name, metalName(l), micro(f.measured), at(f.at), f.rule.isEmpty() ? QString() : QLatin1Char(' ') + f.rule,
+                                  micro(f.required));
                 add(f);
             }
+
+        // The rest of the design rules, on the net's metal as drawn: its
+        // lines and landings with its own metal they touch, by metal.
+        for (int l = 0; l < planes; ++l) {
+            if (byPlane[std::size_t(l)].empty() && fresh.at(l).isEmpty()) continue;
+            const double minWidth = l < p.tech.minWidth.size() ? p.tech.minWidth.at(l) : 0;
+            const double minArea = l < p.tech.minArea.size() ? p.tech.minArea.at(l) : 0;
+            Paths merged;
+            if (minWidth > 0 || minArea > 0) {
+                Box all;
+                ClipperLib::Clipper u;
+                for (const Box& b : byPlane[std::size_t(l)]) {
+                    u.AddPath(pathOf(polyOf(b)), ClipperLib::ptSubject, true);
+                    all = all.united(b);
+                }
+                for (const auto& [metal, poly] : r.fills)
+                    if (metal == l) u.AddPath(pathOf(poly), ClipperLib::ptSubject, true);
+                m.index[std::size_t(l)].query(all, [&](int j) {
+                    const int s = m.onPlane[std::size_t(l)][std::size_t(j)];
+                    if (ownerOf(m, s) == n) u.AddPath(pathOf(p.metal.at(s).outline), ClipperLib::ptSubject, true);
+                    return true;
+                });
+                u.Execute(ClipperLib::ctUnion, merged, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+            }
+            // Width: what an opening by the rule (a square of its side rolled
+            // inside) leaves out, where it is new metal.
+            if (minWidth > 0) {
+                // (in quarter units, so that a width half a unit short of the rule is the rule)
+                Paths fine = merged;
+                for (Path& x : fine)
+                    for (ClipperLib::IntPoint& q : x) q = ClipperLib::IntPoint(q.X * 4, q.Y * 4);
+                const double h = double(2 * p.units(minWidth) - 1);
+                ClipperLib::ClipperOffset in(2.0), out(2.0);
+                in.AddPaths(fine, ClipperLib::jtMiter, ClipperLib::etClosedPolygon);
+                Paths eroded, opened;
+                in.Execute(eroded, -h);
+                out.AddPaths(eroded, ClipperLib::jtMiter, ClipperLib::etClosedPolygon);
+                out.Execute(opened, h);
+                // New metal no square of the rule's side inside the net's
+                // metal covers (its own metal narrow already is not its doing).
+                ClipperLib::Clipper d;
+                for (const Poly& q : fresh.at(l)) {
+                    Path x = pathOf(q);
+                    for (ClipperLib::IntPoint& pt : x) pt = ClipperLib::IntPoint(pt.X * 4, pt.Y * 4);
+                    d.AddPath(x, ClipperLib::ptSubject, true);
+                }
+                d.AddPaths(opened, ClipperLib::ptClip, true);
+                Paths narrow;
+                d.Execute(ClipperLib::ctDifference, narrow, ClipperLib::pftNonZero, ClipperLib::pftNonZero);
+                for (Path& x : narrow)
+                    for (ClipperLib::IntPoint& q : x) q = ClipperLib::IntPoint(q.X / 4, q.Y / 4);
+                bool told = false;
+                for (const Path& x : narrow) {
+                    if (told || ClipperLib::Area(x) <= 0) continue;
+                    const Poly xp = polyOfPath(x);
+                    const Box xb = boundsOf(xp);
+                    if (std::min(xb.width(), xb.height()) <= 2) continue;   // (rounding)
+                    told = true;
+                    Finding f;
+                    f.kind = QStringLiteral("width");
+                    f.net = net.name;
+                    f.metal = l;
+                    f.box = xb.grown(p.units(minWidth));
+                    f.at = xb.centre();
+                    f.measured = um(double(std::min(xb.width(), xb.height())));
+                    f.required = minWidth;
+                    f.rule = ruleOf(p.tech, QStringLiteral("width"), {metalName(l)}, minWidth);
+                    f.text = QStringLiteral("%1 on %2 is narrower than %3 µm at %4 (the width rule %5)")
+                                 .arg(net.name, metalName(l), micro(minWidth), at(f.at), f.rule);
+                    add(f);
+                }
+            }
+            // Area: each piece of the net's metal there that has new metal in it.
+            if (minArea > 0) {
+                const double need = minArea / (p.unit * p.unit);
+                double area = 0;
+                Box pieceBox;
+                std::vector<std::pair<double, Box>> outers;
+                for (const Path& x : merged) {
+                    const double a = ClipperLib::Area(x);
+                    if (a > 0) outers.push_back({a, boundsOf(polyOfPath(x))});
+                }
+                for (const Path& x : merged) {
+                    const double a = ClipperLib::Area(x);
+                    if (a >= 0) continue;   // a hole: its piece's area less it
+                    const Box hb = boundsOf(polyOfPath(x));
+                    for (auto& [oa, ob] : outers)
+                        if (ob.contains(hb)) {
+                            oa += a;
+                            break;
+                        }
+                }
+                for (const auto& [oa, ob] : outers) {
+                    if (oa >= need * (1 - 1e-6)) continue;
+                    bool isNew = false;
+                    for (const Poly& q : fresh.at(l)) isNew = isNew || ob.contains(boundsOf(q));
+                    if (!isNew) continue;
+                    area = oa;
+                    pieceBox = ob;
+                    Finding f;
+                    f.kind = QStringLiteral("area");
+                    f.net = net.name;
+                    f.metal = l;
+                    f.box = pieceBox.grown(p.units(std::sqrt(minArea)));
+                    f.at = pieceBox.centre();
+                    f.measured = area * p.unit * p.unit;
+                    f.required = minArea;
+                    f.rule = ruleOf(p.tech, QStringLiteral("area"), {metalName(l)}, minArea);
+                    f.text = QStringLiteral("%1's metal on %2 at %3 is %4 µm², less than the area rule %5's %6 µm²")
+                                 .arg(net.name, metalName(l), at(f.at), micro(f.measured), f.rule, micro(minArea));
+                    add(f);
+                }
+            }
+            // Inclusion: its new metal inside each region the rules keep it in.
+            for (int ri = 0; ri < p.tech.inclusions.size(); ++ri) {
+                const InclusionRule& rule = p.tech.inclusions.at(ri);
+                if (rule.metal != l) continue;
+                for (const Poly& q : fresh.at(l)) {
+                    const Paths outside = outsidePart(q, regions[std::size_t(ri)]);
+                    if (outside.empty()) continue;
+                    Box ob;
+                    double area = 0;
+                    for (const Path& x : outside) {
+                        ob = ob.united(boundsOf(polyOfPath(x)));
+                        area += std::abs(ClipperLib::Area(x));
+                    }
+                    Finding f;
+                    f.kind = QStringLiteral("inclusion");
+                    f.rule = rule.name;
+                    f.net = net.name;
+                    f.other = rule.of.text();
+                    f.metal = l;
+                    f.box = ob.grown(p.units(std::max(rule.min, p.tech.grid)) * 2);
+                    f.at = ob.centre();
+                    f.measured = area * p.unit * p.unit;
+                    f.required = rule.min;
+                    f.text = QStringLiteral("%1 on %2 leaves the region the rule %3 keeps it in (inside %4 by %5 µm) near %6, %7 µm² of it")
+                                 .arg(net.name, metalName(l), rule.name, f.other, micro(rule.min), at(f.at), micro(f.measured));
+                    add(f);
+                    break;
+                }
+            }
+        }
+        // Enclosure: each cut the rules name inside the net's metal on that
+        // side (its landing, line and own metal) by the minimum.
+        for (const DesignRule& rule : p.tech.rules) {
+            if (rule.type != QLatin1String("enclosure")) continue;
+            const int l = p.tech.metalIndex(rule.other);
+            if (l < 0) continue;
+            for (int ci = 0; ci < int(netCuts.size()); ++ci) {
+                const Via& via = p.tech.vias.at(netCuts[std::size_t(ci)].first);
+                if (!namesOf(via).contains(rule.layer, Qt::CaseInsensitive)) continue;
+                const Box need = netCuts[std::size_t(ci)].second.grown(p.units(rule.min));
+                std::vector<Box> around;
+                for (const Box& b : byPlane[std::size_t(l)])
+                    if (b.overlaps(need)) around.push_back(b);
+                std::vector<const Poly*> covers;
+                std::vector<Poly> boxes;
+                boxes.reserve(around.size());
+                for (const Box& b : around) boxes.push_back(polyOf(b));
+                for (const Poly& b : boxes) covers.push_back(&b);
+                m.index[std::size_t(l)].query(need, [&](int j) {
+                    const int s = m.onPlane[std::size_t(l)][std::size_t(j)];
+                    if (ownerOf(m, s) == n) covers.push_back(&p.metal.at(s).outline);
+                    return true;
+                });
+                const Paths left = difference(Paths{pathOf(polyOf(need))}, covers);
+                double area = 0;
+                for (const Path& x : left) area += std::abs(ClipperLib::Area(x));
+                if (area <= double(p.units(0.001)) * double(need.width())) continue;
+                Finding f;
+                f.kind = QStringLiteral("enclosure");
+                f.rule = rule.name;
+                f.net = net.name;
+                f.other = via.name;
+                f.metal = l;
+                f.box = need.grown(p.units(rule.min) * 2);
+                f.at = need.centre();
+                f.required = rule.min;
+                f.text = QStringLiteral("%1's %2 at %3 is not enclosed by %4 µm of %5 (the enclosure rule %6)")
+                             .arg(net.name, via.name, at(f.at), micro(rule.min), rule.other, rule.name);
+                add(f);
+            }
+        }
 
         // Keep-outs.
         for (const KeepOut& k : p.keepOuts) {
@@ -612,7 +889,7 @@ Verification verify(const Problem& p, const Result& result)
         BoxIndex index;
         index.build(bounds);
         Coord most = 0;
-        for (const NetClass& c : p.tech.classes) most = std::max(most, p.units(std::max(c.spacing, p.tech.sameLayer)));
+        for (const NetClass& c : p.tech.classes) most = std::max(most, spacingOn(p, l, p.units(std::max(c.spacing, p.tech.sameLayer))));
         std::map<std::pair<int, int>, Finding> worst;   // a pair of nets: the nearest place
         for (std::size_t a = 0; a < ids.size(); ++a) {
             const Piece& pa = pieces[std::size_t(ids[a])];
@@ -621,7 +898,8 @@ Verification verify(const Problem& p, const Result& result)
                 if (std::size_t(bi) <= a || pb.net == pa.net) return true;
                 const NetClass& ca = p.tech.classes.at(p.nets.at(pa.net).netClass);
                 const NetClass& cb = p.tech.classes.at(p.nets.at(pb.net).netClass);
-                const Coord need = p.units(std::max({ca.spacing, cb.spacing, p.tech.sameLayer}));
+                const Coord classes = p.units(std::max({ca.spacing, cb.spacing, p.tech.sameLayer}));
+                const Coord need = spacingOn(p, l, classes);
                 if (boxDistance2(pa.bounds, pb.bounds) >= double(need) * double(need)) return true;
                 Pt where;
                 const double d = polyDistance(pa.poly, pb.poly, &where);
@@ -638,9 +916,11 @@ Verification verify(const Problem& p, const Result& result)
                 f.box = Box{where.x, where.y, where.x, where.y}.grown(std::max<Coord>(need * 3, p.units(10)));
                 f.measured = um(d);
                 f.required = um(double(need));
+                if (need > classes) f.rule = ruleOf(p.tech, QStringLiteral("spacing"), {metalName(l)}, p.tech.metalSpacing.at(l));
                 f.text = d <= 0 ? QStringLiteral("%1 and %2 touch on %3 at %4").arg(f.net, f.other, metalName(l), at(where))
-                                : QStringLiteral("%1 and %2 are %3 µm apart on %4 at %5 (%6 µm needed)")
-                                      .arg(f.net, f.other, micro(f.measured), metalName(l), at(where), micro(f.required));
+                                : QStringLiteral("%1 and %2 are %3 µm apart on %4 at %5 (%6 µm needed%7)")
+                                      .arg(f.net, f.other, micro(f.measured), metalName(l), at(where), micro(f.required),
+                                           f.rule.isEmpty() ? QString() : QStringLiteral(", the rule ") + f.rule);
                 worst[key] = f;
                 return true;
             });
@@ -648,8 +928,11 @@ Verification verify(const Problem& p, const Result& result)
         for (const auto& [key, f] : worst) add(f);
 
         // Metal already there that is not the net's own.
-        const Coord toMetal = p.units(p.tech.toMetal), toTerminal = p.units(p.tech.toTerminal);
+        const Coord toMetal = spacingOn(p, l, p.units(p.tech.toMetal)), toTerminal = spacingOn(p, l, p.units(p.tech.toTerminal));
         const Coord reach = std::max({toMetal, toTerminal, Coord(1)});
+        const QString spacingRule = l < p.tech.metalSpacing.size() && p.tech.metalSpacing.at(l) > 0
+                                        ? ruleOf(p.tech, QStringLiteral("spacing"), {metalName(l)}, p.tech.metalSpacing.at(l))
+                                        : QString();
         std::map<std::pair<int, int>, Finding> near;    // net, shape
         for (int id : ids) {
             const Piece& pc = pieces[std::size_t(id)];
@@ -672,6 +955,7 @@ Verification verify(const Problem& p, const Result& result)
                 f.box = Box{where.x, where.y, where.x, where.y}.grown(std::max<Coord>(need * 3, p.units(10)));
                 f.measured = um(d);
                 f.required = um(double(need));
+                if (need == p.units(p.tech.metalSpacing.value(l)) && need > p.units(pad ? p.tech.toTerminal : p.tech.toMetal)) f.rule = spacingRule;
                 if (own >= 0) f.other = p.nets.at(own).name;
                 if (d <= 0) {
                     f.kind = own >= 0 ? QStringLiteral("short") : QStringLiteral("metal");
@@ -680,11 +964,11 @@ Verification verify(const Problem& p, const Result& result)
                                       : QStringLiteral("%1 touches metal of no net on %2 at %3").arg(f.net, metalName(l), at(where));
                 } else {
                     f.kind = pad ? QStringLiteral("pad") : QStringLiteral("metal");
-                    f.text = QStringLiteral("%1 is %2 µm from %3 on %4 at %5 (%6 µm needed)")
+                    f.text = QStringLiteral("%1 is %2 µm from %3 on %4 at %5 (%6 µm needed%7)")
                                  .arg(f.net, micro(f.measured),
                                       pad ? QStringLiteral("net %1's pad").arg(f.other)
                                           : (own >= 0 ? QStringLiteral("metal of net %1").arg(f.other) : QStringLiteral("metal of no net")),
-                                      metalName(l), at(where), micro(f.required));
+                                      metalName(l), at(where), micro(f.required), f.rule.isEmpty() ? QString() : QStringLiteral(", the rule ") + f.rule);
                 }
                 near[key] = f;
                 return true;
@@ -693,30 +977,41 @@ Verification verify(const Problem& p, const Result& result)
         for (const auto& [key, f] : near) add(f);
     }
 
-    // Via cuts apart, the routes' against all.
-    for (int vi = 0; vi < p.tech.vias.size(); ++vi) {
-        const Via& via = p.tech.vias.at(vi);
-        const Coord need = p.units(via.spacing);
-        if (need <= 0) continue;
+    // Via cuts apart, the routes' against all, by cut layer (two vias of
+    // one layer keep the larger of their spacings).
+    std::vector<LayerId> cutLayers;
+    for (const Via& via : p.tech.vias)
+        if (std::find(cutLayers.begin(), cutLayers.end(), via.layer) == cutLayers.end()) cutLayers.push_back(via.layer);
+    for (const LayerId& layer : cutLayers) {
+        Coord most = 0;
+        for (const Via& via : p.tech.vias)
+            if (via.layer == layer) most = std::max(most, p.units(via.spacing));
+        if (most <= 0) continue;
         std::vector<Box> all;
-        std::vector<int> netOf;
+        std::vector<int> netOf, defOf;
         for (const auto& [n, c] : cuts)
-            if (c.first == vi) {
+            if (p.tech.vias.at(c.first).layer == layer) {
                 all.push_back(c.second);
                 netOf.push_back(n);
+                defOf.push_back(c.first);
             }
         const std::size_t ours = all.size();
         for (const Shape& c : p.cuts)
-            if (c.layer == vi) {
+            if (c.layer >= 0 && c.layer < p.tech.vias.size() && p.tech.vias.at(c.layer).layer == layer) {
                 all.push_back(boundsOf(c.outline));
                 netOf.push_back(-1);
+                defOf.push_back(c.layer);
             }
         BoxIndex index;
         index.build(all);
         for (std::size_t a = 0; a < ours; ++a)
-            index.query(all[a].grown(need), [&](int b) {
+            index.query(all[a].grown(most), [&](int b) {
                 if (std::size_t(b) == a || (std::size_t(b) < ours && std::size_t(b) < a)) return true;
                 if (all[std::size_t(b)] == all[a]) return true;
+                const Via& via = p.tech.vias.at(defOf[a]);
+                const Via& theirs = p.tech.vias.at(defOf[std::size_t(b)]);
+                const Coord need = std::max(p.units(via.spacing), p.units(theirs.spacing));
+                if (need <= 0) return true;
                 const double d = std::sqrt(boxDistance2(all[a], all[std::size_t(b)]));
                 if (d >= double(need) - tol) return true;
                 Finding f;
@@ -726,9 +1021,11 @@ Verification verify(const Problem& p, const Result& result)
                 f.at = all[a].centre();
                 f.box = all[a].united(all[std::size_t(b)]).grown(need);
                 f.measured = um(d);
-                f.required = via.spacing;
-                f.text = QStringLiteral("%1's %2 at %3 is %4 µm from %5's (%6 µm needed)")
-                             .arg(f.net, via.name, at(f.at), micro(f.measured), f.other, micro(f.required));
+                f.required = std::max(via.spacing, theirs.spacing);
+                f.rule = ruleOf(p.tech, QStringLiteral("spacing"), namesOf(via.spacing >= theirs.spacing ? via : theirs), f.required);
+                f.text = QStringLiteral("%1's %2 at %3 is %4 µm from %5's (%6 µm needed%7)")
+                             .arg(f.net, via.name, at(f.at), micro(f.measured), f.other, micro(f.required),
+                                  f.rule.isEmpty() ? QString() : QStringLiteral(", the rule ") + f.rule);
                 add(f);
                 return true;
             });

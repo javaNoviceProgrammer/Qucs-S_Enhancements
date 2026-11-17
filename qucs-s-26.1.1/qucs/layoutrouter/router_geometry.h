@@ -78,6 +78,9 @@ Poly polyOf(const Box& b);
 /// same, and exact. Boxes of one slab next to each other are not merged;
 /// boxes over each other with the same sides are.
 void boxesOf(const Poly& poly, Coord slab, std::vector<Box>* outer, std::vector<Box>* inner);
+/// The same for several rings at once, wound together (a hole: a ring the
+/// other way round).
+void boxesOf(const std::vector<Poly>& rings, Coord slab, std::vector<Box>* outer, std::vector<Box>* inner);
 
 /// The squared distance between two boxes (0 when they meet).
 inline double boxDistance2(const Box& a, const Box& b)

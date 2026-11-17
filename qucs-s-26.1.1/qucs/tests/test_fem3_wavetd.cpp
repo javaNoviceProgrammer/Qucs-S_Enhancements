@@ -565,7 +565,12 @@ private slots:
     void aFastSweepAgreesWithEachWavelength()
     {
         const double L = 2, d = 0.5;
-        Model m = hollowGuide(L, d, slowBuild() ? 0.2 : 0.12, silica());
+        // The coarse mesh where the LU is Eigen's (Linux, or CI's macOS 15
+        // runner, whose Accelerate has no LU), as test_fem3_magnetic's
+        // coarse(): there the fine mesh's sweeps and fourteen exact solves
+        // take some 240 s here and past QtTest's 300 s on CI; coarse, 3 s,
+        // with the same counts.
+        Model m = hollowGuide(L, d, slowBuild() || !acceleratedLu() ? 0.2 : 0.12, silica());
         const Built b = build(m);
         Wave3Settings st;
         st.ports = ports(m, b, 0, L, QStringLiteral("1"), 4, false);

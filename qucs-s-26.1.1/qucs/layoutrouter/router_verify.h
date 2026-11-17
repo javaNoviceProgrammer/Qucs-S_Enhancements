@@ -3,9 +3,11 @@
  *                   lattice: each net one piece touching its terminals,
  *                   its new metal (what it draws outside its own) kept
  *                   from other nets, other metal and pads, obstacles and
- *                   keep-outs; via cuts apart; every net not routed too.
- *                   It complements a foundry's DRC, and does not replace
- *                   it (no widths, notches, densities, antennas)
+ *                   keep-outs; via cuts apart; the technology's design
+ *                   rules (width, area, inclusion, enclosure, notch); every
+ *                   net not routed too. It complements a foundry's DRC, and
+ *                   does not replace it (no densities, antennas, or rules
+ *                   the technology does not give)
  *
  * This file is part of Qucs-S.
  *
@@ -22,8 +24,10 @@
 namespace qucs_s::router {
 
 struct Finding {
-    /// unroutable, open, short, spacing, pad, metal, obstacle, keep_out, via_spacing, notch
+    /// unroutable, open, short, spacing, pad, metal, obstacle, keep_out, via_spacing,
+    /// notch, width, inclusion, enclosure, area
     QString kind;
+    QString rule;               ///< the design rule it breaks, by its name, when one does
     QString net;
     QString other;              ///< the other net, or what is in the way
     int metal = -1;             ///< Technology::metals' index (-1: none)
@@ -57,6 +61,12 @@ void fillNotches(const Problem& problem, Result* result);
 /// The new metal of each net, on each metal: its runs and landings less
 /// its own metal (exposed for the tests).
 QVector<QVector<Poly>> newMetal(const Problem& problem, const NetResult& route, int net);
+
+/// The union of \a polys shrunk by \a by (units): what an inclusion rule
+/// leaves lines (holes wound the other way round, as boxesOf takes them).
+std::vector<Poly> shrunkUnion(const std::vector<Poly>& polys, Coord by);
+/// \a area less shrunkUnion(in, by).
+std::vector<Poly> outsideOf(const Box& area, const std::vector<Poly>& in, Coord by);
 
 } // namespace qucs_s::router
 
