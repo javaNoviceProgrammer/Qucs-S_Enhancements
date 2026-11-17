@@ -471,6 +471,64 @@ double feedLength(const QList<Conductor>& conductors, const QString& metal, QPoi
 }
 
 /*!
+ * The layers that end, \a extents (the layout's units), as a feed \a width
+ * wide stands on them - its face's lower end at \a lo along \a unit from
+ * \a on, in along \a inward -, in the frame its calibration strips are laid
+ * out in: x in from the face, y across from that lower end. Each layer's
+ * shapes are cut across the feed \a depth in from the face, and each piece
+ * across it laid along the strips from \a reach before the face to \a reach
+ * past it - the strips are a line, the feed as it is there all along them.
+ * A layer with no shape across the feed is there as it is beyond its
+ * shapes, and kept so: with no shapes.
+ */
+QList<Extent> feedExtents(const QList<Extent>& extents, QPointF on, QPointF unit, QPointF inward, double lo, double width,
+                          double depth, double reach)
+{
+    QList<Extent> out;
+    // (A strip across the feed, a hair deep, as far out either side as
+    //  the strips' own reach.)
+    const double hair = 1e-4 * width;
+    const QPointF at = on + inward * depth;
+    const QPolygonF cut({at + unit * (lo - reach) - inward * hair, at + unit * (lo + width + reach) - inward * hair,
+                         at + unit * (lo + width + reach) + inward * hair, at + unit * (lo - reach) + inward * hair});
+    for (const Extent& e : extents) {
+        QList<std::pair<double, double>> spans;
+        for (const QPolygonF& shape : e.shapes) {
+            const QPolygonF piece = shape.intersected(cut);
+            // (Its closed rings one after another, each ending at its own
+            //  first corner.)
+            int first = 0;
+            double a = 0, b = 0;
+            for (int i = 0; i < piece.size(); ++i) {
+                const QPointF d = piece.at(i) - on;
+                const double across = d.x() * unit.x() + d.y() * unit.y() - lo;
+                a = i == first ? across : std::min(a, across);
+                b = i == first ? across : std::max(b, across);
+                if (i > first && piece.at(i) == piece.at(first)) {
+                    if (b - a > hair) spans << std::make_pair(a, b);
+                    first = i + 1;
+                }
+            }
+            if (first < piece.size() && b - a > hair) spans << std::make_pair(a, b);
+        }
+        std::sort(spans.begin(), spans.end());
+        Extent strip{e.layer, {}, e.beyond};
+        for (const auto& [a, b] : spans) {
+            if (!strip.shapes.isEmpty()) {
+                const QRectF last = strip.shapes.last().boundingRect();
+                if (a <= last.bottom() + hair) {
+                    strip.shapes.last() = QPolygonF(QRectF(QPointF(-reach, last.top()), QPointF(reach, std::max(b, last.bottom()))));
+                    continue;
+                }
+            }
+            strip.shapes << QPolygonF(QRectF(QPointF(-reach, a), QPointF(reach, b)));
+        }
+        out << strip;
+    }
+    return out;
+}
+
+/*!
  * The vias down a coplanar feed's grounds, into \a feed: of \a conductors
  * on the stack's vias that land on its metal, those over a ground beside
  * the face and within \a window (the layout's units) of it, in the port's
@@ -3120,17 +3178,34 @@ QString Feed::key() const
     const auto n = [](double v) { return QString::number(v, 'g', 9); };
     const auto text = [this, &n](bool mirror) {
         QStringList parts = {metal, n(width)};
-        if (!coplanar) return parts.join(QLatin1Char('|'));
-        const int a = mirror ? 1 : 0, b = 1 - a;
-        parts << QStringLiteral("coplanar") << n(gap[a]) << n(ground[a]) << n(gap[b]) << n(ground[b]) << n(pitch)
-              << unlike;
-        QStringList each;
-        for (const Via& v : vias)
-            each << QStringList{v.layer, n(mirror ? width - v.across1 : v.across0), n(mirror ? width - v.across0 : v.across1),
-                                n(v.in0), n(v.in1), v.wall ? QStringLiteral("wall") : QString()}
-                        .join(QLatin1Char(','));
-        each.sort();
-        return (parts + each).join(QLatin1Char('|'));
+        if (coplanar) {
+            const int a = mirror ? 1 : 0, b = 1 - a;
+            parts << QStringLiteral("coplanar") << n(gap[a]) << n(ground[a]) << n(gap[b]) << n(ground[b]) << n(pitch)
+                  << unlike;
+            QStringList each;
+            for (const Via& v : vias)
+                each << QStringList{v.layer, n(mirror ? width - v.across1 : v.across0), n(mirror ? width - v.across0 : v.across1),
+                                    n(v.in0), n(v.in1), v.wall ? QStringLiteral("wall") : QString()}
+                            .join(QLatin1Char(','));
+            each.sort();
+            parts += each;
+        }
+        // (The dielectric it stands on, where a layer ends: the same feed on
+        //  another mesa is another line.)
+        QStringList under;
+        for (const Extent& e : extents) {
+            QStringList spans;
+            for (const QPolygonF& s : e.shapes) {
+                const QRectF r = s.boundingRect();
+                spans << (mirror ? n(width - r.bottom()) + QLatin1Char(',') + n(width - r.top())
+                                 : n(r.top()) + QLatin1Char(',') + n(r.bottom()));
+            }
+            spans.sort();
+            under << QStringList{e.layer, n(e.beyond), spans.join(QLatin1Char(';'))}.join(QLatin1Char(':'));
+        }
+        under.sort();
+        if (!under.isEmpty()) parts << QStringLiteral("under") << under;
+        return parts.join(QLatin1Char('|'));
     };
     return std::min(text(false), text(true));
 }
@@ -4021,6 +4096,16 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             const double height = std::max(0.0, metalHeight(givenStack, out.faceMetals.at(p))) / micrometre;
             out.feeds[p].length = feedLength(givenConductors, out.faceMetals.at(p), on, unit, span.inside < 0 ? -normal : normal,
                                              span.lo, faceWidth, 2 * (8 * height + 2 * faceWidth), beyond);
+            // The layers that end, as the feed stands on them: its strips
+            // laid on the same (they were laid on each such layer as it is
+            // inside its shapes, everywhere - a GSG line on a mesa calibrated
+            // as on the mesa's material from side to side).
+            if (control != nullptr && !control->extents.isEmpty()) {
+                const double length = out.feeds.at(p).length;
+                const double depth = 0.25 * std::min(faceWidth, length > 0 ? length : faceWidth);
+                out.feeds[p].extents = feedExtents(control->extents, on, unit, span.inside < 0 ? -normal : normal, span.lo, faceWidth,
+                                                   depth, 10 * std::max(faceWidth, 2 * (8 * height + 2 * faceWidth)));
+            }
         }
         owns[p] = own;
         ownCount[p] = int(face.size());

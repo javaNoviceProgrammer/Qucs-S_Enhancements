@@ -4408,6 +4408,96 @@ private slots:
         QCOMPARE(doc->placing(), RF25Doc::Placing::None);
     }
 
+    // A port's feed on a layer that ends is calibrated on it: the strips
+    // stand on the substrate as the feed does - a band from 30 µm out from
+    // one edge of the strip to 50 µm out from the other, air beyond - and so read
+    // the line the structure is, which its de-embedded S says itself (its
+    // chain matrix's impedance and propagation). They were solved on the
+    // substrate from side to side: a GSG line on a mesa in oxide read eps_eff
+    // 6.34 where its line was 5.37.
+    void aFeedOnALayerThatEndsIsCalibratedOnIt()
+    {
+        const QString model = fullWaveLine(QStringLiteral("band.qrf25"));
+        QVERIFY(!model.isEmpty());
+        {
+            QFile f(model);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString why;
+            std::optional<rf::Model> read = rf::Model::fromJson(f.readAll(), &why);
+            QVERIFY2(read.has_value(), qPrintable(why));
+            rf::Model m = *read;
+            f.close();
+            for (rf::Node& port : m.ports().children) port.props.insert(QStringLiteral("calibrate"), true);
+            rf::Node* study = m.root.child(QStringLiteral("rf_study"));
+            QVERIFY(study != nullptr);
+            study->props.insert(QStringLiteral("from"), QStringLiteral("20[GHz]"));
+            study->props.insert(QStringLiteral("to"), QStringLiteral("20[GHz]"));
+            study->props.insert(QStringLiteral("points"), 1);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QStringList done;
+        QString why;
+        QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "Substrate"}, {"box", QJsonArray{-600, -30, 1600, 100}}}},
+                                 &done, &why),
+                 qPrintable(why));
+        QVERIFY(doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QVERIFY(doc->processed() != nullptr && doc->processed()->extents.contains(QStringLiteral("Substrate")));
+        doc->solve();
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::FullWave> w = doc->fullWave();
+        QVERIFY2(w != nullptr && w->ok(), qPrintable(doc->solveProblem()));
+        const rf::PortDeembedding& d = w->deembedding.value(0);
+        QVERIFY(d.done && d.calibrated);
+        // Its feed stands on the band: across from the strip's lower edge,
+        // -30 to 100 µm - or, seen from its other end, -50 to 80 -, laid
+        // along its strips.
+        QCOMPARE(int(w->feeds.at(0).extents.size()), 1);
+        const rf::Extent& under = w->feeds.at(0).extents.at(0);
+        QCOMPARE(under.layer, QStringLiteral("Substrate"));
+        QCOMPARE(int(under.shapes.size()), 1);
+        const QRectF band = under.shapes.at(0).boundingRect();
+        const bool asDrawn = std::abs(band.top() + 30) < 1e-6 && std::abs(band.bottom() - 100) < 1e-6;
+        const bool mirrored = std::abs(band.top() + 50) < 1e-6 && std::abs(band.bottom() - 80) < 1e-6;
+        QVERIFY2((asDrawn || mirrored) && band.left() < -1000 && band.right() > 2000,
+                 qPrintable(QStringLiteral("%1 to %2 across, %3 to %4 along").arg(band.top()).arg(band.bottom()).arg(band.left()).arg(band.right())));
+        // The line de-embedded: its chain matrix.
+        const auto& s = w->s.at(0);
+        const double z0 = w->references.at(0);
+        const std::complex<double> s11 = s.at(0).at(0), s21 = s.at(1).at(0), s12 = s.at(0).at(1), s22 = s.at(1).at(1);
+        const std::complex<double> a = ((1.0 + s11) * (1.0 - s22) + s12 * s21) / (2.0 * s21), dd = ((1.0 - s11) * (1.0 + s22) + s12 * s21) / (2.0 * s21);
+        const std::complex<double> b = z0 * ((1.0 + s11) * (1.0 + s22) - s12 * s21) / (2.0 * s21);
+        const std::complex<double> c = ((1.0 - s11) * (1.0 - s22) - s12 * s21) / (2.0 * s21 * z0);
+        const std::complex<double> h = 0.5 * (a + dd);
+        std::complex<double> e = h + std::sqrt(h * h - 1.0);
+        if (std::abs(e) < 1) e = 1.0 / e;
+        const double beta = std::abs(std::log(e).imag()) / 1000e-6;
+        const double epsLine = std::pow(beta * 299792458.0 / (2 * M_PI * 20e9), 2), zLine = std::sqrt(b / c).real();
+        QVERIFY2(std::abs(d.epsEff / epsLine - 1) < 0.01 && std::abs(d.impedance.real() / zLine - 1) < 0.01,
+                 qPrintable(QStringLiteral("the strips: %1 Ohm, eps_eff %2; the line: %3 Ohm, eps_eff %4")
+                                .arg(d.impedance.real()).arg(d.epsEff).arg(zLine).arg(epsLine)));
+
+        // The band under P1's end alone: the two ends' feeds, alike but for
+        // what they stand on, are calibrated each of its own - P2's on air.
+        doc->undo();
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "Substrate"}, {"box", QJsonArray{-600, -30, 500, 100}}}},
+                                 &done, &why),
+                 qPrintable(why));
+        QVERIFY(doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY2(doc->waitForSolved(300000), "the solve ended");
+        const std::shared_ptr<const rf::FullWave> half = doc->fullWave();
+        QVERIFY2(half != nullptr && half->ok(), qPrintable(doc->solveProblem()));
+        const rf::PortDeembedding &onBand = half->deembedding.value(0), &onAir = half->deembedding.value(1);
+        QVERIFY(onBand.calibrated && onAir.calibrated);
+        QVERIFY2(std::abs(onBand.epsEff / d.epsEff - 1) < 1e-3 && onAir.epsEff < 1.2 && onBand.epsEff > 2 * onAir.epsEff,
+                 qPrintable(QStringLiteral("P1's feed eps_eff %1 (on the whole band %2), P2's %3")
+                                .arg(onBand.epsEff).arg(d.epsEff).arg(onAir.epsEff)));
+    }
+
     void aCoplanarPortIsReadAndItsFeedCalibrated()
     {
         QVERIFY(writeRectangles(path(QStringLiteral("cpw.gds")),
