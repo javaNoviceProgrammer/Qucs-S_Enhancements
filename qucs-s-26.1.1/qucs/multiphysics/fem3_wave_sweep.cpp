@@ -64,11 +64,14 @@ int threadCount()
     return std::clamp(int(std::thread::hardware_concurrency()), 1, 32);
 }
 
-/// C = op(A) B, op the transpose (\a conjugate: and conjugated) or none - on
-/// the machine's threads (Accelerate's BLAS where it is, Eigen's elsewhere).
-void gemm(const Eigen::MatrixXcd& A, bool transpose, bool conjugate, const Eigen::MatrixXcd& B, Eigen::MatrixXcd& C)
+/// C = op(A) B, op the transpose (\a conjugate: and conjugated) or none - of
+/// A's first \a columns (all: -1; column-major, they are its storage's start,
+/// no copy) - on the machine's threads (Accelerate's BLAS where it is,
+/// Eigen's elsewhere).
+void gemm(const Eigen::MatrixXcd& A, bool transpose, bool conjugate, const Eigen::MatrixXcd& B, Eigen::MatrixXcd& C, int columns = -1)
 {
-    const int m = transpose ? int(A.cols()) : int(A.rows()), k = transpose ? int(A.rows()) : int(A.cols()), n = int(B.cols());
+    const int ac = columns >= 0 ? std::min(columns, int(A.cols())) : int(A.cols());
+    const int m = transpose ? ac : int(A.rows()), k = transpose ? int(A.rows()) : ac, n = int(B.cols());
     C.resize(m, n);
     if (m == 0 || n == 0) return;
     if (k == 0) {
@@ -80,9 +83,9 @@ void gemm(const Eigen::MatrixXcd& A, bool transpose, bool conjugate, const Eigen
     cblas_zgemm(CblasColMajor, transpose ? (conjugate ? CblasConjTrans : CblasTrans) : CblasNoTrans, CblasNoTrans, m, n, k, &one, A.data(),
                 int(A.rows()), B.data(), int(B.rows()), &zero, C.data(), int(C.rows()));
 #else
-    if (!transpose) C.noalias() = A * B;
-    else if (conjugate) C.noalias() = A.adjoint() * B;
-    else C.noalias() = A.transpose() * B;
+    if (!transpose) C.noalias() = A.leftCols(ac) * B;
+    else if (conjugate) C.noalias() = A.leftCols(ac).adjoint() * B;
+    else C.noalias() = A.leftCols(ac).transpose() * B;
 #endif
 }
 
@@ -332,8 +335,9 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
         const int room = columns - int(V.cols());
         if (rank > room) {
             if (!capped && log)
-                *log << tr("The fast sweep's basis kept to %1 columns (the memory beside a factorization): more wavelengths solved exactly instead")
-                            .arg(int(V.cols()) + std::max(0, room));
+                *log << tr("The fast sweep's basis kept to %1 columns (%2): more wavelengths solved exactly instead")
+                            .arg(int(V.cols()) + std::max(0, room))
+                            .arg(settings.sweepColumns > 0 && settings.sweepColumns == columns ? tr("as asked") : tr("the memory beside a factorization"));
             capped = true;
             rank = std::max(0, room);
         }
@@ -401,6 +405,12 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
         r.warnings = ports[std::size_t(k)].warnings;
         wave3::resultOfSolves(su, ports[std::size_t(k)], settings, f, backed, X, &r);
         exact[std::size_t(k)] = 1;
+        // (Handed over now, its field let go: a basis full early solves many
+        // exactly, their fields not all held.)
+        if (each) {
+            each(k, r);
+            std::vector<Eigen::VectorXcd>().swap(r.fields);
+        }
         lastGrowth = 0;
         grow(X);
         // Its derivatives in k0, the factorization reused - each a solve, a
@@ -467,6 +477,7 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
     double reducedSeconds = 0;
     Wave3Settings noFields = settings;
     noFields.fieldsKept = 0;
+    std::vector<Eigen::MatrixXcd> coefficients(static_cast<std::size_t>(Nf));   // each one's y of its last round
     auto solveReduced = [&](int k, double* residual, bool withFields) -> bool {
         QElapsedTimer t;
         t.start();
@@ -497,6 +508,7 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
         Eigen::MatrixXcd Br;
         gemm(V, true, false, B, Br);
         const Eigen::MatrixXcd y = Kr.partialPivLu().solve(Br);
+        coefficients[std::size_t(k)] = y;
         Eigen::MatrixXcd X;
         gemm(V, false, false, y, X);
         // Its residual, K x - b, of b's size: the column worst so.
@@ -638,19 +650,32 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
                     .arg(change >= 0 && std::isfinite(change) ? QString::number(change, 'g', 2) : tr("-"))
                     .arg(finishedExactly > 0 ? tr("; %1 of them past the tolerance where the basis was full").arg(finishedExactly) : QString());
     }
-    // Each result handed over, in turn, as it is made: the rounds' made no
-    // field; each reduced one's made again now with its field (a reduced
-    // solve, a second or less), handed over and let go - not every
-    // wavelength's field held at once (16 bytes an unknown each: 16 GB for
-    // a million unknowns' thousand wavelengths).
+    // The reduced results handed over in turn (the exact ones were, as each
+    // was made): the rounds' made no field; each one's field now V y of its
+    // last round's y - one product, its S and residual those checked (a
+    // basis grown since leaves its first columns as they were) -, handed
+    // over and let go: not every wavelength's field held at once (16 bytes
+    // an unknown each: 16 GB for a million unknowns' thousand wavelengths).
     for (int k = 0; k < Nf; ++k) {
+        if (exact[std::size_t(k)]) continue;
         if (cancelled()) {
             *error = tr("cancelled");
             return out;
         }
-        if (!exact[std::size_t(k)] && settings.fieldsKept != 0) {
-            double res = 0;
-            if (!solveReduced(k, &res, true)) return out;
+        if (settings.fieldsKept != 0) {
+            const Eigen::MatrixXcd& y = coefficients[std::size_t(k)];
+            Eigen::MatrixXcd X;
+            gemm(V, false, false, y, X, int(y.rows()));
+            Wave3Result& r = out[std::size_t(k)];
+            const QStringList warnings = r.warnings;
+            r = Wave3Result();
+            r.frequency = frequencies[std::size_t(k)];
+            r.space = su.space;
+            r.unknowns = N;
+            r.portModes = ports[std::size_t(k)].portModes;
+            r.warnings = warnings;
+            wave3::atWavelength(su, *parameters, C0 / frequencies[std::size_t(k)]);
+            wave3::resultOfSolves(su, ports[std::size_t(k)], settings, frequencies[std::size_t(k)], backed, X, &r);
         }
         if (each) {
             each(k, out[std::size_t(k)]);

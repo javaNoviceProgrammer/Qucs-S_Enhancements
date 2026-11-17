@@ -210,7 +210,8 @@ std::vector<std::array<std::complex<double>, 3>> nodalField(const EdgeSpace3& sp
 /// basis), until every one's residual is under settings.sweepTolerance.
 /// Each wavelength's result as solveWave3's; \a log its account. On a
 /// failure \a error, the results not to be used. \a each, given: each
-/// result handed to it in turn at the end, its fields let go after - the
+/// result handed to it once (an exact one as it is solved, the reduced at
+/// the end, in no set order: by its index), its fields let go after - the
 /// fields not all held at once.
 std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<ParameterScope> parameters, const Topology3& topology,
                                     std::shared_ptr<const Mesh3> mesh, const Wave3Settings& settings, const std::vector<double>& frequencies,
