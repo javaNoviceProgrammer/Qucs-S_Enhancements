@@ -332,6 +332,11 @@ qucs_add_test(test_rf25_trl)
 # GHz; 314 since a calibration's strips build one set of tables between
 # them, kept between solves.)
 set_tests_properties(test_rf25_deembed PROPERTIES TIMEOUT 900)
+# (The loops' and the ended dielectrics' dense solves likewise: 23 and 15 s
+# in Release, sanitized here some 360 s each with their heaviest functions
+# skipped there, CI's Linux runner two or three times as long, past the
+# 900 s that 300 times its scale gave the whole suite.)
+set_tests_properties(test_rf25_inductance test_rf25_dielectric PROPERTIES TIMEOUT 900)
 qucs_add_test(test_rf25_doc)
 # (Its full-wave studies' ports have their paths up from the ground: 273 s
 # sanitized here, past nine tenths of the 300 a test has unasked; at CI's

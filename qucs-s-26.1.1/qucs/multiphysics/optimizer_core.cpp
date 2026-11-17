@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <limits>
@@ -288,18 +289,36 @@ DifferentialEvolution::DifferentialEvolution(const QVector<double>& lower, const
 {
 }
 
+// (The engine's own uniform numbers from the Mersenne Twister's words, which
+// the standard fixes, not std::uniform_real_distribution's or
+// std::uniform_int_distribution's, which it leaves to each library: with
+// those, one seed gave one run on macOS's libc++ and another on Linux's and
+// MinGW's libstdc++ - test_fem_optimize's seeded DE ended at the limit's
+// optimum on one and 0.17 against its 0.125 on the other: CI's Linux job
+// from 14 November.)
+double DifferentialEvolution::unit()
+{
+    // 53 bits from two words, as the Twister's own genrand_res53: [0, 1).
+    const std::uint32_t a = a_rng() >> 5, b = a_rng() >> 6;
+    return (double(a) * 67108864.0 + double(b)) * (1.0 / 9007199254740992.0);
+}
+
 double DifferentialEvolution::uniform(double lo, double hi)
 {
     if (!(hi > lo)) return lo;
-    return std::uniform_real_distribution<double>(lo, hi)(a_rng);
+    return lo + (hi - lo) * unit();
+}
+
+int DifferentialEvolution::below(int count)
+{
+    return count > 1 ? std::min(count - 1, int(unit() * count)) : 0;
 }
 
 int DifferentialEvolution::pick(QList<int>* taken)
 {
-    std::uniform_int_distribution<int> d(0, a_np - 1);
     int r;
     do {
-        r = d(a_rng);
+        r = below(a_np);
     } while (taken->contains(r));
     taken->append(r);
     return r;
@@ -359,8 +378,7 @@ QVector<double> DifferentialEvolution::trial(int i)
         }
     };
     QVector<double> t = x;
-    std::uniform_int_distribution<int> start(0, std::max(a_dim - 1, 0));
-    int n = start(a_rng);
+    int n = below(std::max(a_dim, 1));
     if (a_settings.method <= 5) {   // exponential crossover: a run of coordinates
         int L = 0;
         do {

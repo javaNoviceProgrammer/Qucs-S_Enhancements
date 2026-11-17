@@ -447,7 +447,10 @@ private slots:
     void coaxialInductance()
     {
         const double a = 0.5e-3, b = 1.5e-3, c = 1.8e-3, len = 1e-3;
-        Model m = model3d(0.05);
+        // (0.08 where the LU is Eigen's: two solves 16.6 s there, 0.59 % off;
+        // 0.05 took 72 s on an M2 Ultra and past QtTest's 300 on CI's macOS
+        // runner, and 0.1 was 0.92 % off of the 1 % allowed.)
+        Model m = model3d(coarse() ? 0.08 : 0.05);
         addCylinder(m, QStringLiteral("shell"), 1.8, 1);
         addCylinder(m, QStringLiteral("gap"), 1.5, 1);
         addCylinder(m, QStringLiteral("core"), 0.5, 1);

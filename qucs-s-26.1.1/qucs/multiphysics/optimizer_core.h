@@ -177,7 +177,9 @@ public:
     int populationSize() const { return a_np; }
 
 private:
+    double unit();                       ///< [0, 1), the same on every platform for a seed
     double uniform(double lo, double hi);
+    int below(int count);                ///< 0 to count - 1, likewise
     int pick(QList<int>* taken);
     QVector<double> trial(int i);
     void updateBest();
