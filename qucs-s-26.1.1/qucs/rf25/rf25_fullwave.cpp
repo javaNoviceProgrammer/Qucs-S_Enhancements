@@ -97,6 +97,7 @@ constexpr int kMostIterations = 3000;
 /// An ended layer's correction to P (rf25_dielectric.h) held dense up to
 /// this many cells, as its factors past them.
 constexpr int kMostDenseCorrection = 5000;
+std::atomic_int g_mostDenseCorrection{0};
 constexpr int kMostCompressed = 2000000;
 /// GMRES short of kResidual: the residual below which its answer still
 /// stands, said doubtful (solveCompressed()); and the share of
@@ -1674,7 +1675,12 @@ Complex Kernels::potential(int i, int j, double pij, double pji) const
     const Complex base = i == j ? oneWay(i, i, pij) : 0.5 * (oneWay(i, j, pij) + oneWay(j, i, pji));
     Complex boxed = c.boxed ? base + boxPotential(i, j) : base;
     if (c.symAxis != 0) boxed += symmetryPotential(i, j);
-    return c.corrected ? boxed + c.dielectric.at(i, j) : boxed;
+    // (A correction held as its factors is no entry's: its entry is a sum
+    //  over every panel, and a compressed fill and its frequencies asked for
+    //  millions of them - all but the whole of a calibration strip's time
+    //  over a layer that ends. P's products add it as U (V^T x) instead -
+    //  addFactored() -, the near field's LU and a dense column take it apart.)
+    return c.corrected && !c.dielectric.factored ? boxed + c.dielectric.at(i, j) : boxed;
 }
 
 Complex Kernels::symmetryPotential(int i, int j) const
@@ -2264,6 +2270,22 @@ void systemColumn(const Context& c, const Kernels& k, MatrixC& m, int b)
 void potentialColumn(const Context& c, const Kernels& k, MatrixC& p, int j)
 {
     for (int i = 0; i <= j; ++i) p(i, j) = k.potential(i, j, c.pStatic(i, j), c.pStatic(j, i));
+    // (A correction held as its factors, its column in one product.)
+    if (c.corrected && c.dielectric.factored) {
+        const Eigen::VectorXd column = c.dielectric.u.topRows(j + 1) * c.dielectric.v.row(j).transpose();
+        for (int i = 0; i <= j; ++i) p(i, j) += column[i];
+    }
+}
+
+/// \a y += the correction of the layers that end, held as its factors, times
+/// \a x: U (V^T x), which Kernels::potential() leaves out. Nothing where it
+/// is held whole (its entries in P's) or there is none.
+void addFactored(const Context& c, const VectorC& x, VectorC& y)
+{
+    if (!c.corrected || !c.dielectric.factored) return;
+    const Eigen::VectorXd re = c.dielectric.v.transpose() * x.real(), im = c.dielectric.v.transpose() * x.imag();
+    y.real() += c.dielectric.u * re;
+    y.imag() += c.dielectric.u * im;
 }
 
 /// The columns a thread makes below the diagonal at a time
@@ -2613,6 +2635,10 @@ struct Compression {
     QList<int> xRun, yRun;                     ///< each kernel's runs, in the plane
     HMatrix kx, ky, p, phi, g;                 ///< their shapes, unfilled
     QList<QPair<int, int>> nearRuns, nearCells, nearViaCells, nearVias;
+    /// A correction held as its factors (rf25_dielectric.h): its entry for
+    /// each of nearCells, made once - static, the same at every frequency -
+    /// for the near field's LU; empty where it is held whole or there is none.
+    QList<double> nearCorrection;
     double estimate = 0;                       ///< bytes a frequency is guessed to take
     double denseBytes = 0;                     ///< what the dense solve would take
 };
@@ -2666,6 +2692,12 @@ void plan(Compression& z, const Context& c)
         if (std::abs(c.dirX.at(pair.first) * c.dirX.at(pair.second) + c.dirY.at(pair.first) * c.dirY.at(pair.second)) >= 1e-9)
             z.nearRuns << pair;
     z.nearCells = nearPairs(cells, nullptr, kNear);
+    // (A factored correction's near entries, each a sum over the panels:
+    //  once here, where every frequency's near field had each again.)
+    if (c.corrected && c.dielectric.factored) {
+        z.nearCorrection.resize(z.nearCells.size());
+        for (int k = 0; k < z.nearCells.size(); ++k) z.nearCorrection[k] = c.dielectric.at(z.nearCells.at(k).first, z.nearCells.at(k).second);
+    }
     if (nv > 0) {
         z.nearViaCells = nearPairs(vias, &cells, kNear);
         z.nearVias = nearPairs(vias, nullptr, kNear);
@@ -2845,6 +2877,7 @@ void System::operator()(const VectorC& x, VectorC& y) const
         q[c.head.at(a)] -= x[a];
     }
     p.multiply(q, v);
+    addFactored(c, q, v);
     // (Divided, not overJw(): one a run, against the dense system's one a
     //  term, its cost is nothing.)
     for (int a = 0; a < c.nr; ++a) y[a] += ((c.tail.at(a) >= 0 ? v[c.tail.at(a)] : Complex(0, 0)) - v[c.head.at(a)]) / jw;
@@ -2893,8 +2926,11 @@ Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, c
         if (r.first != r.second) near.emplace_back(r.second, r.first, v);
     }
     std::vector<Eigen::Triplet<Complex>> terms;
-    for (const QPair<int, int>& q : z.nearCells) {
-        const Complex v = k.potential(q.first, q.second);
+    for (int n = 0; n < z.nearCells.size(); ++n) {
+        const QPair<int, int>& q = z.nearCells.at(n);
+        // (A correction held as its factors, its near pairs' entries here -
+        //  made once, plan().)
+        const Complex v = k.potential(q.first, q.second) + (z.nearCorrection.isEmpty() ? 0.0 : z.nearCorrection.at(n));
         terms.emplace_back(q.first, q.second, v);
         if (q.first != q.second) terms.emplace_back(q.second, q.first, v);
     }
@@ -3021,6 +3057,7 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
         const VectorC dq = c.drive.col(q);
         VectorC t = VectorC::Zero(nc);
         p.multiply(dq, t);
+        addFactored(c, dq, t);
         pd.col(q) = t;
         if (nv == 0) continue;
         VectorC u = VectorC::Zero(nv);
@@ -3242,6 +3279,17 @@ QString Feed::key() const
         return parts.join(QLatin1Char('|'));
     };
     return std::min(text(false), text(true));
+}
+
+int mostDenseCorrection()
+{
+    const int set = g_mostDenseCorrection.load();
+    return set > 0 ? set : kMostDenseCorrection;
+}
+
+void setMostDenseCorrection(int cells)
+{
+    g_mostDenseCorrection.store(std::max(0, cells));
 }
 
 Complex sheetImpedance(double sigma, double thickness, double frequency)
@@ -4589,7 +4637,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             cell.z = zOf.at(i);
             charged << cell;
         }
-        c.dielectric = dielectricCorrection(dielectricPlanned, charged, nc > kMostDenseCorrection,
+        c.dielectric = dielectricCorrection(dielectricPlanned, charged, nc > mostDenseCorrection(),
                                             control != nullptr ? control->stop : nullptr);
         if (control != nullptr && control->stop != nullptr && control->stop->load()) return FullWave();
         if (!c.dielectric.ok()) {
