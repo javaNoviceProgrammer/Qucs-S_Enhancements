@@ -595,7 +595,11 @@ private slots:
     // 1600 nm, a few wavelengths solved exactly and the rest on their
     // solutions' reduced basis - every port mode's column in it, the
     // absorbing ports' coupling of them all -, each within 1e-5 of its own
-    // exact solve.
+    // exact solve. Its basis held to 16 columns (the memory's ceiling, as a
+    // large model's): the wavelengths still past the tolerance solved
+    // exactly, not ended on S unchanged - the basis full, the rounds' S
+    // change no more - (the review of 5db0d8cd: held to 7 columns, a
+    // replica's monitor 41 % off and nothing said).
     void aFastSweepOfAJunction()
     {
         if (const QString why = leftOut("seven solves of 60,000 unknowns take minutes"); !why.isEmpty()) QSKIP(qPrintable(why));
@@ -608,30 +612,46 @@ private slots:
         std::vector<double> f;
         for (int k = 0; k < 7; ++k) f.push_back(C0 / ((1.5 + 0.1 * k / 6) * 1e-6));
         st.portMeshWavelength = C0 / *std::max_element(f.begin(), f.end());
-        QStringList log;
-        QString why;
+        std::vector<Wave3Result> exact;
         QElapsedTimer t;
         t.start();
-        const std::vector<Wave3Result> fast = sweepWave3(m, b.parameters, *b.topology, b.mesh, st, f, &log, &why);
-        const qint64 fastMs = t.elapsed();
-        QVERIFY2(why.isEmpty(), qPrintable(why));
-        for (const QString& l : log) qInfo("  %s", qPrintable(l));
-        const QString said = log.join(QLatin1Char('\n'));
-        QVERIFY2(!said.contains(QLatin1String("7 wavelengths, 7 solved exactly")), qPrintable(said));
-        t.restart();
-        double worst = 0;
-        for (std::size_t k = 0; k < f.size(); ++k) {
-            const Wave3Result exact = solveWave3(m, b.parameters, *b.topology, b.mesh, st, f[k]);
-            QVERIFY2(exact.ok(), qPrintable(exact.error));
-            double diff = 0;
-            for (int i = 0; i < 2; ++i)
-                for (int j = 0; j < 2; ++j) diff = std::max(diff, std::abs(fast[k].S(i, j) - exact.S(i, j)));
-            worst = std::max(worst, diff);
-            qInfo("%.1f nm: fast |S21|² %.7f, exact %.7f; |ΔS| %.2e; balance %.7f", C0 / f[k] * 1e9, std::norm(fast[k].S(1, 0)), std::norm(exact.S(1, 0)), diff,
-                  fast[k].balance[0]);
+        for (double fk : f) {
+            exact.push_back(solveWave3(m, b.parameters, *b.topology, b.mesh, st, fk));
+            QVERIFY2(exact.back().ok(), qPrintable(exact.back().error));
         }
-        qInfo("fast sweep %lld ms, each solved %lld ms; |ΔS| %.2e at worst", fastMs, t.elapsed(), worst);
-        QVERIFY2(worst < 1e-5, qPrintable(QString::number(worst)));
+        const qint64 exactMs = t.elapsed();
+        auto sweep = [&](int columns, QString* said) {
+            Wave3Settings sw = st;
+            sw.sweepColumns = columns;
+            QStringList log;
+            QString why;
+            QElapsedTimer tt;
+            tt.start();
+            const std::vector<Wave3Result> fast = sweepWave3(m, b.parameters, *b.topology, b.mesh, sw, f, &log, &why);
+            if (!why.isEmpty()) {
+                *said = why;
+                return 1.0;
+            }
+            for (const QString& l : log) qInfo("  %s", qPrintable(l));
+            *said = log.join(QLatin1Char('\n'));
+            double worst = 0;
+            for (std::size_t k = 0; k < f.size(); ++k) {
+                double diff = 0;
+                for (int i = 0; i < 2; ++i)
+                    for (int j = 0; j < 2; ++j) diff = std::max(diff, std::abs(fast[k].S(i, j) - exact[k].S(i, j)));
+                worst = std::max(worst, diff);
+                qInfo("%.1f nm: fast |S21|² %.7f, exact %.7f; |ΔS| %.2e", C0 / f[k] * 1e9, std::norm(fast[k].S(1, 0)), std::norm(exact[k].S(1, 0)), diff);
+            }
+            qInfo("fast sweep (%d columns at most) %lld ms, each solved %lld ms; |ΔS| %.2e at worst", columns, tt.elapsed(), exactMs, worst);
+            return worst;
+        };
+        QString said;
+        const double free = sweep(0, &said);
+        QVERIFY2(!said.contains(QLatin1String("7 wavelengths, 7 solved exactly")), qPrintable(said));
+        QVERIFY2(free < 1e-5, qPrintable(QString::number(free)));
+        const double held = sweep(16, &said);
+        QVERIFY2(said.contains(QLatin1String("basis kept to 16 columns")), qPrintable(said));
+        QVERIFY2(held < 1e-5, qPrintable(QString::number(held)));
     }
 };
 

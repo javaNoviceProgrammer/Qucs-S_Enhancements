@@ -155,6 +155,9 @@ struct Wave3Settings {
     /// A Wavelength Domain step's: by sweepWave3 (the physics' Sweep, fast),
     /// past three wavelengths.
     bool fastSweep = false;
+    /// A sweep's basis at most this many columns (0: what the memory beside a
+    /// factorization holds).
+    int sweepColumns = 0;
     std::function<bool()> cancelled;
     std::function<void(double, const QString&)> progress;
 };
@@ -206,10 +209,12 @@ std::vector<std::array<std::complex<double>, 3>> nodalField(const EdgeSpace3& sp
 /// largest -, the rest on the space their solutions span (a reduced
 /// basis), until every one's residual is under settings.sweepTolerance.
 /// Each wavelength's result as solveWave3's; \a log its account. On a
-/// failure \a error, the results not to be used.
+/// failure \a error, the results not to be used. \a each, given: each
+/// result handed to it in turn at the end, its fields let go after - the
+/// fields not all held at once.
 std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<ParameterScope> parameters, const Topology3& topology,
                                     std::shared_ptr<const Mesh3> mesh, const Wave3Settings& settings, const std::vector<double>& frequencies,
-                                    QStringList* log, QString* error);
+                                    QStringList* log, QString* error, const std::function<void(int, Wave3Result&)>& each = {});
 
 Estimate3 estimateWave3(std::shared_ptr<const Mesh3> mesh, int order);
 /// What a magnetic field of \a order on \a mesh will hold and take: A on

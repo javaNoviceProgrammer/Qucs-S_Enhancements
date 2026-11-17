@@ -1202,7 +1202,13 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
                 st.cancelled = [&] { return stopped; };
                 QStringList sweepLog;
                 QString why;
-                std::vector<Wave3Result> rs = sweepWave3(s.model(), s.parametersPtr(), topology, s.meshPtr(), st, frequencies, &sweepLog, &why);
+                // (Each one's nodal field made as it is handed over, its own
+                // let go: not every wavelength's held at once.)
+                std::vector<std::vector<std::array<std::complex<double>, 3>>> nodal(static_cast<std::size_t>(Wn));
+                std::vector<Wave3Result> rs = sweepWave3(s.model(), s.parametersPtr(), topology, s.meshPtr(), st, frequencies, &sweepLog, &why,
+                                                         [&](int w, Wave3Result& r) {
+                                                             if (!r.fields.empty()) nodal[std::size_t(w)] = nodalField(*r.space, r.fields.front(), *nodes);
+                                                         });
                 if (!why.isEmpty()) {
                     *error = stopped ? tr("cancelled") : tr("%1: %2").arg(name, why);
                     return false;
@@ -1210,8 +1216,7 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
                 for (int w = 0; w < Wn; ++w) {
                     Wave3Result& r = rs[std::size_t(w)];
                     if (w == 0) r.log = sweepLog + r.log;
-                    waveFields[std::size_t(k)].push_back(r.fields.empty() ? std::vector<std::array<std::complex<double>, 3>>()
-                                                                          : nodalField(*r.space, r.fields.front(), *nodes));
+                    waveFields[std::size_t(k)].push_back(std::move(nodal[std::size_t(w)]));
                     waveResults[std::size_t(k)].push_back(asEmeResult(r));
                 }
                 continue;
