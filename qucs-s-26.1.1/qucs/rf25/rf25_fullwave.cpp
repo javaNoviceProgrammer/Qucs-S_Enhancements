@@ -4137,8 +4137,38 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (control != nullptr && !control->extents.isEmpty()) {
                 const double length = out.feeds.at(p).length;
                 const double depth = 0.25 * std::min(faceWidth, length > 0 ? length : faceWidth);
-                out.feeds[p].extents = feedExtents(control->extents, on, unit, span.inside < 0 ? -normal : normal, span.lo, faceWidth,
-                                                   depth, 10 * std::max(faceWidth, 2 * (8 * height + 2 * faceWidth)));
+                const QPointF inward = span.inside < 0 ? -normal : normal;
+                const double reach = 10 * std::max(faceWidth, 2 * (8 * height + 2 * faceWidth));
+                out.feeds[p].extents = feedExtents(control->extents, on, unit, inward, span.lo, faceWidth, depth, reach);
+                // (The section again at the far end of its straight run: where
+                //  a layer ends along the feed itself - a mesa that begins part
+                //  way along it, or whose edge crosses it at an angle -, the
+                //  strips, a line, have the one near the face: said.)
+                const double deep = 0.9 * length;
+                if (port.wantsStrips() && deep > 2 * depth) {
+                    const QList<Extent> far = feedExtents(control->extents, on, unit, inward, span.lo, faceWidth, deep, reach);
+                    const auto spans = [](const Extent& e) {
+                        QList<std::pair<double, double>> out;
+                        for (const QPolygonF& s : e.shapes) out << std::make_pair(s.boundingRect().top(), s.boundingRect().bottom());
+                        return out;
+                    };
+                    bool same = far.size() == out.feeds.at(p).extents.size();
+                    const double tol = 1e-3 * faceWidth;
+                    for (int k = 0; same && k < far.size(); ++k) {
+                        const auto a = spans(out.feeds.at(p).extents.at(k)), b = spans(far.at(k));
+                        same = a.size() == b.size();
+                        for (int m = 0; same && m < a.size(); ++m)
+                            same = std::abs(a.at(m).first - b.at(m).first) <= tol && std::abs(a.at(m).second - b.at(m).second) <= tol;
+                    }
+                    if (!same) {
+                        const QString w = tr("%1's feed stands on a layer that ends otherwise %2 µm in than at its face: its "
+                                             "calibration strips, a line, stand on it as it is %3 µm in all along - what of the "
+                                             "change is between is the structure's, not taken out.")
+                                              .arg(name).arg(deep, 0, 'g', 4).arg(depth, 0, 'g', 3);
+                        out.warnings << w;
+                        out.lines << w;
+                    }
+                }
             }
         }
         owns[p] = own;
