@@ -887,6 +887,10 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
             ++job.calibrationsBegun;
             // (Its strips not converged, solved once more with longer cells:
             //  calibrate()'s own, P14 of the open items.)
+            // (Its strips on the layers that end as the feed stands on them,
+            //  laid along them: the feed's key has them, so that a feed on
+            //  another mesa is calibrated of its own.)
+            quiet.extents = feed.extents;
             calibration = std::make_shared<Calibration>(
                 calibrate(job.stack, how, job.top, feed, solvedAt, 1e-6, &quiet, port.strips / 1e-6));
             if (calibration->ok() && structureAt.size() < frequencies.size())

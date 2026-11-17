@@ -320,6 +320,13 @@ struct Feed {
     /// Why strips cannot have the feed's vias as it has them, where they
     /// cannot: then it is not calibrated.
     QString unlike;
+    /// The stack's layers that end (rf25_dielectric.h) as the feed stands
+    /// on them, in the strips' frame - x in from the face, y across from
+    /// its lower end: each layer's shapes cut across the feed a little in
+    /// from its face, and laid along the strips' whole length, so that its
+    /// strips stand on the dielectric the feed does. None where no layer
+    /// ends.
+    QList<Extent> extents;
     /// Where the feed's own line begins, in from the face: the centre of
     /// the nearest first via of a row, or the far start of a wall - nought
     /// with none. Strips take the port's own discontinuity to there, and
