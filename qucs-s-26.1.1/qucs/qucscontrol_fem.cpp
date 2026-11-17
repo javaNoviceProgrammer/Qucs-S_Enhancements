@@ -705,6 +705,8 @@ QString formatTextRf25()
         "a new model: the full wave's sweep from a rational fit through a few frequencies; false or absent, every point "
         "solved) and \"adaptive_tolerance\". rf_exports: "
         "rf_touchstone and rf_circuit of a solution; rf_mp3d (\"file\", \"margin\": a .qfem3d of Multiphysics 3D and its .gds), "
+        "rf_palace (\"file\", \"sides\" perfect or absorbing, \"margin\", \"air\", \"largest\", \"edges\", \"metals\" thick or sheets, \"order\", \"solver\" default or ams, "
+        "\"adaptive_tolerance\": a project of Palace, its .json and its .msh, to run as it is), "
         "rf_gds and rf_dxf (\"file\") of the shapes, needing no solve (rf25_export 'node' writes one). A stack layer's node may "
         "carry \"visibility\" \"hidden\" or \"frame\" (beside \"properties\"): what the tab's view draws of it. rf25_hfss_export writes a model for HFSS™ 3D Layout, rf25_hfss_import makes one of a "
         "project, its control file or an exported script, and rf25_compare sets a solve beside a Touchstone file's S. "

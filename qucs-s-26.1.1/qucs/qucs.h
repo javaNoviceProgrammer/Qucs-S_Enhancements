@@ -627,6 +627,7 @@ public:
   /// RF 2.5D > Export HFSS™ 3D Layout, Import HFSS™ 3D Layout and Compare With
   /// Touchstone: a file asked for, and the tool that does it.
   void exportRf25Hfss();
+  void exportRf25Palace();
   void importRf25Hfss();
   void compareRf25WithTouchstone();
   /// The left dock's RF 2.5D tab brought to the front.

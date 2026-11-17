@@ -5239,6 +5239,147 @@ private slots:
         QVERIFY(!why.isEmpty());
     }
 
+    // Exports > Palace EM: added from the menu, written by Write without a
+    // solve - the configuration and the mesh it names beside it -, an option
+    // that is none said and nothing written; the RF 2.5D menu's own entry.
+    void aPalaceProjectIsWrittenFromItsNode()
+    {
+        const QString file = fullWaveLine(QStringLiteral("palace.qrf25"));
+        QVERIFY(!file.isEmpty());
+        RF25Doc* doc = open(file);
+        QVERIFY(doc != nullptr);
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY(doc->waitForPrepared(60000));
+        const QString exportsTag = doc->model().root.child(QStringLiteral("rf_exports"))->tag;
+        QMenu* exports = panel()->menuFor(exportsTag);
+        QVERIFY(exports != nullptr);
+        QVERIFY(exports->findChild<QAction*>(QStringLiteral("rfAdd_rf_palace")) != nullptr);
+        exports->deleteLater();
+        const QString tag = panel()->addNode(exportsTag, QStringLiteral("rf_palace"));
+        QVERIFY(!tag.isEmpty());
+        QCOMPARE(doc->model().root.find(tag)->label.isEmpty() ? rf::nameOf(*doc->model().root.find(tag)) : doc->model().root.find(tag)->label,
+                 QStringLiteral("Palace EM"));
+        const QString where = doc->exportPath(tag);
+        QVERIFY2(where.endsWith(QStringLiteral("/palace_") + tag + QStringLiteral(".json")), qPrintable(where));
+        panel()->selectNode(tag);
+        auto* write = panel()->findChild<QPushButton*>(QStringLiteral("rfWriteExport"));
+        QVERIFY(write != nullptr);
+        QVERIFY2(write->toolTip().contains(QStringLiteral("Palace")), qPrintable(write->toolTip()));
+        write->click();
+        auto* said = panel()->findChild<QLabel*>(QStringLiteral("rfExportSaid"));
+        QVERIFY(said != nullptr);
+        const QString mesh = QFileInfo(where).absoluteDir().filePath(QFileInfo(where).completeBaseName() + QStringLiteral(".msh"));
+        QVERIFY2(said->text().startsWith(QStringLiteral("Written to")) && said->text().contains(QFileInfo(mesh).fileName()),
+                 qPrintable(said->text()));
+        QVERIFY2(said->text().contains(QStringLiteral("P1: lumped port 1")), qPrintable(said->text()));
+        QVERIFY(QFile::exists(where));
+        QVERIFY(QFile::exists(mesh));
+        // The configuration names the mesh beside it, and both ports.
+        QFile f(where);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QByteArray body;
+        for (const QByteArray& l : f.readAll().split('\n'))
+            if (!l.trimmed().startsWith("//")) body += l + '\n';
+        const QJsonObject config = QJsonDocument::fromJson(body).object();
+        QCOMPARE(config.value(QStringLiteral("Model")).toObject().value(QStringLiteral("Mesh")).toString(), QFileInfo(mesh).fileName());
+        QCOMPARE(config.value(QStringLiteral("Boundaries")).toObject().value(QStringLiteral("LumpedPort")).toArray().size(), 2);
+        // An order that is none: said, nothing written.
+        QVERIFY(QFile::remove(where));
+        QVERIFY(doc->editNode(tag, [](rf::Node& n) { n.props.insert(QStringLiteral("order"), 9); }, QStringLiteral("order")));
+        QString why;
+        QVERIFY(doc->writeLayoutExport(tag, nullptr, &why).isEmpty());
+        QVERIFY2(why.contains(QStringLiteral("order")), qPrintable(why));
+        QVERIFY(!QFile::exists(where));
+        doc->undo();
+        QVERIFY(doc->editNode(tag, [](rf::Node& n) { n.props.insert(QStringLiteral("margin"), QStringLiteral("-1[mm]")); }, QStringLiteral("margin")));
+        QVERIFY(doc->writeLayoutExport(tag, nullptr, &why).isEmpty());
+        QVERIFY2(why.contains(QStringLiteral("margin")), qPrintable(why));
+        doc->undo();
+        // Sheets, as asked: written again, smaller.
+        const qint64 thick = QFileInfo(mesh).size();
+        QVERIFY(doc->editNode(tag, [](rf::Node& n) { n.props.insert(QStringLiteral("metals"), QStringLiteral("sheets")); }, QStringLiteral("metals")));
+        QStringList notes;
+        QCOMPARE(doc->writeLayoutExport(tag, &notes, &why), (QStringList{where, mesh}));
+        QVERIFY2(notes.join(QLatin1Char(' ')).contains(QStringLiteral("Each metal is a sheet at its bottom")), qPrintable(notes.join(' ')));
+        QVERIFY(QFileInfo(mesh).size() > 0);
+        Q_UNUSED(thick);
+        // The menu's own entry, beside HFSS's.
+        QAction* menuEntry = app->findChild<QAction*>(QStringLiteral("rfPalaceExportAction"));
+        QVERIFY(menuEntry != nullptr);
+        QCOMPARE(menuEntry->text(), QStringLiteral("Export Palace EM…"));
+    }
+
+    // The Palace export's timing: opt in with
+    // QUCS_RF25_PALACE_TIMING=1. test_rf25_palace's linesForPalace lines -
+    // a 240 µm strip of 10 µm copper on 254 µm of alumina, 2 and 4 mm long -
+    // solved full-wave through the tab's Solve, its mesh and study as a new
+    // model has them (2 to 20 GHz, 10 points, adaptive): the time, and S.
+    void fullWaveTimingForPalace()
+    {
+        if (qEnvironmentVariable("QUCS_RF25_PALACE_TIMING").isEmpty()) QSKIP("QUCS_RF25_PALACE_TIMING=1 times the lines");
+        for (const double length : {2000.0, 4000.0}) {
+            const QString gds = QStringLiteral("palace_line%1.gds").arg(int(length / 1000));
+            QVERIFY(writeStrip(path(gds), length, 240));
+            rf::Model m = rf::Model::blank();
+            std::vector<rf::Node>& stack = m.stackNode().children;
+            stack.erase(std::remove_if(stack.begin(), stack.end(),
+                                       [](const rf::Node& n) { return n.type == QLatin1String("rf_dielectric"); }),
+                        stack.end());
+            for (rf::Node& n : stack) {
+                if (n.type == QLatin1String("rf_substrate")) {
+                    n.props.insert(QStringLiteral("thickness"), QStringLiteral("254[um]"));
+                    n.props.insert(QStringLiteral("epsr"), QStringLiteral("9.8"));
+                    n.props.insert(QStringLiteral("tand"), QStringLiteral("0.0002"));
+                } else if (n.type == QLatin1String("rf_metal")) {
+                    n.props.insert(QStringLiteral("thickness"), QStringLiteral("10[um]"));
+                    n.props.insert(QStringLiteral("sigma"), QStringLiteral("5.8e7"));
+                }
+            }
+            m.layout().props.insert(QStringLiteral("file"), gds);
+            m.layout().child(QStringLiteral("rf_layer_map"))
+                ->props.insert(QStringLiteral("rows"), rowsOf({{QStringLiteral("1"), QStringLiteral("0"), QStringLiteral("M1")}}));
+            for (const QPair<QString, QString>& at : {qMakePair(QStringLiteral("0"), QStringLiteral("-x")),
+                                                      qMakePair(QStringLiteral("%1[um]").arg(length), QStringLiteral("+x"))}) {
+                rf::Node port = m.make(QStringLiteral("rf_edge_port"));
+                port.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+                port.props.insert(QStringLiteral("x"), at.first);
+                port.props.insert(QStringLiteral("y"), QStringLiteral("120[um]"));
+                port.props.insert(QStringLiteral("facing"), at.second);
+                QVERIFY(m.add(QStringLiteral("ports"), port) != nullptr);
+            }
+            rf::Node* study = m.root.child(QStringLiteral("rf_study"));
+            study->props.insert(QStringLiteral("kind"), QStringLiteral("full_wave"));
+            study->props.insert(QStringLiteral("from"), QStringLiteral("2[GHz]"));
+            study->props.insert(QStringLiteral("to"), QStringLiteral("20[GHz]"));
+            study->props.insert(QStringLiteral("points"), 10);
+            const QString file = path(QStringLiteral("palace_line%1.qrf25").arg(int(length / 1000)));
+            {
+                QFile f(file);
+                QVERIFY(f.open(QIODevice::WriteOnly));
+                f.write(m.toJson());
+            }
+            RF25Doc* doc = open(file);
+            QVERIFY(doc != nullptr);
+            QVERIFY(doc->waitForLayout(60000));
+            QVERIFY(doc->waitForPrepared(60000));
+            QElapsedTimer clock;
+            clock.start();
+            doc->solve();
+            QVERIFY(doc->waitForSolved(3600000));
+            const qint64 ms = clock.elapsed();
+            const std::shared_ptr<const qucs_s::rf25::FullWave> wave = doc->fullWave();
+            QVERIFY2(wave && wave->ok(), qPrintable(doc->solveProblem()));
+            qInfo("line %g mm: %.1f s, %d runs and %d cells, %lld frequencies solved of %lld", length / 1000, ms / 1000.0, wave->runs,
+                  wave->cells, (long long)wave->solvedFrequencies.size(), (long long)wave->frequencies.size());
+            for (int k = 0; k < wave->frequencies.size(); ++k) {
+                const auto& sk = wave->s.at(k);
+                qInfo("  %5.1f GHz  S11 %7.2f dB %8.2f deg  S21 %7.3f dB %8.2f deg", wave->frequencies.at(k) / 1e9,
+                      20 * std::log10(std::abs(sk.at(0).at(0))), std::arg(sk.at(0).at(0)) * 180 / M_PI,
+                      20 * std::log10(std::abs(sk.at(1).at(0))), std::arg(sk.at(1).at(0)) * 180 / M_PI);
+            }
+        }
+    }
+
     // Pictures: opt in with QUCS_RF25_PICTURES=<folder>.
     // A capacitor of three metals over silicon, its shapes the model's own:
     // the tab with its top metal hidden and framed, the drop-down, the tree's

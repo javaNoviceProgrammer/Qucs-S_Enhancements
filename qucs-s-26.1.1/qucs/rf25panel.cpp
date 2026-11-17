@@ -969,7 +969,8 @@ void RF25Panel::showSettings()
     }
     // An export writes: the button that does it, and what it said - an
     // equivalent circuit's values and how well it fits too.
-    const bool shapesOut = n->type == QLatin1String("rf_mp3d") || n->type == QLatin1String("rf_gds") || n->type == QLatin1String("rf_dxf");
+    const bool palace = n->type == QLatin1String("rf_palace");
+    const bool shapesOut = n->type == QLatin1String("rf_mp3d") || palace || n->type == QLatin1String("rf_gds") || n->type == QLatin1String("rf_dxf");
     if (n->type == QLatin1String("rf_touchstone") || n->type == QLatin1String("rf_circuit") || shapesOut) {
         const bool circuit = n->type == QLatin1String("rf_circuit");
         auto* write = new QPushButton(tr("Write"), a_form);
@@ -979,6 +980,8 @@ void RF25Panel::showSettings()
                           : n->type == QLatin1String("rf_mp3d")
                               ? tr("Writes the model as a 3D model of Multiphysics 3D (.qfem3d), with the GDSII file of its shapes "
                                    "beside it; Open in Multiphysics 3D opens it. No solve is needed: its shapes as processed.")
+                          : palace ? tr("Writes the model as a Palace project: its configuration (.json) and its mesh (.msh) beside "
+                                        "it, to run as it is with \"palace -np 4 <name>.json\" in their folder. No solve is needed.")
                           : shapesOut ? tr("Writes the shapes as processed. No solve is needed.")
                                       : tr("Writes the file at the study's own frequencies. The model must be solved first."));
         auto* said = new QLabel(a_form);
@@ -991,7 +994,7 @@ void RF25Panel::showSettings()
         said->setText(a_exportSaid);
         said->setVisible(!a_exportSaid.isEmpty());
         const QString tag = n->tag;
-        connect(write, &QPushButton::clicked, this, [this, tag, said, circuit, shapesOut] {
+        connect(write, &QPushButton::clicked, this, [this, tag, said, circuit, shapesOut, palace] {
             if (a_doc == nullptr) return;
             QString why;
             if (shapesOut) {
@@ -1002,8 +1005,9 @@ void RF25Panel::showSettings()
                 } else {
                     QStringList names;
                     for (const QString& w : written) names << QDir::toNativeSeparators(w);
-                    a_exportSaid = (written.size() > 1 ? tr("Written to %1, its shapes read from %2.").arg(names.at(0), QFileInfo(written.at(1)).fileName())
-                                                       : tr("Written to %1.").arg(names.at(0)))
+                    a_exportSaid = (palace                ? tr("Written to %1, its mesh %2 beside it.").arg(names.at(0), QFileInfo(written.value(1)).fileName())
+                                    : written.size() > 1 ? tr("Written to %1, its shapes read from %2.").arg(names.at(0), QFileInfo(written.at(1)).fileName())
+                                                         : tr("Written to %1.").arg(names.at(0)))
                                    + (notes.isEmpty() ? QString() : QLatin1Char(' ') + notes.join(QLatin1Char(' ')));
                 }
                 if (QPushButton* open = a_form->findChild<QPushButton*>(QStringLiteral("rfOpenExport")))
@@ -1338,8 +1342,9 @@ QWidget* RF25Panel::makeEditor(const Node& node, const PropertyDef& p)
         // (An export's file is written; the Layout's is read.)
         const NodeKind* nk = kindOf(node);
         const bool written = nk != nullptr && nk->group == QLatin1String("export");
-        const QString writtenFilter = node.type == QLatin1String("rf_mp3d") ? tr("3D multiphysics models (*.qfem3d)")
-                                      : node.type == QLatin1String("rf_gds")  ? tr("GDSII files (*.gds)")
+        const QString writtenFilter = node.type == QLatin1String("rf_mp3d")   ? tr("3D multiphysics models (*.qfem3d)")
+                                      : node.type == QLatin1String("rf_palace") ? tr("Palace configurations (*.json)")
+                                      : node.type == QLatin1String("rf_gds")    ? tr("GDSII files (*.gds)")
                                       : node.type == QLatin1String("rf_dxf")  ? tr("DXF drawings (*.dxf)")
                                       : node.type == QLatin1String("rf_circuit")
                                           ? tr("Qucs-S parts (*.sch);;SPICE subcircuits (*.cir *.sp *.lib)")

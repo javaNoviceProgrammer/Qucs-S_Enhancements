@@ -808,8 +808,8 @@ QList<NodeKind> makeKinds()
                        "ports' S at each frequency, whether it is reciprocal and passive, and the currents drawn on "
                        "the layout.")});
     add({QStringLiteral("rf_exports"), tr("Exports"), QString(), QStringLiteral("exports"), none, {},
-         {QStringLiteral("rf_touchstone"), QStringLiteral("rf_circuit"), QStringLiteral("rf_mp3d"), QStringLiteral("rf_gds"),
-          QStringLiteral("rf_dxf")},
+         {QStringLiteral("rf_touchstone"), QStringLiteral("rf_circuit"), QStringLiteral("rf_mp3d"), QStringLiteral("rf_palace"),
+          QStringLiteral("rf_gds"), QStringLiteral("rf_dxf")},
          {}, true, true, QString(), tr("What is written out of the model: of a solution, or of its shapes and its stack.")});
     add({QStringLiteral("rf_touchstone"), tr("Touchstone"), QStringLiteral("export"), QStringLiteral("export"), none,
          {file(QStringLiteral("file"), tr("File")),
@@ -861,6 +861,46 @@ QList<NodeKind> makeKinds()
             "stack's slabs across a window round the shapes, each metal and via drawn up from its shapes as processed - "
             "read from a GDSII file of the same name written beside it -, each with its material (permittivity, loss "
             "tangent, conductivity). The air above is drawn as its frame alone; what is hidden in this tab is hidden there.")});
+    // The model as a project of Palace, the open-source 3D solver, to run as
+    // it is written.
+    add({QStringLiteral("rf_palace"), tr("Palace EM"), QStringLiteral("export"), QStringLiteral("export"), none,
+         {file(QStringLiteral("file"), tr("File")),
+          choice(QStringLiteral("sides"), tr("Box sides"), {QStringLiteral("perfect"), QStringLiteral("absorbing")},
+                 {tr("Perfect conductors"), tr("Absorbing")}, QStringLiteral("perfect"),
+                 tr("Where the stack ends across the plane. An absorbing side takes a line's field along it as a resistive wall "
+                    "would: a microstrip's loss came out four times its copper's with absorbing sides five heights out, half again "
+                    "with them a quarter wave out; with perfect sides, its copper's. A lid's side walls, where it has them, are the "
+                    "box instead")),
+          expr(QStringLiteral("margin"), tr("Margin"), QStringLiteral("m"), QString(),
+               tr("How far the stack reaches beyond the shapes (empty: five heights of the stack to perfect sides, a quarter "
+                  "wave at the top of the sweep to absorbing ones)")),
+          expr(QStringLiteral("air"), tr("Air above"), QStringLiteral("m"), QString(),
+               tr("How far the air reaches over the stack, to an absorbing boundary (empty: a quarter wave at the top of the "
+                  "sweep); a metal lid closes it at its own height")),
+          expr(QStringLiteral("largest"), tr("Largest element"), QStringLiteral("m"), QString(),
+               tr("Empty: a tenth of the wavelength in the slowest dielectric at the top of the sweep")),
+          expr(QStringLiteral("edges"), tr("Elements at the edges"), QStringLiteral("m"), QString(),
+               tr("Along the metals' edges and the ports (empty: a quarter of the narrowest conductor)")),
+          choice(QStringLiteral("metals"), tr("Metals"), {QStringLiteral("thick"), QStringLiteral("sheets")},
+                 {tr("As thick as they are, cut out of the mesh"), tr("Sheets at their bottoms, as RF 2.5D solves a sheet")},
+                 QStringLiteral("thick"),
+                 tr("A sheet's thickness is in its loss alone; it meshes with far fewer elements than a thin metal cut out")),
+          integer(QStringLiteral("order"), tr("Order"), 2, tr("The finite elements' order, 1 to 4: Palace's Solver Order")),
+          choice(QStringLiteral("solver"), tr("Linear solver"), {QStringLiteral("default"), QStringLiteral("ams")},
+                 {tr("Palace's default: a sparse direct solver where it has one"), tr("Auxiliary-space multigrid (AMS) alone")},
+                 QStringLiteral("default")),
+          expr(QStringLiteral("adaptive_tolerance"), tr("Adaptive tolerance"), QString(), QStringLiteral("1e-3"),
+               tr("Palace's adaptive sweep: a few frequencies solved and the rest from a reduced model through them, to this "
+                  "tolerance (0: every frequency solved)"))},
+         {}, {}, false, false, QStringLiteral("pal"),
+         tr("The model as a project of Palace, the open-source 3D finite-element solver, ready to run: \"palace -np 4 "
+            "<name>.json\" in the folder it is written to. The configuration (.json) holds a driven solve over the study's "
+            "sweep, every port driven in turn, and names the mesh beside it (.msh, Gmsh's format, in µm): tetrahedra through "
+            "the stack's slabs across a box round the shapes, each metal and via cut out of it - its surface perfect or of its "
+            "conductivity -, or each metal a sheet at its bottom, the ground the box's floor, perfect or absorbing sides, an "
+            "absorbing boundary over the air. Each port is a lumped port: an edge port's under its face down to the "
+            "ground, or across its gaps to the conductors beside it; an internal port's up from its From metal to its To "
+            "metal. No solve is needed for it.")});
     add({QStringLiteral("rf_gds"), tr("GDSII"), QStringLiteral("export"), QStringLiteral("export"), none,
          {file(QStringLiteral("file"), tr("File"))},
          {}, {}, false, false, QStringLiteral("gds"),
