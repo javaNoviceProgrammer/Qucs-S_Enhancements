@@ -4066,6 +4066,16 @@ private slots:
         QCOMPARE(j.value("nets lit").toArray().at(0).toObject().value("shape count").toInt(), 5);
         QCOMPARE(j.value("nets lit").toArray().at(1).toObject().value("name").toString(), QString("net 2"));
         QCOMPARE(doc->highlightedNets().size(), 2);
+        // The layout those nets were traced on, once the file is read again:
+        // let go (the call's hook on the tab, which held it, let go with
+        // its answer).
+        {
+            const std::weak_ptr<const Layout> traced = doc->layout();
+            QVERIFY(doc->reload());
+            QTRY_VERIFY(!doc->isLoading());
+            QVERIFY(doc->layout() && doc->layout() != traced.lock());
+            QTRY_VERIFY(traced.expired());
+        }
         j = json(call("show_layout", {{"path", "nets.gds"}, {"highlight_net", QJsonObject{{"text", "NOPE"}}}}));
         QVERIFY(j.value("nets not lit").toArray().first().toString().contains("NOPE"));
         QVERIFY(failed(call("show_layout", {{"path", "nets.gds"}, {"highlight_net", 5}})));
