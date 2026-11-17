@@ -967,6 +967,42 @@ private slots:
         }
     }
 
+    // A layer that ends, its correction held as its factors - as past 5000
+    // cells, a calibration's long strips over a mesa - is the correction held
+    // whole: compressed and dense alike, the same S. Held as its factors, its
+    // every entry was a sum over the panels, which a compressed fill asked for
+    // millions of times a frequency - all but the whole of the strips' time;
+    // P's products now take it as U (V^T x).
+    void aCorrectionHeldAsItsFactorsIsTheCorrection()
+    {
+        const rf::Stack st = grounded(9.8, 100e-6);
+        const rf::Conductor line = strip(0, 0, 1000, 50);
+        const rf::Mesh mesh = meshed({line}, 4, 100e-6);
+        QList<rf::FullWave> solved;
+        for (const auto matrix : {rf::FullWaveControl::Matrix::Compressed, rf::FullWaveControl::Matrix::Dense})
+            for (const int limit : {0, 1}) {
+                rf::setMostDenseCorrection(limit);
+                rf::FullWaveControl control;
+                control.matrix = matrix;
+                control.extents = {rf::Extent{QStringLiteral("SUB"), {QPolygonF(QRectF(-600, -30, 2200, 130))}, 1.0}};
+                solved << rf::fullWaveOf(mesh, {line}, st, {edgePort(QPointF(0, 25)), edgePort(QPointF(1000, 25))}, {5e9, 20e9}, 1e-6, &control);
+                rf::setMostDenseCorrection(0);
+                QVERIFY2(solved.last().ok(), qPrintable(why(solved.last())));
+            }
+        for (int k = 0; k < 2; ++k) {
+            double compressed = 0, dense = 0, across = 0;
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) {
+                    compressed = std::max(compressed, std::abs(solved.at(1).s.at(k).at(i).at(j) - solved.at(0).s.at(k).at(i).at(j)));
+                    dense = std::max(dense, std::abs(solved.at(3).s.at(k).at(i).at(j) - solved.at(2).s.at(k).at(i).at(j)));
+                    across = std::max(across, std::abs(solved.at(0).s.at(k).at(i).at(j) - solved.at(2).s.at(k).at(i).at(j)));
+                }
+            QVERIFY2(compressed < 1e-6 && dense < 1e-9 && across < 1e-4,
+                     qPrintable(QStringLiteral("%1 GHz: factored against whole %2 compressed, %3 dense; compressed against dense %4")
+                                    .arg(k == 0 ? 5 : 20).arg(compressed).arg(dense).arg(across)));
+        }
+    }
+
     // A port's face is its conductor's whole side, though corners on it split
     // it: an outline with two corners on the line's end - as one healed or
     // not may have - drove the cells along the piece the port's point was on,

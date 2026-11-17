@@ -607,6 +607,13 @@ FullWave foldLumped(const FullWave& wave, const QList<FullWavePort>& ports, cons
 FullWave fullWaveOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, const QList<QPointF>& ports,
                     const QList<double>& frequencies, double reference = 50, double micrometre = 1e-6);
 
+/// How many cells a layer that ends has its correction to P held whole for
+/// (rf25_dielectric.h): 5000, past which it is held as its factors and P's
+/// products take it as U (V^T x). Tests: setMostDenseCorrection() sets it
+/// (0: the build's again), so that a few hundred cells take the factors.
+int mostDenseCorrection();
+void setMostDenseCorrection(int cells);
+
 /// The surface impedance of a metal sheet whose current runs on both its
 /// faces, Ohm a square: (gamma / 2 sigma) coth(gamma t / 2), gamma =
 /// (1 + j)/delta - 1/(sigma t) at direct current, and half a thick metal's
