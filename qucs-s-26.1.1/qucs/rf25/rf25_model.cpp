@@ -869,8 +869,9 @@ QList<NodeKind> makeKinds()
                  {tr("Perfect conductors"), tr("Absorbing")}, QStringLiteral("perfect"),
                  tr("Where the stack ends across the plane. An absorbing side takes a line's field along it as a resistive wall "
                     "would: a microstrip's loss came out four times its copper's with absorbing sides five heights out, half again "
-                    "with them a quarter wave out; with perfect sides, its copper's. A lid's side walls, where it has them, are the "
-                    "box instead")),
+                    "with them a quarter wave out; with perfect sides, its copper's. Perfect sides near a line take a little of its "
+                    "field the other way: its eps_eff some 1 % low five heights out, 0.3 % at twenty - a larger Margin. A lid's side "
+                    "walls, where it has them, are the box instead")),
           expr(QStringLiteral("margin"), tr("Margin"), QStringLiteral("m"), QString(),
                tr("How far the stack reaches beyond the shapes (empty: five heights of the stack to perfect sides, a quarter "
                   "wave at the top of the sweep to absorbing ones)")),

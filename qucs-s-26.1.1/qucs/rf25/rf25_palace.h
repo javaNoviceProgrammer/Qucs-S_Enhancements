@@ -31,9 +31,10 @@ namespace qucs_s::rf25 {
 /// How a model is written for Palace. Lengths in metres; nought or below
 /// nought: chosen.
 struct PalaceOptions {
-    /// How far the stack reaches beyond the shapes on every side, where an
-    /// absorbing boundary closes it (chosen: five heights of the stack). A
-    /// lid's side walls give the box instead.
+    /// How far the stack reaches beyond the shapes on every side, to the
+    /// box's sides (chosen: five heights of the stack to perfect sides, a
+    /// quarter wave at the top of the sweep to absorbing ones). A lid's side
+    /// walls give the box instead.
     double margin = -1;
     /// The box's sides where the Cover has no walls: "perfect", perfect
     /// conductors (chosen: five heights of the stack out), or "absorbing", a
@@ -99,7 +100,8 @@ constexpr int kPalaceMostTetrahedra = 6000000;
  * The stack is laid across a box round the shapes (\a options' margin, or a
  * lid's side walls), each slab the material it is - a metal's room the
  * dielectric over it - as RF 2.5D has the stack without end across the
- * plane: closed at the box's sides by an absorbing boundary. A metal and
+ * plane: closed at the box's sides, perfect conductors or an absorbing
+ * boundary as \a options' sides say. A metal and
  * a via are cut out of the mesh, each surface a perfect conductor or of its
  * conductivity - or, \a options' sheets, a metal is a sheet at its bottom.
  * The ground is the box's floor: perfect, of its conductivity, or of its

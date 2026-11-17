@@ -195,6 +195,9 @@ const char* const kTwoEdgePorts =
        {"type": "rf_edge_port", "tag": "p2", "label": "P2", "properties": {"conductor": "M1", "x": "2000[um]", "y": "0", "facing": "+x"}})";
 
 constexpr double kL = 2000, kW = 240, kH = 254;
+/// A metal's name with a double quote in it, as JSON writes it. (Not in a raw
+/// string literal: moc cannot read one with an escaped quote in it.)
+const QString kQuoted = QStringLiteral("Top \\\"M2\\\"");
 
 } // namespace
 
@@ -531,6 +534,43 @@ private slots:
         }
     }
 
+    // An internal port whose To metal is under its From, the metals thick:
+    // from the lower's top up to the upper's bottom, its plus below - and a
+    // metal named with a double quote, its physical group's name kept whole.
+    void anInternalPortDownToALowerMetalAndAQuotedName()
+    {
+        const QString stack = QStringLiteral(R"({"type": "rf_stack", "tag": "stack", "children": [
+            {"type": "rf_ground", "tag": "g", "label": "GND", "properties": {"kind": "perfect"}},
+            {"type": "rf_substrate", "tag": "s", "label": "Sub", "properties": {"thickness": "100[um]", "epsr": "4"}},
+            {"type": "rf_metal", "tag": "m1", "label": "M1", "properties": {"thickness": "2[um]", "sigma": "5.8e7"}},
+            {"type": "rf_dielectric", "tag": "d", "label": "ILD", "properties": {"thickness": "10[um]", "epsr": "3.9"}},
+            {"type": "rf_metal", "tag": "m2", "label": "%1", "properties": {"thickness": "2[um]", "sigma": "5.8e7"}},
+            {"type": "rf_cover", "tag": "c", "label": "Air", "properties": {"height": "200[um]"}}]})")
+                                  .arg(kQuoted);
+        const Model model = modelOf(stack, QStringLiteral(R"({"type": "rf_internal_port", "tag": "p1", "label": "P1", "properties": {"x": "50[um]", "y": "50[um]", "from": "%1", "to": "M1", "width": "20[um]"}})")
+                                               .arg(kQuoted));
+        const QString top = QStringLiteral("Top \"M2\"");
+        PalaceOptions options;
+        options.margin = 100e-6;
+        options.air = 200e-6;
+        const PalaceExport e = palaceExportOf(model, {box(QStringLiteral("M1"), 0, 0, 100, 100), box(top, 0, 0, 100, 100)}, options);
+        QVERIFY2(e.ok(), qPrintable(e.problems.join(QLatin1Char(' ')) + e.notes.join(QLatin1Char(' '))));
+        const Msh m = readMsh(e.mesh);
+        QVERIFY2(m.error.isEmpty(), qPrintable(m.error));
+        QCOMPARE(bareFaces(m), 0);
+        // M1's top at 102 µm up to the upper metal's bottom at 112.
+        const int port = m.tagOf(2, QStringLiteral("port P1"));
+        QVERIFY2(std::abs(m.areaOf(port) - 20 * 10) < 1e-6, qPrintable(QString::number(m.areaOf(port))));
+        for (const auto& [t, g] : m.tris)
+            if (g == port)
+                for (const int n : t) QVERIFY(m.nodes.at(n)[2] > 102 - 1e-9 && m.nodes.at(n)[2] < 112 + 1e-9);
+        const QJsonObject p = configOf(e.config).value(QStringLiteral("Boundaries")).toObject().value(QStringLiteral("LumpedPort")).toArray().at(0).toObject();
+        QCOMPARE(p.value(QStringLiteral("Direction")).toString(), QStringLiteral("+Z"));
+        // The quoted name, its quotes made single: the physical names read whole.
+        QVERIFY(m.tagOf(2, QStringLiteral("Top 'M2'")) > 0);
+        QVERIFY(std::abs(m.areaOf(m.tagOf(2, QStringLiteral("Top 'M2'"))) - (2 * 10000 + 4 * 100 * 2)) < 1e-6);
+    }
+
     // A box: the lid's side walls and the lid perfect, nothing absorbing.
     void aShieldedLineIsClosedByItsBox()
     {
@@ -600,7 +640,8 @@ private slots:
 
     // Runs: opt in with QUCS_RF25_PALACE_OUT=<folder>. The
     // thick microstrip 2 and 4 mm long, every option chosen, each in a folder
-    // of its own to run Palace in - the two lines' difference its line alone.
+    // of its own to run Palace in - the two lines' difference its line alone
+    // -, and the same with Metals: sheets ("line2s", "line4s").
     void linesForPalace()
     {
         const QString folder = qEnvironmentVariable("QUCS_RF25_PALACE_OUT");
@@ -612,14 +653,19 @@ private slots:
                                       .arg(length);
             const Model model = modelOf(microstrip(QStringLiteral(R"("thickness": "10[um]", "sigma": "5.8e7")")), ports,
                                         QStringLiteral(R"({"type": "rf_study", "tag": "study", "properties": {"kind": "full_wave", "from": "2[GHz]", "to": "20[GHz]", "points": "10"}})"));
-            const QString name = QStringLiteral("line%1").arg(int(length / 1000));
-            const PalaceExport e = palaceExportOf(model, {box(QStringLiteral("M1"), 0, -kW / 2, length, kW / 2)}, PalaceOptions(), name);
-            QVERIFY2(e.ok(), qPrintable(e.problems.join(QLatin1Char(' '))));
-            const QDir dir(QDir(folder).filePath(name));
-            QDir().mkpath(dir.path());
-            QString why;
-            QVERIFY2(writePalaceExport(e, dir.filePath(name + QStringLiteral(".json")), nullptr, &why), qPrintable(why));
-            qInfo("%s: %s", qPrintable(name), qPrintable(e.notes.join(QLatin1Char(' '))));
+            // (Each as thick as it is, and as a sheet: RF 2.5D's metal.)
+            for (const bool sheets : {false, true}) {
+                const QString name = QStringLiteral("line%1%2").arg(int(length / 1000)).arg(sheets ? QStringLiteral("s") : QString());
+                PalaceOptions options;
+                options.sheets = sheets;
+                const PalaceExport e = palaceExportOf(model, {box(QStringLiteral("M1"), 0, -kW / 2, length, kW / 2)}, options, name);
+                QVERIFY2(e.ok(), qPrintable(e.problems.join(QLatin1Char(' '))));
+                const QDir dir(QDir(folder).filePath(name));
+                QDir().mkpath(dir.path());
+                QString why;
+                QVERIFY2(writePalaceExport(e, dir.filePath(name + QStringLiteral(".json")), nullptr, &why), qPrintable(why));
+                qInfo("%s: %s", qPrintable(name), qPrintable(e.notes.join(QLatin1Char(' '))));
+            }
         }
     }
 
