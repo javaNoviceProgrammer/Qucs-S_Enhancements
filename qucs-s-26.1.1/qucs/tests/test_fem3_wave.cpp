@@ -649,8 +649,13 @@ private slots:
         const double free = sweep(0, &said);
         QVERIFY2(!said.contains(QLatin1String("7 wavelengths, 7 solved exactly")), qPrintable(said));
         QVERIFY2(free < 1e-5, qPrintable(QString::number(free)));
+        // (Full at the first exact solve - two ports' ten modes, 20 columns a
+        // solve -, every wavelength then exact: an absorbing port's residual,
+        // its S right to its square, past the tolerance at each. The mixed
+        // case, some wavelengths on the basis: test_fem3_wavetd's.)
         const double held = sweep(16, &said);
-        QVERIFY2(said.contains(QLatin1String("basis kept to 16 columns")), qPrintable(said));
+        QVERIFY2(said.contains(QLatin1String("basis kept to 16 columns (as asked)")), qPrintable(said));
+        QVERIFY2(said.contains(QLatin1String("past the tolerance where the basis was full")), qPrintable(said));
         QVERIFY2(held < 1e-5, qPrintable(QString::number(held)));
     }
 };

@@ -595,6 +595,25 @@ private slots:
         }
         qInfo("fast sweep %lld ms, each solved %lld ms; |ΔS| %.2e at worst", fastMs, t.elapsed(), worst);
         QVERIFY2(worst < 1e-5, qPrintable(QString::number(worst)));
+        // Its basis held to 8 columns - five a wavelength solved exactly (its
+        // solution, four derivatives): full at the second -, the wavelengths
+        // still past the tolerance solved exactly, the rest on the basis, every
+        // one within reach of its exact solve.
+        st.sweepColumns = 8;
+        log.clear();
+        const std::vector<Wave3Result> held = sweepWave3(m, b.parameters, *b.topology, b.mesh, st, f, &log, &why);
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        for (const QString& l : log) qInfo("  %s", qPrintable(l));
+        const QString said = log.join(QLatin1Char('\n'));
+        QVERIFY2(said.contains(QLatin1String("basis kept to 8 columns (as asked)")), qPrintable(said));
+        QVERIFY2(!said.contains(QLatin1String("7 wavelengths, 7 solved exactly")), qPrintable(said));
+        double heldWorst = 0;
+        for (std::size_t k = 0; k < f.size(); ++k) {
+            const Wave3Result exact = solveWave3(m, b.parameters, *b.topology, b.mesh, st, f[k]);
+            heldWorst = std::max(heldWorst, maxDiff(held[k].S, exact.S, 1));
+        }
+        qInfo("held to 8 columns: |ΔS| %.2e at worst", heldWorst);
+        QVERIFY2(heldWorst < 1e-5, qPrintable(QString::number(heldWorst)));
     }
 
 };
