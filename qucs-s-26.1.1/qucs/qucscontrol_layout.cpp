@@ -17,6 +17,7 @@
 #include "graphicsexport.h"
 #include "layoutdoc.h"
 #include "layoutedit.h"
+#include "layoutnet.h"
 #include "misc.h"
 #include "qucs.h"
 #include "rf25doc.h"
@@ -384,6 +385,237 @@ bool sketchItemOf(const QJsonObject& o, LayoutView::Sketch* out, QString* error)
     return true;
 }
 
+// ----------------------------------------------------------------------
+// Nets: traced from a shape (layoutnet.h), for find_shapes' 'connected'
+// and show_layout's 'highlight_net'
+
+// The one layer \a spec names, or -1 with why.
+int oneLayer(const Layout& layout, const QVector<LayerStyle>& styles, const QJsonValue& spec, QString* error)
+{
+    const QVector<bool> on = layersOf(layout, styles, spec, error);
+    int found = -1;
+    for (int i = 0; i < on.size(); ++i)
+        if (on.at(i)) {
+            if (found >= 0) {
+                *error = tr("%1 names more than one layer: a net is traced from one (\"1/0\").").arg(spec.toVariant().toString());
+                return -1;
+            }
+            found = i;
+        }
+    if (found < 0 && error->isEmpty()) *error = tr("No layer is %1.").arg(spec.toVariant().toString());
+    return found;
+}
+
+// 'connectivity' as given - [[lower, cut, upper], ...], each a layer -,
+// else the router's technology beside the layout, else none (each shape's
+// own layer). False, with why, when what is given names no layer.
+bool netConnectivityOf(const Layout& layout, const QVector<LayerStyle>& styles, const QJsonObject& args, NetConnectivity* out, QString* error)
+{
+    const QJsonValue given = args.value(QLatin1String("connectivity"));
+    if (given.isUndefined()) {
+        QString why;
+        if (!connectivityBeside(layout, out, &why)) {
+            *out = {};
+            out->source = tr("none: each shape's own layer only (%1; 'connectivity' gives the layers and their cuts)").arg(why);
+        }
+        return true;
+    }
+    if (!given.isArray() || given.toArray().isEmpty() || given.toArray().size() > 32) {
+        *error = tr("'connectivity' is [[lower metal, cut, upper metal], ...] (1 to 32 of them), each a layer: [[\"1/0\", \"3/0\", \"2/0\"]].");
+        return false;
+    }
+    out->steps.clear();
+    for (const QJsonValue& v : given.toArray()) {
+        const QJsonArray step = v.toArray();
+        if (step.size() != 3) {
+            *error = tr("'connectivity': each step is [lower metal, cut, upper metal]: [\"1/0\", \"3/0\", \"2/0\"].");
+            return false;
+        }
+        NetStep s;
+        int* parts[3] = {&s.lower, &s.cut, &s.upper};
+        for (int k = 0; k < 3; ++k)
+            if ((*parts[k] = oneLayer(layout, styles, step.at(k), error)) < 0) {
+                *error = tr("'connectivity': %1").arg(*error);
+                return false;
+            }
+        out->steps.append(s);
+    }
+    out->source = tr("as given");
+    return true;
+}
+
+QString stepsSaid(const Layout& layout, const NetConnectivity& c)
+{
+    QStringList said;
+    const auto name = [&](int l) { return l >= 0 && l < layout.layers.size() ? layout.layers.at(l).key.text() : QStringLiteral("-"); };
+    for (const NetStep& s : c.steps) said << (s.cut < 0 ? name(s.lower) : QStringLiteral("%1 - %2 - %3").arg(name(s.lower), name(s.cut), name(s.upper)));
+    return said.join(QStringLiteral(", "));
+}
+
+// Where a net starts: \a spec's 'at' (with 'layer', or the lowest metal of
+// the connectivity there), its 'text' (the shape under that text, on its
+// layer or the lowest metal there) or 'from': "selection" (the shape
+// selected in \a doc's tab). The shapes, and what was taken, in \a said;
+// none, with why in \a error.
+QVector<Found> netSeeds(const Layout& layout, const QVector<LayerStyle>& styles, int cell, const QJsonObject& spec, const LayoutDoc* doc,
+                        const NetConnectivity& connectivity, QString* said, QString* error)
+{
+    const QJsonArray at = spec.value(QLatin1String("at")).toArray();
+    const QString text = spec.value(QLatin1String("text")).toString().trimmed();
+    const QString from = spec.value(QLatin1String("from")).toString().trimmed().toLower();
+    const int ways = int(spec.contains(QLatin1String("at"))) + int(spec.contains(QLatin1String("text"))) + int(spec.contains(QLatin1String("from")));
+    if (ways != 1) {
+        *error = tr("A net is traced from one of 'at' [x, y] (with 'layer'), 'text' (the shape a text is on) or 'from': \"selection\".");
+        return {};
+    }
+    if (spec.contains(QLatin1String("from"))) {
+        if (from != QLatin1String("selection")) {
+            *error = tr("'from' is selection: the shape selected in the layout's tab.");
+            return {};
+        }
+        if (doc == nullptr || !doc->view()->selection() || doc->view()->selection()->isText()) {
+            *error = tr("Nothing is selected in the layout's tab to trace from (a shape, not a text): 'at' or 'text' instead.");
+            return {};
+        }
+        if (doc->shownCell() != cell) {
+            *error = tr("The selection is in %1, the cell its tab shows, not %2.").arg(layout.cells.at(doc->shownCell()).name, layout.cells.at(cell).name);
+            return {};
+        }
+        *said = tr("the shape selected in the tab");
+        return {*doc->view()->selection()};
+    }
+    if (spec.contains(QLatin1String("at"))) {
+        if (at.size() != 2 || !at.at(0).isDouble() || !at.at(1).isDouble()) {
+            *error = tr("'at' is [x, y] in µm.");
+            return {};
+        }
+        int layer = -1;
+        if (spec.contains(QLatin1String("layer")) && (layer = oneLayer(layout, styles, spec.value(QLatin1String("layer")), error)) < 0) return {};
+        if (layer < 0 && connectivity.isEmpty()) {
+            *error = tr("'layer' is needed with 'at': there is no connectivity to take the lowest metal from.");
+            return {};
+        }
+        const QPointF p(at.at(0).toDouble(), at.at(1).toDouble());
+        const QVector<Found> seeds = seedsAt(layout, cell, p, layer, connectivity);
+        if (seeds.isEmpty())
+            *error = tr("No shape at %1, %2 µm on %3.").arg(micrometres(layout, p.x()), micrometres(layout, p.y()),
+                                                             layer >= 0 ? layout.layers.at(layer).key.text() : tr("a metal of the connectivity"));
+        else *said = tr("the shape(s) at %1, %2 µm on %3").arg(micrometres(layout, p.x()), micrometres(layout, p.y()),
+                                                                layout.layers.at(int(layout.cells.at(seeds.first().cell).shapes.at(seeds.first().shape).layer)).key.text());
+        return seeds;
+    }
+    // A text: the one that says it, else the first that matches it with
+    // * and ? (any case).
+    if (text.isEmpty()) {
+        *error = tr("'text' is what a text says: \"VDD\", or a pattern with * and ?.");
+        return {};
+    }
+    const QRegularExpression pattern(QRegularExpression::wildcardToRegularExpression(text), QRegularExpression::CaseInsensitiveOption);
+    Query q;
+    q.cell = cell;
+    std::optional<Found> exact, like;
+    int matching = 0;
+    search(layout, q, [&](const Found& f) {
+        if (!f.isText()) return true;
+        const QString& t = layout.cells.at(f.cell).labels.at(f.label).text;
+        if (t == text) {
+            if (!exact) exact = f;
+            ++matching;
+        } else if (pattern.match(t).hasMatch()) {
+            if (!like) like = f;
+            ++matching;
+        }
+        return matching < 10000;
+    });
+    const std::optional<Found> label = exact ? exact : like;
+    if (!label) {
+        *error = tr("No text in %1 says %2.").arg(layout.cells.at(cell).name, text);
+        return {};
+    }
+    const Label& l = layout.cells.at(label->cell).labels.at(label->label);
+    const QPointF p = label->transform.map(l.origin);
+    QVector<Found> seeds = seedsAt(layout, cell, p, int(l.layer), connectivity);
+    if (seeds.isEmpty() && !connectivity.isEmpty()) seeds = seedsAt(layout, cell, p, -1, connectivity);
+    if (seeds.isEmpty()) {
+        *error = tr("The text %1 at %2, %3 µm is on no shape of its layer %4%5.")
+                     .arg(l.text, micrometres(layout, p.x()), micrometres(layout, p.y()), layout.layers.at(int(l.layer)).key.text(),
+                          connectivity.isEmpty() ? QString() : tr(" nor of a metal of the connectivity"));
+        return {};
+    }
+    *said = tr("the shape under the text %1 at %2, %3 µm").arg(l.text, micrometres(layout, p.x()), micrometres(layout, p.y()));
+    if (matching > 1) *said += tr(" (%1 texts match; the first that says it exactly, else the first)").arg(matching);
+    return seeds;
+}
+
+// A net as the tools give it: its shapes (to 'limit'), and by layer; its
+// box, length, texts, cells and vias; what joined its layers; and what to
+// note - two texts on it, one alone, followed no further.
+QJsonObject netJson(const Layout& layout, const QVector<LayerStyle>& styles, const TracedNet& net, const NetConnectivity& connectivity, int limit)
+{
+    QJsonObject o;
+    QMap<int, int> byLayer;
+    for (const NetShape& s : net.shapes) ++byLayer[s.layer];
+    QJsonArray layers;
+    for (auto it = byLayer.cbegin(); it != byLayer.cend(); ++it) {
+        QJsonObject l{{QStringLiteral("layer"), layout.layers.at(it.key()).key.text()}, {QStringLiteral("shapes"), it.value()},
+                      {QStringLiteral("pieces"), net.pieces.value(it.key())}};
+        const QString name = layerName(layout, styles, it.key());
+        if (!name.isEmpty()) l.insert(QStringLiteral("name"), name);
+        layers.append(l);
+    }
+    o.insert(QStringLiteral("shape count"), int(net.shapes.size()));
+    o.insert(QStringLiteral("layers"), layers);
+    if (!net.shapes.isEmpty()) o.insert(QStringLiteral("bounds"), boxJson(layout, net.bounds));
+    o.insert(QStringLiteral("length µm"), onGrid(layout, net.length));
+    o.insert(QStringLiteral("length"), tr("the centre lines of its runs: each path's spine, each rectangle's long side less its short; other polygons not counted"));
+    QJsonArray texts;
+    QStringList distinct;
+    for (const NetLabel& l : net.labels) {
+        if (texts.size() < 200)
+            texts.append(QJsonObject{{QStringLiteral("text"), l.text}, {QStringLiteral("layer"), layout.layers.at(l.layer).key.text()},
+                                     {QStringLiteral("at"), pointJson(layout, l.at)}, {QStringLiteral("in"), layout.cells.at(l.cell).name}});
+        if (!distinct.contains(l.text)) distinct << l.text;
+    }
+    o.insert(QStringLiteral("texts"), texts);
+    QJsonArray cells;
+    for (int c : net.cells()) cells.append(layout.cells.at(c).name);
+    o.insert(QStringLiteral("cells"), cells);
+    int cuts = 0;
+    QJsonArray vias;
+    for (const NetVia& v : net.vias) {
+        cuts += v.cuts;
+        if (vias.size() < 200)
+            vias.append(QJsonObject{{QStringLiteral("layer"), layout.layers.at(v.layer).key.text()}, {QStringLiteral("at"), pointJson(layout, v.at)},
+                                    {QStringLiteral("cuts"), v.cuts}});
+    }
+    o.insert(QStringLiteral("via count"), int(net.vias.size()));
+    o.insert(QStringLiteral("cut count"), cuts);
+    o.insert(QStringLiteral("vias"), vias);
+    QJsonArray shapes;
+    for (const NetShape& s : net.shapes) {
+        if (shapes.size() >= limit) break;
+        shapes.append(foundJson(layout, styles, s.found));
+    }
+    o.insert(QStringLiteral("shapes"), shapes);
+    if (net.shapes.size() > shapes.size())
+        o.insert(QStringLiteral("shapes not listed"), tr("%1 of %2 listed: 'limit' (up to 1000) for more").arg(shapes.size()).arg(net.shapes.size()));
+    o.insert(QStringLiteral("connectivity"), connectivity.isEmpty() ? connectivity.source
+                                                                     : QStringLiteral("%1: %2").arg(connectivity.source, stepsSaid(layout, connectivity)));
+    QJsonArray notes;
+    if (distinct.size() > 1)
+        notes.append(tr("%1 texts on one net (%2): joined on purpose, or a short").arg(distinct.size()).arg(distinct.mid(0, 12).join(QStringLiteral(", "))));
+    if (distinct.size() == 1 && net.labels.size() == 1)
+        notes.append(tr("its one text, %1, reaches no other text: a route that ends nowhere named, or a pad not joined").arg(distinct.first()));
+    if (distinct.isEmpty() && !net.shapes.isEmpty())
+        notes.append(tr("no text on it: no pad or pin named on its layers"));
+    if (net.stopped)
+        notes.append(tr("followed no further than %1 shapes ('max_shapes'): more of it is not listed").arg(net.shapes.size()));
+    if (net.cancelled) notes.append(tr("stopped before it was traced whole"));
+    if (!notes.isEmpty()) o.insert(QStringLiteral("notes"), notes);
+    return o;
+}
+
+
 } // namespace
 
 // ----------------------------------------------------------------------
@@ -627,6 +859,27 @@ void QucsControl::findShapes(const QJsonObject& args, const Done& done)
         return done(errorResult(tr("'limit' is how many shapes to list at most, 1 to 1000 (50 when not given): %1 is none of "
                                    "them.").arg(args.value(QLatin1String("limit")).toInt(0))));
     const int limit = std::clamp(args.value(QLatin1String("limit")).toInt(50), 1, 1000);
+    // A net: what is joined to the shape at 'at' (on 'layer'), under a
+    // 'text', or selected ('from'), through the cuts of 'connectivity'.
+    const bool connected = args.value(QLatin1String("connected")).toBool();
+    for (const char* key : {"connectivity", "stop_at", "max_shapes", "from"})
+        if (args.contains(QLatin1String(key)) && !connected)
+            return done(errorResult(tr("'%1' is of a net: with 'connected': true.").arg(QLatin1String(key))));
+    if (connected) {
+        for (const char* key : {"region", "depth", "texts"})
+            if (args.contains(QLatin1String(key)))
+                return done(errorResult(tr("'%1' finds shapes, not a net: 'connected' follows the net from 'at', 'text' or 'from' "
+                                           "through every level.").arg(QLatin1String(key))));
+        if (args.contains(QLatin1String("max_shapes")) && !(args.value(QLatin1String("max_shapes")).toInt(0) >= 1
+                                                            && args.value(QLatin1String("max_shapes")).toInt(0) <= 200000))
+            return done(errorResult(tr("'max_shapes' is how many shapes a net is followed to, 1 to 200000 (20000 when not given).")));
+    }
+    const int maxShapes = args.value(QLatin1String("max_shapes")).toInt(20000);
+    // (What a net reads of the call, taken before the layout is: where it
+    //  starts, its connectivity, the layers it stops at.)
+    const QJsonObject netSpec = args;
+    const bool stopGiven = args.contains(QLatin1String("stop_at"));
+    const QJsonValue stopSpec = args.value(QLatin1String("stop_at"));
     withLayout(args, false, [=](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
         const QVector<LayerStyle> styles = doc != nullptr ? doc->view()->styles()
                                                           : stylesFor(*layout, readLayerPropertiesFile(layerPropertiesBeside(layout->file), nullptr), LayoutDoc::klayoutLook());
@@ -634,6 +887,31 @@ void QucsControl::findShapes(const QJsonObject& args, const Done& done)
         const int cell = cellOf(*layout, cellName, doc != nullptr ? doc->shownCell() : -1, &error);
         if (cell < 0) {
             done(errorResult(error.isEmpty() ? tr("%1 has no cells.").arg(QFileInfo(layout->file).fileName()) : error));
+            return;
+        }
+        if (connected) {
+            NetConnectivity connectivity;
+            if (!netConnectivityOf(*layout, styles, netSpec, &connectivity, &error)) return done(errorResult(error));
+            QVector<bool> stopAt;
+            if (stopGiven) {
+                stopAt = layersOf(*layout, styles, stopSpec, &error);
+                if (stopAt.isEmpty()) return done(errorResult(tr("'stop_at': %1").arg(error)));
+            }
+            QString said;
+            const QVector<Found> seeds = netSeeds(*layout, styles, cell, netSpec, doc, connectivity, &said, &error);
+            if (seeds.isEmpty()) return done(errorResult(error));
+            NetTrace trace;
+            trace.cell = cell;
+            trace.seeds = seeds;
+            trace.connectivity = connectivity;
+            trace.stopAt = stopAt;
+            trace.maxShapes = maxShapes;
+            const TracedNet net = traceNet(*layout, trace);
+            QJsonObject result = netJson(*layout, styles, net, connectivity, limit);
+            result.insert(QStringLiteral("cell"), layout->cells.at(cell).name);
+            result.insert(QStringLiteral("from"), said);
+            result.insert(QStringLiteral("units"), tr("µm, in %1's coordinates").arg(layout->cells.at(cell).name));
+            done(jsonResult(result));
             return;
         }
         Query q;
@@ -742,6 +1020,24 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         && !(selectAt.size() == 2 && selectAt.at(0).isDouble() && selectAt.at(1).isDouble()))
         return done(errorResult(tr("'select' is [x, y] in µm - what a click there selects (at the same point again: the next "
                                    "one under it) - or none.")));
+    // Nets lit over the layout (its Highlight Net): each from 'at' (with
+    // 'layer'), a 'text' or the selection - or the nets lit taken away.
+    const QJsonValue highlight = args.value(QLatin1String("highlight_net"));
+    const bool clearNets = highlight.isString() && highlight.toString().trimmed().compare(QLatin1String("clear"), Qt::CaseInsensitive) == 0;
+    QList<QJsonObject> netsAsked;
+    if (args.contains(QLatin1String("highlight_net")) && !clearNets) {
+        const QJsonArray many = highlight.isArray() ? highlight.toArray() : QJsonArray{highlight};
+        bool bad = false;
+        for (const QJsonValue& v : many) {
+            if (v.isString() && v.toString().trimmed().compare(QLatin1String("selection"), Qt::CaseInsensitive) == 0)
+                netsAsked << QJsonObject{{QStringLiteral("from"), QStringLiteral("selection")}};
+            else if (v.isObject()) netsAsked << v.toObject();
+            else bad = true;
+        }
+        if (bad || netsAsked.isEmpty() || netsAsked.size() > 16)
+            return done(errorResult(tr("'highlight_net' is a net to light - {\"at\": [x, y], \"layer\": \"1/0\"}, {\"text\": \"VDD\"} or "
+                                       "\"selection\" - a list of up to 16, or clear.")));
+    }
     // Rulers added - each end snapped as a ruler's drag snaps it, to a
     // shape's corner or edge within a few pixels - or taken away.
     const QJsonValue rulers = args.value(QLatin1String("rulers"));
@@ -807,7 +1103,7 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
             // (Its rulers are its own, as a layout's tab's: V4 of the open
             //  items, refused here, so that a measurement asked could not be
             //  checked.)
-            for (const char* key : {"cell", "layers", "depth", "overlay", "select", "colours",
+            for (const char* key : {"cell", "layers", "depth", "overlay", "select", "highlight_net", "colours",
                                     "layer_properties", "layer_look", "theme", "contrast", "grid_style", "reload"})
                 if (args.contains(QLatin1String(key))) {
                     done(errorResult(tr("'%1' is of a layout's own tab: an RF 2.5D model's cell is its Layout node's and "
@@ -1054,6 +1350,40 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
                 if (!view->visibleRegion().intersects(b)) view->setView(b.center(), view->scale());
             }
         }
+        // The nets lit: each traced from where it is asked, beside those lit.
+        QJsonArray netsLit;
+        QStringList netsNot;
+        if (clearNets) doc->clearHighlightedNets();
+        if (!netsAsked.isEmpty()) {
+            QString why;
+            const NetConnectivity connectivity = doc->netConnectivity(&why);
+            for (const QJsonObject& spec : std::as_const(netsAsked)) {
+                QString said, error;
+                const QVector<Found> seeds = netSeeds(*layout, view->styles(), view->cell(), spec, doc, connectivity, &said, &error);
+                if (seeds.isEmpty()) {
+                    netsNot << error;
+                    continue;
+                }
+                const TracedNet net = doc->highlightNet(seeds, &connectivity);
+                int index = -1;
+                for (int i = 0; i < doc->highlightedNets().size(); ++i)
+                    if (!doc->highlightedNets().at(i).shapes.isEmpty() && !net.shapes.isEmpty()
+                        && doc->highlightedNets().at(i).shapes.first().found.transform == net.shapes.first().found.transform
+                        && doc->highlightedNets().at(i).shapes.first().found.shape == net.shapes.first().found.shape
+                        && doc->highlightedNets().at(i).shapes.first().found.cell == net.shapes.first().found.cell)
+                        index = i;
+                QJsonObject lit = netJson(*layout, view->styles(), net, connectivity, 0);
+                lit.remove(QStringLiteral("shapes"));
+                lit.remove(QStringLiteral("shapes not listed"));
+                lit.remove(QStringLiteral("length"));
+                lit.insert(QStringLiteral("from"), said);
+                if (index >= 0) {
+                    lit.insert(QStringLiteral("name"), doc->highlightedNetName(index));
+                    lit.insert(QStringLiteral("colour"), LayoutView::highlightColor(index).name());
+                }
+                netsLit.append(lit);
+            }
+        }
         // The rulers: each end snapped as the ruler's drag snaps it, at the
         // zoom shown.
         if (clearRulers) view->clearRulers();
@@ -1102,6 +1432,11 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         } else if (clearOverlay) {
             result.insert(QStringLiteral("overlay"), tr("taken away"));
         }
+        if (!netsLit.isEmpty()) result.insert(QStringLiteral("nets lit"), netsLit);
+        if (!netsNot.isEmpty()) result.insert(QStringLiteral("nets not lit"), QJsonArray::fromStringList(netsNot));
+        if (clearNets) result.insert(QStringLiteral("highlight_net"), tr("the nets lit taken away"));
+        else if (!doc->highlightedNets().isEmpty() && netsAsked.isEmpty())
+            result.insert(QStringLiteral("nets lit"), tr("%n net(s) lit in the tab (highlight_net: clear takes them away)", "", int(doc->highlightedNets().size())));
         // What is selected and measured there now - the user's or Claude's.
         insertSelectionAndRulers(result, *layout, view);
         if (nothingThere)

@@ -406,6 +406,10 @@ void LayoutView::setLayout(std::shared_ptr<const Layout> layout)
     a_selectionOutline.clear();
     a_rulers.clear();
     a_cell = a_layout ? a_layout->mainCell() : -1;
+    if (!a_highlights.isEmpty()) {
+        a_highlights.clear();
+        emit highlightsChanged();
+    }
     invalidate();
 }
 
@@ -422,6 +426,10 @@ void LayoutView::setStyles(const QVector<LayerStyle>& styles)
 void LayoutView::setCell(int cell)
 {
     if (!a_layout || cell < 0 || cell >= a_layout->cells.size()) return;
+    if (cell != a_cell && !a_highlights.isEmpty()) {
+        a_highlights.clear();
+        emit highlightsChanged();
+    }
     a_cell = cell;
     a_selection.reset();
     a_selectionOutline.clear();
@@ -1003,10 +1011,45 @@ void LayoutView::paintFrame(QPainter& p, LayoutGpu* gl)
     paintOver(p, c);
 }
 
+void LayoutView::setHighlights(const QList<NetHighlight>& nets)
+{
+    a_highlights = nets;
+    update();
+    emit highlightsChanged();
+}
+
+QColor LayoutView::highlightColor(int n)
+{
+    // Strong, apart from one another on a light canvas and a dark one.
+    static const QColor colors[] = {QColor(255, 140, 0), QColor(0, 170, 255), QColor(230, 40, 160), QColor(60, 200, 60),
+                                    QColor(255, 215, 0), QColor(150, 90, 255), QColor(0, 210, 190), QColor(255, 70, 70)};
+    return colors[std::size_t(n) % (sizeof(colors) / sizeof(colors[0]))];
+}
+
 void LayoutView::paintOver(QPainter& p, const Colors& c)
 {
     p.save();
     p.setRenderHint(QPainter::Antialiasing);
+    // Nets lit: the layout dimmed under them, each net in its colour.
+    if (!a_highlights.isEmpty()) {
+        QColor veil = c.background;
+        veil.setAlpha(170);
+        p.fillRect(rect(), veil);
+        const QRectF seen = visibleRegion();
+        for (const NetHighlight& net : std::as_const(a_highlights)) {
+            QColor fill = net.color;
+            fill.setAlpha(150);
+            p.setPen(QPen(net.color, 1.5));
+            p.setBrush(fill);
+            for (const QPolygonF& shape : net.shapes) {
+                if (shape.size() < 2 || !shape.boundingRect().intersects(seen)) continue;
+                QPolygonF shown;
+                shown.reserve(shape.size());
+                for (const QPointF& pt : shape) shown << toPixel(pt);
+                p.drawPolygon(shown);
+            }
+        }
+    }
     if (a_grid && a_layout && a_cell >= 0) paintScale(p, c);
     // What is selected.
     if (!a_selectionOutline.isEmpty()) {
@@ -1323,7 +1366,7 @@ bool LayoutView::event(QEvent* event)
     if (event->type() == QEvent::ShortcutOverride) {
         auto* key = static_cast<QKeyEvent*>(event);
         if (key->key() == Qt::Key_Escape && key->modifiers() == Qt::NoModifier
-            && (a_measuring || a_selection || !a_rulers.isEmpty() || a_mode != Mode::Select)) {
+            && (a_measuring || a_selection || !a_highlights.isEmpty() || !a_rulers.isEmpty() || a_mode != Mode::Select)) {
             event->accept();
             return true;
         }
@@ -1576,6 +1619,8 @@ void LayoutView::keyPressEvent(QKeyEvent* event)
             emit rulersChanged();
         } else if (a_selection) {
             select(std::nullopt);
+        } else if (!a_highlights.isEmpty()) {
+            setHighlights({});
         } else if (!a_rulers.isEmpty()) {
             clearRulers();
         } else if (a_mode != Mode::Select) {
@@ -1859,8 +1904,21 @@ void LayoutDoc::buildUi()
     a_layers->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     a_layers->setUniformRowHeights(true);
     a_layers->setContextMenuPolicy(Qt::CustomContextMenu);
+    a_nets = new QTreeWidget(a_side);
+    a_nets->setObjectName(QStringLiteral("layoutNets"));
+    a_nets->setHeaderLabels({tr("Net"), tr("Length µm"), tr("Vias")});
+    a_nets->setToolTip(tr("The nets lit (right-click a shape: Highlight Net). A click shows one; Escape in the layout takes them all away."));
+    a_nets->setRootIsDecorated(false);
+    a_nets->header()->setStretchLastSection(false);
+    a_nets->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    a_nets->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    a_nets->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    a_nets->setUniformRowHeights(true);
+    a_nets->setContextMenuPolicy(Qt::CustomContextMenu);
+    a_nets->hide();
     a_side->addWidget(a_cells);
     a_side->addWidget(a_layers);
+    a_side->addWidget(a_nets);
 
     auto* right = new QWidget(a_splitter);
     auto* rightLayout = new QVBoxLayout(right);
@@ -2073,12 +2131,45 @@ void LayoutDoc::buildUi()
         if (a_view->drawnInPart()) updateInfo();
     });
     connect(a_view, &LayoutView::cellRequested, this, [this](int cell) { showCell(cell); });
+    // The nets lit: taken away in the view (Escape, another cell, the file
+    // read again), gone from the list too.
+    connect(a_view, &LayoutView::highlightsChanged, this, [this] {
+        if (a_view->highlights().isEmpty() && !a_lit.isEmpty()) {
+            a_lit.clear();
+            fillNetList();
+        }
+    });
+    connect(a_nets, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item) {
+        const int i = a_nets->indexOfTopLevelItem(item);
+        if (i < 0 || i >= a_lit.size()) return;
+        const QRectF b = a_lit.at(i).bounds;
+        const double m = std::max(b.width(), b.height()) * 0.05 + 1;
+        a_view->showRegion(b.adjusted(-m, -m, m, m));
+    });
+    connect(a_nets, &QWidget::customContextMenuRequested, this, [this](QPoint at) {
+        auto* menu = new QMenu(this);
+        const int i = a_nets->indexOfTopLevelItem(a_nets->itemAt(at));
+        if (i >= 0 && i < a_lit.size())
+            menu->addAction(tr("Take %1 Away").arg(highlightedNetName(i)), this, [this, i] {
+                if (i >= a_lit.size()) return;
+                a_lit.removeAt(i);
+                fillNetList();
+            });
+        menu->addAction(tr("Take Every Net Away"), this, &LayoutDoc::clearHighlightedNets);
+        qucs_s::popUp(menu, a_nets->viewport()->mapToGlobal(at));
+    });
     connect(a_view, &LayoutView::menuRequested, this, [this](QPoint at) {
         auto* menu = new QMenu(this);
         QAction* copy = menu->addAction(tr("Copy"), this, &LayoutDoc::copySelection);
         copy->setShortcut(QKeySequence::Copy);
         menu->addAction(tr("Show the Whole Cell"), this, [this] { a_view->fit(); });
         if (a_view->selection()) menu->addAction(tr("Zoom to the Selection"), this, &LayoutDoc::zoomToSelection);
+        // The net of the shape right-clicked (selected, when nothing was).
+        if (!a_view->selection()) a_view->selectAt(a_view->mapFromGlobal(at));
+        QAction* net = menu->addAction(tr("Highlight Net"), this, [this] { highlightSelectedNet(); });
+        net->setEnabled(a_view->selection() && !a_view->selection()->isText());
+        net->setToolTip(tr("The metal joined to the shape selected, through the vias, lit over the layout"));
+        if (!a_lit.isEmpty()) menu->addAction(tr("Take the Nets Lit Away"), this, &LayoutDoc::clearHighlightedNets);
         menu->addSeparator();
         QAction* ruler = menu->addAction(tr("Ruler"), this, [this](bool on) { a_rulerButton->setChecked(on); });
         ruler->setCheckable(true);
@@ -3070,6 +3161,102 @@ double LayoutDoc::zoomBy(double factor)
 void LayoutDoc::showAll()
 {
     a_view->fit();
+}
+
+qucs_s::layout::NetConnectivity LayoutDoc::netConnectivity(QString* why) const
+{
+    qucs_s::layout::NetConnectivity c;
+    QString reason;
+    if (!a_layout || !qucs_s::layout::connectivityBeside(*a_layout, &c, &reason)) {
+        c = {};
+        c.source = tr("none: each shape's own layer only (%1)").arg(reason.isEmpty() ? tr("no layout") : reason);
+    }
+    if (why != nullptr) *why = c.source;
+    return c;
+}
+
+qucs_s::layout::TracedNet LayoutDoc::highlightNet(const QVector<Found>& seeds, const qucs_s::layout::NetConnectivity* connectivity,
+                                                  const QVector<bool>& stopAt, int maxShapes)
+{
+    qucs_s::layout::TracedNet net;
+    if (!a_layout || shownCell() < 0 || seeds.isEmpty()) return net;
+    qucs_s::layout::NetTrace trace;
+    trace.cell = shownCell();
+    trace.seeds = seeds;
+    trace.connectivity = connectivity != nullptr ? *connectivity : netConnectivity();
+    trace.stopAt = stopAt;
+    trace.maxShapes = maxShapes;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    net = qucs_s::layout::traceNet(*a_layout, trace);
+    QApplication::restoreOverrideCursor();
+    if (net.shapes.isEmpty()) return net;
+    // Lit already (a shape of it a shape of one lit): that one, once.
+    const auto same = [](const Found& a, const Found& b) { return a.cell == b.cell && a.shape == b.shape && a.copy == b.copy && a.transform == b.transform; };
+    for (const qucs_s::layout::TracedNet& lit : std::as_const(a_lit))
+        for (const qucs_s::layout::NetShape& s : lit.shapes)
+            if (same(s.found, net.shapes.first().found)) return lit;
+    a_lit.append(net);
+    fillNetList();
+    return net;
+}
+
+bool LayoutDoc::highlightSelectedNet()
+{
+    const std::optional<Found>& sel = a_view->selection();
+    if (!sel || sel->isText()) return false;
+    return !highlightNet({*sel}).shapes.isEmpty();
+}
+
+QString LayoutDoc::highlightedNetName(int index) const
+{
+    if (index < 0 || index >= a_lit.size()) return {};
+    const QVector<qucs_s::layout::NetLabel>& labels = a_lit.at(index).labels;
+    return labels.isEmpty() ? tr("net %1").arg(index + 1) : labels.first().text;
+}
+
+void LayoutDoc::clearHighlightedNets()
+{
+    a_lit.clear();
+    fillNetList();
+}
+
+void LayoutDoc::fillNetList()
+{
+    QList<LayoutView::NetHighlight> lit;
+    a_nets->clear();
+    for (int i = 0; i < a_lit.size(); ++i) {
+        const qucs_s::layout::TracedNet& net = a_lit.at(i);
+        LayoutView::NetHighlight h;
+        h.name = highlightedNetName(i);
+        h.color = LayoutView::highlightColor(i);
+        h.bounds = net.bounds;
+        for (const qucs_s::layout::NetShape& s : net.shapes) h.shapes << s.outline;
+        lit << h;
+        auto* item = new QTreeWidgetItem(a_nets, {h.name, micrometres(*a_layout, net.length), QString::number(net.vias.size())});
+        QPixmap swatch(12, 12);
+        swatch.fill(h.color);
+        item->setIcon(0, QIcon(swatch));
+        QStringList texts, layers;
+        for (const qucs_s::layout::NetLabel& l : net.labels)
+            if (!texts.contains(l.text)) texts << l.text;
+        for (const qucs_s::layout::NetShape& s : net.shapes)
+            if (!layers.contains(a_layout->layers.at(s.layer).key.text())) layers << a_layout->layers.at(s.layer).key.text();
+        QString tip = tr("%n shape(s) on %1", "", int(net.shapes.size())).arg(layers.join(QStringLiteral(", ")));
+        if (!texts.isEmpty()) tip += QLatin1Char('\n') + tr("Texts: %1").arg(texts.join(QStringLiteral(", ")));
+        if (texts.size() > 1) tip += QLatin1Char('\n') + tr("More than one text on it: joined on purpose, or a short.");
+        if (net.stopped) tip += QLatin1Char('\n') + tr("Followed no further than %n shape(s).", "", int(net.shapes.size()));
+        item->setToolTip(0, tip);
+    }
+    const bool shown = !a_nets->isHidden();
+    a_nets->setVisible(!a_lit.isEmpty());
+    // Shown at last: room made for it under the cells and the layers.
+    if (!shown && !a_lit.isEmpty() && a_side->count() == 3) {
+        const QList<int> was = a_side->sizes();
+        const int total = std::max(was.value(0) + was.value(1) + was.value(2), 300);
+        const int nets = std::max(total / 4, a_nets->sizeHint().height() / 2);
+        a_side->setSizes({(total - nets) * 3 / 5, (total - nets) * 2 / 5, nets});
+    }
+    a_view->setHighlights(lit);
 }
 
 void LayoutDoc::zoomToSelection()
