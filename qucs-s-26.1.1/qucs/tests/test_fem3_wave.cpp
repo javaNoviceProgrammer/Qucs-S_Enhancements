@@ -24,6 +24,7 @@
 #include "fem_sparse.h"
 
 #include <QJsonArray>
+#include <QElapsedTimer>
 #include <QtTest>
 
 #include <cmath>
@@ -527,6 +528,110 @@ private slots:
         QCOMPARE(out.main.suffix, QStringLiteral("s2p"));
         QVERIFY(out.main.text.contains(QLatin1String("optical port 1's TE0 (neff")));
         QCOMPARE(int(out.main.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts).filter(QRegularExpression(QStringLiteral("^[0-9]"))).size()), 2);
+    }
+
+    // A Wavelength Domain step of five wavelengths: the physics' fast sweep
+    // by default (the log says so), each wavelength's S21 as the exact
+    // sweep's (Sweep: exact) within its tolerance's reach.
+    void aWavelengthStepSweepsFast()
+    {
+        if (const QString why = leftOut("ten solves of 40,000 unknowns take minutes"); !why.isEmpty()) QSKIP(qPrintable(why));
+        auto run = [](const QString& sweep, QStringList* log) {
+            const double L = 1;
+            Model m = model3d(0.3);
+            addBox(m, QStringLiteral("ox"), 0, L, -0.8, 0.8, -0.6, 0.82);
+            addBox(m, QStringLiteral("core"), 0, L, -0.25, 0.25, 0, 0.22);
+            addMaterial(m, QStringLiteral("oxide"), QStringLiteral("1.444"), {QStringLiteral("ox")});
+            addMaterial(m, QStringLiteral("silicon"), QStringLiteral("3.476"), {QStringLiteral("core")});
+            addSize(m, 0.12, {QStringLiteral("core")});
+            Node ewfd = m.make(QStringLiteral("waves3"));
+            ewfd.props.insert(QStringLiteral("portresolution"), QStringLiteral("15"));
+            if (!sweep.isEmpty()) ewfd.props.insert(QStringLiteral("sweep"), sweep);
+            const QString tag = ewfd.tag;
+            m.add(m.component().tag, ewfd);
+            for (int k = 0; k < 2; ++k) {
+                Node port = m.make(QStringLiteral("waves3/port"));
+                port.props.insert(QStringLiteral("name"), QString::number(k + 1));
+                port.props.insert(QStringLiteral("absorbed"), 4);
+                port.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("plane"), QJsonObject{{QStringLiteral("x"), k == 0 ? 0.0 : L}}}});
+                m.add(tag, port);
+            }
+            for (Node& c : m.root.children)
+                if (c.type == QLatin1String("study")) {
+                    c.children.clear();
+                    Node step = m.make(QStringLiteral("wavelength"));
+                    step.props.insert(QStringLiteral("wavelengths"), QStringLiteral("range(1500[nm],25[nm],1600[nm])"));
+                    c.children.push_back(step);
+                }
+            auto ps = evaluateParameters(m);
+            const GeometryBuild3 g = buildGeometry3(m, *ps);
+            const StudyRun3 r = runStudy3(m, ps, g.topology, nullptr, QString(), {});
+            *log = r.log;
+            std::vector<cd> s21;
+            if (!r.ok() || r.solutions.empty()) return s21;
+            const std::shared_ptr<Solution3> s = r.solutions.back();
+            for (int k = 0; k < s->snapshotCount(); ++k) {
+                s->select(k);
+                s21.push_back(cd(*s->global(QStringLiteral("ewfd.S21")), *s->global(QStringLiteral("ewfd.S21_im"))));
+            }
+            return s21;
+        };
+        QStringList fastLog, exactLog;
+        const std::vector<cd> fast = run(QString(), &fastLog), exact = run(QStringLiteral("exact"), &exactLog);
+        QCOMPARE(int(fast.size()), 5);
+        QCOMPARE(int(exact.size()), 5);
+        const QString said = fastLog.join(QLatin1Char('\n'));
+        QVERIFY2(said.contains(QLatin1String("Fast sweep: 5 wavelengths")), qPrintable(said));
+        QVERIFY(!exactLog.join(QLatin1Char('\n')).contains(QLatin1String("Fast sweep")));
+        for (const QString& l : fastLog)
+            if (l.contains(QLatin1String("Fast sweep"))) qInfo("  %s", qPrintable(l));
+        double worst = 0;
+        for (int k = 0; k < 5; ++k) worst = std::max(worst, std::abs(fast[std::size_t(k)] - exact[std::size_t(k)]));
+        qInfo("the step's fast sweep against its exact one: |ΔS21| %.2e at worst", worst);
+        QVERIFY2(worst < 1e-5, qPrintable(QString::number(worst)));
+    }
+
+    // The junction's fast sweep, its ports absorbing their modes: over 1500 to
+    // 1600 nm, a few wavelengths solved exactly and the rest on their
+    // solutions' reduced basis - every port mode's column in it, the
+    // absorbing ports' coupling of them all -, each within 1e-5 of its own
+    // exact solve.
+    void aFastSweepOfAJunction()
+    {
+        if (const QString why = leftOut("seven solves of 60,000 unknowns take minutes"); !why.isEmpty()) QSKIP(qPrintable(why));
+        const double L = 1.0;
+        const Model m = halfJunction(0.5, 1.0, L, 0.3, 0.15);
+        const Built b = build(m);
+        Wave3Settings st;
+        st.ports = endPorts(m, b, 2 * L, QStringLiteral("TE0"), 10);
+        st.fieldsKept = 0;
+        std::vector<double> f;
+        for (int k = 0; k < 7; ++k) f.push_back(C0 / ((1.5 + 0.1 * k / 6) * 1e-6));
+        st.portMeshWavelength = C0 / *std::max_element(f.begin(), f.end());
+        QStringList log;
+        QString why;
+        QElapsedTimer t;
+        t.start();
+        const std::vector<Wave3Result> fast = sweepWave3(m, b.parameters, *b.topology, b.mesh, st, f, &log, &why);
+        const qint64 fastMs = t.elapsed();
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        for (const QString& l : log) qInfo("  %s", qPrintable(l));
+        const QString said = log.join(QLatin1Char('\n'));
+        QVERIFY2(!said.contains(QLatin1String("7 wavelengths, 7 solved exactly")), qPrintable(said));
+        t.restart();
+        double worst = 0;
+        for (std::size_t k = 0; k < f.size(); ++k) {
+            const Wave3Result exact = solveWave3(m, b.parameters, *b.topology, b.mesh, st, f[k]);
+            QVERIFY2(exact.ok(), qPrintable(exact.error));
+            double diff = 0;
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) diff = std::max(diff, std::abs(fast[k].S(i, j) - exact.S(i, j)));
+            worst = std::max(worst, diff);
+            qInfo("%.1f nm: fast |S21|² %.7f, exact %.7f; |ΔS| %.2e; balance %.7f", C0 / f[k] * 1e9, std::norm(fast[k].S(1, 0)), std::norm(exact.S(1, 0)), diff,
+                  fast[k].balance[0]);
+        }
+        qInfo("fast sweep %lld ms, each solved %lld ms; |ΔS| %.2e at worst", fastMs, t.elapsed(), worst);
+        QVERIFY2(worst < 1e-5, qPrintable(QString::number(worst)));
     }
 };
 

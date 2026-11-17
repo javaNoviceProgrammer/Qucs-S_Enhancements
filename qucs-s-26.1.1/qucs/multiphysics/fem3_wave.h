@@ -144,6 +144,17 @@ struct Wave3Settings {
     /// one nearest the band's middle, n so many evenly over the band, -1
     /// every one (as far as 2 GB hold them); the S-parameters at every one.
     int fieldWavelengths = 5;
+    /// A sweep's (sweepWave3): every wavelength's residual under this, of
+    /// its right-hand side's size, on the reduced basis (0: 1e-5) - S then
+    /// within some as much of the exact solve's.
+    double sweepTolerance = 0;
+    /// A sweep's: each wavelength solved exactly its solution's derivatives
+    /// in frequency this many, into the basis (each a solve, the
+    /// factorization reused).
+    int sweepMoments = 4;
+    /// A Wavelength Domain step's: by sweepWave3 (the physics' Sweep, fast),
+    /// past three wavelengths.
+    bool fastSweep = false;
     std::function<bool()> cancelled;
     std::function<void(double, const QString&)> progress;
 };
@@ -190,6 +201,16 @@ std::vector<std::array<std::complex<double>, 3>> nodalField(const EdgeSpace3& sp
 /// and its peak memory - some 20 kB an unknown, the most measured (a box of
 /// 973,000 unknowns 19.8 GB, 1.92 million 43 GB; a long guide's 11 kB) - and
 /// seconds (a box's: 68 s and 249 s there; a long guide's a fifth).
+/// A sweep of the frequency domain over \a frequencies (Hz): a few solved
+/// exactly - the band's ends and middle, then where the residual is
+/// largest -, the rest on the space their solutions span (a reduced
+/// basis), until every one's residual is under settings.sweepTolerance.
+/// Each wavelength's result as solveWave3's; \a log its account. On a
+/// failure \a error, the results not to be used.
+std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<ParameterScope> parameters, const Topology3& topology,
+                                    std::shared_ptr<const Mesh3> mesh, const Wave3Settings& settings, const std::vector<double>& frequencies,
+                                    QStringList* log, QString* error);
+
 Estimate3 estimateWave3(std::shared_ptr<const Mesh3> mesh, int order);
 /// What a magnetic field of \a order on \a mesh will hold and take: A on
 /// its edge elements and the gauge's multiplier on its nodes, a real LU of

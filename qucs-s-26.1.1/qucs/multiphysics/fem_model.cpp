@@ -1947,7 +1947,21 @@ QList<NodeKind> makeKinds()
           flag(QStringLiteral("throughpml"), tr("Ports through the PMLs"), false,
                tr("Off: a port's faces on a PML left out, metal behind the PML there, its modes the window's inside. On: kept, its "
                   "modes those of the cross-section with the PMLs stretched as the 3D field's are - the PMLs' own modes then crowd "
-                  "its cut's (some eight times the modes found for those it absorbs)"))},
+                  "its cut's (some eight times the modes found for those it absorbs)")),
+          choice(QStringLiteral("sweep"), tr("Sweep"), {QStringLiteral("fast"), QStringLiteral("exact")},
+                 {tr("Fast: a few wavelengths solved, the rest on their solutions (a reduced basis), each checked"),
+                  tr("Exact: every wavelength solved")},
+                 QStringLiteral("fast"),
+                 tr("A Wavelength Domain step of more than three wavelengths. Fast: its band's ends and middle solved exactly - each a "
+                    "factorization - with their solutions' derivatives in frequency (each a solve of the same factors), every other "
+                    "wavelength on the space they span (a reduced basis), its residual checked, and another solved exactly where the "
+                    "largest is, until the residuals are under the tolerance or the last one solved moved no S by more: some three to "
+                    "six factorizations however many the wavelengths (a Y-branch of 956,000 unknowns, 49 wavelengths: 4 factorizations, "
+                    "383 s for some 40 minutes, |S|² within 2e-6). Exact: each one its own - the answer for a few wavelengths far apart")),
+          shownIf(expr(QStringLiteral("sweeptolerance"), tr("Its tolerance"), QString(), QStringLiteral("1e-5"),
+                       tr("Each wavelength's residual |K x - b| on the reduced basis, of |b|: |S|² then within some as much of each "
+                          "wavelength's own solve (a Y-branch's: 4.6e-5 gave 3e-5, 5e-6 4e-6)")),
+                  QStringLiteral("sweep=fast"))},
          {QStringLiteral("waves3/port"), QStringLiteral("waves3/pml")}, {}, false, false, QStringLiteral("ewfd"),
          tr("Light through a 3D device - a junction, a bend, a crossing, a Y-branch, an MMI, a grating - by the finite element method "
             "at each wavelength of a Wavelength Domain step: E on edge elements (Nédélec's) of the prism mesh, the curl-curl equation "

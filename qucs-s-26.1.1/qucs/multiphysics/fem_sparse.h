@@ -277,6 +277,10 @@ public:
     /// Before compute().
     void setMemoryLimit(double bytes);
     double factorBytes() const;
+    /// Accelerate's: its analysis (METIS's ordering, the symbolic
+    /// factorization) the one kept from the last factorization of the same
+    /// pattern - a sweep's wavelengths after its first -, not made again.
+    bool reusedAnalysis() const;
 
 private:
     struct Impl;

@@ -1139,6 +1139,68 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
             out.log << tr("Its sources: each fed mode's profile at %1, between them by a filter of %2 steps").arg(at.join(QStringLiteral(", "))).arg(2 * NN - 1);
         }
     }
+    // Each frequency's ports - their modes, columns (the media as the steps
+    // have them), what is taken and carrying - on threads of their own while
+    // the steps run (a few cores: the steps' solves keep some two busy), none
+    // of it of the steps' making; joined after them, where the field is
+    // split into the modes' waves. (After the steps, one after another, some
+    // 13 s of a 956,000-unknown run's 396.)
+    std::vector<wave3::PortsAt> portsOf(static_cast<std::size_t>(Nf));
+    std::vector<QString> portsWhy(static_cast<std::size_t>(Nf));
+    std::atomic<bool> portsStop{false};
+    std::atomic<qint64> portsMs{0};
+    int portLanes = 1;
+    std::thread portsThread;
+    {
+        const double perCut = 1.5e9 * std::pow(std::max(1.0, settings.portResolution) / 30.0, 2) * (settings.order == 1 ? 0.5 : 1.0);
+        const double held = chol->factorBytes() + double(N) * P * 8.0 * 8 + double(NS) * 16.0 * N;
+        const double budget = (settings.memoryLimit > 0 ? settings.memoryLimit : physicalMemory() / 2) - held;
+        const int hardware = std::max(1, int(std::thread::hardware_concurrency()));
+        portLanes = std::clamp(int(budget / perCut), 1, std::min(std::max(1, hardware / 4), Nf));
+        portsThread = std::thread([&, lanes = portLanes] {
+            QElapsedTimer t;
+            t.start();
+            std::atomic<int> next{0};
+            auto work = [&] {
+                for (int k = next++; k < Nf; k = next++) {
+                    if (portsStop || cancelled()) return;
+                    const double f = frequencies[std::size_t(k)];
+                    std::vector<EmeModes> modes(su.ports.size());
+                    QString why;
+                    for (std::size_t pi = 0; pi < su.ports.size() && why.isEmpty(); ++pi) {
+                        modes[pi] = wave3::portModes(model, parameters, topology, su, settings, int(pi), f, std::max(1, settings.ports[pi].absorbed), &why);
+                        if (why.isEmpty() && modes[pi].count() == 0) why = tr("no mode found");
+                        if (!why.isEmpty()) why = tr("port %1 at %2: %3").arg(settings.ports[pi].name, formatQuantity(C0 / f, Dim::length()), why);
+                    }
+                    if (why.isEmpty()) {
+                        const double kk = 2 * M_PI * f / C0;
+                        std::vector<cd> epsAt(medium.size());
+                        for (std::size_t d = 0; d < medium.size(); ++d) epsAt[d] = mediumAt(medium[d], J * kk);
+                        if (!wave3::portsAt(model, parameters, topology, su, settings, f, epsAt, std::move(modes), &portsOf[std::size_t(k)], &why))
+                            why = tr("at %1: %2").arg(formatQuantity(C0 / f, Dim::length()), why);
+                    }
+                    if (!why.isEmpty()) {
+                        portsWhy[std::size_t(k)] = why;
+                        portsStop = true;
+                    }
+                }
+            };
+            std::vector<std::thread> pool;
+            for (int i = 1; i < lanes; ++i) pool.emplace_back(work);
+            work();
+            for (std::thread& th : pool) th.join();
+            portsMs = t.elapsed();
+        });
+    }
+    struct PortsJoined {
+        std::thread& t;
+        std::atomic<bool>& stop;
+        ~PortsJoined()
+        {
+            stop = true;
+            if (t.joinable()) t.join();
+        }
+    } portsJoined{portsThread, portsStop};
     // The steps.
     // (E1: the step before; hist: the next step's history.)
     Eigen::MatrixXd E1 = Eigen::MatrixXd::Zero(N, P), hist = Eigen::MatrixXd::Zero(N, P);
@@ -1300,111 +1362,13 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
     std::vector<double>().swap(pmlOut);
     domainState.clear();
     massOfDomain.clear();
-    // Each frequency asked: its ports' modes, every port's field split into
-    // its modes' waves, the S-matrix - the frequencies side by side, each
-    // its ports' modes solved afresh (a cut some gigabyte at the ports'
-    // resolution 30: as many at once as half the memory, or the limit,
-    // holds).
-    std::vector<int> fedTaken;
-    for (const Fed& f : fedList) fedTaken.push_back(f.taken);
-    out.at.assign(std::size_t(Nf), Wave3Result());
-    std::vector<QString> failed(static_cast<std::size_t>(Nf));
-    const double perCut = 1.5e9 * std::pow(std::max(1.0, settings.portResolution) / 30.0, 2) * (settings.order == 1 ? 0.5 : 1.0);
-    const double held = double(NS) * 16.0 * N + double(Nf) * Nm * P * 16.0;
-    const double budget = (settings.memoryLimit > 0 ? settings.memoryLimit : physicalMemory() / 2) - held;
-    const int hardware = std::max(1, int(std::thread::hardware_concurrency()));
-    const int lanes = std::clamp(int(budget / perCut), 1, std::min(hardware, Nf));
-    std::atomic<int> nextFrequency{0}, doneFrequencies{0};
-    std::mutex telling;
+    // Each frequency asked: its ports (made beside the steps), every port's
+    // field split into its modes' waves, the S-matrix.
     QElapsedTimer modesTimer;
     modesTimer.start();
-    tell(0.9, tr("the ports' modes at each frequency (%1 at once)").arg(lanes));
-    auto oneFrequency = [&](int k) {
-        Wave3Result r;
-        r.frequency = frequencies[std::size_t(k)];
-        r.space = su.space;
-        r.unknowns = N;
-        std::vector<EmeModes> modes(su.ports.size());
-        std::vector<int> firstColumn, index, rowPort;
-        int Mtot = 0;
-        for (std::size_t pi = 0; pi < su.ports.size(); ++pi) {
-            const Wave3Port& wp = settings.ports[pi];
-            QString why;
-            modes[pi] = wave3::portModes(model, parameters, topology, su, settings, int(pi), r.frequency, std::max(1, wp.absorbed), &why);
-            if (!why.isEmpty() || modes[pi].count() == 0) {
-                failed[std::size_t(k)] = tr("port %1 at %2: %3").arg(wp.name, formatQuantity(C0 / r.frequency, Dim::length()), why.isEmpty() ? tr("no mode found") : why);
-                return;
-            }
-            firstColumn.push_back(Mtot);
-            for (const QString& l : wp.modes) {
-                const int m = modes[pi].find(l);
-                if (m < 0) {
-                    failed[std::size_t(k)] = tr("port %1 has no mode %2 at %3").arg(wp.name, l, formatQuantity(C0 / r.frequency, Dim::length()));
-                    return;
-                }
-                index.push_back(Mtot + m);
-                Wave3Result::PortMode pm;
-                pm.port = int(pi);
-                pm.label = modes[pi].label(m);
-                pm.neff = modes[pi].neff(m);
-                pm.te = modes[pi].te[std::size_t(m)];
-                r.portModes.push_back(pm);
-            }
-            Mtot += modes[pi].count();
-            rowPort.resize(std::size_t(Mtot), int(pi));
-        }
-        std::vector<char> carries(static_cast<std::size_t>(Mtot), 0);
-        for (std::size_t pi = 0; pi < su.ports.size(); ++pi)
-            for (int m = 0; m < modes[pi].count(); ++m) {
-                const cd b = modes[pi].beta[std::size_t(m)];
-                carries[std::size_t(firstColumn[pi] + m)] = b.real() > 0 && std::abs(b.imag()) <= 1e-3 * b.real() ? 1 : 0;
-            }
-        // (H = -∇×E/(jω'µ0): the transform's frequency the one asked; the
-        // media there as the steps have them.)
-        const cd jw = J * (2 * M_PI * r.frequency);
-        const double kk = 2 * M_PI * r.frequency / C0;
-        std::vector<cd> epsAt(medium.size());
-        for (std::size_t d = 0; d < medium.size(); ++d) epsAt[d] = mediumAt(medium[d], J * kk);
-        Eigen::MatrixXcd a(Mtot, P), b(Mtot, P);
-        Eigen::VectorXcd full = Eigen::VectorXcd::Zero(N);
-        for (std::size_t pi = 0; pi < su.ports.size(); ++pi) {
-            std::vector<wave3::Column> u, v;
-            wave3::portColumns(su, su.ports[pi], modes[pi], settings.order, kk, epsAt, &u, &v);
-            for (int j = 0; j < P; ++j) {
-                for (int i = 0; i < Nm; ++i) full(monitor[std::size_t(i)]) = monitorHat[std::size_t(k)](i, j);
-                Eigen::VectorXcd ap, bp;
-                wave3::waveAmplitudes(u, v, full, jw, &ap, &bp);
-                a.block(firstColumn[pi], j, ap.size(), 1) = ap;
-                b.block(firstColumn[pi], j, bp.size(), 1) = bp;
-            }
-        }
-        Eigen::MatrixXcd perFed;
-        wave3::scatteringOfAmplitudes(a, b, index, fedTaken, carries, rowPort, &r, &perFed);
-        r.fed = {fedTaken.front()};
-        if (slotOf[std::size_t(k)] >= 0) r.fields.push_back(fieldHat[std::size_t(slotOf[std::size_t(k)])] * perFed(0, 0));
-        out.at[std::size_t(k)] = std::move(r);
-    };
-    {
-        std::atomic<bool> stop{false};
-        auto work = [&] {
-            for (int k = nextFrequency++; k < Nf; k = nextFrequency++) {
-                if (stop || cancelled()) {
-                    stop = true;
-                    return;
-                }
-                oneFrequency(k);
-                if (!failed[std::size_t(k)].isEmpty()) stop = true;
-                const int finished = ++doneFrequencies;
-                std::lock_guard<std::mutex> lock(telling);
-                tell(0.9 + 0.1 * finished / Nf, tr("the ports' modes at %1 of %2 frequencies (%3 at once)").arg(finished).arg(Nf).arg(lanes));
-            }
-        };
-        std::vector<std::thread> lanePool;
-        for (int t = 1; t < lanes; ++t) lanePool.emplace_back(work);
-        work();
-        for (std::thread& t : lanePool) t.join();
-    }
-    for (const QString& f : failed)
+    tell(0.9, tr("the ports' modes at each frequency (%1 at once beside the steps)").arg(portLanes));
+    portsThread.join();
+    for (const QString& f : portsWhy)
         if (!f.isEmpty()) {
             out.error = f;
             return out;
@@ -1413,10 +1377,40 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
         out.error = tr("cancelled");
         return out;
     }
+    std::vector<int> fedTaken;
+    for (const Fed& f : fedList) fedTaken.push_back(f.taken);
+    out.at.assign(std::size_t(Nf), Wave3Result());
+    const int lanes = portLanes;
+    for (int k = 0; k < Nf; ++k) {
+        const wave3::PortsAt& pa = portsOf[std::size_t(k)];
+        Wave3Result r;
+        r.frequency = frequencies[std::size_t(k)];
+        r.space = su.space;
+        r.unknowns = N;
+        r.portModes = pa.portModes;
+        // (H = -∇×E/(jω'µ0): the transform's frequency the one asked; the
+        // media there as the steps have them.)
+        const cd jw = J * (2 * M_PI * r.frequency);
+        Eigen::MatrixXcd a(pa.count, P), b(pa.count, P);
+        Eigen::VectorXcd full = Eigen::VectorXcd::Zero(N);
+        for (std::size_t pi = 0; pi < su.ports.size(); ++pi)
+            for (int j = 0; j < P; ++j) {
+                for (int i = 0; i < Nm; ++i) full(monitor[std::size_t(i)]) = monitorHat[std::size_t(k)](i, j);
+                Eigen::VectorXcd ap, bp;
+                wave3::waveAmplitudes(pa.u[pi], pa.v[pi], full, jw, &ap, &bp);
+                a.block(pa.firstColumn[pi], j, ap.size(), 1) = ap;
+                b.block(pa.firstColumn[pi], j, bp.size(), 1) = bp;
+            }
+        Eigen::MatrixXcd perFed;
+        wave3::scatteringOfAmplitudes(a, b, pa.index, fedTaken, pa.carries, pa.rowPort, &r, &perFed);
+        r.fed = {fedTaken.front()};
+        if (slotOf[std::size_t(k)] >= 0) r.fields.push_back(fieldHat[std::size_t(slotOf[std::size_t(k)])] * perFed(0, 0));
+        out.at[std::size_t(k)] = std::move(r);
+    }
     const double modesSeconds = modesTimer.elapsed() / 1000.0;
     out.log << tr("Time-domain solve: %1 unknowns (order %2), %3 prisms (%4 in PMLs), %5 port modes fed together; Δt %6 fs (%7 a period at "
                   "%8), %9 steps to %10 fs%11; %12 s - %13 %14 s, the steps %15 s (%16 ms each), the ports' modes and the spectra %17 s "
-                  "(%18 frequencies, %19 at once)")
+                  "after them (%18 frequencies, %19 at once beside the steps, %20 s)")
                      .arg(N)
                      .arg(settings.order)
                      .arg(Ne)
@@ -1435,7 +1429,8 @@ Wave3TimeResult solveWave3Time(const Model& model, std::shared_ptr<ParameterScop
                      .arg(out.steps > 0 ? double(steppedFor) / out.steps : 0.0, 0, 'f', 1)
                      .arg(modesSeconds, 0, 'f', 2)
                      .arg(Nf)
-                     .arg(lanes);
+                     .arg(lanes)
+                     .arg(portsMs.load() / 1000.0, 0, 'f', 1);
     out.log << tr("Its steps: the solves %1 s, the bulk's history %2 s, the PMLs' points %3 s (%4 of them, %5 MB of states), the transforms %6 s")
                    .arg(spent[0] * 1e-9, 0, 'f', 2)
                    .arg(spent[1] * 1e-9, 0, 'f', 2)

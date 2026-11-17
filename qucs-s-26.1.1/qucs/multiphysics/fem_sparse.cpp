@@ -995,6 +995,52 @@ template class SparseLu<std::complex<double>>;
 
 // ------------------------------------------------- complex symmetric LDLT
 
+#if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
+namespace {
+
+/// The last complex LDLT's symbolic factorization (Accelerate's: its METIS
+/// ordering and analysis) kept, by its matrix's pattern: a sweep's every
+/// wavelength - the same mesh, the same pattern - one analysis (9 s of a
+/// 956,000-unknown solve's 45), a model solved again the same. One kept,
+/// a reference of its own (SparseRetain): each factorization made from it
+/// holds one too.
+struct KeptSymbolic {
+    std::mutex lock;
+    bool held = false;
+    int n = 0;
+    long nonZeros = 0;
+    quint64 hash = 0;
+    SparseOpaqueSymbolicFactorization symbolic{};
+    ~KeptSymbolic()
+    {
+        if (held) SparseCleanup(symbolic);
+    }
+};
+
+KeptSymbolic& keptLdltSymbolic()
+{
+    static KeptSymbolic kept;
+    return kept;
+}
+
+/// A pattern's digest (FNV-1a over its column starts and row indices).
+quint64 patternDigest(const long* starts, int n, const int* rows, long nonZeros)
+{
+    quint64 h = 1469598103934665603ULL;
+    for (int i = 0; i <= n; ++i) {
+        h ^= quint64(starts[i]);
+        h *= 1099511628211ULL;
+    }
+    for (long k = 0; k < nonZeros; ++k) {
+        h ^= quint64(unsigned(rows[k]));
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+} // namespace
+#endif
+
 struct SparseComplexLdlt::Impl {
     bool accelerate = false;
     double limit = 0, bytes = 0;
@@ -1010,6 +1056,7 @@ struct SparseComplexLdlt::Impl {
     std::vector<long> starts;
     int n = 0;
     bool analysed = false, factored = false;
+    bool reusedAnalysis = false;
     SparseOpaqueSymbolicFactorization symbolic{};
     SparseOpaqueFactorization_Complex_Double numeric{};
     SparseMatrixStructureComplex structure()
@@ -1098,9 +1145,34 @@ void SparseComplexLdlt::compute(const Matrix& a)
             d.info = Eigen::Success;
             if (d.n == 0) return;
             accelerateError.clear();
-            SparseSymbolicFactorOptions so = symbolicOptions();
-            so.orderMethod = SparseOrderMetis;
-            d.symbolic = SparseFactor(SparseFactorizationLDLT, d.structure(), so);
+            // The pattern's analysis kept from the last of the same pattern,
+            // or made and kept.
+            const long nonZeros = long(d.lower.nonZeros());
+            const quint64 digest = patternDigest(d.starts.data(), d.n, d.lower.innerIndexPtr(), nonZeros);
+            KeptSymbolic& kept = keptLdltSymbolic();
+            bool reused = false;
+            {
+                std::lock_guard<std::mutex> lock(kept.lock);
+                if (kept.held && kept.n == d.n && kept.nonZeros == nonZeros && kept.hash == digest) {
+                    d.symbolic = SparseRetain(kept.symbolic);
+                    reused = true;
+                }
+            }
+            if (!reused) {
+                SparseSymbolicFactorOptions so = symbolicOptions();
+                so.orderMethod = SparseOrderMetis;
+                d.symbolic = SparseFactor(SparseFactorizationLDLT, d.structure(), so);
+                if (d.symbolic.status == SparseStatusOK) {
+                    std::lock_guard<std::mutex> lock(kept.lock);
+                    if (kept.held) SparseCleanup(kept.symbolic);
+                    kept.symbolic = SparseRetain(d.symbolic);
+                    kept.held = true;
+                    kept.n = d.n;
+                    kept.nonZeros = nonZeros;
+                    kept.hash = digest;
+                }
+            }
+            d.reusedAnalysis = reused;
             d.analysed = d.symbolic.status == SparseStatusOK;
             if (!d.analysed) {
                 d.error = statusText(d.symbolic.status);
@@ -1136,6 +1208,15 @@ void SparseComplexLdlt::compute(const Matrix& a)
     d.lu->compute(a);
     d.info = d.lu->info();
     if (d.info != Eigen::Success) d.error = d.lu->lastErrorMessage();
+}
+
+bool SparseComplexLdlt::reusedAnalysis() const
+{
+#if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
+    return a_impl->accelerate && a_impl->reusedAnalysis;
+#else
+    return false;
+#endif
 }
 
 Eigen::ComputationInfo SparseComplexLdlt::info() const
