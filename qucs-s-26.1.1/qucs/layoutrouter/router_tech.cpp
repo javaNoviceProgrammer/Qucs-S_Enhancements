@@ -425,8 +425,12 @@ Technology readTechnology(const QJsonObject& o, QString* error)
     {
         const QJsonObject s = spacing.toObject();
         if (!onlyKeys(s, {"same_layer", "to_metal", "to_terminal", "notch"}, QStringLiteral("'spacing'"), &e)) return fail(e);
-        if (!length(s, "notch", &t.notch, &e, QStringLiteral("'spacing'"), false, false)) return fail(e);
         if (!length(s, "same_layer", &t.sameLayer, &e, QStringLiteral("'spacing'"), true, false)) return fail(e);
+        // A deck holds its spacing between a net's own shapes too, so a slot
+        // inside one net is held to 'same_layer' unless 'notch' says otherwise
+        // (0: slots inside a net are not looked at).
+        t.notch = t.sameLayer;
+        if (!length(s, "notch", &t.notch, &e, QStringLiteral("'spacing'"), false, false)) return fail(e);
         t.toMetal = t.sameLayer;
         if (!length(s, "to_metal", &t.toMetal, &e, QStringLiteral("'spacing'"), false, false)) return fail(e);
         t.toTerminal = t.toMetal;

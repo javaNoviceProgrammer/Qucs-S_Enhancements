@@ -14135,8 +14135,10 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
             if (field) commitEditor(field);
             // (A panel's field done with, as Return or a click elsewhere
             // leaves it: what it is of takes its text - it kept its old one:
-            // the check of 31ba73b's addendum, 3.)
-            if (ui && !a_uiEnter && field && field->hasAcceptableInput()) emit field->editingFinished();
+            // the check of 31ba73b's addendum, 3. A document's field entered
+            // too, as a real Return gives both: the layout tab's Route panel
+            // takes its technology on editingFinished alone.)
+            if (ui && field && field->hasAcceptableInput()) emit field->editingFinished();
         } else if (auto* p = qobject_cast<QPlainTextEdit*>(w)) {
             p->setPlainText(text);
         } else if (auto* t = qobject_cast<QTextEdit*>(w)) {
