@@ -1141,22 +1141,30 @@ void Runner::makeDraws()
     // Every candidate sees the same draws: its Cpk a function of it alone.
     const int samples = a_plan.samples, count = int(a_plan.variation.size());
     a_draws.assign(std::size_t(samples), std::vector<double>(std::size_t(count), 0.0));
+    // (Its numbers from the generator's words alone, which the standard
+    // fixes - not std::uniform_real_distribution's, std::normal_distribution's
+    // or std::shuffle's, which each library makes its own way: a seed's
+    // samples the same on macOS, Linux and Windows, as DE's are.)
     std::mt19937_64 rng(a_plan.search.seed ? a_plan.search.seed : 1);
-    std::uniform_real_distribution<double> uniform(0.0, 1.0);
-    std::normal_distribution<double> normal(0.0, 1.0);
+    const auto uniform = [&rng] { return double(rng() >> 11) * (1.0 / 9007199254740992.0); };   // [0, 1)
+    const auto normal = [&uniform] {
+        const double u1 = 1.0 - uniform(), u2 = uniform();   // (u1 in (0, 1]: its log finite)
+        return std::sqrt(-2.0 * std::log(u1)) * std::cos(6.283185307179586 * u2);
+    };
     for (int j = 0; j < count; ++j) {
         const bool flat = a_plan.variation[std::size_t(j)].uniform;
         if (a_plan.lhs) {
-            // A Latin hypercube: one stratum per sample, shuffled.
+            // A Latin hypercube: one stratum per sample, shuffled (Fisher and
+            // Yates's).
             std::vector<int> strata(std::size_t(samples), 0);
             for (int s = 0; s < samples; ++s) strata[std::size_t(s)] = s;
-            std::shuffle(strata.begin(), strata.end(), rng);
+            for (int s = samples - 1; s > 0; --s) std::swap(strata[std::size_t(s)], strata[std::size_t(std::min(s, int(uniform() * (s + 1))))]);
             for (int s = 0; s < samples; ++s) {
-                const double p = (strata[std::size_t(s)] + uniform(rng)) / samples;
+                const double p = (strata[std::size_t(s)] + uniform()) / samples;
                 a_draws[std::size_t(s)][std::size_t(j)] = flat ? 2 * p - 1 : normalQuantile(p);
             }
         } else {
-            for (int s = 0; s < samples; ++s) a_draws[std::size_t(s)][std::size_t(j)] = flat ? 2 * uniform(rng) - 1 : normal(rng);
+            for (int s = 0; s < samples; ++s) a_draws[std::size_t(s)][std::size_t(j)] = flat ? 2 * uniform() - 1 : normal();
         }
     }
 }

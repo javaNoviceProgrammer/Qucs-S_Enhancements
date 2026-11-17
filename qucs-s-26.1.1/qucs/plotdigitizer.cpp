@@ -696,7 +696,13 @@ QList<Token> Source::tokens(int page, const QRectF& within)
             // Two runs are of one line when they overlap in height by half
             // the lower's, the one no more than twice the other's height (a
             // turned title beside its axis's labels is not their line), and
-            // stand nearer than a letter's height apart.
+            // stand nearer than a letter's height apart. And a sign - a flat
+            // run, a minus or a dash, within the other's height and no more
+            // than half its height from it - is of the line it stands in: its
+            // bar a point high, it was left out by the heights' ratio, and a
+            // heavy page's labels read by their lines lost their minus signs
+            // (−0.5 and −1 read as 0.5 and 1, the fit then keeping one half
+            // of the axis or the other: upside down on Linux, 16 November).
             const int count = int(t->runs.size());
             QList<int> parent(count);
             std::iota(parent.begin(), parent.end(), 0);
@@ -716,7 +722,12 @@ QList<Token> Source::tokens(int page, const QRectF& within)
                     const double lower = std::max(1.0, std::min(a.height(), b.height()));
                     const double gap = std::max(a.left(), b.left()) - std::min(a.right(), b.right());
                     const double higher = std::max(a.height(), b.height());
-                    if (overlap >= 0.5 * lower && higher <= 2 * lower && gap <= std::max(3.0, lower)) parent[root(byHeight.at(k))] = root(byHeight.at(m));
+                    const QRectF& tall = a.height() >= b.height() ? a : b;
+                    const QRectF& flat = a.height() >= b.height() ? b : a;
+                    const bool sign = flat.width() >= 2 * flat.height() && flat.height() <= 0.4 * tall.height() && flat.top() >= tall.top() - 0.5
+                                      && flat.bottom() <= tall.bottom() + 0.5 && tall.height() <= 3 * tall.width() && gap <= 0.5 * tall.height();
+                    if ((overlap >= 0.5 * lower && higher <= 2 * lower && gap <= std::max(3.0, lower)) || sign)
+                        parent[root(byHeight.at(k))] = root(byHeight.at(m));
                 }
             }
             QHash<int, int> lineOf;

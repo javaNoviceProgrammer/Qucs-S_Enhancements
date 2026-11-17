@@ -11640,7 +11640,11 @@ private slots:
         QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 100}, {"y", 100}})));
         QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R2"}, {"x", 300}, {"y", 100}})));
         for (const QJsonArray& via : {QJsonArray{2147483647, 100}, QJsonArray{100, -2147483647.0 - 1}, QJsonArray{1e300, 0}}) {
-            const QJsonObject r = call("connect", {{"from", "R1.2"}, {"to", "R2.1"}, {"via", QJsonArray{via}}});
+            // (A list holding the one point, appended: QJsonArray{via} is a
+            // copy of via to CI's Apple clang, a nesting to the others.)
+            QJsonArray points;
+            points.append(via);
+            const QJsonObject r = call("connect", {{"from", "R1.2"}, {"to", "R2.1"}, {"via", points}});
             QVERIFY2(failed(r) && text(r).contains("'via':") && text(r).contains("is off the schematic"), qPrintable(text(r)));
         }
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));

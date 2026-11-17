@@ -1531,7 +1531,12 @@ void TestFemOptimize::anotherModelsPlanRunsByItsOwnSolve()
         if (!checkOptimizationPlan(node, *ps, evaluate, &plan, why)) return std::nullopt;
         return plan;
     };
-    const Node node = nodeOf(R"({"method": "de", "seed": 3, "maxiter": 60, "parallel": 4,
+    // (A population of 20: DE's run is the same on every platform since its
+    // numbers are the engine's own, 16 November, and of seeds 1 to 8 six
+    // reach the limit's optimum within 0.02 with 20, five with the default.
+    // Its random numbers were each library's before: CI's Linux job ended
+    // at (1.33, -1.76), f 0.169 against the optimum's 0.125.)
+    const Node node = nodeOf(R"({"method": "de", "seed": 3, "maxiter": 60, "population": 20, "parallel": 4,
         "variables": [["x", "", "-3[m]", "3[m]"], ["y", "", "-3[m]", "3[m]"]],
         "objectives": [["f", "MIN"], ["s", "GE", "-0.5[m]"], ["", "MIN"]]})");
     QString why;

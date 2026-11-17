@@ -206,6 +206,24 @@ rf::MeshSettings likeTheTab(double largest, int across = 1)
     return how;
 }
 
+/// Whether this build is a sanitized one (QUCS_TEST_SLOW: its path in any):
+/// the loops' dense solves some 130 times a Release build's there (the
+/// suite 23 s in Release; under ASan on an M2 Ultra the compressed loop's
+/// function 278 s and the strip at 45 degrees past QtTest's 900, where CI's
+/// Linux job has 900 for the whole suite).
+bool slowBuild()
+{
+    if (qEnvironmentVariableIsSet("QUCS_TEST_SLOW")) return true;
+#if defined(__SANITIZE_ADDRESS__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    return true;
+#endif
+#endif
+    return false;
+}
+
 } // namespace
 
 class TestRf25Inductance : public QObject
@@ -899,7 +917,10 @@ private slots:
         said = both({lower, lowerReach, post, upperReach, upper}, two, 10, QPointF(0, 20), QPointF(0, 80));
         QVERIFY2(said.isEmpty(), qPrintable(said));
 
-        // The mesh this build used to refuse.
+        // The mesh this build used to refuse. (Not under the sanitizers: its
+        // two solves, compressed and a coarser dense one, are most of the
+        // function there.)
+        if (slowBuild()) return;
         const QList<rf::Conductor> big{strip(0, 0, 400, 120)};
         const rf::Inductance over = rf::inductanceOf(meshed(big, 5), big, stack, QPointF(0, 60), QPointF(400, 60));
         QVERIFY2(over.ok() && over.compressed && over.branches + over.nodes > 3000, qPrintable(over.problems.join(" | ")));
@@ -923,6 +944,7 @@ private slots:
     // length and Mohan's measured inductance.
     void aSpiralIsMeshedCleanlyAndItsLoopIsItsLength()
     {
+        if (slowBuild()) QSKIP("three spirals' loops held to the measured values on their meshes: many minutes under the sanitizers");
         const rf::Stack stack = grounded(3.9, 10e-6, 0.9e-6, 3.5e7);
         const double sheet = 1 / (3.5e7 * 0.9e-6);
         struct Spiral {
@@ -1028,6 +1050,10 @@ private slots:
             QVERIFY2(std::abs(u45.lDc / u0.lDc - 1) < within + 0.01,
                      qPrintable(QStringLiteral("a U: %1 nH at 45 degrees, %2 along x").arg(u45.lDc * 1e9).arg(u0.lDc * 1e9)));
             qWarning().noquote() << said;
+            // (Under the sanitizers the coarser mesh alone: the finer, and
+            // the dense and compressed loops below on it, past QtTest's 900 s
+            // there.)
+            if (slowBuild()) return;
         }
         // Dense and compressed, the same loop alike.
         const rf::Conductor slanted = shape({turned(0, 0), turned(L, 0), turned(L, w), turned(0, w)});
@@ -1050,16 +1076,23 @@ private slots:
         const QList<rf::Conductor> big{strip(0, 0, 400, 120)};
         const rf::Mesh mesh = meshed(big, 5);
         static std::atomic_bool stop{false};
+        // (Timed from the stop asked, not from the loop's start: the loop's
+        // L and near field before it are some 2.5 s more under the
+        // sanitizers, which 3197 ms there was.)
+        static std::atomic<qint64> askedAt{0};
+        static QElapsedTimer clock;
+        clock.start();
         stop = false;
+        askedAt = -1;
         rf::setLoopFactorizing([] {
+            askedAt = clock.elapsed();
             stop = true;
             std::this_thread::sleep_for(std::chrono::seconds(3));
         });
-        QElapsedTimer clock;
-        clock.start();
         const rf::Inductance stopped = rf::inductanceOf(mesh, big, stack, QPointF(0, 60), QPointF(400, 60), 1e-6, 0, &stop);
-        const qint64 took = clock.elapsed();
+        const qint64 took = askedAt.load() >= 0 ? clock.elapsed() - askedAt.load() : -1;
         rf::setLoopFactorizing({});
+        QVERIFY2(took >= 0, "the factorization was never reached");
         QVERIFY2(!stopped.ok() && stopped.problems.join(' ').contains(QStringLiteral("stopped")) &&
                      stopped.problems.join(' ').contains(QStringLiteral("in the background")),
                  qPrintable(stopped.problems.join(" | ")));
@@ -1100,6 +1133,7 @@ private slots:
     // pieces that nothing joins", until L was put in its own scale.
     void aFineStripIsSolvedDense()
     {
+        if (slowBuild()) QSKIP("a thousand cells a tenth of a micrometre, dense: minutes under the sanitizers");
         const rf::Stack stack = grounded(1, 100e-6, 1e-6, 5.8e7);
         const QList<rf::Conductor> fine{strip(0, 0, 10, 1)};
         const rf::Inductance loop = rf::inductanceOf(meshed(fine, 0.1), fine, stack, QPointF(0, 0.5), QPointF(10, 0.5));
@@ -1121,6 +1155,7 @@ private slots:
     // gaps said to be 0.012 µm). Each loop is Mohan's ASITIC value to 3 %.
     void aPolygonSpiralIsMeshedCornerToCorner()
     {
+        if (slowBuild()) QSKIP("two spirals' loops held to ASITIC's values on their meshes: many minutes under the sanitizers");
         const rf::Stack stack = grounded(3.9, 10e-6, 0.9e-6, 3.5e7);
         struct Spiral {
             const char* name;
