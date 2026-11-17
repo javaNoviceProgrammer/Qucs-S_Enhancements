@@ -880,7 +880,7 @@ void QucsControl::findShapes(const QJsonObject& args, const Done& done)
     const QJsonObject netSpec = args;
     const bool stopGiven = args.contains(QLatin1String("stop_at"));
     const QJsonValue stopSpec = args.value(QLatin1String("stop_at"));
-    withLayout(args, false, [=](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
+    withLayout(args, false, [=, this](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
         const QVector<LayerStyle> styles = doc != nullptr ? doc->view()->styles()
                                                           : stylesFor(*layout, readLayerPropertiesFile(layerPropertiesBeside(layout->file), nullptr), LayoutDoc::klayoutLook());
         QString error;
@@ -906,12 +906,15 @@ void QucsControl::findShapes(const QJsonObject& args, const Done& done)
             trace.connectivity = connectivity;
             trace.stopAt = stopAt;
             trace.maxShapes = maxShapes;
-            const TracedNet net = traceNet(*layout, trace);
-            QJsonObject result = netJson(*layout, styles, net, connectivity, limit);
-            result.insert(QStringLiteral("cell"), layout->cells.at(cell).name);
-            result.insert(QStringLiteral("from"), said);
-            result.insert(QStringLiteral("units"), tr("µm, in %1's coordinates").arg(layout->cells.at(cell).name));
-            done(jsonResult(result));
+            // (In a thread of its own: a power net of tens of thousands of
+            //  shapes holds no window while it is traced.)
+            traceNetLater(layout, trace, this, [=, this](const TracedNet& net) {
+                QJsonObject result = netJson(*layout, styles, net, connectivity, limit);
+                result.insert(QStringLiteral("cell"), layout->cells.at(cell).name);
+                result.insert(QStringLiteral("from"), said);
+                result.insert(QStringLiteral("units"), tr("µm, in %1's coordinates").arg(layout->cells.at(cell).name));
+                done(jsonResult(result));
+            });
             return;
         }
         Query q;
@@ -1237,7 +1240,7 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         }
     }
 
-    withLayout(args, true, [=](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
+    withLayout(args, true, [=, this](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
         if (doc == nullptr) {
             done(errorResult(tr("%1 is not open as a layout.").arg(QFileInfo(layout->file).fileName())));
             return;
@@ -1350,118 +1353,160 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
                 if (!view->visibleRegion().intersects(b)) view->setView(b.center(), view->scale());
             }
         }
-        // The nets lit: each traced from where it is asked, beside those lit.
-        QJsonArray netsLit;
-        QStringList netsNot;
         if (clearNets) doc->clearHighlightedNets();
-        if (!netsAsked.isEmpty()) {
-            QString why;
-            const NetConnectivity connectivity = doc->netConnectivity(&why);
-            for (const QJsonObject& spec : std::as_const(netsAsked)) {
-                QString said, error;
-                const QVector<Found> seeds = netSeeds(*layout, view->styles(), view->cell(), spec, doc, connectivity, &said, &error);
-                if (seeds.isEmpty()) {
-                    netsNot << error;
-                    continue;
-                }
-                const TracedNet net = doc->highlightNet(seeds, &connectivity);
-                int index = -1;
-                for (int i = 0; i < doc->highlightedNets().size(); ++i)
-                    if (!doc->highlightedNets().at(i).shapes.isEmpty() && !net.shapes.isEmpty()
-                        && doc->highlightedNets().at(i).shapes.first().found.transform == net.shapes.first().found.transform
-                        && doc->highlightedNets().at(i).shapes.first().found.shape == net.shapes.first().found.shape
-                        && doc->highlightedNets().at(i).shapes.first().found.cell == net.shapes.first().found.cell)
-                        index = i;
-                QJsonObject lit = netJson(*layout, view->styles(), net, connectivity, 0);
-                lit.remove(QStringLiteral("shapes"));
-                lit.remove(QStringLiteral("shapes not listed"));
-                lit.remove(QStringLiteral("length"));
-                lit.insert(QStringLiteral("from"), said);
-                if (index >= 0) {
-                    lit.insert(QStringLiteral("name"), doc->highlightedNetName(index));
-                    lit.insert(QStringLiteral("colour"), LayoutView::highlightColor(index).name());
-                }
-                netsLit.append(lit);
+        // The rest of the answer once the nets asked are traced - each in a
+        // thread of its own, one after the other, the window not held.
+        const QPointer<LayoutDoc> held = doc;
+        const auto finish = [=](const QJsonArray& netsLit, const QStringList& netsNot) {
+            if (!held) {
+                done(errorResult(tr("%1 was closed while its nets were traced.").arg(QFileInfo(layout->file).fileName())));
+                return;
             }
-        }
-        // The rulers: each end snapped as the ruler's drag snaps it, at the
-        // zoom shown.
-        if (clearRulers) view->clearRulers();
-        for (const QLineF& r : newRulers) view->addRuler(QLineF(view->snapped(r.p1()), view->snapped(r.p2())));
-        view->repaint();
-        const int shown = view->cell();
-        QStringList visible, hidden;
-        for (int i = 0; i < view->styles().size(); ++i) (view->styles().at(i).visible ? visible : hidden) << layout->layers.at(i).key.text();
-        QJsonObject result{{QStringLiteral("file"), QDir::toNativeSeparators(layout->file)},
-                           {QStringLiteral("cell"), shown >= 0 ? layout->cells.at(shown).name : QString()},
-                           {QStringLiteral("region"), boxJson(*layout, view->visibleRegion())},
-                           {QStringLiteral("levels"), doc->depth() < 0 ? QJsonValue(QStringLiteral("all")) : QJsonValue(doc->depth())},
-                           {QStringLiteral("layers shown"), hidden.isEmpty() ? QJsonValue(QStringLiteral("all")) : QJsonValue(QJsonArray::fromStringList(visible))},
-                           {QStringLiteral("drawn"), QJsonObject{{QStringLiteral("shapes"), double(view->lastStats().polygons)},
-                                                                 {QStringLiteral("too small to see, as dots"), double(view->lastStats().dots)},
-                                                                 {QStringLiteral("cells as frames"), double(view->lastStats().frames)},
-                                                                 {QStringLiteral("texts"), double(view->lastStats().labels)}}},
-                           {QStringLiteral("note"), tr("screenshot shows the tab as the user sees it.")}};
-        if (view->gridShown()) result.insert(QStringLiteral("grid"), gridSaid(*layout, view));
-        // (Texts in the file, none drawn: the tab's Texts button, which is
-        // kept from one session to the next, is off - it read "texts: 0" of a file with texts.)
-        if (!view->labelsShown() && layout->labelCount > 0)
-            result.insert(QStringLiteral("texts hidden"), tr("the file's cells hold %1 texts; the tab's Texts button is off (the user's choice, "
-                                                             "kept for the next tab) - 'texts': true shows them")
-                                                              .arg(layout->labelCount));
-        if (view->lastStats().incomplete) result.insert(QStringLiteral("incomplete"), tr("too much in sight: drawn in part - a smaller region draws all of it"));
-        // What the user drew with the pen, read stroke by stroke - what each
-        // is and what it marks, its box in µm - the latest 40; and whether
-        // the pen is taken up.
-        if (!view->drawing().isEmpty()) insertDrawings(result, view->readDrawing(false));
-        if (view->mode() == LayoutView::Mode::Draw) result.insert(QStringLiteral("pen"), tr("taken up: a drag draws on the cell shown"));
-        if (cleared) result.insert(QStringLiteral("done"), tr("What the pen drew taken away (the pen's Undo gives it back)."));
-        if (marked > 0) result.insert(QStringLiteral("addressed"), tr("%1 stroke(s) marked addressed: drawn faded, and left out of what a prompt tells").arg(marked));
-        if (marked < 0) result.insert(QStringLiteral("addressed"), tr("%1 stroke(s) no longer marked addressed").arg(-marked));
-        if (const QList<LayoutView::Sketch> drawn = view->sketch(view->drawingPart()); !drawn.isEmpty()) {
-            QJsonObject kinds;
-            for (const LayoutView::Sketch& item : drawn) {
-                const QString kind = item.kind == LayoutView::Sketch::Kind::Polygon ? QStringLiteral("polygons")
-                                     : item.kind == LayoutView::Sketch::Kind::Path  ? QStringLiteral("paths")
-                                     : item.kind == LayoutView::Sketch::Kind::Text  ? QStringLiteral("texts")
-                                                                                    : QStringLiteral("arrows");
-                kinds.insert(kind, kinds.value(kind).toInt() + 1);
+            LayoutDoc* const doc = held.data();
+            LayoutView* const view = doc->view();
+            // The rulers: each end snapped as the ruler's drag snaps it, at the
+            // zoom shown.
+            if (clearRulers) view->clearRulers();
+            for (const QLineF& r : newRulers) view->addRuler(QLineF(view->snapped(r.p1()), view->snapped(r.p2())));
+            view->repaint();
+            const int shown = view->cell();
+            QStringList visible, hidden;
+            for (int i = 0; i < view->styles().size(); ++i) (view->styles().at(i).visible ? visible : hidden) << layout->layers.at(i).key.text();
+            QJsonObject result{{QStringLiteral("file"), QDir::toNativeSeparators(layout->file)},
+                               {QStringLiteral("cell"), shown >= 0 ? layout->cells.at(shown).name : QString()},
+                               {QStringLiteral("region"), boxJson(*layout, view->visibleRegion())},
+                               {QStringLiteral("levels"), doc->depth() < 0 ? QJsonValue(QStringLiteral("all")) : QJsonValue(doc->depth())},
+                               {QStringLiteral("layers shown"), hidden.isEmpty() ? QJsonValue(QStringLiteral("all")) : QJsonValue(QJsonArray::fromStringList(visible))},
+                               {QStringLiteral("drawn"), QJsonObject{{QStringLiteral("shapes"), double(view->lastStats().polygons)},
+                                                                     {QStringLiteral("too small to see, as dots"), double(view->lastStats().dots)},
+                                                                     {QStringLiteral("cells as frames"), double(view->lastStats().frames)},
+                                                                     {QStringLiteral("texts"), double(view->lastStats().labels)}}},
+                               {QStringLiteral("note"), tr("screenshot shows the tab as the user sees it.")}};
+            if (view->gridShown()) result.insert(QStringLiteral("grid"), gridSaid(*layout, view));
+            // (Texts in the file, none drawn: the tab's Texts button, which is
+            // kept from one session to the next, is off - it read "texts: 0" of a file with texts.)
+            if (!view->labelsShown() && layout->labelCount > 0)
+                result.insert(QStringLiteral("texts hidden"), tr("the file's cells hold %1 texts; the tab's Texts button is off (the user's choice, "
+                                                                 "kept for the next tab) - 'texts': true shows them")
+                                                                  .arg(layout->labelCount));
+            if (view->lastStats().incomplete) result.insert(QStringLiteral("incomplete"), tr("too much in sight: drawn in part - a smaller region draws all of it"));
+            // What the user drew with the pen, read stroke by stroke - what each
+            // is and what it marks, its box in µm - the latest 40; and whether
+            // the pen is taken up.
+            if (!view->drawing().isEmpty()) insertDrawings(result, view->readDrawing(false));
+            if (view->mode() == LayoutView::Mode::Draw) result.insert(QStringLiteral("pen"), tr("taken up: a drag draws on the cell shown"));
+            if (cleared) result.insert(QStringLiteral("done"), tr("What the pen drew taken away (the pen's Undo gives it back)."));
+            if (marked > 0) result.insert(QStringLiteral("addressed"), tr("%1 stroke(s) marked addressed: drawn faded, and left out of what a prompt tells").arg(marked));
+            if (marked < 0) result.insert(QStringLiteral("addressed"), tr("%1 stroke(s) no longer marked addressed").arg(-marked));
+            if (const QList<LayoutView::Sketch> drawn = view->sketch(view->drawingPart()); !drawn.isEmpty()) {
+                QJsonObject kinds;
+                for (const LayoutView::Sketch& item : drawn) {
+                    const QString kind = item.kind == LayoutView::Sketch::Kind::Polygon ? QStringLiteral("polygons")
+                                         : item.kind == LayoutView::Sketch::Kind::Path  ? QStringLiteral("paths")
+                                         : item.kind == LayoutView::Sketch::Kind::Text  ? QStringLiteral("texts")
+                                                                                        : QStringLiteral("arrows");
+                    kinds.insert(kind, kinds.value(kind).toInt() + 1);
+                }
+                kinds.insert(QStringLiteral("note"), tr("Claude's own, over the cell shown, apart from the pen's strokes - overlay: clear takes it away"));
+                result.insert(QStringLiteral("overlay"), kinds);
+            } else if (clearOverlay) {
+                result.insert(QStringLiteral("overlay"), tr("taken away"));
             }
-            kinds.insert(QStringLiteral("note"), tr("Claude's own, over the cell shown, apart from the pen's strokes - overlay: clear takes it away"));
-            result.insert(QStringLiteral("overlay"), kinds);
-        } else if (clearOverlay) {
-            result.insert(QStringLiteral("overlay"), tr("taken away"));
+            if (!netsLit.isEmpty()) result.insert(QStringLiteral("nets lit"), netsLit);
+            if (!netsNot.isEmpty()) result.insert(QStringLiteral("nets not lit"), QJsonArray::fromStringList(netsNot));
+            if (clearNets) result.insert(QStringLiteral("highlight_net"), tr("the nets lit taken away"));
+            else if (!doc->highlightedNets().isEmpty() && netsAsked.isEmpty())
+                result.insert(QStringLiteral("nets lit"), tr("%n net(s) lit in the tab (highlight_net: clear takes them away)", "", int(doc->highlightedNets().size())));
+            // What is selected and measured there now - the user's or Claude's.
+            insertSelectionAndRulers(result, *layout, view);
+            if (nothingThere)
+                result.insert(QStringLiteral("not selected"), tr("nothing at %1, %2 µm of the layers shown, to the depth drawn")
+                                                                  .arg(micrometres(*layout, selectAt.at(0).toDouble()),
+                                                                       micrometres(*layout, selectAt.at(1).toDouble())));
+            // How it looks, where not as it comes.
+            if (!doc->layerPropertiesFile().isEmpty())
+                result.insert(QStringLiteral("layer properties"), QDir::toNativeSeparators(doc->layerPropertiesFile()));
+            else if (!lyp.isEmpty())
+                result.insert(QStringLiteral("layer properties"), tr("the palette"));
+            if (view->theme() != LayoutView::Theme::Application) result.insert(QStringLiteral("theme"), themeName(view->theme()));
+            if (!view->colorsAdapted()) result.insert(QStringLiteral("colours in contrast"), false);
+            if (!doc->layerPropertiesFile().isEmpty())
+                result.insert(QStringLiteral("layer look"), doc->drawsKLayoutLook() ? QStringLiteral("klayout") : QStringLiteral("viewer"));
+            if (view->gridShown()) result.insert(QStringLiteral("grid style"), gridStyleName(view->gridStyle()));
+            if (reload) result.insert(QStringLiteral("read again"), true);
+            // What reading it again changed: by cell and layer, the shapes added
+            // and taken away ("Claude can then confirm
+            // an edit without a screenshot").
+            if (reload && beforeReload && beforeReload != layout) {
+                const QJsonObject changed = differences(*beforeReload, *layout);
+                result.insert(QStringLiteral("changed"), changed.isEmpty() ? QJsonValue(tr("nothing")) : QJsonValue(changed));
+            }
+            done(jsonResult(result));
+        };
+        if (netsAsked.isEmpty()) {
+            finish({}, {});
+            return;
         }
-        if (!netsLit.isEmpty()) result.insert(QStringLiteral("nets lit"), netsLit);
-        if (!netsNot.isEmpty()) result.insert(QStringLiteral("nets not lit"), QJsonArray::fromStringList(netsNot));
-        if (clearNets) result.insert(QStringLiteral("highlight_net"), tr("the nets lit taken away"));
-        else if (!doc->highlightedNets().isEmpty() && netsAsked.isEmpty())
-            result.insert(QStringLiteral("nets lit"), tr("%n net(s) lit in the tab (highlight_net: clear takes them away)", "", int(doc->highlightedNets().size())));
-        // What is selected and measured there now - the user's or Claude's.
-        insertSelectionAndRulers(result, *layout, view);
-        if (nothingThere)
-            result.insert(QStringLiteral("not selected"), tr("nothing at %1, %2 µm of the layers shown, to the depth drawn")
-                                                              .arg(micrometres(*layout, selectAt.at(0).toDouble()),
-                                                                   micrometres(*layout, selectAt.at(1).toDouble())));
-        // How it looks, where not as it comes.
-        if (!doc->layerPropertiesFile().isEmpty())
-            result.insert(QStringLiteral("layer properties"), QDir::toNativeSeparators(doc->layerPropertiesFile()));
-        else if (!lyp.isEmpty())
-            result.insert(QStringLiteral("layer properties"), tr("the palette"));
-        if (view->theme() != LayoutView::Theme::Application) result.insert(QStringLiteral("theme"), themeName(view->theme()));
-        if (!view->colorsAdapted()) result.insert(QStringLiteral("colours in contrast"), false);
-        if (!doc->layerPropertiesFile().isEmpty())
-            result.insert(QStringLiteral("layer look"), doc->drawsKLayoutLook() ? QStringLiteral("klayout") : QStringLiteral("viewer"));
-        if (view->gridShown()) result.insert(QStringLiteral("grid style"), gridStyleName(view->gridStyle()));
-        if (reload) result.insert(QStringLiteral("read again"), true);
-        // What reading it again changed: by cell and layer, the shapes added
-        // and taken away ("Claude can then confirm
-        // an edit without a screenshot").
-        if (reload && beforeReload && beforeReload != layout) {
-            const QJsonObject changed = differences(*beforeReload, *layout);
-            result.insert(QStringLiteral("changed"), changed.isEmpty() ? QJsonValue(tr("nothing")) : QJsonValue(changed));
-        }
-        done(jsonResult(result));
+        auto lit = std::make_shared<QJsonArray>();
+        auto notLit = std::make_shared<QStringList>();
+        auto at = std::make_shared<int>(0);          // the net being traced
+        auto answered = std::make_shared<bool>(false);
+        const auto finishOnce = [=](const QJsonArray& netsLit, const QStringList& netsNot) {
+            if (*answered) return;
+            *answered = true;
+            finish(netsLit, netsNot);
+        };
+        // The tab closed while a net is traced: its trace's answer is
+        // dropped with the tab, so the call is answered here - the nets lit
+        // so far, and the rest not lit (the review of 92543b5e).
+        connect(doc, &QObject::destroyed, this, [=] {
+            if (*answered) return;
+            *answered = true;
+            QStringList left = *notLit;
+            if (*at < netsAsked.size())
+                left << tr("%n net(s) not traced: the layout's tab was closed while they were", "", int(netsAsked.size() - *at));
+            QJsonObject result{{QStringLiteral("file"), QDir::toNativeSeparators(layout->file)},
+                               {QStringLiteral("closed"), tr("the layout's tab was closed while its nets were traced")},
+                               {QStringLiteral("nets not lit"), QJsonArray::fromStringList(left)}};
+            if (!lit->isEmpty()) result.insert(QStringLiteral("nets lit"), *lit);
+            done(jsonResult(result));
+        });
+        const NetConnectivity connectivity = doc->netConnectivity();
+        auto step = std::make_shared<std::function<void(int)>>();
+        const std::weak_ptr<std::function<void(int)>> self = step;
+        *step = [=](int i) {
+            *at = i;
+            if (!held || i >= netsAsked.size()) {
+                finishOnce(*lit, *notLit);
+                return;
+            }
+            QString said, error;
+            const QVector<Found> seeds = netSeeds(*layout, held->view()->styles(), held->view()->cell(), netsAsked.at(i), held, connectivity, &said, &error);
+            const std::shared_ptr<std::function<void(int)>> next = self.lock();
+            if (seeds.isEmpty()) {
+                *notLit << error;
+                (*next)(i + 1);
+                return;
+            }
+            held->highlightNetLater(seeds, &connectivity, {}, 20000, [=](const TracedNet& net, int index) {
+                if (net.cancelled) {
+                    *notLit << tr("%1: stopped before it was traced whole (Escape, another cell shown, or the file read again)").arg(said);
+                } else if (held) {
+                    QJsonObject one = netJson(*layout, held->view()->styles(), net, connectivity, 0);
+                    one.remove(QStringLiteral("shapes"));
+                    one.remove(QStringLiteral("shapes not listed"));
+                    one.remove(QStringLiteral("length"));
+                    one.insert(QStringLiteral("from"), said);
+                    if (index >= 0) {
+                        one.insert(QStringLiteral("name"), held->highlightedNetName(index));
+                        one.insert(QStringLiteral("colour"), LayoutView::highlightColor(index).name());
+                    }
+                    lit->append(one);
+                }
+                (*next)(i + 1);
+            });
+        };
+        (*step)(0);
     }, done);
 }
 

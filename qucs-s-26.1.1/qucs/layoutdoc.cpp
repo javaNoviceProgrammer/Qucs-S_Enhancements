@@ -1366,7 +1366,7 @@ bool LayoutView::event(QEvent* event)
     if (event->type() == QEvent::ShortcutOverride) {
         auto* key = static_cast<QKeyEvent*>(event);
         if (key->key() == Qt::Key_Escape && key->modifiers() == Qt::NoModifier
-            && (a_measuring || a_selection || !a_highlights.isEmpty() || !a_rulers.isEmpty() || a_mode != Mode::Select)) {
+            && (a_measuring || a_tracingNet || a_selection || !a_highlights.isEmpty() || !a_rulers.isEmpty() || a_mode != Mode::Select)) {
             event->accept();
             return true;
         }
@@ -1617,6 +1617,8 @@ void LayoutView::keyPressEvent(QKeyEvent* event)
             a_drag = Drag::None;
             update();
             emit rulersChanged();
+        } else if (a_tracingNet) {
+            emit stopRequested();
         } else if (a_selection) {
             select(std::nullopt);
         } else if (!a_highlights.isEmpty()) {
@@ -1713,6 +1715,10 @@ LayoutDoc::~LayoutDoc()
 {
     // A read still going: it stops at its next step, and nothing waits for it.
     if (a_job) a_job->cancelled = true;
+    // A net being traced: stopped, and waited for (it reads the layout this
+    // tab holds; what it found is dropped with the tab).
+    for (const qucs_s::layout::NetTracing& t : std::as_const(a_tracing)) t.stop();
+    for (const qucs_s::layout::NetTracing& t : std::as_const(a_tracing)) t.wait();
     // The Route panel first, while this is still a LayoutDoc and its view is
     // there: its destructor gives the view back its mode and overlays. Left to
     // ~QWidget's children, it reached them through a document already past
@@ -2139,6 +2145,7 @@ void LayoutDoc::buildUi()
             fillNetList();
         }
     });
+    connect(a_view, &LayoutView::stopRequested, this, &LayoutDoc::stopTracingNets);
     connect(a_nets, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item) {
         const int i = a_nets->indexOfTopLevelItem(item);
         if (i < 0 || i >= a_lit.size()) return;
@@ -2417,6 +2424,7 @@ void LayoutDoc::layoutReady(bool keepView)
     QVector<LayerStyle>& styles = a_plan.styles;
     for (int i = 0; i < styles.size(); ++i)
         if (shown.contains(a_layout->layers.at(i).key)) styles[i].visible = shown.value(a_layout->layers.at(i).key);
+    stopTracingNets();
     a_view->setLayout(a_layout);
     a_view->setStyles(styles);
     a_stack->setCurrentIndex(0);
@@ -2450,6 +2458,7 @@ void LayoutDoc::showCell(int cell, bool fit)
         a_cellLabel->setText(a_layout && a_layout->cells.isEmpty() ? tr("No cells") : QString());
         return;
     }
+    if (cell != a_view->cell()) stopTracingNets();
     a_view->setCell(cell);
     if (fit) a_view->fit();
     const Cell& c = a_layout->cells.at(cell);
@@ -2974,6 +2983,11 @@ void LayoutDoc::updateInfo()
         a_info->clear();
         return;
     }
+    // A net being traced: said, with how to stop it.
+    if (!a_tracing.isEmpty()) {
+        a_info->setText(tr("Tracing the net… (Escape stops it)"));
+        return;
+    }
     if (a_view->selection()) {
         QString text = describe(*a_view->selection());
         // (A shape's layer a process flow's mask: its steps, in the open
@@ -3175,36 +3189,59 @@ qucs_s::layout::NetConnectivity LayoutDoc::netConnectivity(QString* why) const
     return c;
 }
 
-qucs_s::layout::TracedNet LayoutDoc::highlightNet(const QVector<Found>& seeds, const qucs_s::layout::NetConnectivity* connectivity,
-                                                  const QVector<bool>& stopAt, int maxShapes)
+void LayoutDoc::highlightNetLater(const QVector<Found>& seeds, const qucs_s::layout::NetConnectivity* connectivity, const QVector<bool>& stopAt,
+                                  int maxShapes, std::function<void(const qucs_s::layout::TracedNet&, int)> then)
 {
-    qucs_s::layout::TracedNet net;
-    if (!a_layout || shownCell() < 0 || seeds.isEmpty()) return net;
+    if (!a_layout || shownCell() < 0 || seeds.isEmpty()) {
+        if (then) then({}, -1);
+        return;
+    }
     qucs_s::layout::NetTrace trace;
     trace.cell = shownCell();
     trace.seeds = seeds;
     trace.connectivity = connectivity != nullptr ? *connectivity : netConnectivity();
     trace.stopAt = stopAt;
     trace.maxShapes = maxShapes;
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    net = qucs_s::layout::traceNet(*a_layout, trace);
-    QApplication::restoreOverrideCursor();
-    if (net.shapes.isEmpty()) return net;
-    // Lit already (a shape of it a shape of one lit): that one, once.
-    const auto same = [](const Found& a, const Found& b) { return a.cell == b.cell && a.shape == b.shape && a.copy == b.copy && a.transform == b.transform; };
-    for (const qucs_s::layout::TracedNet& lit : std::as_const(a_lit))
-        for (const qucs_s::layout::NetShape& s : lit.shapes)
-            if (same(s.found, net.shapes.first().found)) return lit;
-    a_lit.append(net);
-    fillNetList();
-    return net;
+    const std::shared_ptr<const Layout> traced = a_layout;
+    const int cell = shownCell();
+    auto going = std::make_shared<qucs_s::layout::NetTracing>();
+    *going = qucs_s::layout::traceNetLater(traced, trace, this, [this, traced, cell, going, then](const qucs_s::layout::TracedNet& net) {
+        a_tracing.removeIf([&](const qucs_s::layout::NetTracing& t) { return t.cancel == going->cancel; });
+        a_view->setTracing(!a_tracing.isEmpty());
+        updateInfo();
+        // Stopped, or of a layout or a cell no longer shown: not lit.
+        if (net.cancelled || traced != a_layout || cell != shownCell() || net.shapes.isEmpty()) {
+            if (then) then(net, -1);
+            return;
+        }
+        // Lit already (a shape of it a shape of one lit): that one, once.
+        const auto same = [](const Found& a, const Found& b) { return a.cell == b.cell && a.shape == b.shape && a.copy == b.copy && a.transform == b.transform; };
+        for (int i = 0; i < a_lit.size(); ++i)
+            for (const qucs_s::layout::NetShape& s : a_lit.at(i).shapes)
+                if (same(s.found, net.shapes.first().found)) {
+                    if (then) then(a_lit.at(i), i);
+                    return;
+                }
+        a_lit.append(net);
+        fillNetList();
+        if (then) then(net, int(a_lit.size()) - 1);
+    });
+    a_tracing.append(*going);
+    a_view->setTracing(true);
+    updateInfo();
+}
+
+void LayoutDoc::stopTracingNets()
+{
+    for (const qucs_s::layout::NetTracing& t : std::as_const(a_tracing)) t.stop();
 }
 
 bool LayoutDoc::highlightSelectedNet()
 {
     const std::optional<Found>& sel = a_view->selection();
     if (!sel || sel->isText()) return false;
-    return !highlightNet({*sel}).shapes.isEmpty();
+    highlightNetLater({*sel});
+    return true;
 }
 
 QString LayoutDoc::highlightedNetName(int index) const
@@ -3247,15 +3284,7 @@ void LayoutDoc::fillNetList()
         if (net.stopped) tip += QLatin1Char('\n') + tr("Followed no further than %n shape(s).", "", int(net.shapes.size()));
         item->setToolTip(0, tip);
     }
-    const bool shown = !a_nets->isHidden();
-    a_nets->setVisible(!a_lit.isEmpty());
-    // Shown at last: room made for it under the cells and the layers.
-    if (!shown && !a_lit.isEmpty() && a_side->count() == 3) {
-        const QList<int> was = a_side->sizes();
-        const int total = std::max(was.value(0) + was.value(1) + was.value(2), 300);
-        const int nets = std::max(total / 4, a_nets->sizeHint().height() / 2);
-        a_side->setSizes({(total - nets) * 3 / 5, (total - nets) * 2 / 5, nets});
-    }
+    a_nets->setVisible(!a_lit.isEmpty());   // (the side's splitter shares its room with it)
     a_view->setHighlights(lit);
 }
 

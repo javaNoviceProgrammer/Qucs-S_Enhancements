@@ -21,7 +21,12 @@
 #include <QString>
 #include <QVector>
 
+#include <QPointer>
+#include <QThread>
+
 #include <atomic>
+#include <functional>
+#include <memory>
 
 namespace qucs_s::layout {
 
@@ -108,6 +113,29 @@ struct NetTrace {
 /// happens to share its name or number. A seed's layer that no step names
 /// is followed on that layer alone.
 TracedNet traceNet(const Layout& layout, const NetTrace& trace);
+
+/// A trace going on in a thread of its own (traceNetLater()).
+struct NetTracing {
+    std::shared_ptr<std::atomic_bool> cancel;
+    QPointer<QThread> thread;
+    /// It stops at its next shape; what it found so far comes back, said
+    /// cancelled.
+    void stop() const
+    {
+        if (cancel) cancel->store(true);
+    }
+    /// Waits for it to end (a tab closed with one going).
+    void wait() const
+    {
+        if (thread) thread->wait();
+    }
+};
+
+/// traceNet() in a thread of its own, so that a power net of tens of
+/// thousands of shapes holds no window; \a then with the net, on
+/// \a context's thread, unless \a context is gone by then. The layout
+/// is held while it goes.
+NetTracing traceNetLater(std::shared_ptr<const Layout> layout, NetTrace trace, QObject* context, std::function<void(const TracedNet&)> then);
 
 /// The shapes a trace starts from at \a point: on \a layer, or (-1) on
 /// the lowest layer of \a connectivity that has one there - as the router

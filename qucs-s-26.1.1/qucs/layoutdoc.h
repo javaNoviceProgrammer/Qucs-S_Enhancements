@@ -283,6 +283,9 @@ public:
         QRectF bounds;
     };
     void setHighlights(const QList<NetHighlight>& nets);
+    /// A net being traced (its tab's): Escape is then stopRequested(), before
+    /// the selection's.
+    void setTracing(bool tracing) { a_tracingNet = tracing; }
     const QList<NetHighlight>& highlights() const { return a_highlights; }
     /// The colour of the \a n th net lit, by its place among them.
     static QColor highlightColor(int n);
@@ -367,6 +370,8 @@ signals:
     void sketchChanged();
     /// The nets lit changed (Escape, the cell or the layout changed, set).
     void highlightsChanged();
+    /// Escape while a net is traced: stop it.
+    void stopRequested();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -429,6 +434,7 @@ private:
 
     QList<Overlay> a_overlays;
     QList<NetHighlight> a_highlights;
+    bool a_tracingNet = false;
     QHash<QString, QList<Sketch>> a_sketch;   // Claude's, by cell
     Legend a_legend;
     int a_overlayDrawn = 0;
@@ -588,15 +594,23 @@ public:
     /// (layoutnet.h's connectivityBeside()), else nothing (a net followed
     /// on its own layer), with why in \a why.
     qucs_s::layout::NetConnectivity netConnectivity(QString* why = nullptr) const;
-    /// The net \a seeds are on (in the cell shown's coordinates) traced
-    /// and lit over the layout, beside the others lit, and listed in the
-    /// side's Nets; \a connectivity when given, else netConnectivity().
-    /// The net traced (none lit when it has no shapes).
-    qucs_s::layout::TracedNet highlightNet(const QVector<qucs_s::layout::Found>& seeds,
-                                          const qucs_s::layout::NetConnectivity* connectivity = nullptr,
-                                          const QVector<bool>& stopAt = {}, int maxShapes = 20000);
-    /// The net of the shape selected lit; false when no shape is selected.
+    /// The net \a seeds are on (in the cell shown's coordinates) traced in
+    /// a thread of its own - the window is not held, the info line says it
+    /// goes, Escape stops it - and then lit over the layout, beside the
+    /// others lit, and listed in the side's Nets; \a connectivity when
+    /// given, else netConnectivity(). \a then, when it ends, with the net
+    /// and its place among the nets lit: -1 when none is lit - no shapes,
+    /// or stopped (Escape, another cell shown, the file read again; the
+    /// net then says cancelled).
+    void highlightNetLater(const QVector<qucs_s::layout::Found>& seeds, const qucs_s::layout::NetConnectivity* connectivity = nullptr,
+                           const QVector<bool>& stopAt = {}, int maxShapes = 20000,
+                           std::function<void(const qucs_s::layout::TracedNet&, int)> then = {});
+    /// The net of the shape selected traced and lit (highlightNetLater());
+    /// false when no shape is selected.
     bool highlightSelectedNet();
+    /// Whether a net is being traced, and its tracing stopped.
+    bool isTracingNet() const { return !a_tracing.isEmpty(); }
+    void stopTracingNets();
     /// The nets lit, in the order lit.
     const QList<qucs_s::layout::TracedNet>& highlightedNets() const { return a_lit; }
     /// A net lit's name: its first text, else "net n".
@@ -736,6 +750,7 @@ private:
     QTreeWidget* a_layers = nullptr;
     QTreeWidget* a_nets = nullptr;
     QList<qucs_s::layout::TracedNet> a_lit;
+    QList<qucs_s::layout::NetTracing> a_tracing;
     void fillNetList();
     qucs_s::layout::LayoutView* a_view = nullptr;
     QLabel* a_position = nullptr;
