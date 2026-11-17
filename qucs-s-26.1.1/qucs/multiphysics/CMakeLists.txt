@@ -34,6 +34,7 @@ set(FEM_SRCS
   fem3_estimate.cpp
   fem3_eme.cpp
   fem3_wave.cpp
+  fem3_wave_sweep.cpp
   fem3_wavetd.cpp
   fem_elastic.cpp
   fem_magnetic.cpp

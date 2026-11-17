@@ -1190,6 +1190,32 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
                 }
                 continue;
             }
+            // A frequency domain's fast sweep: its wavelengths at once, a
+            // few solved exactly, the rest on their solutions.
+            if (waveSettings[std::size_t(k)].fastSweep && Wn > 3) {
+                Wave3Settings st = waveSettings[std::size_t(k)];
+                const double from = share * double(k) / double(WP), span = share / double(WP);
+                const QString name = waves[std::size_t(k)]->name();
+                st.progress = [&](double f, const QString& what) {
+                    if (tell && !tell(from + span * std::clamp(f, 0.0, 1.0), tr("%1: %2").arg(name, what))) stopped = true;
+                };
+                st.cancelled = [&] { return stopped; };
+                QStringList sweepLog;
+                QString why;
+                std::vector<Wave3Result> rs = sweepWave3(s.model(), s.parametersPtr(), topology, s.meshPtr(), st, frequencies, &sweepLog, &why);
+                if (!why.isEmpty()) {
+                    *error = stopped ? tr("cancelled") : tr("%1: %2").arg(name, why);
+                    return false;
+                }
+                for (int w = 0; w < Wn; ++w) {
+                    Wave3Result& r = rs[std::size_t(w)];
+                    if (w == 0) r.log = sweepLog + r.log;
+                    waveFields[std::size_t(k)].push_back(r.fields.empty() ? std::vector<std::array<std::complex<double>, 3>>()
+                                                                          : nodalField(*r.space, r.fields.front(), *nodes));
+                    waveResults[std::size_t(k)].push_back(asEmeResult(r));
+                }
+                continue;
+            }
             for (int w = 0; w < Wn && !stopped; ++w) {
                 Wave3Settings st = waveSettings[std::size_t(k)];
                 const double from = share * double(k * Wn + w) / double(WP * Wn), span = share / double(WP * Wn);

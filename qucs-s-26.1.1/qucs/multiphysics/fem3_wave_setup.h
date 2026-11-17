@@ -16,7 +16,10 @@
 
 #include "fem3_wave.h"
 
+#include <Eigen/Sparse>
+
 #include <array>
+#include <functional>
 #include <complex>
 #include <map>
 #include <set>
@@ -121,6 +124,53 @@ void waveAmplitudes(const std::vector<Column>& u, const std::vector<Column>& v, 
 /// solve's share of a unit wave in each).
 void scatteringOfAmplitudes(const Eigen::MatrixXcd& a, const Eigen::MatrixXcd& b, const std::vector<int>& index, const std::vector<int>& fed,
                             const std::vector<char>& carries, const std::vector<int>& rowPort, Wave3Result* r, Eigen::MatrixXcd* perFed);
+
+/// \a su's materials at \a lambda (m): each domain's ε, the PMLs' index -
+/// as setUp makes them there.
+void atWavelength(Setup& su, const ParameterScope& parameters, double lambda);
+
+/// A sparse matrix of the elements \a elements (all: empty), each one's
+/// matrix by \a element(e, Ke) (perElement() square, its lower triangle
+/// read), on the machine's threads - every entry kept, so that its pattern
+/// is the mesh's alone; the fixed dofs' rows and columns left out, their
+/// diagonal 1 where \a identity. False where \a cancelled.
+bool assembleElements(const Setup& su, const std::vector<int>& elements, const std::function<void(int, Eigen::MatrixXcd&)>& element, bool identity,
+                      const std::function<bool()>& cancelled, Eigen::SparseMatrix<std::complex<double>>* K);
+
+/// A frequency's ports: their modes, columns, the port modes taken (each an
+/// S-parameter's port), those fed, those carrying power - what a solve needs
+/// of them, and its result's port modes and warnings.
+struct PortsAt {
+    double frequency = 0;
+    std::vector<EmeModes> modes;                     ///< by port
+    std::vector<std::vector<int>> taken;             ///< by port: its modes taken
+    std::vector<std::vector<Column>> u, v;           ///< by port: its modes' columns (v: a PML behind it)
+    std::vector<int> firstColumn;                    ///< by port: its first mode's row among every port mode's
+    int count = 0;                                   ///< every port's modes
+    std::vector<int> index;                          ///< by port mode taken: its row
+    std::vector<int> fed;                            ///< backed: by fed one, its index among those taken
+    std::vector<char> carries;                       ///< by row
+    std::vector<int> rowPort;                        ///< by row
+    std::vector<Column> source;                      ///< backed: by port mode taken, its source
+    std::vector<Wave3Result::PortMode> portModes;    ///< as the result lists them
+    QStringList warnings;
+};
+
+/// \a ports filled from each port's modes (\a modes, solved at \a
+/// frequency): their columns (k0, each domain's ε \a eps), what is taken,
+/// fed and carrying, the sources (at settings.sourceFrequency where given);
+/// the modes themselves not kept. False with \a error.
+bool portsAt(const Model& model, std::shared_ptr<ParameterScope> parameters, const Topology3& topology, const Setup& su, const Wave3Settings& settings,
+             double frequency, const std::vector<std::complex<double>>& eps, std::vector<EmeModes> modes, PortsAt* ports, QString* error);
+
+/// The right-hand sides of a solve at \a ports: ports with a PML behind them,
+/// each fed one's source; absorbing ports, every port mode's column.
+Eigen::MatrixXcd rightHandSides(const Setup& su, const PortsAt& ports, bool backed);
+
+/// \a r's S, balance, back and fields from \a X = K⁻¹ B (B the right-hand
+/// sides above) at \a frequency.
+void resultOfSolves(const Setup& su, const PortsAt& ports, const Wave3Settings& settings, double frequency, bool backed, const Eigen::MatrixXcd& X,
+                    Wave3Result* r);
 
 } // namespace qucs_s::fem::wave3
 

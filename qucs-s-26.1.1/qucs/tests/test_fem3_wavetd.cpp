@@ -22,6 +22,7 @@
 #include "fem_sparse.h"
 
 #include <QJsonArray>
+#include <QElapsedTimer>
 #include <QtTest>
 
 #include <cmath>
@@ -555,6 +556,45 @@ private slots:
         qInfo("at 1500 nm: |S21|² %.7f, the frequency domain's %.7f; |ΔS| %.2e", std::norm(td.at[0].S(1, 0)), std::norm(fd.S(1, 0)), diff);
         // (4.8e-6; the middle's profile alone 4.1e-3.)
         QVERIFY2(diff < 5e-5, qPrintable(QString::number(diff)));
+    }
+
+
+    // A frequency domain's fast sweep (sweepWave3): a few wavelengths solved
+    // exactly, the rest on their solutions' reduced basis - each within the
+    // tolerance's reach of its own exact solve.
+    void aFastSweepAgreesWithEachWavelength()
+    {
+        const double L = 2, d = 0.5;
+        Model m = hollowGuide(L, d, slowBuild() ? 0.2 : 0.12, silica());
+        const Built b = build(m);
+        Wave3Settings st;
+        st.ports = ports(m, b, 0, L, QStringLiteral("1"), 4, false);
+        st.pmlDomains = domainsOf(m, b, {QStringLiteral("pa"), QStringLiteral("pb")});
+        st.fieldsKept = 0;
+        std::vector<double> f;
+        for (int k = 0; k < 7; ++k) f.push_back(C0 / ((1.5 + 0.1 * k / 6) * 1e-6));
+        st.portMeshWavelength = C0 / *std::max_element(f.begin(), f.end());
+        QStringList log;
+        QString why;
+        QElapsedTimer t;
+        t.start();
+        const std::vector<Wave3Result> fast = sweepWave3(m, b.parameters, *b.topology, b.mesh, st, f, &log, &why);
+        const qint64 fastMs = t.elapsed();
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        for (const QString& l : log) qInfo("  %s", qPrintable(l));
+        QVERIFY2(log.join(QLatin1Char('\n')).contains(QLatin1String("7 wavelengths, 3 solved exactly")), qPrintable(log.join(QLatin1Char('\n'))));
+        t.restart();
+        double worst = 0;
+        for (std::size_t k = 0; k < f.size(); ++k) {
+            const Wave3Result exact = solveWave3(m, b.parameters, *b.topology, b.mesh, st, f[k]);
+            QVERIFY2(exact.ok(), qPrintable(exact.error));
+            const double diff = maxDiff(fast[k].S, exact.S, 1);
+            worst = std::max(worst, diff);
+            qInfo("%.1f nm: fast S21 %.7f%+.7fj, exact %.7f%+.7fj; |ΔS| %.2e", C0 / f[k] * 1e9, fast[k].S(1, 0).real(), fast[k].S(1, 0).imag(),
+                  exact.S(1, 0).real(), exact.S(1, 0).imag(), diff);
+        }
+        qInfo("fast sweep %lld ms, each solved %lld ms; |ΔS| %.2e at worst", fastMs, t.elapsed(), worst);
+        QVERIFY2(worst < 1e-5, qPrintable(QString::number(worst)));
     }
 
 };
