@@ -595,9 +595,13 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
             // ports) end the loop on the metals they reach, not on the plate
             // under both - "both ends of the loop on the same face" (P42 of
             // the open items). A stack's own ground is no metal of the mesh.
-            const auto endOn = [&model](const QPair<QString, QString>& own, const QPair<QString, QString>& other) {
-                const auto metal = [&model](const QString& name) {
-                    const Layer* l = model.stack().named(name);
+            // (The stack held here: named() points into it, and a Stack
+            //  model.stack() returns died with its line - a use after free,
+            //  CI's Linux ASan job of 5821c258.)
+            const Stack stack = model.stack();
+            const auto endOn = [&stack](const QPair<QString, QString>& own, const QPair<QString, QString>& other) {
+                const auto metal = [&stack](const QString& name) {
+                    const Layer* l = stack.named(name);
                     return l != nullptr && l->kind == Layer::Metal ? l->name : QString();
                 };
                 if (own.first == own.second) return metal(own.first);

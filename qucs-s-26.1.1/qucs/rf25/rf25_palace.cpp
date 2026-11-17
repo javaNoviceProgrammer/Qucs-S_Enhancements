@@ -151,6 +151,16 @@ QJsonValue directionJson(const std::array<double, 3>& d)
     return QJsonArray{d[0], d[1], d[2]};
 }
 
+/// A layer's or a port's name as a physical group's in MSH: a double quote
+/// would end it, and a line break the line, so each is made harmless.
+std::string physicalName(QString name)
+{
+    name.replace(QLatin1Char('"'), QLatin1Char('\''));
+    name.replace(QLatin1Char('\n'), QLatin1Char(' '));
+    name.replace(QLatin1Char('\r'), QLatin1Char(' '));
+    return name.toStdString();
+}
+
 void append(std::string& out, double v)
 {
     char buf[40];
@@ -469,7 +479,11 @@ PalaceExport palaceExportOf(const Model& model, const QList<Conductor>& conducto
                 continue;
             }
             const bool toGround = from.isEmpty() || stack.isGround(from);
-            double z0 = 0;
+            // From the lower metal's top (the ground's nought) up to the upper
+            // metal's bottom, whichever of its two is the lower; its plus, the
+            // To metal, above or below.
+            double z0 = 0, z1 = zOf(to, false);
+            bool toAbove = true;
             if (toGround) {
                 if (openGround) {
                     out.notes << tr("%1 is not written: it returns to the ground, and the ground is open.").arg(own);
@@ -481,10 +495,10 @@ PalaceExport palaceExportOf(const Model& model, const QList<Conductor>& conducto
                     out.notes << tr("%1 is not written: its From metal %2 is no metal of the stack.").arg(own, from);
                     continue;
                 }
-                z0 = zOf(from, true);
+                toAbove = tl->z0 > fl->z0;
+                z0 = toAbove ? zOf(from, true) : zOf(to, true);
+                z1 = toAbove ? zOf(to, false) : zOf(from, false);
             }
-            double z1 = zOf(to, false);
-            if (z1 < z0) std::swap(z0, z1);
             if (!(z1 > z0 + tol)) {
                 out.notes << tr("%1 is not written: its two metals have no room between them.").arg(own);
                 continue;
@@ -504,17 +518,18 @@ PalaceExport palaceExportOf(const Model& model, const QList<Conductor>& conducto
             e.z0 = z0;
             e.z1 = z1;
             // (From its To metal, its plus, down to its From.)
-            e.direction = {{0, 0, zOf(to, false) >= z0 + tol ? -1.0 : 1.0}};
+            e.direction = {{0, 0, toAbove ? -1.0 : 1.0}};
             e.area = span * (z1 - z0);
             w.elements << e;
-            const QString fromName = toGround ? (ground != nullptr ? ground->name : QStringLiteral("ground")) : from;
+            const QString fromName = toGround ? (ground != nullptr ? ground->name : QStringLiteral("ground")) : toAbove ? from : to;
+            const QString toName = toAbove ? to : from;
             const QString across = alongX ? QStringLiteral("x") : QStringLiteral("y");
             out.portSaid << (lumpedElement ? tr("%1: lumped element, an undriven lumped port, from %2 up to %3, %4 µm across %5")
-                                                 .arg(own, fromName, to, um(span), across)
+                                                 .arg(own, fromName, toName, um(span), across)
                                            : tr("%1: lumped port %2 from %3 up to %4, %5 µm across %6")
                                                  .arg(own)
                                                  .arg(measuring + 1)
-                                                 .arg(fromName, to, um(span), across));
+                                                 .arg(fromName, toName, um(span), across));
         }
         if (lumpedElement) {
             ++out.lumped;
@@ -977,12 +992,12 @@ PalaceExport palaceExportOf(const Model& model, const QList<Conductor>& conducto
     for (int i = 0; i < media.size(); ++i) {
         msh += "3 ";
         append(msh, (long long)(i + 1));
-        msh += " \"" + media.at(i).name.toStdString() + "\"\n";
+        msh += " \"" + physicalName(media.at(i).name) + "\"\n";
     }
     for (int i = 0; i < groups.size(); ++i) {
         msh += "2 ";
         append(msh, (long long)(i + 1));
-        msh += " \"" + groups.at(i).name.toStdString() + "\"\n";
+        msh += " \"" + physicalName(groups.at(i).name) + "\"\n";
     }
     msh += "$EndPhysicalNames\n$Nodes\n";
     append(msh, (long long)nodes);

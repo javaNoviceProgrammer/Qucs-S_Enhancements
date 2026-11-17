@@ -95,6 +95,21 @@ bool says(const QStringList& lines, const char* words)
     return false;
 }
 
+/// Whether this build is one whose solves are many times slower - a
+/// sanitized one, as CI's Linux job is (QUCS_TEST_SLOW: its path in any).
+bool slowBuild()
+{
+    if (qEnvironmentVariableIsSet("QUCS_TEST_SLOW")) return true;
+#if defined(__SANITIZE_ADDRESS__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    return true;
+#endif
+#endif
+    return false;
+}
+
 } // namespace
 
 class TestRf25Mesh : public QObject
@@ -113,6 +128,38 @@ private slots:
     // and 170,381 - and its loop's L within 1 %. (A rectangle and an
     // octagon keep every corner; a circle of 360 segments becomes one of
     // fewer, no point of it moved more than the tolerance.)
+    // The spiral drawn of 24, 72 and 180 segments a turn: its loop's L the
+    // same within 1 % (P49), the curves thinned and snapped as the tab has
+    // them. (Apart from the meshes' checks above: the three solves were 20 of
+    // the function's 23 s here, past CI's sanitized limit. A slow build takes
+    // a turn and a half of it at 24 and 72 a turn: its cells are its curves'
+    // corners', not its width's, so that fewer across is no lighter.)
+    void aSpiralsInductanceIsTheSameHoweverManySegments()
+    {
+        const rf::Model m = stacked();
+        const rf::Stack stack = m.stack();
+        const bool slow = slowBuild();
+        const double turns = slow ? 1.5 : 2.5;
+        // (Its two ends: a quarter turn below the centre, 100 µm out, and
+        //  above it, 12 µm in for each turn.)
+        const QPointF in(0, -100), out(0, 100 - 12 * turns);
+        QList<double> loops;
+        for (const int n : slow ? QList<int>{24, 72} : QList<int>{24, 72, 180}) {
+            const rf::Processed processed =
+                rf::processShapes({{QStringLiteral("M1"), {spiralOutline(n, 100, 12, turns)}}}, {}, rf::Processing(), stack);
+            QVERIFY2(processed.ok() && processed.conductors.size() == 1, qPrintable(processed.problems.join(" | ")));
+            rf::MeshSettings how;
+            how.cellsAcross = 4;
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, how, stack, 14e9);
+            const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, in, out, 1e-6, 2e9);
+            QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+            qWarning("%d a turn, %g turns: %d cells, L %.4f nH", n, turns, int(mesh.cells.size()), loop.l * 1e9);
+            loops << loop.l;
+        }
+        for (const double l : std::as_const(loops))
+            QVERIFY2(std::abs(l / loops.first() - 1) < 0.01, qPrintable(QStringLiteral("%1 nH against %2").arg(l * 1e9).arg(loops.first() * 1e9)));
+    }
+
     void aCurveDrawnOfManySegmentsMeshesAsOfFew()
     {
         const QPolygonF box(QRectF(0, 0, 10, 4));
@@ -131,7 +178,6 @@ private slots:
         const rf::Model m = stacked();
         const rf::Stack stack = m.stack();
         QList<int> cells;
-        QList<double> loops;
         for (const int n : {24, 72, 180}) {
             const rf::Processed processed = rf::processShapes({{QStringLiteral("M1"), {spiralOutline(n)}}}, {}, rf::Processing(), stack);
             QVERIFY2(processed.ok() && processed.conductors.size() == 1, qPrintable(processed.problems.join(" | ")));
@@ -153,16 +199,11 @@ private slots:
                 const QRegularExpressionMatch match = offSpiral.match(mesh.lines.join(' '));
                 QVERIFY2(match.hasMatch() && match.captured(1).toDouble() <= 0.1, qPrintable(mesh.lines.join(" | ")));
             }
-            const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, QPointF(0, -100), QPointF(0, 70), 1e-6, 2e9);
-            QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
-            qWarning("%d a turn: %d cells, L %.4f nH", n, int(mesh.cells.size()), loop.l * 1e9);
+            qWarning("%d a turn: %d cells", n, int(mesh.cells.size()));
             cells << int(mesh.cells.size());
-            loops << loop.l;
         }
         QVERIFY2(*std::max_element(cells.begin(), cells.end()) <= 6 * *std::min_element(cells.begin(), cells.end()),
                  qPrintable(QStringLiteral("%1, %2, %3 cells").arg(cells.at(0)).arg(cells.at(1)).arg(cells.at(2))));
-        for (const double l : std::as_const(loops))
-            QVERIFY2(std::abs(l / loops.first() - 1) < 0.01, qPrintable(QStringLiteral("%1 nH against %2").arg(l * 1e9).arg(loops.first() * 1e9)));
         // A disc of 100 µm, and a plane of 1 mm with a round opening of 100,
         // keyholed, each of 180 segments: snapped by a twentieth of their
         // width - 5 µm, 19 - the corners near a cap, where neither side

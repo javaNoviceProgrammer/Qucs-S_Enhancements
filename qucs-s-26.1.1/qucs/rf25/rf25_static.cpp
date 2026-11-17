@@ -337,14 +337,47 @@ constexpr double kBesideWidths = 1.5;
 // left C 0.4 % high on a 50 Ohm line, and the answer depending on how the
 // cells were stretched (the full-wave solve's low-frequency check, 1
 // November).
+/// The average over \a rect of 1/R from \a point, \a z under or over it,
+/// by Gauss-Legendre's rule of \a points (2 or 3) a side: where \a z is a
+/// cell's side or more, within 1.4e-4 of rectanglePotential() by three a side
+/// and 2.4e-4 by two at two sides (the point at its centre, the worst), at a
+/// fraction of its four corners' logarithms and arctangents.
+double gaussPotential(const QRectF& rect, const QPointF& point, double z, int points)
+{
+    static const double x2[2] = {-0.57735026918962576, 0.57735026918962576}, w2[2] = {1, 1};
+    static const double x3[3] = {-0.77459666924148338, 0, 0.77459666924148338}, w3[3] = {5.0 / 9, 8.0 / 9, 5.0 / 9};
+    const double* x = points == 3 ? x3 : x2;
+    const double* w = points == 3 ? w3 : w2;
+    const double cx = rect.center().x() - point.x(), cy = rect.center().y() - point.y();
+    const double hx = rect.width() / 2, hy = rect.height() / 2;
+    double sum = 0;
+    for (int i = 0; i < points; ++i)
+        for (int j = 0; j < points; ++j) {
+            const double dx = cx + x[i] * hx, dy = cy + x[j] * hy;
+            sum += w[i] * w[j] / std::sqrt(dx * dx + dy * dy + z * z);
+        }
+    return sum / 4;
+}
+
 double cellPotential(const QPointF& at, const QRectF& rect, const Green& g, double side, bool self)
 {
     const double distance = std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y());
     if (self || distance < kNearWidths * side) {
         const double within = self || distance < kBesideWidths * side ? kNearImages * side : 0;
         const QList<Green::Image> terms = g.strongestTerms(kMostNear, within);
+        // (An image a cell's side or more away in z over the cell by Gauss's
+        //  rule, nearer in closed form: the closed form for every near image
+        //  out to four sides had a coplanar line over a ground 2 µm down
+        //  take 20 s an extraction of 5500 cells, its logarithms the most of
+        //  it - CI's timeouts of 5821c258.)
+        const double longest = std::max(rect.width(), rect.height());
         double sum = 0;
-        for (const Green::Image& t : terms) sum += t.a * rectanglePotential(rect, at, t.z);
+        for (const Green::Image& t : terms) {
+            const double depth = std::abs(t.z);
+            sum += t.a * (depth < longest       ? rectanglePotential(rect, at, t.z)
+                          : depth < 2 * longest ? gaussPotential(rect, at, t.z, 3)
+                                                : gaussPotential(rect, at, t.z, 2));
+        }
         return sum / (4 * M_PI * g.epsilon()) + g.beyondStrongest(distance, kMostNear, within);
     }
     return g.potential(distance);

@@ -261,6 +261,31 @@ bool says(const QStringList& lines, const char* words)
     return false;
 }
 
+/// A MIM's stack: an oxide 5 µm thick under M1, the MIM dielectric (6.892,
+/// 40 nm) up to M2, and 2 µm of oxide over it.
+rf::Stack mimStack()
+{
+    rf::Stack st = layered({{4.1, 5e-6}});
+    rf::Layer gap;
+    gap.kind = rf::Layer::Dielectric;
+    gap.name = QStringLiteral("MIM");
+    gap.tag = QStringLiteral("mim");
+    gap.thickness = 40e-9;
+    gap.epsr = 6.892;
+    rf::Layer top;
+    top.kind = rf::Layer::Metal;
+    top.name = QStringLiteral("M2");
+    top.tag = QStringLiteral("m2");
+    rf::Layer over;
+    over.kind = rf::Layer::Dielectric;
+    over.name = QStringLiteral("OX");
+    over.tag = QStringLiteral("ox");
+    over.thickness = 2e-6;
+    over.epsr = 4.1;
+    st.layers << gap << top << over;
+    return st;
+}
+
 } // namespace
 
 class TestRf25Static : public QObject
@@ -923,24 +948,7 @@ private slots:
     // cells (P29), at 5 µm.
     void aMimsPlatesFaceEachOtherCellForCell()
     {
-        rf::Stack st = layered({{4.1, 5e-6}});
-        rf::Layer gap;
-        gap.kind = rf::Layer::Dielectric;
-        gap.name = QStringLiteral("MIM");
-        gap.tag = QStringLiteral("mim");
-        gap.thickness = 40e-9;
-        gap.epsr = 6.892;
-        rf::Layer top;
-        top.kind = rf::Layer::Metal;
-        top.name = QStringLiteral("M2");
-        top.tag = QStringLiteral("m2");
-        rf::Layer over;
-        over.kind = rf::Layer::Dielectric;
-        over.name = QStringLiteral("OX");
-        over.tag = QStringLiteral("ox");
-        over.thickness = 2e-6;
-        over.epsr = 4.1;
-        st.layers << gap << top << over;
+        const rf::Stack st = mimStack();
         const auto solved = [&st](double side, double cell, QStringList* warned = nullptr, QStringList* lines = nullptr) {
             rf::Conductor plate = strip(0, 0, side, side);
             plate.layer = QStringLiteral("M2");
@@ -974,41 +982,11 @@ private slots:
         solved(80, 10, &warned);
         QVERIFY2(warned.join(' ').contains(QStringLiteral("times the gap")), qPrintable(warned.join(" | ")));
 
-        // Plates neither of which is a plate of the other (the review of
-        // 26ff2805): a 10 µm plate over a 30 µm one, two over one bottom
-        // plate, and a plate with its feed - each cut at the other's edges,
-        // their C at 5 µm cells within 2 % of 0.625 µm's, where misaligned
-        // they read as low as P28's.
         const auto on2 = [](double x, double y, double w, double h) {
             rf::Conductor c = strip(x, y, w, h);
             c.layer = QStringLiteral("M2");
             return c;
         };
-        rf::Conductor fed = on2(0, 0, 10, 10);
-        fed.outline = QPolygonF({QPointF(0, 0), QPointF(10, 0), QPointF(10, 4), QPointF(30, 4), QPointF(30, 6), QPointF(10, 6), QPointF(10, 10), QPointF(0, 10)});
-        const QList<QList<rf::Conductor>> layouts{{strip(-7.3, -8.1, 31, 29.3), on2(0, 0, 10, 10)},
-                                                  {strip(-7.3, -8.1, 61, 29.3), on2(0, 0, 10, 10), on2(23.7, 0, 10, 10)},
-                                                  {strip(-0.6, -0.6, 11.2, 11.2), fed}};
-        for (const QList<rf::Conductor>& layout : layouts) {
-            const auto c = [&](double cell, QStringList* said) {
-                rf::MeshSettings how;
-                how.maximum = cell * 1e-6;
-                how.cellsAcross = 0;
-                const rf::Mesh mesh = rf::meshOf(layout, how, st, 1e9);
-                *said = mesh.lines + mesh.warnings;
-                const rf::Extraction e = rf::extract(mesh, layout, st);
-                double between = 0;
-                for (int j = 1; j < int(e.maxwell.size()); ++j) between -= e.maxwell.at(0).at(j);
-                return std::make_pair(e.ok() ? between : 0.0, int(mesh.cells.size()));
-            };
-            QStringList said;
-            const auto atFine = c(0.625, &said);
-            const auto atCoarse = c(5, &said);
-            qWarning("%d conductor(s): %g fF at 5 um, %d cells; %g at 0.625, %d cells", int(layout.size()), atCoarse.first * 1e15, atCoarse.second,
-                     atFine.first * 1e15, atFine.second);
-            QVERIFY2(std::abs(atCoarse.first / atFine.first - 1) < 0.02,
-                     qPrintable(QStringLiteral("%1 fF at 5 µm cells, %2 at 0.625 | %3").arg(atCoarse.first * 1e15).arg(atFine.first * 1e15).arg(said.join(" | "))));
-        }
         // An octagonal plate's slanted parts, which nothing aligns: said, with
         // how coarse its cells are against the gap.
         {
@@ -1028,6 +1006,57 @@ private slots:
             QVERIFY2(said(2).contains(QStringLiteral("cells cannot be aligned")), qPrintable(said(2)));
         }
 
+    }
+
+    // Plates neither of which is a plate of the other (the review of
+    // 26ff2805), cut at each other's edges. (Apart from the MIM's own checks:
+    // the three were 21 s of that function's 80 here, past CI's limits; a slow
+    // build takes 1.25 µm cells for the fine reference, not 0.625.)
+    void platesNeitherAPlateOfTheOtherAreCutAtEachOther()
+    {
+        const rf::Stack st = mimStack();
+        const auto on2 = [](double x, double y, double w, double h) {
+            rf::Conductor c = strip(x, y, w, h);
+            c.layer = QStringLiteral("M2");
+            return c;
+        };
+        // (The review of
+        // 26ff2805): a 10 µm plate over a 30 µm one, two over one bottom
+        // plate, and a plate with its feed - each cut at the other's edges,
+        // their C at 5 µm cells within 2 % of 0.625 µm's, where misaligned
+        // they read as low as P28's.
+        rf::Conductor fed = on2(0, 0, 10, 10);
+        fed.outline = QPolygonF({QPointF(0, 0), QPointF(10, 0), QPointF(10, 4), QPointF(30, 4), QPointF(30, 6), QPointF(10, 6), QPointF(10, 10), QPointF(0, 10)});
+        const QList<QList<rf::Conductor>> layouts{{strip(-7.3, -8.1, 31, 29.3), on2(0, 0, 10, 10)},
+                                                  {strip(-7.3, -8.1, 61, 29.3), on2(0, 0, 10, 10), on2(23.7, 0, 10, 10)},
+                                                  {strip(-0.6, -0.6, 11.2, 11.2), fed}};
+        for (const QList<rf::Conductor>& layout : layouts) {
+            const auto c = [&](double cell, QStringList* said) {
+                rf::MeshSettings how;
+                how.maximum = cell * 1e-6;
+                how.cellsAcross = 0;
+                const rf::Mesh mesh = rf::meshOf(layout, how, st, 1e9);
+                *said = mesh.lines + mesh.warnings;
+                const rf::Extraction e = rf::extract(mesh, layout, st);
+                double between = 0;
+                for (int j = 1; j < int(e.maxwell.size()); ++j) between -= e.maxwell.at(0).at(j);
+                return std::make_pair(e.ok() ? between : 0.0, int(mesh.cells.size()));
+            };
+            QStringList said;
+            const auto atFine = c(slowBuild() ? 1.25 : 0.625, &said);
+            const auto atCoarse = c(5, &said);
+            qWarning("%d conductor(s): %g fF at 5 um, %d cells; %g at 0.625, %d cells", int(layout.size()), atCoarse.first * 1e15, atCoarse.second,
+                     atFine.first * 1e15, atFine.second);
+            QVERIFY2(std::abs(atCoarse.first / atFine.first - 1) < 0.02,
+                     qPrintable(QStringLiteral("%1 fF at 5 µm cells, %2 at 0.625 | %3").arg(atCoarse.first * 1e15).arg(atFine.first * 1e15).arg(said.join(" | "))));
+        }
+    }
+
+    // A line near a lower metal cut at its edges, not into a tartan. (Apart
+    // from the MIM's checks: its 25 µm reference was 47 s of that function's
+    // 80 here.)
+    void aLineNearALowerMetalIsCutAtItsEdges()
+    {
         // Ordinary layouts with a lower metal near: a coplanar line over a
         // ground 2 µm below, and three tracks over a shield, at 50 µm cells.
         // Shared lines across whole pieces made a tartan of each (the review
@@ -1058,7 +1087,10 @@ private slots:
             QList<rf::Conductor> shield{strip(-200, -200, 1400, 600), on2(0, 0, 1000, 20), on2(0, 90, 1000, 20), on2(0, 180, 1000, 20)};
             rf::MeshSettings how;
             how.maximum = 50e-6;
-            if (gap < 1e-5) {
+            // (Its C on a slow build not: its two extractions were 27 s here
+            //  in Release, the meshes themselves milliseconds, and a smaller
+            //  line left the two meshes alike, the check empty.)
+            if (gap < 1e-5 && !slowBuild()) {
                 double signal[2] = {0, 0};
                 for (int k = 0; k < 2; ++k) {
                     rf::MeshSettings at = how;
@@ -1189,9 +1221,12 @@ private slots:
             *said = e.lines;
             return std::make_pair(e.ok() ? -e.maxwell.at(0).at(1) : 0.0, int(mesh.cells.size()));
         };
-        for (const bool faces : {false, true}) {
+        // (A slow build its sheets alone, against 1.25 µm cells - eight times
+        //  finer than the coarse one's still: the whole was 30 s here in
+        //  Release, the stack's hundreds of images' tables the most of it.)
+        for (const bool faces : slowBuild() ? QList<bool>{false} : QList<bool>{false, true}) {
             QStringList said;
-            const auto fine = solved(faces, 0.625, 0, &said);
+            const auto fine = solved(faces, slowBuild() ? 1.25 : 0.625, 0, &said);
             const auto coarse = solved(faces, 4000, 1, &said);
             qWarning("%s: %g fF on %d cells, %g on %d", faces ? "faces" : "sheets", coarse.first * 1e15, coarse.second, fine.first * 1e15, fine.second);
             QVERIFY2(coarse.second <= 20, qPrintable(QString::number(coarse.second)));
