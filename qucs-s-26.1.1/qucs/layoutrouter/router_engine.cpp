@@ -1692,8 +1692,14 @@ bool Router::Impl::search(int n, const std::vector<std::pair<quint64, float>>& s
             const std::uint8_t a1 = statAt(lowT, v, c), a2 = statAt(upT, v + 1, c);
             if (a1 == Blocked || a2 == Blocked) continue;
             // Not within a cut's spacing of the net's last via on its way here
+            // when that one is on the same cut layer - back the way it came
             // (squares apart by their spacing: up to viaGap cells, or so many
-            // steps along a diagonal walk).
+            // steps along a diagonal walk). A via of the other pair is no
+            // matter: stacked on it or beside it, its cuts are on another
+            // layer. (Held for every pair, the test made A* lose ways: which
+            // move reached a cell decides it, and a cell is closed once - a
+            // signal kept off a metal by its width rule, reaching its pad
+            // under the metal on a via, could go no further up.)
             bool nearVia = false;
             {
                 const Via& here = t.vias.at(def);
@@ -1703,6 +1709,7 @@ bool Router::Impl::search(int n, const std::vector<std::pair<quint64, float>>& s
                 for (int k = 0; k < 2 * viaGap + 2 && !nearVia; ++k) {
                     const std::uint8_t m = b.from[back];
                     if (m == Up || m == Down) {
+                        if ((m == Up ? l - 1 : l) != v) break;   // (the other pair's)
                         const double dx = double(std::max<Coord>(0, std::abs(Coord(bi - (i - wi0))) * pitch - size));
                         const double dy = double(std::max<Coord>(0, std::abs(Coord(bj - (j - wj0))) * pitch - size));
                         nearVia = dx * dx + dy * dy < double(gap) * double(gap) || (bi == i - wi0 && bj == j - wj0);
@@ -1996,7 +2003,8 @@ QString Router::Impl::diagnose(int n, Pt* where)
     }
     if (failedLeg == 0) {
         *where = st.terminals.front().point;
-        return QStringLiteral("no way within its guide's band: the guide may cross something it cannot");
+        if (st.hasGuide) return QStringLiteral("no way within its guide's band: the guide may cross something it cannot");
+        return QStringLiteral("no way found clear of the other nets' lines, though one is there past them");
     }
     *where = nearest;
     // What is in the way there: the nearest fixed thing to that point, on its way to the pad.
@@ -2203,6 +2211,11 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
             for (std::size_t k = 0; k < batch.size(); ++k) {
                 const int n = batch[k];
                 if (!found[k]) found[k] = route(n, strict, present, *buffers[0], true);
+                // Negotiated: before a net is called unroutable, the search
+                // the diagnosis makes - the whole area, other nets no cost -
+                // whose way, if it finds one, is taken (to be negotiated from
+                // there like any other).
+                if (!found[k] && !strict) found[k] = route(n, false, 0.0, *buffers[0], true);
                 NetState& st = nets[std::size_t(n)];
                 if (found[k]) {
                     st.routed = true;
@@ -2468,9 +2481,27 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
 
 // ----------------------------------------------------------------------
 
+bool Problem::oriented() const
+{
+    for (const QVector<Shape>* shapes : {&metal, &cuts, &obstacles, &regions})
+        for (const Shape& s : *shapes)
+            if (area2(s.outline) < 0) return false;
+    for (const KeepOut& k : keepOuts)
+        if (area2(k.outline) < 0) return false;
+    return true;
+}
+
+void Problem::orient()
+{
+    for (QVector<Shape>* shapes : {&metal, &cuts, &obstacles, &regions})
+        for (Shape& s : *shapes) router::orient(&s.outline);
+    for (KeepOut& k : keepOuts) router::orient(&k.outline);
+}
+
 Router::Router(Problem problem) : d(std::make_unique<Impl>())
 {
     d->p = std::move(problem);
+    d->p.orient();
 }
 
 Router::~Router() = default;

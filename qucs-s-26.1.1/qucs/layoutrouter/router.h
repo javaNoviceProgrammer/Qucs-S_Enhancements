@@ -158,10 +158,17 @@ struct Technology {
     int viaFor(int cls, const QVector<int>& netVias, int pair) const;
     /// The square a via lands on \a metal (its lower or upper one) under a
     /// line \a lineWidth wide: its landing, the line's width, the metal's
-    /// least width and the side its least area needs - the largest. µm.
+    /// least width and the side its least area needs (in whole steps of
+    /// two grids) - the largest. µm.
     double landing(int via, int metal, double lineWidth) const;
-    /// The notch rule on \a metal: its own, else 'notch'. µm.
-    double notchOn(int metal) const { return metal < metalNotch.size() && metalNotch.at(metal) > 0 ? metalNotch.at(metal) : notch; }
+    /// The notch rule on \a metal: its own notch rule, else the larger of
+    /// 'notch' and its spacing rule (which a deck holds between a net's own
+    /// shapes as much as between nets'). µm.
+    double notchOn(int metal) const
+    {
+        if (metal < metalNotch.size() && metalNotch.at(metal) > 0) return metalNotch.at(metal);
+        return std::max(notch, metal < metalSpacing.size() ? metalSpacing.at(metal) : 0.0);
+    }
     /// Whether a line of class \a cls may run on \a metal (the metal's least width).
     bool classOn(int cls, int metal) const { return metal >= minWidth.size() || classes.at(cls).width >= minWidth.at(metal) - 1e-9; }
 };
@@ -259,6 +266,11 @@ struct Problem {
 
     Coord units(double um) const { return Coord(std::llround(um / unit)); }
     double um(Coord u) const { return double(u) * unit; }
+
+    /// Whether every shape and keep-out runs counterclockwise, as the
+    /// router and its check want (orient() turns those that do not).
+    bool oriented() const;
+    void orient();
 };
 
 // ----------------------------------------------------------------------

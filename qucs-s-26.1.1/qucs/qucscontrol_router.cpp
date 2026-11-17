@@ -134,13 +134,15 @@ QJsonObject formatReference()
         {"spacing", "{same_layer, to_metal (metal of no net, and a net's metal that is not its terminal's shape), to_terminal (the shape another net's terminal is on), "
                     "notch (optional: narrower slots against a net's own metal filled, else found)}"},
         {"obstacles", "[{name, layer, clearance (0: no metal over it), metals (all), landings (a via may sit on a net's own contact in it)}]"},
-        {"rules", "[{name (as the deck has it: findings name it), type, layer, min, to | of | by}], 1000 at most; each honoured where lines are drawn and checked on them: "
+        {"rules", "[{name (as the deck has it: findings name it, so no two alike), type, layer, min, to | of | by}], 1000 at most; each honoured where lines are drawn "
+                  "and checked on them; a via's name in 'layer' means its cut layer (every via on it): "
                   "width (layer a metal: a class narrower never runs on it - it only lands there -, landings never narrower), "
-                  "spacing (a metal: least distance from new metal to all other metal there, other nets' lines too; a via, by name or layer \"3/0\": cut to cut; "
+                  "spacing (a metal: least distance from new metal to all other metal there, other nets' lines too, and its notch rule unless it has one; "
+                  "a via, by name or layer \"3/0\": cut to cut between vias, an array's own cuts as it gives them; "
                   "with 'to' a layer: as exclusion), exclusion (a metal, 'to' a layer: kept that far from its shapes), "
                   "inclusion (a metal, 'of' a layer: lines stay inside its shapes by min; a net's own metal is never in the way), "
                   "enclosure (a via, 'by' a metal it joins: its cuts inside that metal by min - the landing grown), "
-                  "area (a metal, µm²: each piece of a net's metal at least this - landings grown to it), notch (a metal: its own notch rule)"},
+                  "area (a metal, µm²: each piece of a net's metal at least this - landings grown to it, in whole steps of two grids), notch (a metal: its own notch rule)"},
         {"costs", "{bend 2, via 10, wrong_way 2} in lattice steps"},
         {"area", "{margin µm round the terminals (100), or box [x0, y0, x1, y1]}"},
         {"refused", "any key it does not know, by name; a length that is not a positive number in range"}};
@@ -350,6 +352,7 @@ void QucsControl::routeSetup(const QJsonObject& args, const Done& done)
             else job.nets.append(n);
         };
         if (call.value(QLatin1String("replace_nets")).toBool()) job.nets.clear();
+        QStringList given;   // the nets this call adds or replaces
         for (const QJsonValue& v : call.value(QLatin1String("nets")).toArray()) {
             JobNet n;
             if (!readNet(v, &n, &error)) {
@@ -357,6 +360,7 @@ void QucsControl::routeSetup(const QJsonObject& args, const Done& done)
                 return;
             }
             putNet(n);
+            given << n.name;
         }
         if (call.contains(QLatin1String("nets_csv"))) {
             QFile f(folder.absoluteFilePath(call.value(QLatin1String("nets_csv")).toString()));
@@ -369,7 +373,10 @@ void QucsControl::routeSetup(const QJsonObject& args, const Done& done)
                 done(errorResult(QFileInfo(f.fileName()).fileName() + QStringLiteral(": ") + error));
                 return;
             }
-            for (const JobNet& n : nets) putNet(n);
+            for (const JobNet& n : nets) {
+                putNet(n);
+                given << n.name;
+            }
         }
         for (const QJsonValue& v : call.value(QLatin1String("remove_nets")).toArray()) {
             const int i = job.netIndex(v.toString());
@@ -458,6 +465,25 @@ void QucsControl::routeSetup(const QJsonObject& args, const Done& done)
         s->job = job;
         Technology t;
         if (!s->technology(&t, &error)) {
+            s->job = before;
+            done(errorResult(error));
+            return;
+        }
+        // So must the class and vias of each net this call gives, against it
+        // (refused as a technology is, nothing kept).
+        for (const QString& name : std::as_const(given)) {
+            const JobNet& n = job.nets.at(job.netIndex(name));
+            bool ok = true;
+            if (!n.netClass.isEmpty() && t.classIndex(n.netClass) < 0) {
+                QStringList have;
+                for (const NetClass& c : t.classes) have << c.name;
+                error = tr("Net %1's class %2 is not in the technology (it has %3).").arg(n.name, n.netClass, have.join(QStringLiteral(", ")));
+                ok = false;
+            } else if (!n.vias.isEmpty()) {
+                QVector<int> choice;
+                ok = readViaChoice(t, QJsonArray::fromStringList(n.vias), &choice, QStringLiteral("Net %1").arg(n.name), &error);
+            }
+            if (ok) continue;
             s->job = before;
             done(errorResult(error));
             return;
