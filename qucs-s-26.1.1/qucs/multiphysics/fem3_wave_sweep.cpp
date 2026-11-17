@@ -112,7 +112,7 @@ void multiply(const RowSparse& S, const Eigen::MatrixXcd& X, Eigen::MatrixXcd& Y
 
 std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<ParameterScope> parameters, const Topology3& topology,
                                     std::shared_ptr<const Mesh3> mesh, const Wave3Settings& settings, const std::vector<double>& frequencies,
-                                    QStringList* log, QString* error)
+                                    QStringList* log, QString* error, const std::function<void(int, Wave3Result&)>& each)
 {
     QElapsedTimer timer;
     timer.start();
@@ -295,7 +295,8 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
     Eigen::MatrixXcd V(N, 0);
     Eigen::MatrixXcd Cr(0, 0);
     double factorBytes = 0;   // the last factorization's
-    bool capped = false;
+    bool capped = false;      // the basis at the memory's (or sweepColumns') ceiling
+    int lastGrowth = 0;       // columns the last exact solve added
     std::vector<Eigen::MatrixXcd> Mr(static_cast<std::size_t>(G));
     auto grow = [&](const Eigen::MatrixXcd& X) {
         // Orthonormal to V (twice: classical Gram-Schmidt), its columns
@@ -326,7 +327,9 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
         // (As many as the memory holds beside a factorization: the basis and
         // two of its size at work.)
         const double budget = (settings.memoryLimit > 0 ? settings.memoryLimit : physicalMemory() / 2) - factorBytes;
-        const int room = std::max(16, int(budget / (3 * 16.0 * N))) - int(V.cols());
+        int columns = std::max(16, int(budget / (3 * 16.0 * N)));
+        if (settings.sweepColumns > 0) columns = std::min(columns, settings.sweepColumns);
+        const int room = columns - int(V.cols());
         if (rank > room) {
             if (!capped && log)
                 *log << tr("The fast sweep's basis kept to %1 columns (the memory beside a factorization): more wavelengths solved exactly instead")
@@ -334,6 +337,7 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
             capped = true;
             rank = std::max(0, room);
         }
+        lastGrowth += rank;
         if (rank == 0) return 0;
         const Eigen::MatrixXcd Q = qr.householderQ() * Eigen::MatrixXcd::Identity(W.rows(), rank);
         // The projections grown: [Vᵀ A V, Vᵀ A Q; Qᵀ A V, Qᵀ A Q].
@@ -397,6 +401,7 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
         r.warnings = ports[std::size_t(k)].warnings;
         wave3::resultOfSolves(su, ports[std::size_t(k)], settings, f, backed, X, &r);
         exact[std::size_t(k)] = 1;
+        lastGrowth = 0;
         grow(X);
         // Its derivatives in k0, the factorization reused - each a solve, a
         // second where the factorization took forty: x' = K⁻¹ (b' - K' x),
@@ -460,7 +465,9 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
     };
     // A reduced solve at wavelength k: its result, its residual.
     double reducedSeconds = 0;
-    auto solveReduced = [&](int k, double* residual) -> bool {
+    Wave3Settings noFields = settings;
+    noFields.fieldsKept = 0;
+    auto solveReduced = [&](int k, double* residual, bool withFields) -> bool {
         QElapsedTimer t;
         t.start();
         const double f = frequencies[std::size_t(k)], k0 = 2 * M_PI * f / C0;
@@ -516,7 +523,7 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
         res.unknowns = N;
         res.portModes = ports[std::size_t(k)].portModes;
         res.warnings = ports[std::size_t(k)].warnings;
-        wave3::resultOfSolves(su, ports[std::size_t(k)], settings, f, backed, X, &res);
+        wave3::resultOfSolves(su, ports[std::size_t(k)], withFields ? settings : noFields, f, backed, X, &res);
         reducedSeconds += t.elapsed() / 1000.0;
         return true;
     };
@@ -542,13 +549,17 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
         ++solvedExactly;
     }
     std::vector<double> residual(static_cast<std::size_t>(Nf), 0.0);
-    // (Done when every residual is under the tolerance, or when the last
-    // wavelength solved exactly - where the residual was largest - moved no
-    // other one's S by more than it: an absorbing port's S, Galerkin's G =
-    // Uᵀ K⁻¹ U, right to some residual squared - a junction's to 9 digits
-    // where the residual was 1e-4 -, a port with a PML behind it's to some
-    // residual.)
-    int rounds = 0;
+    // Done when every residual is under the tolerance. Absorbing ports: or
+    // when two wavelengths solved exactly in turn - each where the residual
+    // was largest - moved no other one's S by more than it (their S,
+    // Galerkin's G = Uᵀ K⁻¹ U, right to some residual squared: a junction's
+    // to 9 digits where the residual was 1e-4). Ports with a PML behind them
+    // by the residual alone (their S, of the field at the monitors, right to
+    // some residual). The basis at its ceiling - an exact solve adding
+    // nothing more -, every wavelength still past the tolerance solved
+    // exactly (the rounds' S would stay as they were: no sign of their being
+    // right).
+    int rounds = 0, quiet = 0, finishedExactly = 0;
     double change = -1;
     std::vector<Eigen::MatrixXcd> before(static_cast<std::size_t>(Nf));
     for (;;) {
@@ -562,7 +573,7 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
                 *error = tr("cancelled");
                 return out;
             }
-            if (!solveReduced(k, &residual[std::size_t(k)])) return out;
+            if (!solveReduced(k, &residual[std::size_t(k)], false)) return out;
             ++evaluated;
             tell(std::min(0.95, progressOf()), tr("the reduced basis of %1 at %2 of %3 wavelengths").arg(V.cols()).arg(evaluated).arg(Nf - solvedExactly));
             if (residual[std::size_t(k)] > worst) {
@@ -575,7 +586,26 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
             before[std::size_t(k)] = S;
         }
         ++rounds;
-        if (at < 0 || worst <= tolerance || (change >= 0 && change <= tolerance)) break;
+        if (at < 0 || worst <= tolerance) break;
+        const bool full = capped || lastGrowth == 0;
+        if (full) {
+            for (int k : byFrequency) {
+                if (exact[std::size_t(k)] || residual[std::size_t(k)] <= tolerance) continue;
+                if (cancelled()) {
+                    *error = tr("cancelled");
+                    return out;
+                }
+                tell(std::min(0.95, progressOf()), tr("solved exactly at %1 (its residual %2; the basis full)").arg(formatQuantity(C0 / frequencies[std::size_t(k)], Dim::length())).arg(residual[std::size_t(k)], 0, 'g', 2));
+                if (!solveExactly(k)) return out;
+                ++solvedExactly;
+                ++finishedExactly;
+            }
+            break;
+        }
+        if (!backed && change >= 0 && change <= tolerance) {
+            if (++quiet >= 2) break;
+        } else
+            quiet = 0;
         tell(std::min(0.95, progressOf()), tr("solved exactly at %1 (its residual %2)").arg(formatQuantity(C0 / frequencies[std::size_t(at)], Dim::length())).arg(worst, 0, 'g', 2));
         if (!solveExactly(at)) return out;
         ++solvedExactly;
@@ -587,9 +617,9 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
         QStringList at;
         for (int k : byFrequency)
             if (exact[std::size_t(k)]) at << formatQuantity(C0 / frequencies[std::size_t(k)], Dim::length());
-        *log << tr("Fast sweep: %1 wavelengths, %2 solved exactly (%3; %4 %5 s, their derivatives %15 s), the rest on their solutions' reduced "
-                   "basis of %6 - its largest residual %7, S moved %16 by the last solved (tolerance %8), %9 rounds, %10 s; %11 unknowns (order %12), "
-                   "the ports' modes %13 s; %14 s in all")
+        *log << tr("Fast sweep: %1 wavelengths, %2 solved exactly (%3; %4 %5 s, their derivatives %15 s%17), the rest on their solutions' "
+                   "reduced basis of %6 - its largest residual %7, S moved %16 by the last solved (tolerance %8), %9 rounds, %10 s; %11 unknowns "
+                   "(order %12), the ports' modes %13 s; %14 s in all")
                     .arg(Nf)
                     .arg(solvedExactly)
                     .arg(at.join(QStringLiteral(", ")))
@@ -605,7 +635,27 @@ std::vector<Wave3Result> sweepWave3(const Model& model, std::shared_ptr<Paramete
                     .arg(portsMs / 1000.0, 0, 'f', 1)
                     .arg(timer.elapsed() / 1000.0, 0, 'f', 1)
                     .arg(momentSeconds, 0, 'f', 1)
-                    .arg(change >= 0 && std::isfinite(change) ? QString::number(change, 'g', 2) : tr("-"));
+                    .arg(change >= 0 && std::isfinite(change) ? QString::number(change, 'g', 2) : tr("-"))
+                    .arg(finishedExactly > 0 ? tr("; %1 of them past the tolerance where the basis was full").arg(finishedExactly) : QString());
+    }
+    // Each result handed over, in turn, as it is made: the rounds' made no
+    // field; each reduced one's made again now with its field (a reduced
+    // solve, a second or less), handed over and let go - not every
+    // wavelength's field held at once (16 bytes an unknown each: 16 GB for
+    // a million unknowns' thousand wavelengths).
+    for (int k = 0; k < Nf; ++k) {
+        if (cancelled()) {
+            *error = tr("cancelled");
+            return out;
+        }
+        if (!exact[std::size_t(k)] && settings.fieldsKept != 0) {
+            double res = 0;
+            if (!solveReduced(k, &res, true)) return out;
+        }
+        if (each) {
+            each(k, out[std::size_t(k)]);
+            std::vector<Eigen::VectorXcd>().swap(out[std::size_t(k)].fields);
+        }
     }
     tell(1.0, tr("done"));
     return out;
