@@ -4463,6 +4463,8 @@ private slots:
         const bool mirrored = std::abs(band.top() + 50) < 1e-6 && std::abs(band.bottom() - 80) < 1e-6;
         QVERIFY2((asDrawn || mirrored) && band.left() < -1000 && band.right() > 2000,
                  qPrintable(QStringLiteral("%1 to %2 across, %3 to %4 along").arg(band.top()).arg(band.bottom()).arg(band.left()).arg(band.right())));
+        // (The same band all along its feed: nothing said of it.)
+        QVERIFY2(!w->warnings.join(' ').contains(QStringLiteral("stands on a layer that ends otherwise")), qPrintable(w->warnings.join(" | ")));
         // The line de-embedded: its chain matrix.
         const auto& s = w->s.at(0);
         const double z0 = w->references.at(0);
@@ -4496,6 +4498,12 @@ private slots:
         QVERIFY2(std::abs(onBand.epsEff / d.epsEff - 1) < 1e-3 && onAir.epsEff < 1.2 && onBand.epsEff > 2 * onAir.epsEff,
                  qPrintable(QStringLiteral("P1's feed eps_eff %1 (on the whole band %2), P2's %3")
                                 .arg(onBand.epsEff).arg(d.epsEff).arg(onAir.epsEff)));
+        // Each feed's band changes along it - P1's ends half way, P2's begins
+        // there -: the strips have the section at the face, and it is said.
+        const QString warned = half->warnings.join(QStringLiteral(" | "));
+        QVERIFY2(warned.contains(QStringLiteral("P1's feed stands on a layer that ends otherwise"))
+                     && warned.contains(QStringLiteral("P2's feed stands on a layer that ends otherwise")),
+                 qPrintable(warned));
     }
 
     void aCoplanarPortIsReadAndItsFeedCalibrated()

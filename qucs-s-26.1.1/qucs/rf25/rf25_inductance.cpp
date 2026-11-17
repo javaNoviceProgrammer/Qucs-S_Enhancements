@@ -635,6 +635,48 @@ std::array<QLineF, 2> besideEdges(const QList<Conductor>& conductors, const QLin
     return out;
 }
 
+namespace {
+
+/// The whole side \a edge (an outline edge of a shape on \a layer) is part
+/// of: the edges before and after it that run on along its line, the same
+/// way, with it. An outline with a corner on a straight side, as one healed
+/// or not may have, split it, and a port's face was the cells along the
+/// piece its point was on - part of the side, its feed as narrow. (Not
+/// faceEdge()'s own: the exports want the outline's edge itself.)
+QLineF wholeSideOf(const QList<Conductor>& conductors, const QLineF& edge, const QString& layer)
+{
+    const QPointF d = edge.p2() - edge.p1();
+    const double len = std::hypot(d.x(), d.y());
+    if (!(len > 0)) return edge;
+    const auto onLine = [&](QPointF from, QPointF to) {
+        const QPointF e = to - from;
+        const double l = std::hypot(e.x(), e.y());
+        return l > 0 && std::abs(e.x() * d.y() - e.y() * d.x()) <= 1e-9 * l * len && e.x() * d.x() + e.y() * d.y() > 0;
+    };
+    for (const Conductor& c : conductors) {
+        if (c.layer != layer) continue;
+        const int n = int(c.outline.size());
+        for (int i = 0; i < n; ++i) {
+            if (c.outline.at(i) != edge.p1() || c.outline.at((i + 1) % n) != edge.p2()) continue;
+            QPointF from = edge.p1(), to = edge.p2();
+            for (int k = 1; k < n; ++k) {
+                const QPointF p0 = c.outline.at(((i - k) % n + n) % n), p1 = c.outline.at(((i - k + 1) % n + n) % n);
+                if (!onLine(p0, p1)) break;
+                from = p0;
+            }
+            for (int k = 1; k < n; ++k) {
+                const QPointF p0 = c.outline.at((i + k) % n), p1 = c.outline.at((i + k + 1) % n);
+                if (!onLine(p0, p1)) break;
+                to = p1;
+            }
+            return QLineF(from, to);
+        }
+    }
+    return edge;
+}
+
+} // namespace
+
 QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const QList<int>& reached, QPointF where,
                      QPointF* onLine, QPointF* alongLine, const QString& layer, QPointF facing)
 {
@@ -672,6 +714,7 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
     QLineF edge;
     QString onLayer;
     faceEdge(conductors, where, layer, facing, &edge, nullptr, &onLayer);
+    if (!onLayer.isEmpty()) edge = wholeSideOf(conductors, edge, onLayer);
     const QPointF p = edge.p1(), q = edge.p2();
     if (onLayer.isEmpty()) {
         // No edge of that layer facing that way: the cell nearest it.

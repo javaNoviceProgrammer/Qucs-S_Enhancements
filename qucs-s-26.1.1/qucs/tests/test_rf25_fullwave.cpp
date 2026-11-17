@@ -967,6 +967,31 @@ private slots:
         }
     }
 
+    // A port's face is its conductor's whole side, though corners on it split
+    // it: an outline with two corners on the line's end - as one healed or
+    // not may have - drove the cells along the piece the port's point was on,
+    // two of the side's six, its feed 30 µm wide where the line is 50; now
+    // the line's own face, its S the line's.
+    void aPortsFaceIsItsWholeSide()
+    {
+        const rf::Stack st = grounded(9.8, 100e-6);
+        const rf::Conductor whole = strip(0, 0, 1000, 50);
+        rf::Conductor split = whole;
+        split.outline = QPolygonF({QPointF(0, 0), QPointF(1000, 0), QPointF(1000, 50), QPointF(0, 50), QPointF(0, 30), QPointF(0, 10)});
+        QList<rf::FullWave> solved;
+        for (const rf::Conductor& c : {whole, split}) {
+            const rf::Mesh mesh = meshed({c}, 4, 100e-6);
+            solved << rf::fullWaveOf(mesh, {c}, st, {edgePort(QPointF(0, 35)), edgePort(QPointF(1000, 25))}, {10e9});
+            QVERIFY2(solved.last().ok(), qPrintable(why(solved.last())));
+        }
+        QCOMPARE(solved.at(1).feeds.at(0).width, 50.0);
+        QCOMPARE(solved.at(1).portsSaid.at(0).section(QLatin1Char(' '), 0, 3), solved.at(0).portsSaid.at(0).section(QLatin1Char(' '), 0, 3));
+        double most = 0;
+        for (int i = 0; i < 2; ++i)
+            for (int j = 0; j < 2; ++j) most = std::max(most, std::abs(solved.at(1).s.at(0).at(i).at(j) - solved.at(0).s.at(0).at(i).at(j)));
+        QVERIFY2(most < 1e-9, qPrintable(QStringLiteral("S %1 apart; %2 against %3").arg(most).arg(solved.at(1).portsSaid.at(0), solved.at(0).portsSaid.at(0))));
+    }
+
     // Past its low-frequency limit a solve says so (N4 of the open items: a
     // spiral at 10 Hz read S21 -118 dB, an open, with nothing but GMRES's
     // iterations said): a copper line's charges' term outweighs its
