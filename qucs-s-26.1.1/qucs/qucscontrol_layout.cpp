@@ -1240,7 +1240,7 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         }
     }
 
-    withLayout(args, true, [=](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
+    withLayout(args, true, [=, this](std::shared_ptr<const Layout> layout, LayoutDoc* doc) {
         if (doc == nullptr) {
             done(errorResult(tr("%1 is not open as a layout.").arg(QFileInfo(layout->file).fileName())));
             return;
@@ -1449,12 +1449,35 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         }
         auto lit = std::make_shared<QJsonArray>();
         auto notLit = std::make_shared<QStringList>();
+        auto at = std::make_shared<int>(0);          // the net being traced
+        auto answered = std::make_shared<bool>(false);
+        const auto finishOnce = [=](const QJsonArray& netsLit, const QStringList& netsNot) {
+            if (*answered) return;
+            *answered = true;
+            finish(netsLit, netsNot);
+        };
+        // The tab closed while a net is traced: its trace's answer is
+        // dropped with the tab, so the call is answered here - the nets lit
+        // so far, and the rest not lit (the review of 92543b5e).
+        connect(doc, &QObject::destroyed, this, [=] {
+            if (*answered) return;
+            *answered = true;
+            QStringList left = *notLit;
+            if (*at < netsAsked.size())
+                left << tr("%n net(s) not traced: the layout's tab was closed while they were", "", int(netsAsked.size() - *at));
+            QJsonObject result{{QStringLiteral("file"), QDir::toNativeSeparators(layout->file)},
+                               {QStringLiteral("closed"), tr("the layout's tab was closed while its nets were traced")},
+                               {QStringLiteral("nets not lit"), QJsonArray::fromStringList(left)}};
+            if (!lit->isEmpty()) result.insert(QStringLiteral("nets lit"), *lit);
+            done(jsonResult(result));
+        });
         const NetConnectivity connectivity = doc->netConnectivity();
         auto step = std::make_shared<std::function<void(int)>>();
         const std::weak_ptr<std::function<void(int)>> self = step;
         *step = [=](int i) {
+            *at = i;
             if (!held || i >= netsAsked.size()) {
-                finish(*lit, *notLit);
+                finishOnce(*lit, *notLit);
                 return;
             }
             QString said, error;

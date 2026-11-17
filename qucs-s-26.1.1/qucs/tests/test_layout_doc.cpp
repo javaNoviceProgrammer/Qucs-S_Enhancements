@@ -4126,6 +4126,21 @@ private slots:
         QVERIFY(doc->highlightSelectedNet());
         QVERIFY(doc->isTracingNet());
         closeAll();
+        // show_layout's tab closed while its net is traced: answered all the
+        // same (the trace's answer goes with the tab), the net not lit.
+        doc = open(path("chain.gds"));
+        QVERIFY(doc != nullptr);
+        answered = false;
+        j = {};
+        control->callTool("show_layout", {{"path", "chain.gds"}, {"highlight_net", QJsonObject{{"at", QJsonArray{1, 0.5}}, {"layer", "1/0"}}}},
+                          [&](const QJsonObject& r) {
+                              j = json(r);
+                              answered = true;
+                          });
+        QTRY_VERIFY(doc->isTracingNet());
+        closeAll();
+        QTRY_VERIFY_WITH_TIMEOUT(answered, 30000);
+        QVERIFY2(j.value("nets not lit").toArray().first().toString().contains("tab was closed"), qPrintable(QJsonDocument(j).toJson()));
     }
 
     void find_shapesFindsByPlaceAndLayer()
