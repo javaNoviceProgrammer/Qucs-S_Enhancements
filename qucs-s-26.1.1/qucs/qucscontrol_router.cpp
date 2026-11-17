@@ -132,7 +132,7 @@ QJsonObject formatReference()
         {"classes", "[{name, width, spacing (to another net's line; the larger of the two classes'), vias [names: the class's own via between those metals]}], 1 to 32"},
         {"default_class", "a class's name (the first)"},
         {"spacing", "{same_layer, to_metal (metal of no net, and a net's metal that is not its terminal's shape), to_terminal (the shape another net's terminal is on), "
-                    "notch (optional: narrower slots against a net's own metal filled, else found)}"},
+                    "notch (narrower slots against a net's own metal filled, else found; same_layer when not given, 0 for none)}"},
         {"obstacles", "[{name, layer, clearance (0: no metal over it), metals (all), landings (a via may sit on a net's own contact in it)}]"},
         {"rules", "[{name (as the deck has it: findings name it, so no two alike), type, layer, min, to | of | by}], 1000 at most; each honoured where lines are drawn "
                   "and checked on them; a via's name in 'layer' means its cut layer (every via on it): "

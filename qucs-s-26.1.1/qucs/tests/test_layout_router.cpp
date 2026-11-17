@@ -1567,12 +1567,13 @@ private slots:
 
     void aMetalsOwnNotchRuleIsFilled()
     {
-        // The notch scene, the rule M1's own (no notch in 'spacing'): a
+        // The notch scene, the rule M1's own ('spacing' with its notch 0): a
         // notch rule, or a spacing rule alone (a deck's spacing holds
         // between a net's own shapes too).
         for (const char* type : {"notch", "spacing"}) {
             const QString name = QLatin1String(type) == QLatin1String("notch") ? QStringLiteral("M1.N.1") : QStringLiteral("M1.S.1");
             QJsonObject o = techJson();
+            o.insert("spacing", QJsonObject{{"same_layer", 2}, {"to_metal", 2}, {"to_terminal", 2}, {"notch", 0}});
             o.insert("rules", QJsonArray{QJsonObject{{"name", name}, {"type", type}, {"layer", "M1"}, {"min", 5}}});
             Problem p = problemOf(tech(o));
             QCOMPARE(p.tech.notch, 0.0);
@@ -1600,6 +1601,53 @@ private slots:
         o.insert("rules", QJsonArray{QJsonObject{{"name", "M1.S.1"}, {"type", "spacing"}, {"layer", "M1"}, {"min", 6}},
                                      QJsonObject{{"name", "M1.N.1"}, {"type", "notch"}, {"layer", "M1"}, {"min", 3}}});
         QCOMPARE(tech(o).notchOn(0), 3.0);
+    }
+
+    void aSlotInsideOneNetIsHeldToItsSpacingByDefault()
+    {
+        // No notch in 'spacing', and no rules: a slot inside one net is held
+        // to 'same_layer', as a deck holds its spacing inside a net too. The
+        // notch scene's 4 µm slot under a spacing of 5: found, then filled.
+        Problem p = problemOf(tech(techJson(2, 5)));
+        QCOMPARE(p.tech.notch, 5.0);
+        QCOMPARE(p.tech.notchOn(0), 5.0);
+        QCOMPARE(p.tech.notchOn(1), 5.0);
+        p.metal.append({rect(p, 0, 0, 100, 4), 0});
+        p.nets = {net("n", at(p, 95, 2, -1, Terminal::Mode::Exact), at(p, 10, 9, 0, Terminal::Mode::Exact))};
+        NetResult x;
+        x.status = NetResult::Status::Routed;
+        x.runs = {Run{0, {p.units(95), p.units(2)}, {p.units(95), p.units(9)}, p.units(2)}, Run{0, {p.units(95), p.units(9)}, {p.units(10), p.units(9)}, p.units(2)}};
+        {
+            Router router(p);
+            QVERIFY(router.prepare());
+            Result r;
+            r.nets = {x};
+            const Verification before = verify(router.problem(), r);
+            QCOMPARE(before.findings.size(), 1);
+            QCOMPARE(before.findings[0].kind, QStringLiteral("notch"));
+            QCOMPARE(before.findings[0].required, 5.0);
+            fillNotches(router.problem(), &r);
+            QCOMPARE(r.nets[0].fills.size(), 1);
+            QVERIFY2(verify(router.problem(), r).clean(), qPrintable(describe(verify(router.problem(), r))));
+        }
+        // Written back as read.
+        QString e;
+        QCOMPARE(readTechnology(technologyJson(p.tech), &e).notch, 5.0);
+        // A notch of 0 given: slots inside a net not looked at.
+        QJsonObject o = techJson(2, 5);
+        o.insert("spacing", QJsonObject{{"same_layer", 5}, {"to_metal", 5}, {"to_terminal", 5}, {"notch", 0}});
+        Problem q = problemOf(tech(o));
+        QCOMPARE(q.tech.notchOn(0), 0.0);
+        QCOMPARE(readTechnology(technologyJson(q.tech), &e).notch, 0.0);
+        q.metal = p.metal;
+        q.nets = p.nets;
+        Router router(q);
+        QVERIFY(router.prepare());
+        Result r;
+        r.nets = {x};
+        QVERIFY2(verify(router.problem(), r).clean(), qPrintable(describe(verify(router.problem(), r))));
+        fillNotches(router.problem(), &r);
+        QVERIFY(r.nets[0].fills.isEmpty());
     }
 
     void designRulesAreReadAndRefusedByName()

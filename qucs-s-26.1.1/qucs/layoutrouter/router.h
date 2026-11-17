@@ -130,7 +130,8 @@ struct Technology {
     double toTerminal = 0;      ///< to another net's contact or pad (the shapes its terminals are on), µm
     /// A slot narrower than this between a net's line and its own metal is
     /// filled with the net's metal where that keeps clear, and is a finding
-    /// where it cannot be; 0: neither.
+    /// where it cannot be; 0: neither. Read as 'same_layer' when the
+    /// technology does not give it.
     double notch = 0;
     QVector<ObstacleRule> obstacles;
     /// The design rules as given, and what they come to by metal (index):

@@ -591,6 +591,19 @@ private slots:
         QVERIFY(panel);
         QVERIFY(panel->isVisible());
         QCOMPARE(panel->setTechnology("tech.json"), QString());
+        // The field set through set_ui in the document's area, as Return
+        // there: the panel takes the file (it goes by editingFinished, which
+        // set_ui gave a document's field none of).
+        QVERIFY(QFile::copy(path("tech.json"), path("tech2.json")));
+        QString field;   // (as get_ui names it)
+        const QJsonValue ui = json(call("get_ui", {{"area", "document"}}));
+        for (const QJsonValue& c : ui.toObject().value("controls").toArray())
+            if (c.toObject().value("value").toString() == QLatin1String("tech.json")) field = c.toObject().value("label").toString();
+        QVERIFY2(!field.isEmpty(), QJsonDocument(ui.toObject()).toJson(QJsonDocument::Compact).left(3000).constData());
+        const QJsonObject set = call("set_ui", {{"area", "document"}, {"set", QJsonArray{QJsonObject{{"control", field}, {"value", "tech2.json"}}}}});
+        QVERIFY2(!failed(set), qPrintable(text(set)));
+        QCOMPARE(panel->session()->job.technologyFile, QStringLiteral("tech2.json"));
+        QCOMPARE(panel->setTechnology("tech.json"), QString());
 
         // Two nets, clicked: contact then pad.
         panel->beginNet();
