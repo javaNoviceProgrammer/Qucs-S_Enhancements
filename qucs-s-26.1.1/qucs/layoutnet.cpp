@@ -149,6 +149,22 @@ bool connectivityBeside(const Layout& layout, NetConnectivity* out, QString* why
     return true;
 }
 
+NetTracing traceNetLater(std::shared_ptr<const Layout> layout, NetTrace trace, QObject* context, std::function<void(const TracedNet&)> then)
+{
+    NetTracing going;
+    going.cancel = std::make_shared<std::atomic_bool>(false);
+    auto result = std::make_shared<TracedNet>();
+    trace.cancel = going.cancel.get();   // (held by the thread's function below)
+    const std::shared_ptr<std::atomic_bool> cancel = going.cancel;
+    QThread* thread = QThread::create([layout, trace, result, cancel] { *result = traceNet(*layout, trace); });
+    thread->setStackSize(8u << 20);   // (a main thread's: a thread's is 512 kB on macOS)
+    QObject::connect(thread, &QThread::finished, context, [result, then] { then(*result); });
+    QObject::connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    going.thread = thread;
+    thread->start();
+    return going;
+}
+
 QVector<Found> seedsAt(const Layout& layout, int cell, QPointF point, int layer, const NetConnectivity& connectivity)
 {
     QVector<int> order;   // the metals, bottom first

@@ -265,6 +265,19 @@ void writeNets(const QString& path, bool job)
     f.write(QJsonDocument(QJsonObject{{"layout", QFileInfo(path).fileName()}, {"technology", technology}}).toJson());
 }
 
+/// A net of \a links rectangles on 1/0, each overlapping the next: (2i, 0)-
+/// (2i + 3, 1) - long enough to trace that a stop lands while it goes.
+void writeChain(const QString& path, int links)
+{
+    gdstk::Library lib = {};
+    lib.init("CHAIN", 1e-6, 1e-9);
+    gdstk::Cell* top = newCell(lib, "TOP");
+    for (int i = 0; i < links; ++i) addRectangle(top, {2.0 * i, 0}, {2.0 * i + 3, 1}, 1);
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QCOMPARE(lib.write_gds(QFile::encodeName(path).constData(), 0, nullptr), gdstk::ErrorCode::NoError);
+    lib.free_all();
+}
+
 /// A hostile hierarchy: a chain of \a depth cells, each placing the next
 /// (the last a rectangle on 1/0); \a cycle a pair placing each other and
 /// one placing itself; \a array a reference repeated 65535 by 65535.
@@ -3997,26 +4010,32 @@ private slots:
         LayoutView* view = doc->view();
         view->showRegion(QRectF(-20, -20, 140, 100));
         QVERIFY(!doc->netList()->isVisible());
-        // A shape selected, its net lit: the net in the side's list.
+        // A shape selected, its net traced in a thread of its own - said in
+        // the info line while it goes - and lit: the net in the side's list.
         QVERIFY(view->selectAt(view->toPixel(QPointF(50, 2))));
         QVERIFY(doc->highlightSelectedNet());
-        QCOMPARE(doc->highlightedNets().size(), 1);
+        QVERIFY(doc->isTracingNet());
+        QVERIFY(doc->infoLabel()->text().contains("Tracing the net"));
+        QTRY_COMPARE(doc->highlightedNets().size(), 1);
+        QVERIFY(!doc->isTracingNet());
+        QVERIFY(!doc->infoLabel()->text().contains("Tracing the net"));
         QCOMPARE(doc->highlightedNets().first().shapes.size(), 5);
         QCOMPARE(view->highlights().size(), 1);
         QCOMPARE(view->highlights().first().shapes.size(), 5);
         QVERIFY(doc->netList()->isVisible());
-        QVERIFY(doc->netList()->height() >= 60);   // (room made for it in the side)
+        QVERIFY(doc->netList()->height() >= 60);   // (room in the side for it)
         QCOMPARE(doc->netList()->topLevelItemCount(), 1);
         QCOMPARE(doc->netList()->topLevelItem(0)->text(0), QString("IN"));
         QCOMPARE(doc->netList()->topLevelItem(0)->text(2), QString("1"));
         // Lit again from its other end: once.
         QVERIFY(view->selectAt(view->toPixel(QPointF(99, 40))));
         QVERIFY(doc->highlightSelectedNet());
+        QTRY_VERIFY(!doc->isTracingNet());
         QCOMPARE(doc->highlightedNets().size(), 1);
         // Another, in a colour of its own.
         QVERIFY(view->selectAt(view->toPixel(QPointF(50, 12))));
         QVERIFY(doc->highlightSelectedNet());
-        QCOMPARE(view->highlights().size(), 2);
+        QTRY_COMPARE(view->highlights().size(), 2);
         QVERIFY(view->highlights().at(0).color != view->highlights().at(1).color);
         // Drawn: a pixel of the net in its colour, the dimmed layout apart.
         {
@@ -4055,9 +4074,58 @@ private slots:
         // Another cell shown: the nets lit there are gone.
         QVERIFY(view->selectAt(view->toPixel(QPointF(50, 2))));
         QVERIFY(doc->highlightSelectedNet());
+        QTRY_COMPARE(doc->highlightedNets().size(), 1);
         doc->showCell(doc->layout()->cellIndex("PAD"));
         QVERIFY(doc->highlightedNets().isEmpty());
         QVERIFY(view->highlights().isEmpty());
+    }
+
+    // A long net traced in a thread of its own: the window goes on, Escape
+    // stops it (nothing lit), another cell shown stops it, and a tab closed
+    // while one goes waits for it.
+    void aLongNetIsTracedWithoutHoldingTheWindow()
+    {
+        writeChain(path("chain.gds"), 30000);
+        LayoutDoc* doc = open(path("chain.gds"));
+        QVERIFY(doc != nullptr);
+        LayoutView* view = doc->view();
+        view->showRegion(QRectF(-5, -5, 40, 10));
+        QVERIFY(view->selectAt(view->toPixel(QPointF(1, 0.5))));
+        QVERIFY(doc->highlightSelectedNet());
+        QVERIFY(doc->isTracingNet());
+        // (Escape: the trace first, the selection after.)
+        QTest::keyClick(view, Qt::Key_Escape);
+        QTRY_VERIFY_WITH_TIMEOUT(!doc->isTracingNet(), 60000);
+        QVERIFY(doc->highlightedNets().isEmpty());
+        QVERIFY(view->selection());
+        // By show_layout, stopped by another cell shown: said, not lit.
+        QJsonObject j;
+        bool answered = false;
+        control->callTool("show_layout", {{"path", "chain.gds"}, {"highlight_net", QJsonObject{{"at", QJsonArray{1, 0.5}}, {"layer", "1/0"}}}},
+                      [&](const QJsonObject& r) {
+                          j = json(r);
+                          answered = true;
+                      });
+        QTRY_VERIFY(doc->isTracingNet());
+        doc->showCell(doc->layout()->mainCell());   // (the same cell: not stopped)
+        QVERIFY(doc->isTracingNet());
+        doc->stopTracingNets();
+        QTRY_VERIFY_WITH_TIMEOUT(answered, 60000);
+        QVERIFY2(j.value("nets not lit").toArray().first().toString().contains("stopped"), qPrintable(QJsonDocument(j).toJson()));
+        QVERIFY(doc->highlightedNets().isEmpty());
+        // Traced whole, to max_shapes: lit, and said so.
+        QVERIFY(view->selectAt(view->toPixel(QPointF(1, 0.5))));   // (the cell shown again: nothing selected)
+        QVERIFY(doc->highlightSelectedNet());
+        QTRY_VERIFY_WITH_TIMEOUT(!doc->isTracingNet(), 120000);
+        QCOMPARE(doc->highlightedNets().size(), 1);
+        QVERIFY(doc->highlightedNets().first().stopped);
+        QCOMPARE(doc->highlightedNets().first().shapes.size(), 20000);
+        // A tab closed while one goes: it is stopped and waited for.
+        QVERIFY(view->selectAt(view->toPixel(QPointF(1, 0.5))));
+        doc->clearHighlightedNets();
+        QVERIFY(doc->highlightSelectedNet());
+        QVERIFY(doc->isTracingNet());
+        closeAll();
     }
 
     void find_shapesFindsByPlaceAndLayer()
