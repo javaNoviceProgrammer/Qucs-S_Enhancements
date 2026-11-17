@@ -35,6 +35,8 @@ struct JobTerminal {
 struct JobNet {
     QString name;
     QString netClass;           ///< empty: the technology's default
+    /// Its own vias by name, one at most between two metals (its class's elsewhere).
+    QStringList vias;
     QVector<JobTerminal> terminals;   ///< the start, then its pads
     QVector<QPointF> guide;     ///< µm
     double band = 0;            ///< µm; 0: the router's (three of its lines' pitch)

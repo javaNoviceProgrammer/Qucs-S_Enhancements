@@ -489,6 +489,67 @@ private slots:
             QVERIFY2(v.toObject().value("kind").toString() == QLatin1String("unroutable"), qPrintable(v.toObject().value("text").toString()));
     }
 
+    // Design rules and each net's vias through the tools: a class's via
+    // array, a net's own via, a width rule keeping the signal off M2.
+    void rulesAndViasThroughTheTools()
+    {
+        MainGuard guard(app);
+        const QString chip = path("rules.gds");
+        writeChip(chip);
+        QJsonObject t = technology();
+        QJsonArray vias = t.value("vias").toArray();
+        vias.append(QJsonObject{{"name", "V1x2"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 1}, {"cuts", QJsonArray{2, 2}},
+                                {"cut_spacing", 1}, {"enclosure", 1}, {"spacing", 2}});
+        t.insert("vias", vias);
+        QJsonArray classes = t.value("classes").toArray();
+        QJsonObject power = classes[1].toObject();
+        QJsonArray array;
+        array.append("V1x2");
+        power.insert("vias", array);
+        classes[1] = power;
+        t.insert("classes", classes);
+        t.insert("rules", QJsonArray{QJsonObject{{"name", "M2.W.1"}, {"type", "width"}, {"layer", "M2"}, {"min", 3}},
+                                     QJsonObject{{"name", "M1.S.1"}, {"type", "spacing"}, {"layer", "M1"}, {"min", 3}}});
+        t.insert("costs", QJsonObject{{"via", 1}});   // (v crosses h, not round its end)
+        // h a signal; v power, and w power asking for the single cut.
+        QJsonArray nets, hPad, vPad, own;
+        hPad.append(xy(100, 50));
+        vPad.append(xy(50, 100));
+        own.append("V1");
+        nets.append(QJsonObject{{"name", "h"}, {"start", xy(0, 50)}, {"pads", hPad}});
+        nets.append(QJsonObject{{"name", "v"}, {"class", "power"}, {"start", xy(50, 0)}, {"pads", vPad}, {"vias", own}});
+        QJsonObject r = call("route_setup", {{"path", chip}, {"clear", true}, {"technology", t}, {"nets", nets}, {"terminals", "none"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QJsonObject o = json(call("route_report", {{"path", chip}, {"what", "job"}}));
+        QCOMPARE(o.value("job").toObject().value("nets").toArray().at(1).toObject().value("vias").toArray(), own);
+        QCOMPARE(o.value("technology read").toObject().value("rules").toArray().size(), 2);
+        r = call("route_run", {{"path", chip}, {"mode", "all"}});
+        QVERIFY2(json(r).value("clean").toBool(), qPrintable(text(r)));
+        // h stays on M1 (a 2 µm line on M2 is under its width rule); v
+        // crosses on M2 through its own single cuts, not its class's array.
+        o = json(call("route_report", {{"path", chip}, {"what", "net"}, {"net", "h"}}));
+        QVERIFY(!o.value("runs (metal, x0, y0, x1, y1)").toArray().isEmpty());
+        for (const QJsonValue& run : o.value("runs (metal, x0, y0, x1, y1)").toArray()) QCOMPARE(run.toArray().at(0).toString(), QStringLiteral("M1"));
+        o = json(call("route_report", {{"path", chip}, {"what", "net"}, {"net", "v"}}));
+        QVERIFY(!o.value("vias (via, x, y)").toArray().isEmpty());
+        for (const QJsonValue& via : o.value("vias (via, x, y)").toArray()) QCOMPARE(via.toArray().at(0).toString(), QStringLiteral("V1"));
+        // A via the technology has not: refused by name.
+        QJsonArray wrong, lost;
+        wrong.append("V9");
+        lost.append(QJsonObject{{"name", "v"}, {"class", "power"}, {"start", xy(50, 0)}, {"pads", vPad}, {"vias", wrong}});
+        r = call("route_setup", {{"path", chip}, {"nets", lost}});
+        QVERIFY2(failed(r) || text(r).contains("V9"), qPrintable(text(r)));
+        if (!failed(r)) {
+            r = call("route_run", {{"path", chip}, {"mode", "all"}});
+            QVERIFY2(text(r).contains("V9"), qPrintable(text(r)));
+        }
+        // The format tells of both.
+        const QJsonObject f = json(call("route_report", {{"path", chip}, {"what", "format"}}));
+        QVERIFY(f.value("technology").toObject().contains("rules"));
+        QVERIFY(f.value("net").toObject().contains("vias"));
+        QVERIFY(!f.value("example technology").toObject().value("rules").toArray().isEmpty());
+    }
+
     // The tab's Route panel: technology, nets clicked, a pen ring a
     // keep-out and a pen line a guide, a run shown, a failed net marked,
     // a finding gone to, committed.

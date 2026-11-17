@@ -30,7 +30,7 @@ QVector<DrawnShape> drawnShapes(const Problem& p, const NetResult& r, int net)
         s.points = {QPointF(p.um(b.x0), p.um(b.y0)), QPointF(p.um(b.x1), p.um(b.y0)), QPointF(p.um(b.x1), p.um(b.y1)), QPointF(p.um(b.x0), p.um(b.y1))};
         out.append(s);
     };
-    const Coord w = p.units(p.tech.classes.at(p.nets.at(net).netClass).width);
+    const double w = p.tech.classes.at(p.nets.at(net).netClass).width;
     for (const Run& run : r.runs)
         if (run.metal >= 0 && run.metal < p.tech.metals.size()) box(p.tech.metals.at(run.metal).layer, run.box());
     for (const auto& [metal, poly] : r.fills) {
@@ -43,7 +43,7 @@ QVector<DrawnShape> drawnShapes(const Problem& p, const NetResult& r, int net)
     for (const ViaPlaced& v : r.vias) {
         if (v.via < 0 || v.via >= p.tech.vias.size()) continue;
         const Via& via = p.tech.vias.at(v.via);
-        const Coord lo = std::max(p.units(via.landingLower), w), up = std::max(p.units(via.landingUpper), w), c = p.units(via.size);
+        const Coord lo = p.units(p.tech.landing(v.via, via.lower, w)), up = p.units(p.tech.landing(v.via, via.lower + 1, w)), c = p.units(via.size);
         box(p.tech.metals.at(via.lower).layer, Box{v.at.x - lo / 2, v.at.y - lo / 2, v.at.x - lo / 2 + lo, v.at.y - lo / 2 + lo});
         box(p.tech.metals.at(via.lower + 1).layer, Box{v.at.x - up / 2, v.at.y - up / 2, v.at.x - up / 2 + up, v.at.y - up / 2 + up});
         // Its cuts: one, or an array of them centred on the via.

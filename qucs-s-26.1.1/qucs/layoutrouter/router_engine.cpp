@@ -364,14 +364,14 @@ private:
 };
 
 // What a static box is.
-enum class Kind : std::uint8_t { Metal, Terminal, Obstacle, KeepOut };
+enum class Kind : std::uint8_t { Metal, Terminal, Obstacle, KeepOut, Outside };
 
 struct StaticBox {
     Box box;
     Coord clearance = 0;
     Kind kind = Kind::Metal;
     int owner = -1;             // the net whose metal it is
-    int source = -1;            // Problem::metal's, obstacles' or keepOuts' index
+    int source = -1;            // Problem::metal's, obstacles' or keepOuts' index; Outside: Technology::inclusions' index
 };
 
 // A size of square tested on the lattice: a class's line, a landing.
@@ -414,7 +414,12 @@ struct Router::Impl {
     std::vector<Type> types;
     std::vector<std::vector<int>> typesOnPlane;   // which types a plane has
     std::vector<int> classLine;                   // a class's line type
-    std::vector<std::vector<int>> classLandLower, classLandUpper;   // [class][via]
+    // A net's own via between each pair of metals (Technology::vias'
+    // index), its landings' types, and the metals it may run on (a
+    // metal's least width): [net][pair], [net][pair], [net][plane].
+    std::vector<std::vector<int>> netVia, netLandLower, netLandUpper;
+    std::vector<std::vector<char>> netOnPlane;
+    std::vector<Coord> planeSpacing;   // [plane]: the metal's spacing rule, units (0: none)
 
     std::vector<std::vector<StaticBox>> statics;  // [plane]
     std::vector<BoxIndex> staticIndex;
@@ -507,7 +512,7 @@ struct Router::Impl {
         const Coord own = types[std::size_t(lineType)].spacing;
         for (const auto& [plane, box] : metal)
             for (int k : typesOnPlane[std::size_t(plane)]) {
-                const Coord s = std::max(own, types[std::size_t(k)].spacing);
+                const Coord s = std::max({own, types[std::size_t(k)].spacing, planeSpacing[std::size_t(plane)]});
                 raster(box, types[std::size_t(k)].half, s, [&](int j, int i0, int i1) { f(k, plane, j, i0, i1); });
             }
     }
@@ -634,8 +639,6 @@ bool Router::Impl::buildTypes()
     };
     typesOnPlane.assign(std::size_t(planes), {});
     classLine.assign(std::size_t(t.classes.size()), 0);
-    classLandLower.assign(std::size_t(t.classes.size()), std::vector<int>(std::size_t(t.vias.size()), 0));
-    classLandUpper = classLandLower;
     const auto onPlane = [&](int type, int plane) {
         auto& v = typesOnPlane[std::size_t(plane)];
         if (std::find(v.begin(), v.end(), type) == v.end()) v.push_back(type);
@@ -646,15 +649,30 @@ bool Router::Impl::buildTypes()
         const int line = typeOf(p.units(k.width) / 2, s);
         classLine[std::size_t(c)] = line;
         for (int l = 0; l < planes; ++l) onPlane(line, l);
-        for (int v = 0; v < t.vias.size(); ++v) {
-            const Via& via = t.vias.at(v);
-            // A landing never narrower than the line that reaches it.
-            const int lower = typeOf(std::max(p.units(via.landingLower) / 2, p.units(k.width) / 2), s);
-            const int upper = typeOf(std::max(p.units(via.landingUpper) / 2, p.units(k.width) / 2), s);
-            classLandLower[std::size_t(c)][std::size_t(v)] = lower;
-            classLandUpper[std::size_t(c)][std::size_t(v)] = upper;
-            onPlane(lower, via.lower);
-            onPlane(upper, via.lower + 1);
+    }
+    // Each net's vias - its own, its class's or the pair's default - and the
+    // squares they land on (never narrower than the line, the metal's least
+    // width or the side its least area needs).
+    planeSpacing.assign(std::size_t(planes), 0);
+    for (int l = 0; l < planes && l < t.metalSpacing.size(); ++l) planeSpacing[std::size_t(l)] = p.units(t.metalSpacing.at(l));
+    const int pairs = std::max(0, planes - 1);
+    netVia.assign(std::size_t(p.nets.size()), std::vector<int>(std::size_t(pairs), 0));
+    netLandLower = netLandUpper = netVia;
+    netOnPlane.assign(std::size_t(p.nets.size()), std::vector<char>(std::size_t(planes), 1));
+    for (int n = 0; n < p.nets.size(); ++n) {
+        const Net& net = p.nets.at(n);
+        const NetClass& k = t.classes.at(net.netClass);
+        const Coord s = p.units(std::max(k.spacing, t.sameLayer));
+        for (int l = 0; l < planes; ++l) netOnPlane[std::size_t(n)][std::size_t(l)] = t.classOn(net.netClass, l);
+        for (int pair = 0; pair < pairs; ++pair) {
+            const int v = t.viaFor(net.netClass, net.vias, pair);
+            netVia[std::size_t(n)][std::size_t(pair)] = v;
+            const int lower = typeOf(p.units(t.landing(v, pair, k.width)) / 2, s);
+            const int upper = typeOf(p.units(t.landing(v, pair + 1, k.width)) / 2, s);
+            netLandLower[std::size_t(n)][std::size_t(pair)] = lower;
+            netLandUpper[std::size_t(n)][std::size_t(pair)] = upper;
+            onPlane(lower, pair);
+            onPlane(upper, pair + 1);
         }
     }
     return true;
@@ -750,11 +768,13 @@ bool Router::Impl::prepare()
         viaGap = std::max(viaGap, int((size + spacing + pitch - 1) / pitch));
         if (spacing <= 0) continue;
         bool any = false;
-        for (const Shape& c : std::as_const(p.cuts)) any = any || c.layer == v;
+        // (cuts on its layer: another via's of the same cut layer too)
+        const auto sameLayer = [&](const Shape& c) { return c.layer >= 0 && c.layer < t.vias.size() && t.vias.at(c.layer).layer == via.layer; };
+        for (const Shape& c : std::as_const(p.cuts)) any = any || sameLayer(c);
         if (!any) continue;
         cutBlocked[std::size_t(v)].init(cells, &memory);
         for (const Shape& c : std::as_const(p.cuts))
-            if (c.layer == v)
+            if (sameLayer(c))
                 raster(boundsOf(c.outline), size / 2, spacing,
                        [&](int j, int i0, int i1) { cutBlocked[std::size_t(v)].setRange(cellAt(i0, j), cellAt(i1, j)); });
     }
@@ -955,9 +975,10 @@ bool Router::Impl::buildStatics()
         const Shape& sh = p.metal.at(s);
         if (sh.layer < 0 || sh.layer >= planes) continue;
         const int own = owner[std::size_t(find(s))];
+        const Coord rule = planeSpacing[std::size_t(sh.layer)];
         for (const Box& b : outerOf[std::size_t(s)])
-            statics[std::size_t(sh.layer)].push_back(
-                {b, isPad[std::size_t(s)] ? toTerminal : toMetal, isPad[std::size_t(s)] ? Kind::Terminal : Kind::Metal, own, s});
+            statics[std::size_t(sh.layer)].push_back({b, std::max(isPad[std::size_t(s)] ? toTerminal : toMetal, rule),
+                                                      isPad[std::size_t(s)] ? Kind::Terminal : Kind::Metal, own, s});
         if (own >= 0) {
             for (const Box& b : innerOf[std::size_t(s)]) {
                 ownInner[std::size_t(sh.layer)].push_back(b);
@@ -974,6 +995,23 @@ bool Router::Impl::buildStatics()
         boxesOf(sh.outline, slab, &outer, nullptr);
         for (int l : rule.metals)
             for (const Box& b : outer) statics[std::size_t(l)].push_back({b, p.units(rule.clearance), Kind::Obstacle, -1, o});
+    }
+    // An inclusion rule's metal: all but its layer's shapes, shrunk by its
+    // minimum, is in the way (a net's own metal there aside, as ever).
+    if (!t.inclusions.isEmpty()) {
+        Coord most = 0;
+        for (const Type& k : types) most = std::max(most, k.half);
+        const Box area = Box{ox, oy, ox + Coord(nx - 1) * pitch, oy + Coord(ny - 1) * pitch}.grown(most + 2 * pitch);
+        for (int r = 0; r < t.inclusions.size(); ++r) {
+            const InclusionRule& rule = t.inclusions.at(r);
+            if (rule.metal < 0 || rule.metal >= planes) continue;
+            std::vector<Poly> in;
+            for (const Shape& sh : std::as_const(p.regions))
+                if (sh.layer == r) in.push_back(sh.outline);
+            std::vector<Box> outer;
+            boxesOf(outsideOf(area, in, p.units(rule.min)), slab, &outer, nullptr);
+            for (const Box& b : outer) statics[std::size_t(rule.metal)].push_back({b, 0, Kind::Outside, -1, r});
+        }
     }
     keepOutNets.assign(std::size_t(p.keepOuts.size()), {});
     for (int k = 0; k < p.keepOuts.size(); ++k) {
@@ -1152,9 +1190,9 @@ void Router::Impl::buildTerminals(int n)
     // Zones: the net's line on each plane, its landings on theirs.
     std::vector<std::pair<int, int>> wanted;
     for (int l = 0; l < planes; ++l) wanted.push_back({st.lineType, l});
-    for (int v = 0; v < p.tech.vias.size(); ++v) {
-        wanted.push_back({classLandLower[std::size_t(st.cls)][std::size_t(v)], p.tech.vias.at(v).lower});
-        wanted.push_back({classLandUpper[std::size_t(st.cls)][std::size_t(v)], p.tech.vias.at(v).lower + 1});
+    for (int pair = 0; pair + 1 < planes; ++pair) {
+        wanted.push_back({netLandLower[std::size_t(n)][std::size_t(pair)], pair});
+        wanted.push_back({netLandUpper[std::size_t(n)][std::size_t(pair)], pair + 1});
     }
     std::sort(wanted.begin(), wanted.end());
     wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
@@ -1220,6 +1258,19 @@ void Router::Impl::buildTerminals(int n)
             const Pt c = pointOf(cellOf(s));
             // Only a cell whose tail into the terminal's middle can be drawn.
             if (leg.tail && !tailClear(n, planeOf(s), c, leg.point)) continue;
+            // On a metal the net may only land on (its width rule), the tail
+            // lies inside the terminal's own metal there.
+            if (leg.tail && !netOnPlane[std::size_t(n)][std::size_t(planeOf(s))]) {
+                const int l = planeOf(s);
+                const Coord half = p.units(p.tech.classes.at(st.cls).width) / 2 + 1;
+                const Box tailBox = Box{std::min(c.x, leg.point.x), std::min(c.y, leg.point.y), std::max(c.x, leg.point.x), std::max(c.y, leg.point.y)}.grown(half);
+                bool inside = false;
+                for (std::size_t k = 0; k < ownInner[std::size_t(l)].size() && !inside; ++k)
+                    inside = ownInnerOwner[std::size_t(l)][k] == n
+                             && std::find(leg.pieces.begin(), leg.pieces.end(), ownInnerPiece[std::size_t(l)][k]) != leg.pieces.end()
+                             && ownInner[std::size_t(l)][k].contains(tailBox);
+                if (!inside) continue;
+            }
             const float tail = leg.tail ? float(double(std::abs(c.x - leg.point.x) + std::abs(c.y - leg.point.y)) / double(pitch)) : 0.f;
             leg.cells.push_back({s, tail});
         }
@@ -1307,7 +1358,7 @@ bool Router::Impl::stillClear(int n) const
         if (!clear(st.lineType, l, c)) return false;
         // The same cell on the metal above: a change of metal, its landings.
         if (l + 1 < planes && std::binary_search(sorted.begin(), sorted.end(), packState(l + 1, c))
-            && (!clear(classLandLower[std::size_t(st.cls)][std::size_t(l)], l, c) || !clear(classLandUpper[std::size_t(st.cls)][std::size_t(l)], l + 1, c)))
+            && (!clear(netLandLower[std::size_t(n)][std::size_t(l)], l, c) || !clear(netLandUpper[std::size_t(n)][std::size_t(l)], l + 1, c)))
             return false;
     }
     return true;
@@ -1423,6 +1474,7 @@ quint64 Router::Impl::key(int n) const
         addInt(g.y);
     }
     addInt(net.band);
+    for (int v : net.vias) addInt(v);
     // What is fixed in its window.
     const NetState& st = nets[std::size_t(n)];
     const Box w{ox + st.window.x0 * pitch, oy + st.window.y0 * pitch, ox + st.window.x1 * pitch, oy + st.window.y1 * pitch};
@@ -1584,7 +1636,10 @@ bool Router::Impl::search(int n, const std::vector<std::pair<quint64, float>>& s
         if (f >= sinkG) break;
         const std::uint8_t arrived = b.from[s];
         const char dir = t.metals.at(l).direction;
-        for (int m = 0; m < 4; ++m) {
+        // No line on a metal whose least width is more than the net's: it
+        // may only land there (its landings are wide enough).
+        const bool lines = netOnPlane[std::size_t(n)][std::size_t(l)] != 0;
+        for (int m = 0; m < 4 && lines; ++m) {
             const int di = m == PlusX ? 1 : (m == MinusX ? -1 : 0), dj = m == PlusY ? 1 : (m == MinusY ? -1 : 0);
             const int ni = i + di, nj = j + dj;
             if (ni < wi0 || nj < wj0 || ni > wi1 || nj > wj1) continue;
@@ -1608,9 +1663,10 @@ bool Router::Impl::search(int n, const std::vector<std::pair<quint64, float>>& s
             const int nl = up ? l + 1 : l - 1;
             if (nl < 0 || nl >= planes) continue;
             const int v = std::min(l, nl);
-            const int lowT = classLandLower[std::size_t(st.cls)][std::size_t(v)], upT = classLandUpper[std::size_t(st.cls)][std::size_t(v)];
+            const int def = netVia[std::size_t(n)][std::size_t(v)];   // the net's own via there
+            const int lowT = netLandLower[std::size_t(n)][std::size_t(v)], upT = netLandUpper[std::size_t(n)][std::size_t(v)];
             const std::size_t c = cellAt(i, j);
-            if (!cutBlocked.empty() && !cutBlocked[std::size_t(v)].empty() && cutBlocked[std::size_t(v)].test(c)) continue;
+            if (!cutBlocked.empty() && !cutBlocked[std::size_t(def)].empty() && cutBlocked[std::size_t(def)].test(c)) continue;
             const std::uint8_t a1 = statAt(lowT, v, c), a2 = statAt(upT, v + 1, c);
             if (a1 == Blocked || a2 == Blocked) continue;
             // Not within a cut's spacing of the net's last via on its way here
@@ -1618,7 +1674,7 @@ bool Router::Impl::search(int n, const std::vector<std::pair<quint64, float>>& s
             // steps along a diagonal walk).
             bool nearVia = false;
             {
-                const Via& here = t.vias.at(v);
+                const Via& here = t.vias.at(def);
                 const Coord size = p.units(here.outline()), gap = p.units(here.spacing);
                 std::uint32_t back = s;
                 int bi = i - wi0, bj = j - wj0;
@@ -1783,7 +1839,7 @@ bool Router::Impl::route(int n, bool strict, double present, Buffers& b, bool fu
             }
             if (!end && planeOf(lp[q - 1]) != planeOf(lp[q])) {
                 const int v = std::min(planeOf(lp[q - 1]), planeOf(lp[q]));
-                r.vias.append({v, pb});
+                r.vias.append({netVia[std::size_t(n)][std::size_t(v)], pb});
                 a = q;
             } else {
                 a = q - 1;
@@ -1812,8 +1868,8 @@ void Router::Impl::draw(int n)
     for (const Run& run : std::as_const(st.result.runs)) st.metal.push_back({run.metal, run.box()});
     for (const ViaPlaced& v : std::as_const(st.result.vias)) {
         const Via& via = p.tech.vias.at(v.via);
-        const Coord w = p.units(p.tech.classes.at(st.cls).width);
-        const Coord lo = std::max(p.units(via.landingLower), w), up = std::max(p.units(via.landingUpper), w);
+        const double w = p.tech.classes.at(st.cls).width;
+        const Coord lo = p.units(p.tech.landing(v.via, via.lower, w)), up = p.units(p.tech.landing(v.via, via.lower + 1, w));
         st.metal.push_back({via.lower, Box{v.at.x - lo / 2, v.at.y - lo / 2, v.at.x - lo / 2 + lo, v.at.y - lo / 2 + lo}});
         st.metal.push_back({via.lower + 1, Box{v.at.x - up / 2, v.at.y - up / 2, v.at.x - up / 2 + up, v.at.y - up / 2 + up}});
     }
@@ -1859,8 +1915,9 @@ bool Router::Impl::conflicted(int n)
         const Coord i = (v.at.x - ox) / pitch, j = (v.at.y - oy) / pitch;
         if (i < 0 || j < 0 || i >= nx || j >= ny) continue;
         const std::size_t c = cellAt(int(i), int(j));
-        bad = use[std::size_t(classLandLower[std::size_t(st.cls)][std::size_t(v.via)])][std::size_t(v.via)].get(c) > 0
-              || use[std::size_t(classLandUpper[std::size_t(st.cls)][std::size_t(v.via)])][std::size_t(v.via + 1)].get(c) > 0;
+        const int pair = p.tech.vias.at(v.via).lower;
+        bad = use[std::size_t(netLandLower[std::size_t(n)][std::size_t(pair)])][std::size_t(pair)].get(c) > 0
+              || use[std::size_t(netLandUpper[std::size_t(n)][std::size_t(pair)])][std::size_t(pair + 1)].get(c) > 0;
     }
     stamp(n, +1);
     return bad;
@@ -1914,6 +1971,9 @@ QString Router::Impl::diagnose(int n, Pt* where)
                                     .arg(micro(p.um(sb.box.x0)), micro(p.um(sb.box.y0)), micro(p.um(sb.box.x1)), micro(p.um(sb.box.y1)));
             switch (sb.kind) {
             case Kind::KeepOut: what = QStringLiteral("the keep-out %1").arg(p.keepOuts.at(sb.source).name); break;
+            case Kind::Outside:
+                what = QStringLiteral("the edge of the region rule %1 keeps %2 in").arg(p.tech.inclusions.at(sb.source).name, p.tech.metals.at(l).name);
+                break;
             case Kind::Obstacle: what = QStringLiteral("the obstacle %1 %2").arg(p.tech.obstacles.at(p.obstacles.at(sb.source).layer).name, box); break;
             case Kind::Terminal:
                 what = QStringLiteral("net %1's terminal on %2 %3").arg(sb.owner >= 0 ? p.nets.at(sb.owner).name : QStringLiteral("?"), p.tech.metals.at(l).name, box);
