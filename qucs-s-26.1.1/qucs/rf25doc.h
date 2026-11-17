@@ -25,6 +25,7 @@
 #include "rf25/rf25_stackfile.h"
 #include "rf25/rf25_inductance.h"
 #include "rf25/rf25_kept.h"
+#include "rf25/rf25_palace.h"
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_static.h"
@@ -456,6 +457,12 @@ public:
     /// The files the layout export \a tag writes, written: the path of each
     /// (the .qfem3d first, then its .gds), or none and why in \a error.
     QStringList writeLayoutExport(const QString& tag, QStringList* said = nullptr, QString* error = nullptr) const;
+    /// The model as a Palace project (rf25_palace.h): its configuration at
+    /// \a path (.json) and its mesh beside it (.msh), written. The paths
+    /// written (the configuration first), or none and why in \a error; what
+    /// it left out and each port as written in \a said.
+    QStringList writePalace(const QString& path, const qucs_s::rf25::PalaceOptions& options, QStringList* said = nullptr,
+                            QString* error = nullptr) const;
     /// Why \a path may not be written by an export - it is the model's own
     /// layout file, or the model itself -, or empty.
     QString overOwnFile(const QString& path) const;

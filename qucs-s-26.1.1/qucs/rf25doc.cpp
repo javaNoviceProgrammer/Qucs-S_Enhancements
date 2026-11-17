@@ -3210,7 +3210,8 @@ bool RF25Doc::isLayoutExport(const QString& tag) const
 {
     const Node* node = a_model.root.find(tag);
     return node != nullptr
-           && (node->type == QLatin1String("rf_mp3d") || node->type == QLatin1String("rf_gds") || node->type == QLatin1String("rf_dxf"));
+           && (node->type == QLatin1String("rf_mp3d") || node->type == QLatin1String("rf_palace") || node->type == QLatin1String("rf_gds")
+               || node->type == QLatin1String("rf_dxf"));
 }
 
 QString RF25Doc::exportPath(const QString& tag) const
@@ -3221,9 +3222,10 @@ QString RF25Doc::exportPath(const QString& tag) const
     // its kind's suffix.
     if (isLayoutExport(tag)) {
         const Node* node = a_model.root.find(tag);
-        const QString suffix = node->type == QLatin1String("rf_mp3d") ? QStringLiteral("qfem3d")
-                               : node->type == QLatin1String("rf_gds") ? QStringLiteral("gds")
-                                                                        : QStringLiteral("dxf");
+        const QString suffix = node->type == QLatin1String("rf_mp3d")     ? QStringLiteral("qfem3d")
+                               : node->type == QLatin1String("rf_palace") ? QStringLiteral("json")
+                               : node->type == QLatin1String("rf_gds")    ? QStringLiteral("gds")
+                                                                          : QStringLiteral("dxf");
         const QString named = textOf(*node, QStringLiteral("file")).trimmed();
         if (named.isEmpty()) return QDir::cleanPath(dir.absoluteFilePath(QStringLiteral("%1_%2.%3").arg(stem, tag, suffix)));
         const QFileInfo info(named);
@@ -3513,9 +3515,34 @@ QStringList RF25Doc::writeLayoutExport(const QString& tag, QStringList* said, QS
     };
     if (error != nullptr) error->clear();
     const Node* node = a_model.root.find(tag);
-    if (!isLayoutExport(tag)) return fail(tr("There is no Multiphysics 3D, GDSII or DXF export called %1 in this model.").arg(tag));
+    if (!isLayoutExport(tag)) return fail(tr("There is no Multiphysics 3D, Palace EM, GDSII or DXF export called %1 in this model.").arg(tag));
     if (!a_processed)
         return fail(a_layoutProblem.isEmpty() ? tr("Its shapes are not made yet: its layout has not been read.") : a_layoutProblem);
+    if (node->type == QLatin1String("rf_palace")) {
+        // Its options as the node says them, each a length where it is one.
+        PalaceOptions options;
+        const auto length = [&](const QString& key, double* into) {
+            if (textOf(*node, key).trimmed().isEmpty()) return true;
+            bool ok = true;
+            const double v = numberOf(*node, key, a_model, 0, &ok);
+            if (!ok || !(v > 0)) return false;
+            *into = v;
+            return true;
+        };
+        if (!length(QStringLiteral("margin"), &options.margin) || !length(QStringLiteral("air"), &options.air)
+            || !length(QStringLiteral("largest"), &options.largest) || !length(QStringLiteral("edges"), &options.edges))
+            return fail(tr("The export's margin, air, largest element and elements at the edges are each a length above nought, or empty."));
+        options.order = integerOf(*node, QStringLiteral("order"));
+        options.sheets = textOf(*node, QStringLiteral("metals")) == QLatin1String("sheets");
+        options.sides = textOf(*node, QStringLiteral("sides")) == QLatin1String("absorbing") ? QStringLiteral("absorbing") : QStringLiteral("perfect");
+        options.solver = textOf(*node, QStringLiteral("solver")).isEmpty() ? QStringLiteral("default") : textOf(*node, QStringLiteral("solver"));
+        bool ok = true;
+        options.adaptiveTolerance = textOf(*node, QStringLiteral("adaptive_tolerance")).trimmed().isEmpty()
+                                        ? 1e-3
+                                        : numberOf(*node, QStringLiteral("adaptive_tolerance"), a_model, 1e-3, &ok);
+        if (!ok || options.adaptiveTolerance < 0) return fail(tr("The export's adaptive tolerance is a number of nought or more."));
+        return writePalace(exportPath(tag), options, said, error);
+    }
     const LayoutExport shapes = layoutExportOf(a_model, *a_processed);
     if (!shapes.ok()) return fail(shapes.problems.join(QLatin1Char(' ')));
     const QString path = exportPath(tag);
@@ -3572,6 +3599,29 @@ QStringList RF25Doc::writeLayoutExport(const QString& tag, QStringList* said, QS
     }
     if (said != nullptr) *said = notes;
     return written;
+}
+
+QStringList RF25Doc::writePalace(const QString& path, const PalaceOptions& options, QStringList* said, QString* error) const
+{
+    const auto fail = [error](const QString& why) {
+        if (error != nullptr) *error = why;
+        return QStringList();
+    };
+    if (error != nullptr) error->clear();
+    if (!a_processed)
+        return fail(a_layoutProblem.isEmpty() ? tr("Its shapes are not made yet: its layout has not been read.") : a_layoutProblem);
+    const QFileInfo info(path);
+    const QString meshPath = info.absoluteDir().filePath(info.completeBaseName() + QStringLiteral(".msh"));
+    for (const QString& where : {info.absoluteFilePath(), meshPath})
+        if (const QString why = overOwnFile(where); !why.isEmpty()) return fail(why);
+    const PalaceExport written =
+        palaceExportOf(a_model, a_processed->conductors, options, info.completeBaseName(), QStringLiteral("Qucs-S %1").arg(misc::buildName()));
+    if (!written.ok()) return fail(written.problems.join(QLatin1Char(' ')));
+    QStringList files;
+    QString why;
+    if (!writePalaceExport(written, info.absoluteFilePath(), &files, &why)) return fail(why);
+    if (said != nullptr) *said = written.notes + written.portSaid;
+    return files;
 }
 
 QString RF25Doc::writeExport(const QString& tag, QString* error, QStringList* said) const

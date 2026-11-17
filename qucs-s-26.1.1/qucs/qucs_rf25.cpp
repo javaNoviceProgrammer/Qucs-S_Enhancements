@@ -20,6 +20,7 @@
 #include "qucscontrol.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QDir>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -155,6 +156,9 @@ void QucsApp::initRf25()
   QAction *hfssExport = a_rf25Menu->addAction(tr("Export HFSS™ 3D Layout…"), this, [this] { exportRf25Hfss(); });
   hfssExport->setObjectName(QStringLiteral("rfHfssExportAction"));
   hfssExport->setStatusTip(tr("An Ansys® Electronics Desktop script that builds the model as an HFSS™ 3D Layout design, with a GDSII file and an XML control file for its other way in"));
+  QAction *palaceExport = a_rf25Menu->addAction(tr("Export Palace EM…"), this, [this] { exportRf25Palace(); });
+  palaceExport->setObjectName(QStringLiteral("rfPalaceExportAction"));
+  palaceExport->setStatusTip(tr("A project of Palace, the open-source 3D electromagnetic solver: its configuration (.json) and its mesh (.msh), ready to run with \"palace -np 4 <name>.json\""));
   QAction *hfssImport = a_rf25Menu->addAction(tr("Import HFSS™ 3D Layout…"), this, [this] { importRf25Hfss(); });
   hfssImport->setObjectName(QStringLiteral("rfHfssImportAction"));
   hfssImport->setStatusTip(tr("A model of an HFSS™ 3D Layout project (.aedt and its .aedb), of a GDSII file with its control file, or of a script exported from here"));
@@ -187,7 +191,7 @@ void QucsApp::updateRf25Menu()
   for (QAction *a : a_rf25Menu->actions())
     if (a->objectName() == QLatin1String("rfReadLayoutAction"))
       a->setEnabled(doc != nullptr && !doc->isBusy());
-    else if (a->objectName() == QLatin1String("rfHfssExportAction"))
+    else if (a->objectName() == QLatin1String("rfHfssExportAction") || a->objectName() == QLatin1String("rfPalaceExportAction"))
       a->setEnabled(doc != nullptr);
     else if (a->objectName() == QLatin1String("rfConvergeAction"))
       a->setEnabled(doc != nullptr && !doc->isSolving());
@@ -219,6 +223,37 @@ void QucsApp::exportRf25Hfss()
   const QJsonObject answer = QJsonDocument::fromJson(QucsControl::textOf(result).toUtf8()).object();
   QStringList said{tr("Written beside each other: the script, and for its other way in the GDSII file and the control file. No Electronics Desktop has run them here: the report the script leaves says what came of it.")};
   for (const QJsonValue &v : answer.value(QStringLiteral("notes")).toArray()) said << v.toString();
+  QMessageBox::information(this, title, said.join(QStringLiteral("\n\n")));
+}
+
+void QucsApp::exportRf25Palace()
+{
+  auto *doc = qobject_cast<RF25Doc *>(DocumentTab->currentWidget());
+  if (doc == nullptr) return;
+  const QString title = tr("Export Palace EM");
+  const QString name = doc->getDocName();
+  const QFileInfo info(name);
+  const QString suggested = name.isEmpty() ? QDir(lastDirOpenSave.isEmpty() ? QucsSettings.qucsWorkspaceDir.absolutePath() : lastDirOpenSave).filePath(QStringLiteral("rf25_palace.json"))
+                                           : info.dir().filePath(info.completeBaseName() + QStringLiteral("_palace.json"));
+  const QString file = QFileDialog::getSaveFileName(this, title, suggested, tr("Palace configurations") + QStringLiteral(" (*.json)"));
+  if (file.isEmpty()) return;
+  // (Its shapes first: a model just opened is still reading its layout.)
+  if (!doc->waitForLayout(300000) || !doc->waitForPrepared(300000)) {
+    QMessageBox::warning(this, title, tr("Its layout is still being read."));
+    return;
+  }
+  QStringList notes;
+  QString why;
+  QApplication::setOverrideCursor(Qt::WaitCursor);
+  const QStringList written = doc->writePalace(file, qucs_s::rf25::PalaceOptions(), &notes, &why);
+  QApplication::restoreOverrideCursor();
+  if (written.isEmpty()) {
+    QMessageBox::warning(this, title, why);
+    return;
+  }
+  QStringList said{tr("Written: %1, and its mesh %2 beside it. Exports > Palace EM in the model sets its box, its elements and its solver.")
+                       .arg(QDir::toNativeSeparators(written.at(0)), QFileInfo(written.value(1)).fileName())};
+  said << notes;
   QMessageBox::information(this, title, said.join(QStringLiteral("\n\n")));
 }
 
