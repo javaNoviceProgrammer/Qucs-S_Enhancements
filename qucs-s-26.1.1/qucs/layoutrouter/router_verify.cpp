@@ -687,7 +687,9 @@ Verification verify(const Problem& p, const Result& result)
             // Width: what an opening by the rule (a square of its side rolled
             // inside) leaves out, where it is new metal.
             if (minWidth > 0) {
-                // (in quarter units, so that a width half a unit short of the rule is the rule)
+                // (in quarter units, eroded by a quarter unit less than half the
+                // rule: a width of the rule, or a quarter unit short of it,
+                // passes; half a unit short is found)
                 Paths fine = merged;
                 for (Path& x : fine)
                     for (ClipperLib::IntPoint& q : x) q = ClipperLib::IntPoint(q.X * 4, q.Y * 4);

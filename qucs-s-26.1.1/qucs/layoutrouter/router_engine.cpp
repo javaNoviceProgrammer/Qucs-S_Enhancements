@@ -221,6 +221,7 @@ public:
         return p[(j % Page) * Page + (i % Page)];
     }
     int pages() const { return a_allocated; }
+    bool active() const { return !a_pages.empty(); }   // init()ed
 
 private:
     std::vector<T*> a_pages;
@@ -432,6 +433,9 @@ struct Router::Impl {
 
     std::vector<std::vector<Bits>> base;          // [type][plane]
     std::vector<std::vector<Paged<std::uint16_t>>> use;   // [type][plane]
+    // [via]: where a new cut of that via would be too near another net's
+    // cut on its cut layer (empty: no spacing on that layer).
+    std::vector<Paged<std::uint16_t>> cutUse;
     std::vector<Paged<float>> history;            // [plane]
 
     struct Zone {
@@ -457,6 +461,7 @@ struct Router::Impl {
         std::vector<Leg> terminals;
         std::vector<quint64> path;          // the states it uses
         std::vector<std::pair<int, Box>> metal;   // what it draws: plane and box
+        std::vector<std::pair<int, Box>> cuts;    // and its vias' cuts (an array's outline): via and box
         NetResult result;
         bool routed = false, failed = false, kept = false, contested = false;
         quint64 key = 0;
@@ -786,6 +791,15 @@ bool Router::Impl::prepare()
         for (int l = 0; l < planes; ++l)
             if (std::find(typesOnPlane[std::size_t(l)].begin(), typesOnPlane[std::size_t(l)].end(), int(k)) != typesOnPlane[std::size_t(l)].end())
                 use[k][std::size_t(l)].init(nx, ny, &memory);
+    }
+    // Nets' new cuts apart, as their lines are: each placed cut stamped,
+    // grown by the spacing, for each via of its cut layer.
+    cutUse.clear();
+    cutUse.resize(std::size_t(t.vias.size()));
+    for (int v = 0; v < t.vias.size(); ++v) {
+        bool spaced = false;
+        for (const Via& o : std::as_const(t.vias)) spaced = spaced || (o.layer == t.vias.at(v).layer && o.spacing > 0);
+        if (spaced) cutUse[std::size_t(v)].init(nx, ny, &memory);
     }
     history.clear();
     history.resize(std::size_t(planes));
@@ -1703,6 +1717,12 @@ bool Router::Impl::search(int n, const std::vector<std::pair<quint64, float>>& s
             const float c2 = congestion(upT, v + 1, i, j, &blocked);
             if (blocked) continue;
             double cost = via * 0.5 * (c1 + c2);
+            // Another net's cut too near: shared, as lines are.
+            if (std::size_t(def) < cutUse.size() && cutUse[std::size_t(def)].active()) {
+                const std::uint16_t near = cutUse[std::size_t(def)].get(i, j);
+                if (strict && near > 0) continue;
+                cost *= 1.0 + present * near;
+            }
             if (a1 == Costly || a2 == Costly) cost *= WayInCost;
             const std::uint32_t ns = local(i, j, nl);
             if (b.closed[ns]) continue;
@@ -1865,9 +1885,12 @@ void Router::Impl::draw(int n)
 {
     NetState& st = nets[std::size_t(n)];
     st.metal.clear();
+    st.cuts.clear();
     for (const Run& run : std::as_const(st.result.runs)) st.metal.push_back({run.metal, run.box()});
     for (const ViaPlaced& v : std::as_const(st.result.vias)) {
         const Via& via = p.tech.vias.at(v.via);
+        const Coord cw = p.units(via.outlineWidth()), ch = p.units(via.outlineHeight());
+        st.cuts.push_back({v.via, Box{v.at.x - cw / 2, v.at.y - ch / 2, v.at.x - cw / 2 + cw, v.at.y - ch / 2 + ch}});
         const double w = p.tech.classes.at(st.cls).width;
         const Coord lo = p.units(p.tech.landing(v.via, via.lower, w)), up = p.units(p.tech.landing(v.via, via.lower + 1, w));
         st.metal.push_back({via.lower, Box{v.at.x - lo / 2, v.at.y - lo / 2, v.at.x - lo / 2 + lo, v.at.y - lo / 2 + lo}});
@@ -1884,6 +1907,22 @@ void Router::Impl::draw(int n)
 void Router::Impl::stamp(int n, int sign)
 {
     stampBoxes(nets[std::size_t(n)].metal, nets[std::size_t(n)].lineType, sign);
+    // Its cuts: where another via's cut of the same layer would be too near
+    // (closer than the larger of the two spacings).
+    for (const auto& [via, box] : nets[std::size_t(n)].cuts)
+        for (int d = 0; d < int(cutUse.size()); ++d) {
+            if (!cutUse[std::size_t(d)].active() || !(p.tech.vias.at(d).layer == p.tech.vias.at(via).layer)) continue;
+            const Coord need = p.units(std::max(p.tech.vias.at(d).spacing, p.tech.vias.at(via).spacing));
+            if (need <= 0) continue;
+            Paged<std::uint16_t>& u = cutUse[std::size_t(d)];
+            raster(box, p.units(p.tech.vias.at(d).outline()) / 2, need, [&](int j, int i0, int i1) {
+                for (int i = i0; i <= i1; ++i) {
+                    std::uint16_t& x = u.ref(i, j);
+                    if (sign > 0) x = std::uint16_t(std::min<int>(65535, x + 1));
+                    else if (x > 0) --x;
+                }
+            });
+        }
 }
 
 void Router::Impl::stampBoxes(const std::vector<std::pair<int, Box>>& metal, int lineType, int sign)
@@ -1917,7 +1956,8 @@ bool Router::Impl::conflicted(int n)
         const std::size_t c = cellAt(int(i), int(j));
         const int pair = p.tech.vias.at(v.via).lower;
         bad = use[std::size_t(netLandLower[std::size_t(n)][std::size_t(pair)])][std::size_t(pair)].get(c) > 0
-              || use[std::size_t(netLandUpper[std::size_t(n)][std::size_t(pair)])][std::size_t(pair + 1)].get(c) > 0;
+              || use[std::size_t(netLandUpper[std::size_t(n)][std::size_t(pair)])][std::size_t(pair + 1)].get(c) > 0
+              || (std::size_t(v.via) < cutUse.size() && cutUse[std::size_t(v.via)].active() && cutUse[std::size_t(v.via)].get(c) > 0);
     }
     stamp(n, +1);
     return bad;
@@ -2002,6 +2042,7 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
     searched = 0;
     for (auto& perType : use)
         for (auto& m : perType) m.clear();
+    for (auto& m : cutUse) m.clear();
     for (auto& h : history) h.clear();
     result.terminals = readings;
     result.crowding = crowding;
@@ -2280,6 +2321,7 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
     if (best.pass > 0 && best.pass != int(result.passes.size())) {
         for (auto& perType : use)
             for (auto& m : perType) m.clear();
+        for (auto& m : cutUse) m.clear();
         for (int n = 0; n < count; ++n) {
             NetState& st = nets[std::size_t(n)];
             st.result = best.routes[std::size_t(n)];
@@ -2453,6 +2495,7 @@ const QVector<Crowding>& Router::crowding() const
 void Router::releaseMaps()
 {
     d->use.clear();
+    d->cutUse.clear();
     d->history.clear();
     d->base.clear();
     d->cutBlocked.clear();
