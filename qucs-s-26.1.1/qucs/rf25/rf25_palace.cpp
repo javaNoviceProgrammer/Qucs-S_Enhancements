@@ -411,6 +411,8 @@ PalaceExport palaceExportOf(const Model& model, const QList<Conductor>& conducto
                 out.notes << tr("%1 is not written: no edge of a shape on %2 near its point faces the way it says.").arg(own, metal);
                 continue;
             }
+            // (Its conductor's whole side, as the solver's face is.)
+            face = wholeSideOf(outlines, face, onLayer);
             const double zMetal = ml->z0 * toUm;
             if (returnKind == QLatin1String("beside")) {
                 const std::array<QLineF, 2> beside = besideEdges(outlines, face, outward, onLayer);

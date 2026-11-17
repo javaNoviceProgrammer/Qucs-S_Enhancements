@@ -339,6 +339,26 @@ private slots:
     // Metals as sheets: each at its bottom where its shape is, its loss of
     // its thickness, the box whole; the floor of a metal ground its
     // conductivity, an open one air.
+    // A port on a side that corners on its line split - an outline not
+    // healed - is on the whole side, as the solver's face is: its rectangle
+    // the strip's width, not the piece its point is on (the review of
+    // 1ed66b44).
+    void aPortOnASplitSideIsTheWholeSide()
+    {
+        const Model model = modelOf(microstrip(QStringLiteral(R"("thickness": "10[um]", "sigma": "5.8e7")")), QLatin1String(kTwoEdgePorts));
+        Conductor split = box(QStringLiteral("M1"), 0, -kW / 2, kL, kW / 2);
+        split.outline = QPolygonF(QList<QPointF>{{0, -kW / 2}, {kL, -kW / 2}, {kL, kW / 2}, {0, kW / 2}, {0, kW / 4}, {0, -kW / 4}});
+        PalaceOptions options;
+        options.margin = 400e-6;
+        options.air = 600e-6;
+        const PalaceExport e = palaceExportOf(model, {split}, options, QStringLiteral("split"), QStringLiteral("Qucs-S test"));
+        QVERIFY2(e.ok(), qPrintable(e.problems.join(QLatin1Char(' '))));
+        const Msh m = readMsh(e.mesh);
+        QVERIFY2(m.error.isEmpty(), qPrintable(m.error));
+        const double port = m.areaOf(m.tagOf(2, QStringLiteral("port P1")));
+        QVERIFY2(std::abs(port - kW * kH) < 1e-9 * kW * kH, qPrintable(QString::number(port)));
+    }
+
     void aSheetIsAPerfectSheetAndTheGroundItsKind()
     {
         const Conductor strip = box(QStringLiteral("M1"), 0, -kW / 2, kL, kW / 2);

@@ -635,14 +635,6 @@ std::array<QLineF, 2> besideEdges(const QList<Conductor>& conductors, const QLin
     return out;
 }
 
-namespace {
-
-/// The whole side \a edge (an outline edge of a shape on \a layer) is part
-/// of: the edges before and after it that run on along its line, the same
-/// way, with it. An outline with a corner on a straight side, as one healed
-/// or not may have, split it, and a port's face was the cells along the
-/// piece its point was on - part of the side, its feed as narrow. (Not
-/// faceEdge()'s own: the exports want the outline's edge itself.)
 QLineF wholeSideOf(const QList<Conductor>& conductors, const QLineF& edge, const QString& layer)
 {
     const QPointF d = edge.p2() - edge.p1();
@@ -674,8 +666,6 @@ QLineF wholeSideOf(const QList<Conductor>& conductors, const QLineF& edge, const
     }
     return edge;
 }
-
-} // namespace
 
 QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const QList<int>& reached, QPointF where,
                      QPointF* onLine, QPointF* alongLine, const QString& layer, QPointF facing)
