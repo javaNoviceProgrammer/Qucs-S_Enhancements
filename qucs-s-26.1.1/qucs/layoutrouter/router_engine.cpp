@@ -742,12 +742,20 @@ bool Router::Impl::prepare()
     const qint64 bits = qint64(cells / 8 + 8) * qint64(std::accumulate(typesOnPlane.begin(), typesOnPlane.end(), std::size_t(0),
                                                                      [](std::size_t a, const std::vector<int>& v) { return a + v.size(); }));
     const qint64 counts = qint64(cells) * planes * qint64(2 * types.size() + 4) / 3;
+    // Each via of a cut layer with a spacing: a map of nets' cuts near, its
+    // page table, and a third of its pages (as the counts).
+    qint64 cutMaps = 0;
+    for (const Via& v : std::as_const(t.vias)) {
+        bool spaced = false;
+        for (const Via& o : std::as_const(t.vias)) spaced = spaced || (o.layer == v.layer && o.spacing > 0);
+        if (spaced) cutMaps += qint64(cells) * 2 / 3 + qint64((nx + Page - 1) / Page) * qint64((ny + Page - 1) / Page) * qint64(sizeof(void*));
+    }
     const qint64 search = qint64(cells) * planes * 12;
     int threads = p.options.threads > 0 ? p.options.threads : int(std::max(1u, std::thread::hardware_concurrency()));
     const qint64 cap = p.options.maxMemory * 1024 * 1024;
-    while (threads > 1 && (bits + counts + search * threads) * 5 / 4 > cap) --threads;
+    while (threads > 1 && (bits + counts + cutMaps + search * threads) * 5 / 4 > cap) --threads;
     p.options.threads = threads;
-    estimate = (bits + counts + search * threads) * 5 / 4;
+    estimate = (bits + counts + cutMaps + search * threads) * 5 / 4;
     if (estimate > cap)
         return error = QStringLiteral("Routing this would need about %1 MB, more than the %2 MB allowed (max_memory_mb): %3 x %4 cells on %5 metals. "
                                       "A coarser grid (%6 µm is a quarter of it) or a smaller area would do.")
