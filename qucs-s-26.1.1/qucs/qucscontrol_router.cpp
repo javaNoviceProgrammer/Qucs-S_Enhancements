@@ -472,7 +472,9 @@ void QucsControl::routeSetup(const QJsonObject& args, const Done& done)
         // So must the class and vias of each net this call gives, against it
         // (refused as a technology is, nothing kept).
         for (const QString& name : std::as_const(given)) {
-            const JobNet& n = job.nets.at(job.netIndex(name));
+            const int i = job.netIndex(name);
+            if (i < 0) continue;   // (given and removed in the same call)
+            const JobNet& n = job.nets.at(i);
             bool ok = true;
             if (!n.netClass.isEmpty() && t.classIndex(n.netClass) < 0) {
                 QStringList have;

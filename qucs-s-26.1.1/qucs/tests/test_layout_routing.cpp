@@ -543,6 +543,13 @@ private slots:
         o = json(call("route_report", {{"path", chip}, {"what", "job"}}));
         QCOMPARE(o.value("job").toObject().value("nets").toArray().at(1).toObject().value("vias").toArray(), own);
         QCOMPARE(json(call("route_setup", {{"path", chip}, {"terminals", "none"}})).value("job changed").toBool(), false);
+        // A net given and removed in one call: gone, and nothing read of it.
+        QJsonArray passing;
+        passing.append(QJsonObject{{"name", "x"}, {"class", "thick"}, {"start", xy(50, 0)}, {"pads", vPad}});
+        r = call("route_setup", {{"path", chip}, {"nets", passing}, {"remove_nets", QJsonArray{"x"}}, {"terminals", "none"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        o = json(call("route_report", {{"path", chip}, {"what", "job"}}));
+        QCOMPARE(o.value("job").toObject().value("nets").toArray().size(), 2);
         // So is a class it has not.
         QJsonArray stray;
         stray.append(QJsonObject{{"name", "x"}, {"class", "thick"}, {"start", xy(50, 0)}, {"pads", vPad}});
