@@ -70,6 +70,11 @@ double area2(const Poly& poly);
 bool inside(const Poly& poly, Pt p);
 /// A box as a polygon, counterclockwise.
 Poly polyOf(const Box& b);
+/// \a poly turned counterclockwise if it runs clockwise (KLayout writes its
+/// polygons so): the booleans of the check join shapes by nonzero winding,
+/// so that a clockwise pad and a counterclockwise landing on it would cancel
+/// where they overlap.
+void orient(Poly* poly);
 
 /// \a poly cut into boxes by horizontal slabs at its vertices (nonzero
 /// winding). Outer boxes cover it - a slanted edge's slab is cut again

@@ -538,11 +538,30 @@ private slots:
         wrong.append("V9");
         lost.append(QJsonObject{{"name", "v"}, {"class", "power"}, {"start", xy(50, 0)}, {"pads", vPad}, {"vias", wrong}});
         r = call("route_setup", {{"path", chip}, {"nets", lost}});
-        QVERIFY2(failed(r) || text(r).contains("V9"), qPrintable(text(r)));
-        if (!failed(r)) {
-            r = call("route_run", {{"path", chip}, {"mode", "all"}});
-            QVERIFY2(text(r).contains("V9"), qPrintable(text(r)));
-        }
+        QVERIFY2(failed(r) && text(r).contains("V9"), qPrintable(text(r)));
+        // ... as a bad technology is: nothing kept, the job as it was.
+        o = json(call("route_report", {{"path", chip}, {"what", "job"}}));
+        QCOMPARE(o.value("job").toObject().value("nets").toArray().at(1).toObject().value("vias").toArray(), own);
+        QCOMPARE(json(call("route_setup", {{"path", chip}, {"terminals", "none"}})).value("job changed").toBool(), false);
+        // A net given and removed in one call: gone, and nothing read of it.
+        QJsonArray passing;
+        passing.append(QJsonObject{{"name", "x"}, {"class", "thick"}, {"start", xy(50, 0)}, {"pads", vPad}});
+        r = call("route_setup", {{"path", chip}, {"nets", passing}, {"remove_nets", QJsonArray{"x"}}, {"terminals", "none"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        o = json(call("route_report", {{"path", chip}, {"what", "job"}}));
+        QCOMPARE(o.value("job").toObject().value("nets").toArray().size(), 2);
+        // So is a class it has not.
+        QJsonArray stray;
+        stray.append(QJsonObject{{"name", "x"}, {"class", "thick"}, {"start", xy(50, 0)}, {"pads", vPad}});
+        r = call("route_setup", {{"path", chip}, {"nets", stray}});
+        QVERIFY2(failed(r) && text(r).contains("thick"), qPrintable(text(r)));
+        // A spacing rule on V1's cut layer finer than the array's own cuts:
+        // it holds between vias, and setup says so.
+        QJsonArray rules = t.value("rules").toArray();
+        rules.append(QJsonObject{{"name", "V1.S.1"}, {"type", "spacing"}, {"layer", "V1"}, {"min", 3}});
+        t.insert("rules", rules);
+        r = call("route_setup", {{"path", chip}, {"technology", t}, {"terminals", "none"}});
+        QVERIFY2(!failed(r) && text(r).contains("V1.S.1 (3 µm) holds between vias; V1x2's own cuts are 1 µm apart inside it"), qPrintable(text(r)));
         // The format tells of both.
         const QJsonObject f = json(call("route_report", {{"path", chip}, {"what", "format"}}));
         QVERIFY(f.value("technology").toObject().contains("rules"));

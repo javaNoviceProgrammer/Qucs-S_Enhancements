@@ -76,6 +76,20 @@ bool buildProblem(const layout::Layout& layout, int cell, const Job& job, const 
         for (int u = 0; u < v; ++u) first = first && !(tech.vias.at(u).layer == tech.vias.at(v).layer);
         if (first) role(tech.vias.at(v).layer, 1, v);
     }
+    // A via array whose own cuts are nearer than its cut layer's spacing
+    // rule: the rule holds between vias, as a deck's would between arrays,
+    // and the array is drawn as the technology gives it - said, since a
+    // deck may flag the array itself.
+    for (const DesignRule& r : tech.rules) {
+        if (r.type != QLatin1String("spacing") || !r.other.isEmpty() || tech.metalIndex(r.layer) >= 0) continue;
+        for (const Via& v : tech.vias) {
+            bool named = v.layer.text() == r.layer;
+            for (const Via& o : tech.vias) named = named || (o.layer == v.layer && o.name.compare(r.layer, Qt::CaseInsensitive) == 0);
+            if (named && v.cols * v.rows > 1 && v.cutSpacing < r.min - 1e-9)
+                warnings->append(QStringLiteral("%1 (%2 µm) holds between vias; %3's own cuts are %4 µm apart inside it")
+                                     .arg(r.name, micro(r.min), v.name, micro(v.cutSpacing)));
+        }
+    }
     for (int o = 0; o < tech.obstacles.size(); ++o)
         if (!role(tech.obstacles.at(o).layer, 2, o))
             warnings->append(QStringLiteral("The layout has nothing on the obstacle layer %1 (%2)").arg(tech.obstacles.at(o).name, tech.obstacles.at(o).layer.text()));

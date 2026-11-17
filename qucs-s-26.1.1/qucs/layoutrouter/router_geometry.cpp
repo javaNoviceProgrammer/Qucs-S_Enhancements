@@ -22,6 +22,11 @@ Box boundsOf(const Poly& poly)
     return b;
 }
 
+void orient(Poly* poly)
+{
+    if (area2(*poly) < 0) std::reverse(poly->begin(), poly->end());
+}
+
 double area2(const Poly& poly)
 {
     double a = 0;
