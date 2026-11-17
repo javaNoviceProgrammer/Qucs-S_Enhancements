@@ -3121,7 +3121,12 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
         for (int a = 0; a < np0; a += step) {
             const int t = c.tail.at(a), h = c.head.at(a);
             if (t < 0 || h < 0) continue;
-            const Complex charge = overJw(k.potential(t, t) - k.potential(t, h) - k.potential(h, t) + k.potential(h, h), jw);
+            // (With a correction held as its factors, its four entries too:
+            //  potential() leaves it to P's products - addFactored().)
+            const double factored = c.corrected && c.dielectric.factored ? c.dielectric.at(t, t) - c.dielectric.at(t, h)
+                                                                               - c.dielectric.at(h, t) + c.dielectric.at(h, h)
+                                                                         : 0.0;
+            const Complex charge = overJw(k.potential(t, t) - k.potential(t, h) - k.potential(h, t) + k.potential(h, h) + factored, jw);
             const Filament& run = c.runs.at(a);
             const Complex own = run.width > 0 ? sheetImpedance(run.sigma, run.thickness, f) * (run.length() / run.width) : Complex(0, 0);
             const double rest = std::abs(jw * k.inductance(a, a) + own);
