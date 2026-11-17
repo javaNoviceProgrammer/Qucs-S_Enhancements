@@ -1451,15 +1451,20 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         auto notLit = std::make_shared<QStringList>();
         auto at = std::make_shared<int>(0);          // the net being traced
         auto answered = std::make_shared<bool>(false);
+        auto closedHook = std::make_shared<QMetaObject::Connection>();
         const auto finishOnce = [=](const QJsonArray& netsLit, const QStringList& netsNot) {
             if (*answered) return;
             *answered = true;
+            // (Its hook on the tab let go: it holds this call's layout, which
+            //  a layout read again since would leave in memory till the tab
+            //  closed - the review of 9ec0218f.)
+            QObject::disconnect(*closedHook);
             finish(netsLit, netsNot);
         };
         // The tab closed while a net is traced: its trace's answer is
         // dropped with the tab, so the call is answered here - the nets lit
         // so far, and the rest not lit (the review of 92543b5e).
-        connect(doc, &QObject::destroyed, this, [=] {
+        *closedHook = connect(doc, &QObject::destroyed, this, [=] {
             if (*answered) return;
             *answered = true;
             QStringList left = *notLit;
