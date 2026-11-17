@@ -1057,6 +1057,32 @@ private slots:
         QVERIFY(e.script.contains(QLatin1String("#   - P3: RF 2.5D drives the cells of a rectangle")));
     }
 
+    // A port on a side that corners on its line split - an outline not
+    // healed - is on the whole side, as the solver's face is: every edge of
+    // it, not the piece its point is on (the review of 1ed66b44).
+    void aPortOnASplitSideIsTheWholeSide()
+    {
+        const QString ports = QStringLiteral(R"({"type": "rf_edge_port", "tag": "p1", "label": "P1", "properties": {"conductor": "M1", "x": "0", "y": "0", "facing": "-x"}})");
+        const Model model = modelOf(microstripStack() + QLatin1Char(',') + portsOf(ports) + QLatin1Char(',') + QLatin1String(kStudy));
+        Conductor split = box(QStringLiteral("M1"), 0, -31, 1000, 31);
+        split.outline = QPolygonF(QList<QPointF>{{0, -31}, {1000, -31}, {1000, 31}, {0, 31}, {0, 15}, {0, -15}});
+        const HfssExport e = hfssExportOf(model, {split});
+        QVERIFY2(e.ok(), qPrintable(e.problems.join(QLatin1Char(' '))));
+        QCOMPARE(e.ports, 1);
+        QTemporaryDir dir;
+        const Ran ran = runScript(written(e, dir.path()), dir.path());
+        if (!ran.ok && ran.calls.isEmpty() && ran.output.isEmpty()) QSKIP("no python3 here");
+        QVERIFY2(ran.ok, qPrintable(ran.output));
+        QCOMPARE(ran.of(QStringLiteral("oEditor.CreateEdgePort")).size(), 1);
+        std::function<int(const QJsonArray&)> edgesIn = [&edgesIn](const QJsonArray& a) {
+            int n = 0;
+            // (Each edge "edge:=", ["et:=", "pe", ...]: one "et:=" an edge.)
+            for (const QJsonValue& v : a) n += v.isArray() ? edgesIn(v.toArray()) : v.toString() == QLatin1String("et:=") ? 1 : 0;
+            return n;
+        };
+        QCOMPARE(edgesIn(ran.of(QStringLiteral("oEditor.CreateEdgePort")).first()), 3);
+    }
+
     // A port's edge goes by the number Electronics Desktop reads its polygon
     // with: where the first point is another, where it closes the outline, and
     // where no edge is where it was written, which is said.

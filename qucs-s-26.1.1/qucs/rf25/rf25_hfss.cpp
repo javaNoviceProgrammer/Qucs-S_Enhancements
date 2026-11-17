@@ -1139,7 +1139,13 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, 
                 out.notes << tr("%1 is not written: no edge of a shape on %2 near its point faces the way it says.").arg(own, metal);
                 continue;
             }
-            edges << main;
+            // (Its conductor's whole side, as the solver's face is: every edge
+            //  along it where corners on its line split it.)
+            if (const QLineF side = wholeSideOf(outlines, face, onLayer); side != face) {
+                face = side;
+                edges = edgesOn(side, onLayer);
+            }
+            if (edges.isEmpty()) edges << main;
             const QString layerName = polygons.at(main.polygon).layer;
             const bool calibrate = flagOf(p, QStringLiteral("calibrate"));
             deembed = numberOf(p, QStringLiteral("deembed"), model, 0);

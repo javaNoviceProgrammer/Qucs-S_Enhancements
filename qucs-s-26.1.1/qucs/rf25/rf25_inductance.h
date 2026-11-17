@@ -228,6 +228,15 @@ std::array<QLineF, 2> besideEdges(const QList<Conductor>& conductors, const QLin
  * \a facing, given, to the edges whose outward normal points that way
  * (within 45 degrees) - a port at a corner then drives the face it says.
  */
+/// The whole side \a edge (an outline edge of a shape on \a layer, as
+/// faceEdge() gives it) is part of: the edges before and after it that run
+/// on along its line, the same way, with it. An outline with a corner on a
+/// straight side - one not healed may have - splits it, and a port on the
+/// piece its point is on was a port on part of the side, its feed as narrow
+/// (the review of ab31ce64). faceCells() takes its face along it, and the
+/// exports their ports.
+QLineF wholeSideOf(const QList<Conductor>& conductors, const QLineF& edge, const QString& layer);
+
 QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const QList<int>& reached, QPointF where,
                      QPointF* onLine = nullptr, QPointF* alongLine = nullptr, const QString& layer = QString(),
                      QPointF facing = QPointF());
