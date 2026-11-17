@@ -462,14 +462,29 @@ Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& whi
             const double side = longestSide(ci, cj) * unit;
             const QRectF rect = scaled(cj.charged(), unit);
             const Green& g = greenOf(ci.layer, cj.layer);
-            p(i, j) = cellPotential(at, rect, g, side, i == j);
+            // (A strip's cell's rect is of its own frame: the point turned
+            //  into it - MeshCell::angle.)
+            const QPointF seen = cj.turned() ? MeshCell::turnedAbout(at, rect.center(), -cj.angle) : at;
+            p(i, j) = cellPotential(seen, rect, g, side, i == j);
             const auto ki = charges.constFind(which.at(i)), kj = charges.constFind(which.at(j));
             if ((ki != charges.constEnd() || kj != charges.constEnd())
                 && std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y()) < kNearWidths * side * (1 + 1e-6)) {   // (a margin, as the full wave's)
                 const double zi = zOf(which.at(i)), zj = zOf(which.at(j));
-                const QList<ChargePart> pi = ki != charges.constEnd() ? ki.value() : QList<ChargePart>{wholeCell(scaled(ci.charged(), unit), zi)};
+                QList<ChargePart> pi = ki != charges.constEnd() ? ki.value() : QList<ChargePart>{wholeCell(scaled(ci.charged(), unit), zi)};
+                // (A strip's cell's parts are of its own frame: i's out of
+                //  its, into j's where j is one, as the point is.)
+                if (ci.turned() || cj.turned())
+                    for (ChargePart& part : pi) {
+                        if (part.plane != 0) continue;
+                        QPointF to(part.x, part.y);
+                        if (ci.turned()) to = MeshCell::turnedAbout(to, at, ci.angle);
+                        if (cj.turned()) to = MeshCell::turnedAbout(to, rect.center(), -cj.angle);
+                        part.rect.translate(to.x() - part.x, to.y() - part.y);
+                        part.x = to.x();
+                        part.y = to.y();
+                    }
                 const QList<ChargePart> pj = kj != charges.constEnd() ? kj.value() : QList<ChargePart>{wholeCell(rect, zj)};
-                const auto correction = [&](const Green& h) { return partsCorrection(h, pi, pj, rect, at, std::abs(zi - zj)); };
+                const auto correction = [&](const Green& h) { return partsCorrection(h, pi, pj, rect, seen, std::abs(zi - zj)); };
                 p(i, j) += local ? local(g, which.at(i), which.at(j), correction) : correction(g);
             }
             // In a box, the charge's images in its walls, each of the sign

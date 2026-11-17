@@ -67,6 +67,29 @@ QPolygonF withoutJogs(const QPolygonF& polygon, double under, int* removed = nul
 /// As it was where \a tolerance is not above nought or it has four corners
 /// or fewer.
 QPolygonF simplifiedOutline(const QPolygonF& polygon, double tolerance, double* moved = nullptr);
+
+/*!
+ * Whether \a outline is a strip: a path's outline, or a polygon drawn as
+ * one - two polylines \a width apart either side of a centreline, mitred
+ * at its corners and flush at its ends -, and its centreline (\a spine)
+ * and width where it is. Its corners must come in pairs across it, each
+ * segment's two sides parallel and \a width apart, each end square to its
+ * segment and \a width across, every side of either polyline running the
+ * centreline's way; within \a tolerance (the outline's units). One whose
+ * every side runs along x or y is none: the mesh cuts those into their
+ * rectangles. A rectangle turned is one of a single segment, along its
+ * longer way.
+ */
+bool stripOf(const QPolygonF& outline, double tolerance, QPolygonF* spine = nullptr, double* width = nullptr);
+/// \a spine (an open polyline) thinned by Douglas and Peucker: every corner
+/// within \a tolerance of the line between the corners kept either side of
+/// it dropped, its ends and its sharper corners kept. How far the furthest
+/// dropped corner was from its line in \a moved.
+QPolygonF simplifiedSpine(const QPolygonF& spine, double tolerance, double* moved = nullptr);
+/// The outline of a strip \a width wide along \a spine: mitred at its
+/// corners, flush at its ends - stripOf()'s inverse. Its left side first,
+/// from the spine's start; then its right, back.
+QPolygonF stripOutline(const QPolygonF& spine, double width);
 /// The part of \a shapes that is inside \a within: a cut, which is how a
 /// cell of the mesh is taken out of a conductor.
 QList<QPolygonF> clipTo(const QList<QPolygonF>& shapes, const QPolygonF& within);
@@ -80,6 +103,13 @@ struct Conductor {
     QString layer;          ///< a stack layer's name: "M1", "V1"
     QPolygonF outline;
     bool fill = false;      ///< dummy fill, kept as floating metal
+    /// A strip's centreline and width, µm, where the processing found the
+    /// shape to be one (stripOf()): its outline is then stripOutline() of
+    /// them, and the mesh cuts it along its centreline in cells of its own
+    /// frame. Empty, and nought, for any other shape.
+    QPolygonF spine;
+    double spineWidth = 0;
+    bool isStrip() const { return spine.size() >= 2 && spineWidth > 0; }
     double area() const;    ///< µm², positive whichever way it is wound
 };
 

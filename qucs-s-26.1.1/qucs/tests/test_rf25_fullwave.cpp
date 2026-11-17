@@ -885,22 +885,27 @@ private slots:
         }
     }
 
-    // A square turned 45 degrees is the square: the cells its slanted sides clip each spread their charge
-    // over a rectangle of their own area at their own centroid, not over
-    // their box - up to twice their area, its middle off their centroid. At
-    // cells of a twentieth of its side the turned square reads its C 2.05 %
-    // over the square's, quasi-static and full wave alike - the clipped
-    // edge's own error, which halves as the cells do -; spread over their
-    // boxes, 2.23 and 2.25 %.
+    // A square turned 45 degrees is the square. Found a strip of one segment, as the processing finds it,
+    // it is cut along its centreline in cells of its own frame - the
+    // square's cells, turned -, each solver taking a point into that frame
+    // and its edge cells' profile across their own sides: within 0.02 % of
+    // the square, quasi-static and full wave. Meshed as any polygon, its
+    // slanted sides clip the cells, each spreading its charge over a
+    // rectangle of its own area at its own centroid: 2.05 % over at cells of
+    // a twentieth of its side - the clipped edge's own error, which halves
+    // as the cells do -; spread over their boxes, 2.23 and 2.25 %.
     void aSquareTurnedIsTheSquare()
     {
         const rf::Stack st = grounded(4, 300e-6);
         const double a = 100, h = a / std::sqrt(2.0);
         const rf::Conductor square = strip(-a / 2, -a / 2, a, a);
-        rf::Conductor diamond = square;
-        diamond.outline = QPolygonF({QPointF(0, -h), QPointF(h, 0), QPointF(0, h), QPointF(-h, 0)});
+        rf::Conductor clipped = square;
+        clipped.outline = QPolygonF({QPointF(0, -h), QPointF(h, 0), QPointF(0, h), QPointF(-h, 0)});
+        rf::Conductor diamond = clipped;
+        QVERIFY(rf::stripOf(diamond.outline, 1e-9, &diamond.spine, &diamond.spineWidth));
+        QCOMPARE(diamond.spineWidth, a);
         QList<double> quasi, full;
-        for (const rf::Conductor& c : {square, diamond}) {
+        for (const rf::Conductor& c : {square, diamond, clipped}) {
             rf::MeshSettings how;
             how.maximum = 5e-6;
             how.cellsAcross = 0;
@@ -911,11 +916,55 @@ private slots:
             quasi << e.maxwell.at(0).at(0);
             full << -1.0 / (2 * M_PI * 1e9 * w.z.at(0).at(0).at(0).imag());
         }
-        qWarning("turned: quasi-static %+.3f %%, full wave %+.3f %% (square %.4f / %.4f fF)", 100 * (quasi.at(1) / quasi.at(0) - 1),
-                 100 * (full.at(1) / full.at(0) - 1), quasi.at(0) * 1e15, full.at(0) * 1e15);
-        QVERIFY2(quasi.at(1) / quasi.at(0) - 1 < 0.0215, qPrintable(QStringLiteral("quasi-static %1 against %2").arg(quasi.at(1)).arg(quasi.at(0))));
-        QVERIFY2(full.at(1) / full.at(0) - 1 < 0.0215, qPrintable(QStringLiteral("full wave %1 against %2").arg(full.at(1)).arg(full.at(0))));
-        QVERIFY(quasi.at(1) > quasi.at(0) && full.at(1) > full.at(0));
+        qWarning("turned as a strip: quasi-static %+.3f %%, full wave %+.3f %%; clipped %+.3f %%, %+.3f %% (square %.4f / %.4f fF)",
+                 100 * (quasi.at(1) / quasi.at(0) - 1), 100 * (full.at(1) / full.at(0) - 1), 100 * (quasi.at(2) / quasi.at(0) - 1),
+                 100 * (full.at(2) / full.at(0) - 1), quasi.at(0) * 1e15, full.at(0) * 1e15);
+        // (Within 0.05 %: each piece of its frame left out - the point not
+        //  turned into it, its edges probed along x and y, its parts in the
+        //  layout's axes, its ends not graded - moves it 0.07 to 0.21 %.)
+        QVERIFY2(std::abs(quasi.at(1) / quasi.at(0) - 1) < 5e-4, qPrintable(QStringLiteral("quasi-static %1 against %2").arg(quasi.at(1)).arg(quasi.at(0))));
+        QVERIFY2(std::abs(full.at(1) / full.at(0) - 1) < 5e-4, qPrintable(QStringLiteral("full wave %1 against %2").arg(full.at(1)).arg(full.at(0))));
+        QVERIFY2(quasi.at(2) / quasi.at(0) - 1 < 0.0215 && full.at(2) / full.at(0) - 1 < 0.0215,
+                 qPrintable(QStringLiteral("clipped: %1, %2 against %3, %4").arg(quasi.at(2)).arg(full.at(2)).arg(quasi.at(0)).arg(full.at(0))));
+    }
+
+    // A line at an angle is the line (P49's third fix): a microstrip of
+    // copper turned 30 degrees, found a strip of one segment, is cut along
+    // its centreline into the line's own cells, turned - its runs at the
+    // angle, its ports on its slanted ends -, and its S is the line's along
+    // x: every term within 1e-3, lossy as it is (3e-8 here). (Meshed as any
+    // polygon, its slanted sides cut it into parts between its corners - 2,878
+    // cells of 1 µm where the line's are 132 -, and its S was 0.038 apart.)
+    void aLineAtAnAngleIsTheLine()
+    {
+        const rf::Stack st = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
+        const double length = 1000, width = 50, a = M_PI / 6;
+        const auto turned = [a](QPointF p) { return QPointF(std::cos(a) * p.x() - std::sin(a) * p.y(), std::sin(a) * p.x() + std::cos(a) * p.y()); };
+        const rf::Conductor along = strip(0, 0, length, width);
+        rf::Conductor slanted = along;
+        slanted.outline.clear();
+        for (const QPointF& p : {QPointF(0, 0), QPointF(length, 0), QPointF(length, width), QPointF(0, width)}) slanted.outline << turned(p);
+        QVERIFY(rf::stripOf(slanted.outline, 1e-9, &slanted.spine, &slanted.spineWidth));
+        const QList<double> fs{5e9, 20e9};
+        QList<rf::FullWave> solved;
+        for (const bool angled : {false, true}) {
+            const rf::Conductor& c = angled ? slanted : along;
+            const rf::Mesh mesh = meshed({c}, 4, 100e-6);
+            const QPointF in(0, width / 2), out(length, width / 2), back = angled ? turned(QPointF(-1, 0)) : QPointF(-1, 0);
+            solved << rf::fullWaveOf(mesh, {c}, st,
+                                     {edgePort(angled ? turned(in) : in, QString(), back), edgePort(angled ? turned(out) : out, QString(), -back)}, fs);
+            QVERIFY2(solved.last().ok(), qPrintable(why(solved.last())));
+        }
+        QCOMPARE(int(solved.at(0).s.size()), int(fs.size()));
+        for (int k = 0; k < fs.size(); ++k) {
+            double most = 0;
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) most = std::max(most, std::abs(solved.at(1).s.at(k).at(i).at(j) - solved.at(0).s.at(k).at(i).at(j)));
+            qWarning("%g GHz: S21 %.5f%+.5fi along x, %.5f%+.5fi at 30 degrees; S apart by %.2g at most", fs.at(k) / 1e9,
+                     solved.at(0).s.at(k).at(1).at(0).real(), solved.at(0).s.at(k).at(1).at(0).imag(), solved.at(1).s.at(k).at(1).at(0).real(),
+                     solved.at(1).s.at(k).at(1).at(0).imag(), most);
+            QVERIFY2(most < 1e-3, qPrintable(QStringLiteral("%1 GHz: %2 apart").arg(fs.at(k) / 1e9).arg(most)));
+        }
     }
 
     // Past its low-frequency limit a solve says so (N4 of the open items: a

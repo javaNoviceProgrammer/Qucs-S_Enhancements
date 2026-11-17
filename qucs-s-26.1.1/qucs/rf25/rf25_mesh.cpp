@@ -488,6 +488,138 @@ QPointF centroidOf(const QPolygonF& outline, double area)
     return QPointF(cx / (3 * twice), cy / (3 * twice));
 }
 
+/// A strip's quadrilaterals along its centreline (Conductor::spine): each
+/// segment's left and right corners at its two ends, mitred as
+/// stripOutline() makes its outline. Empty where a segment's side runs back
+/// against its centreline - a turn sharp enough to fold the mitre over -,
+/// which is then meshed as any other polygon.
+struct StripQuads {
+    QList<QPointF> left, right;   ///< at each corner of the centreline
+    QList<double> lengths;        ///< each segment's along the centreline
+    QList<double> angles;         ///< each segment's way, radians from x
+    bool ok() const { return lengths.size() >= 1; }
+};
+
+StripQuads stripQuads(const QPolygonF& spine, double width)
+{
+    StripQuads out;
+    const int n = int(spine.size());
+    if (n < 2 || !(width > 0)) return out;
+    const QPolygonF outline = stripOutline(spine, width);
+    if (outline.size() != 2 * n) return out;
+    for (int i = 0; i < n; ++i) {
+        out.left << outline.at(i);
+        out.right << outline.at(2 * n - 1 - i);
+    }
+    QList<double> lengths, angles;
+    for (int k = 0; k + 1 < n; ++k) {
+        const QPointF d = spine.at(k + 1) - spine.at(k);
+        const double l = std::hypot(d.x(), d.y());
+        if (!(l > 0)) return {};
+        const QPointF dl = out.left.at(k + 1) - out.left.at(k), dr = out.right.at(k + 1) - out.right.at(k);
+        if (!(dl.x() * d.x() + dl.y() * d.y() > 0) || !(dr.x() * d.x() + dr.y() * d.y() > 0)) return {};
+        lengths << l;
+        angles << std::atan2(d.y(), d.x());
+    }
+    out.lengths = lengths;
+    out.angles = angles;
+    return out;
+}
+
+/*!
+ * The cells of a strip (Conductor::spine) cut along its centreline: across
+ * its width \a perFeature cells - their outermost spaces halved where
+ * \a edges, as a rectangle's are - and along its whole length cells
+ * \a stretch times as long as they are wide (up to \a size), its two ends'
+ * outermost spaces halved too: as many as its length holds nearest, a single
+ * segment the rectangle's own count. Where a cell spans a corner of the
+ * centreline, its sides bend there, through the mitre's points at the same
+ * fractions across - so that a strip of many short segments takes the cells
+ * its length does, a turned rectangle the rectangle's, and the cells tile
+ * its outline exactly, each meeting the next edge to edge. Each cell is in
+ * the frame of the chord its middle runs along (MeshCell::angle). \a across
+ * is the cells' width across it and \a isStrip whether it is long enough to
+ * stretch.
+ */
+QList<MeshCell> stripCells(const Conductor& conductor, const StripQuads& quads, double size, int perFeature, double stretch,
+                           bool edges, double* across, bool* isStrip)
+{
+    QList<MeshCell> out;
+    const double width = conductor.spineWidth;
+    const int segments = int(quads.lengths.size());
+    QList<double> starts{0};   // (each corner's distance along the centreline)
+    for (const double l : quads.lengths) starts << starts.last() + l;
+    const double total = starts.last();
+    double step = size;
+    if (perFeature > 0) step = std::min(step, width / perFeature);
+    const bool strip = total >= 3 * width;
+    const double along = strip && stretch > 1 ? std::min(size, stretch * step) : step;
+    *across = step;
+    *isStrip = strip;
+    QList<double> vs = gridLines(0, width, step, edges, edges);
+    for (double& v : vs) v /= width;
+    vs.last() = 1;
+    const int count = segments == 1 ? std::max(1, int(std::ceil(total / along - 1e-9))) : std::max(1, int(std::lround(total / along)));
+    QList<double> ss = gridLines(0, total, total / count, edges, edges);
+    ss.first() = 0;
+    ss.last() = total;
+    const double hair = 1e-9 * std::max(1.0, total);
+    // A point at \a at along the centreline, \a v of the way across from its
+    // left; at a corner, the mitre's. \a k: the segment it is on.
+    const auto segmentOf = [&](double at) {
+        int k = 0;
+        while (k + 1 < segments && at > starts.at(k + 1)) ++k;
+        return k;
+    };
+    const auto point = [&](double at, double v) {
+        const int k = segmentOf(at);
+        const double u = at <= starts.at(k) ? 0 : at >= starts.at(k + 1) ? 1 : (at - starts.at(k)) / quads.lengths.at(k);
+        const QPointF l0 = quads.left.at(k), l1 = quads.left.at(k + 1), r0 = quads.right.at(k), r1 = quads.right.at(k + 1);
+        const QPointF a = u == 0 ? l0 : u == 1 ? l1 : l0 * (1 - u) + l1 * u;
+        const QPointF b = u == 0 ? r0 : u == 1 ? r1 : r0 * (1 - u) + r1 * u;
+        return v == 0 ? a : v == 1 ? b : a * (1 - v) + b * v;
+    };
+    const auto corner = [&](int k, double v) {
+        const QPointF a = quads.left.at(k), b = quads.right.at(k);
+        return v == 0 ? a : v == 1 ? b : a * (1 - v) + b * v;
+    };
+    for (int i = 0; i + 1 < ss.size(); ++i) {
+        const double s0 = ss.at(i), s1 = ss.at(i + 1);
+        QList<int> inside;   // (the centreline's corners strictly within it)
+        for (int k = 1; k < segments; ++k)
+            if (starts.at(k) > s0 + hair && starts.at(k) < s1 - hair) inside << k;
+        const QPointF c0 = (point(s0, 0) + point(s0, 1)) / 2, c1 = (point(s1, 0) + point(s1, 1)) / 2;
+        const QPointF chord = c1 - c0;
+        const double angle = std::atan2(chord.y(), chord.x()), middle = (s0 + s1) / 2;
+        for (int j = 0; j + 1 < vs.size(); ++j) {
+            const double v0 = vs.at(j), v1 = vs.at(j + 1);
+            QPolygonF outline;
+            outline << point(s0, v0);
+            for (const int k : std::as_const(inside)) outline << corner(k, v0);
+            outline << point(s1, v0) << point(s1, v1);
+            for (qsizetype m = inside.size() - 1; m >= 0; --m) outline << corner(inside.at(m), v1);
+            outline << point(s0, v1);
+            MeshCell cell;
+            cell.layer = conductor.layer;
+            cell.outline = outline;
+            cell.area = areaOf(outline);
+            if (!(cell.area > 0)) continue;
+            cell.centre = centroidOf(outline, cell.area);
+            cell.onEdge = j == 0 || j + 2 == vs.size() || i == 0 || i + 2 == ss.size();
+            // (Its frame's rectangle: as long as its middle's chord, as wide
+            //  as it is across at its middle, scaled to its own area.)
+            const double a = std::hypot(chord.x(), chord.y());
+            const QPointF wide = point(middle, v1) - point(middle, v0);
+            const double b = std::hypot(wide.x(), wide.y());
+            const double scale = a > 0 && b > 0 ? std::sqrt(cell.area / (a * b)) : 1;
+            cell.angle = angle;
+            cell.frame = QSizeF(a * scale, b * scale);
+            out << cell;
+        }
+    }
+    return out;
+}
+
 /// How far apart outlines \a a and \a b are at their nearest, where they
 /// do not cross: the least distance from a corner of either to a side of
 /// the other.
@@ -730,7 +862,12 @@ QList<Conductor> withMirrors(const QList<Conductor>& conductors, int axis, doubl
 {
     if (axis == 0) return conductors;
     QList<Conductor> out;
-    for (const Conductor& c : conductors) {
+    for (const Conductor& given : conductors) {
+        // (No strip's centreline: a half is meshed as the whole is, which a
+        //  strip's own frame does not keep to.)
+        Conductor c = given;
+        c.spine.clear();
+        c.spineWidth = 0;
         Conductor m = c;
         for (QPointF& p : m.outline) p = axis == 1 ? QPointF(2 * at - p.x(), p.y()) : QPointF(p.x(), 2 * at - p.y());
         std::reverse(m.outline.begin(), m.outline.end());
@@ -841,7 +978,25 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     QList<Piece> pieces;
     int cutInto = 0, cutFrom = 0, slantedFrom = 0, slantedRectangles = 0, slantedParts = 0, snappedShapes = 0;
     double snappedMost = 0;
+    // A strip (Conductor::spine) is no piece: it is cut along its centreline,
+    // in cells of each segment's own frame (stripCells()), below - a spiral
+    // of 180 segments a turn cut into the parts between its corners was
+    // 26,538 cells where the strip needs some 2,000. Not on a metal standing for a round wire, nor with a
+    // plane of symmetry: the half is meshed as the whole is.
+    QList<StripQuads> quadsOf(conductors.size());
+    int stripsCut = 0, stripSegments = 0;
     for (int c = 0; c < conductors.size(); ++c) {
+        const Conductor& conductor = conductors.at(c);
+        const Layer* metal = stack.named(conductor.layer);
+        if (axis != 0 || !conductor.isStrip() || (metal != nullptr && (metal->kind != Layer::Metal || metal->roundWire))) continue;
+        quadsOf[c] = stripQuads(conductor.spine, conductor.spineWidth);
+        if (quadsOf.at(c).ok()) {
+            ++stripsCut;
+            stripSegments += int(quadsOf.at(c).lengths.size());
+        }
+    }
+    for (int c = 0; c < conductors.size(); ++c) {
+        if (quadsOf.at(c).ok()) continue;
         const QPolygonF& outline = conductors.at(c).outline;
         const QRectF bounds = outline.boundingRect();
         const double area = areaOf(outline);
@@ -1140,6 +1295,11 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                          "of its own, and %3 part(s) along the slanted sides, each meshed by its own width; where two "
                          "meet, their cells meet edge to edge.")
                           .arg(slantedFrom).arg(slantedRectangles).arg(slantedParts);
+    if (stripsCut > 0)
+        mesh.lines << tr("%1 strip(s) cut along their centrelines, %2 segment(s) in all: each segment cut across its width and "
+                         "along its length in cells of its own frame, the next segment's meeting them edge to edge at the "
+                         "mitre between them.")
+                          .arg(stripsCut).arg(stripSegments);
     if (snappedShapes > 0)
         mesh.lines << tr("%1 of them with a curve's corners nearer each other across the cuts than a twentieth of the shape's "
                          "width, put on one cut, each slid along a side of its own or moved across by the curves' tolerance, the "
@@ -1253,7 +1413,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     for (const Layer& l : stack.layers)
         if (l.roundWire) roundWires << l.name;
     const auto cut = [&mesh, &pieces, &meetings, &conductors, &how, &narrowest, &finest, &strips, &facing, &cellConductor,
-                      &roundWires, size, pieceMost](int perFeature, double* many) {
+                      &roundWires, &quadsOf, size, pieceMost](int perFeature, double* many) {
         mesh.cells.clear();
         cellConductor.clear();
         narrowest = finest = 0;
@@ -1446,6 +1606,25 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                         cellConductor << piece.conductor;
                     }
                 }
+        }
+        for (int c = 0; c < conductors.size(); ++c) {
+            if (!quadsOf.at(c).ok()) continue;
+            double across = 0;
+            bool strip = false;
+            const QList<MeshCell> cells =
+                stripCells(conductors.at(c), quadsOf.at(c), size, perFeature, how.stretch, how.edges, &across, &strip);
+            if (double(cells.size()) > 4.0 * pieceMost) {
+                *many = double(cells.size());
+                return false;
+            }
+            for (const MeshCell& cell : cells) {
+                mesh.cells << cell;
+                cellConductor << c;
+            }
+            const double feature = conductors.at(c).spineWidth;
+            if (narrowest <= 0 || feature < narrowest) narrowest = feature;
+            if (finest <= 0 || across < finest) finest = across;
+            if (strip) ++strips;
         }
         *many = double(mesh.cells.size());
         return true;

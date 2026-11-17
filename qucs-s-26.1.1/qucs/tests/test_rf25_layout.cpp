@@ -387,6 +387,100 @@ private slots:
         QCOMPARE(rf::processShapes(shapes, {}, how, stack).byLayer().value(QStringLiteral("M1")), 3);
     }
 
+    // A strip is found on its outline as drawn - a path's outline, or a
+    // polygon drawn as one: two polylines its width apart either side of a
+    // centreline, mitred at its corners, flush at its ends - and its
+    // centreline and width with it, whichever corner its outline starts at
+    // and whichever way round it runs. A rectangle turned is one of a single
+    // segment along its longer way; one along x and y, a taper, a strip of
+    // two widths and an odd outline are none. Processed, a strip keeps its
+    // centreline, thinned as its curves would be, and its outline is made
+    // of it (P49's third fix, the centreline mesh).
+    void aStripIsFoundWithItsCentreline()
+    {
+        // A bend of three segments, 6 wide, its corners mitred.
+        const QPolygonF spine({QPointF(0, 0), QPointF(40, 30), QPointF(80, 30), QPointF(110, 70)});
+        const QPolygonF outline = rf::stripOutline(spine, 6);
+        QCOMPARE(int(outline.size()), 8);
+        QPolygonF found;
+        double width = 0;
+        for (int start = 0; start < outline.size(); ++start)
+            for (const bool backwards : {false, true}) {
+                QPolygonF turned;
+                for (int i = 0; i < outline.size(); ++i) turned << outline.at((start + (backwards ? -i : i) + 8 * outline.size()) % outline.size());
+                QVERIFY2(rf::stripOf(turned, 1e-9, &found, &width), qPrintable(QStringLiteral("from %1%2").arg(start).arg(backwards ? ", backwards" : "")));
+                QVERIFY(std::abs(width - 6) < 1e-9);
+                QCOMPARE(int(found.size()), 4);
+                // (Its centreline either way along: the same points.)
+                const bool same = (found.first() - spine.first()).manhattanLength() < 1e-9 || (found.first() - spine.last()).manhattanLength() < 1e-9;
+                QVERIFY(same);
+            }
+        // A rectangle turned 30 degrees, 50 by 10: along its 50.
+        QPolygonF bar;
+        const double c = std::cos(M_PI / 6), s = std::sin(M_PI / 6);
+        for (const QPointF& p : {QPointF(0, 0), QPointF(50, 0), QPointF(50, 10), QPointF(0, 10)}) bar << QPointF(c * p.x() - s * p.y(), s * p.x() + c * p.y());
+        QVERIFY(rf::stripOf(bar, 1e-9, &found, &width));
+        QVERIFY2(std::abs(width - 10) < 1e-9 && std::abs(QLineF(found.first(), found.last()).length() - 50) < 1e-9,
+                 qPrintable(QStringLiteral("%1 wide, %2 long").arg(width).arg(QLineF(found.first(), found.last()).length())));
+        // None: along x and y; a taper; two widths; an odd count of corners.
+        QVERIFY(!rf::stripOf(box(0, 0, 50, 10), 1e-9));
+        QVERIFY(!rf::stripOf(QPolygonF({QPointF(0, 0), QPointF(50, 10), QPointF(50, 20), QPointF(0, 40)}), 1e-9));
+        // (Two widths: the bend's middle segment 12 wide, its others 6, every
+        //  side parallel to its own segment - its corners where the offset
+        //  sides meet.)
+        {
+            const QList<double> half{3, 6, 3};
+            const auto side = [&](int k, double sign) {
+                const QPointF d = spine.at(k + 1) - spine.at(k);
+                const QPointF n = QPointF(-d.y(), d.x()) / std::hypot(d.x(), d.y());
+                return QLineF(spine.at(k) + sign * half.at(k) * n, spine.at(k + 1) + sign * half.at(k) * n);
+            };
+            const auto meet = [](const QLineF& a, const QLineF& b) {
+                QPointF at;
+                a.intersects(b, &at);
+                return at;
+            };
+            QPolygonF uneven;
+            for (const double sign : {1.0, -1.0}) {
+                QList<QPointF> corners{side(0, sign).p1()};
+                for (int k = 0; k + 1 < 3; ++k) corners << meet(side(k, sign), side(k + 1, sign));
+                corners << side(2, sign).p2();
+                if (sign < 0) std::reverse(corners.begin(), corners.end());
+                for (const QPointF& p : std::as_const(corners)) uneven << p;
+            }
+            QCOMPARE(int(uneven.size()), 8);
+            QVERIFY(!rf::stripOf(uneven, 1e-9));
+        }
+        QVERIFY(!rf::stripOf(QPolygonF({QPointF(0, 0), QPointF(50, 10), QPointF(40, 30)}), 1e-9));
+
+        // Processed: kept as a strip, its outline its centreline's; a
+        // centreline of many corners on a curve thinned, its sides its width
+        // apart still.
+        const rf::Stack stack = stacked().stack();
+        QPolygonF arc;
+        for (int k = 0; k <= 90; ++k) arc << QPointF(100 * std::cos(k * M_PI / 180), 100 * std::sin(k * M_PI / 180));
+        QMap<QString, QList<QPolygonF>> shapes;
+        shapes[QStringLiteral("M1")] = {rf::stripOutline(arc, 8)};
+        const rf::Processed done = rf::processShapes(shapes, {}, rf::Processing(), stack);
+        QVERIFY2(done.ok() && done.conductors.size() == 1, qPrintable(done.problems.join(" | ")));
+        const rf::Conductor& strip = done.conductors.first();
+        QVERIFY(strip.isStrip());
+        QVERIFY2(strip.spine.size() < 60 && strip.spine.size() > 10, qPrintable(QString::number(strip.spine.size())));
+        QVERIFY(std::abs(strip.spineWidth - 8) < 2e-3);
+        QVERIFY(rf::stripOf(strip.outline, 2e-3));
+        QCOMPARE(strip.outline, rf::stripOutline(strip.spine, strip.spineWidth));
+        QVERIFY2(says(done.report.lines, "Simplified 1 shape(s)' curves"), qPrintable(done.report.summary()));
+        // Simplify off: as drawn, every corner kept.
+        rf::Processing asDrawn;
+        asDrawn.simplify = false;
+        const rf::Processed drawn = rf::processShapes(shapes, {}, asDrawn, stack);
+        QVERIFY(drawn.conductors.first().isStrip());
+        QCOMPARE(int(drawn.conductors.first().spine.size()), int(arc.size()));
+        // And a shape along x and y, or a via's, is none.
+        shapes[QStringLiteral("M1")] = {box(0, 0, 50, 10)};
+        QVERIFY(!rf::processShapes(shapes, {}, rf::Processing(), stack).conductors.first().isStrip());
+    }
+
     // Snapping, healing, and dummy fill.
     void snappingHealingAndFill()
     {

@@ -18,6 +18,7 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QSet>
 #include <QThread>
 
 #include <Eigen/Dense>
@@ -464,8 +465,14 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
         if (it.value().size() == 2 && !clash) edges << qMakePair(qMakePair(it.value().at(0), it.value().at(1)), it.key());
     }
     std::sort(edges.begin(), edges.end());
-    for (const QPair<QPair<int, int>, QString>& joined : std::as_const(edges)) {
+    for (qsizetype e = 0; e < edges.size();) {
+        const QPair<QPair<int, int>, QString>& joined = edges.at(e);
         const int a = joined.first.first, b = joined.first.second;
+        // (Every edge the two share: a strip's cells side by side, bent at a
+        //  corner of its centreline, share a side of several - one run, as
+        //  wide as all of them, not one for each.)
+        QSet<QString> theirs;
+        for (; e < edges.size() && edges.at(e).first == joined.first; ++e) theirs.insert(edges.at(e).second.section(QLatin1Char('|'), 1));
         const MeshCell& ca = mesh.cells.at(a);
         const MeshCell& cb = mesh.cells.at(b);
         const double z = height.value(ca.layer, -1);
@@ -480,9 +487,7 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
         double edge = 0;
         for (int i = 0, n = int(ca.outline.size()); i < n; ++i) {
             const QPointF p = ca.outline.at(i), q = ca.outline.at((i + 1) % n);
-            if (edgeKey(p, q) != joined.second.section(QLatin1Char('|'), 1)) continue;
-            edge = std::hypot(q.x() - p.x(), q.y() - p.y());
-            break;
+            if (theirs.contains(edgeKey(p, q))) edge += std::hypot(q.x() - p.x(), q.y() - p.y());
         }
         if (!(edge > 0)) continue;
         const Layer* metal = stack.named(ca.layer);

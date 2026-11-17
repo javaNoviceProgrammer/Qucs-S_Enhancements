@@ -1023,6 +1023,36 @@ struct Context {
     QList<int> tail, head;               ///< each run's cells, as charges (a via's tail -1 on the ground)
     QList<QRectF> rect;                  ///< each charge's cell, m
     QList<QPointF> centre;               ///< m
+    /// Each charge's cell's frame (MeshCell::angle): a strip's cell lies in
+    /// its segment's, its rect of that frame's axes about its centre - a
+    /// point seen from it turned into that frame (seenFrom()). Nought: the
+    /// layout's own axes.
+    QList<double> angle;
+    /// \a at (m) as charge \a from's rect sees it: turned into its frame.
+    QPointF seenFrom(int from, const QPointF& at) const
+    {
+        const double a = from < angle.size() ? angle.at(from) : 0.0;
+        return a == 0 ? at : MeshCell::turnedAbout(at, centre.at(from), -a);
+    }
+    /// Charge \a of's \a parts (m; a strip's cell's in its own frame) as
+    /// charge \a from's frame has them: each part in the plane moved to
+    /// where it is seen from there, its rectangle of the same size. As they
+    /// are where neither is a strip's cell.
+    QList<ChargePart> partsSeenFrom(int from, int of, QList<ChargePart> parts) const
+    {
+        const double a = of < angle.size() ? angle.at(of) : 0.0;
+        if ((from >= angle.size() || angle.at(from) == 0) && a == 0) return parts;
+        for (ChargePart& p : parts) {
+            if (p.plane != 0) continue;
+            QPointF to(p.x, p.y);
+            if (a != 0) to = MeshCell::turnedAbout(to, centre.at(of), a);
+            to = seenFrom(from, to);
+            p.rect.translate(to.x() - p.x, to.y() - p.y);
+            p.x = to.x();
+            p.y = to.y();
+        }
+        return parts;
+    }
     QList<double> heights;               ///< the metals', m, from the lowest
     QList<int> hNode, hRun;              ///< which of them each charge and run in the plane is at
     QList<double> cellZ;                 ///< each charge's height, m
@@ -1634,7 +1664,7 @@ Complex Kernels::potential(int i, int j, double pij, double pji) const
         const Complex v = t.coefficient / (2 * M_PI) * (stat + retarded);
         const double longest = std::max(c.rect.at(from).width(), c.rect.at(from).height());
         const bool centred = to != from && longest * longest < kCentreBound * scale * scale;
-        if (!centred) return v + remainderOver(g, c.rect.at(from), c.centre.at(to), scale);
+        if (!centred) return v + remainderOver(g, c.rect.at(from), c.seenFrom(from, c.centre.at(to)), scale);
         if (!made) {
             atCentres = g.scalarRemainder(rho);
             made = true;
@@ -2304,7 +2334,9 @@ double staticPotentialOf(const Context& c, int i, int j)
 {
     const bool partsI = i < c.charges.size() && !c.charges.at(i).isEmpty();
     const bool partsJ = j < c.charges.size() && !c.charges.at(j).isEmpty();
-    if (!partsI && !partsJ) return rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(c.cellZ.at(i) - c.cellZ.at(j)));
+    // (Seen from j: a strip's cell's rect is of its own frame - Context::angle.)
+    const QPointF seen = c.seenFrom(j, c.centre.at(i));
+    if (!partsI && !partsJ) return rectanglePotential(c.rect.at(j), seen, std::abs(c.cellZ.at(i) - c.cellZ.at(j)));
     // (A charge spread only by its edge's profile, far away, is the cell's:
     //  its parts within four of the longest side of either, as the
     //  quasi-static solve judges a near pair. Walls are taken at every
@@ -2326,12 +2358,14 @@ double staticPotentialOf(const Context& c, int i, int j)
         // (A margin past the cut, so that two pairs alike - a symmetric
         //  layout's mirror images - are taken alike: on an even grid their
         //  distances fall on the cut, a rounding either side.)
-        if (apart > 4 * side * (1 + 1e-6)) return rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(c.cellZ.at(i) - c.cellZ.at(j)));
+        if (apart > 4 * side * (1 + 1e-6)) return rectanglePotential(c.rect.at(j), seen, std::abs(c.cellZ.at(i) - c.cellZ.at(j)));
     }
-    const double parts = partsPotential(partsI ? c.charges.at(i) : QList<ChargePart>{wholeCell(c.rect.at(i), c.cellZ.at(i))},
+    // (A strip's cell's parts are of its own frame: i's seen from j's.)
+    const QList<ChargePart> at = partsI ? c.charges.at(i) : QList<ChargePart>{wholeCell(c.rect.at(i), c.cellZ.at(i))};
+    const double parts = partsPotential(c.partsSeenFrom(j, i, at),
                                         partsJ ? c.charges.at(j) : QList<ChargePart>{wholeCell(c.rect.at(j), c.cellZ.at(j))});
     if (c.profileScale.isEmpty()) return parts;
-    return scaledParts(rectanglePotential(c.rect.at(j), c.centre.at(i), std::abs(c.cellZ.at(i) - c.cellZ.at(j))), parts);
+    return scaledParts(rectanglePotential(c.rect.at(j), seen, std::abs(c.cellZ.at(i) - c.cellZ.at(j))), parts);
 }
 
 double staticPotential(const Context& c, int i, int j)
@@ -4467,12 +4501,14 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // The cells in metres, and the heights they are at.
     c.rect.resize(nc);
     c.centre.resize(nc);
+    c.angle = QList<double>(nc, 0.0);
     QList<double> zOf(nc, -1);
     QRectF extent;   // (of every cell, for how far the Green's tables go)
     for (int i = 0; i < nc; ++i) {
         const MeshCell& cell = mesh.cells.at(cellOf.at(i));
         c.rect[i] = scaledBy(cell.charged(), micrometre);
         c.centre[i] = cell.centre * micrometre;
+        c.angle[i] = cell.turned() ? cell.angle : 0.0;
         extent = i == 0 ? c.rect.at(i) : extent.united(c.rect.at(i));
         zOf[i] = metalHeight(stack, cell.layer);
     }

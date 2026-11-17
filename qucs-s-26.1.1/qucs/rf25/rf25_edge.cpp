@@ -196,6 +196,7 @@ QHash<int, QList<ChargePart>> wallCharges(const Thickened& thick, double microme
     for (int s = 0; s < thick.conductors.size(); ++s) shapesOn[thick.conductors.at(s).layer] << s;
     for (auto it = facing.constBegin(); it != facing.constEnd(); ++it) {
         const int m = it.key(), sides = it.value();
+        if (thick.mesh.cells.at(m).turned()) continue;
         const int partner = thick.topOf.value(m, thick.bottomOf.value(m, -1));
         if (partner < 0) continue;
         const double z = zOf(m), other = zOf(partner), t = std::abs(z - other);
@@ -291,15 +292,20 @@ QHash<int, int> edgeSidesOf(const Mesh& mesh, const QList<Conductor>& conductors
     QHash<int, int> out;
     for (int m = 0; m < mesh.cells.size(); ++m) {
         const MeshCell& cell = mesh.cells.at(m);
-        const QRectF box = cell.outline.boundingRect();
-        const auto outside = [&](const QPointF& probe) {
+        // (A strip's cell: its sides those of its own frame's rectangle -
+        //  MeshCell::angle -, each probed a little past it, turned back.)
+        const bool turned = cell.turned();
+        const QRectF box = turned ? cell.charged() : cell.outline.boundingRect();
+        const auto outside = [&](QPointF probe) {
+            if (turned) probe = MeshCell::turnedAbout(probe, cell.centre, cell.angle);
             for (const int s : shapesOn.value(cell.layer)) {
                 const Conductor& shape = conductors.at(s);
                 if (shape.outline.boundingRect().contains(probe) && shape.outline.containsPoint(probe, Qt::OddEvenFill)) return false;
             }
             return true;
         };
-        const double ex = 5e-4 * box.width(), ey = 5e-4 * box.height();
+        const double past = turned ? 2e-2 : 5e-4;
+        const double ex = past * box.width(), ey = past * box.height();
         int sides = 0;
         if (outside(QPointF(box.center().x(), box.top() - ey))) sides |= 1;
         if (outside(QPointF(box.center().x(), box.bottom() + ey))) sides |= 2;
@@ -460,7 +466,11 @@ QHash<int, QList<ChargePart>> chargeParts(const Thickened& thick, double microme
         if (facedNear(m)) continue;
         QList<ChargePart> parts = out.value(m);
         if (parts.isEmpty()) {
-            const QRectF box = thick.mesh.cells.at(m).outline.boundingRect();
+            // (A strip's cell's in its own frame: its rectangle of that frame
+            //  about its centre, and the profile across its sides there -
+            //  MeshCell::angle.)
+            const MeshCell& cell = thick.mesh.cells.at(m);
+            const QRectF box = cell.turned() ? cell.charged() : cell.outline.boundingRect();
             parts << wholeCell(QRectF(box.left() * micrometre, box.top() * micrometre, box.width() * micrometre, box.height() * micrometre), zOf(m));
         }
         out.insert(m, profiled(parts, it.value(), 0.5));
