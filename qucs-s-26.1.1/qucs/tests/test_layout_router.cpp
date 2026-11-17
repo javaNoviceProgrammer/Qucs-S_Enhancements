@@ -1669,6 +1669,53 @@ private slots:
         QVERIFY2(near, qPrintable(describe(verify(router.problem(), r))));
     }
 
+    void newCutsKeepApartBetweenNetsAndFromCutsThere()
+    {
+        // V1's cuts 7 µm apart (a rule), the array on the same cut layer 2.
+        QJsonObject o = techJson();
+        o.insert("vias", QJsonArray{QJsonObject{{"name", "V1"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 2}, {"enclosure", 1}, {"spacing", 2}},
+                                    QJsonObject{{"name", "V1x2"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 1}, {"cuts", QJsonArray{2, 2}},
+                                                {"cut_spacing", 1}, {"enclosure", 1}, {"spacing", 2}}});
+        o.insert("rules", QJsonArray{QJsonObject{{"name", "V1.S.1"}, {"type", "spacing"}, {"layer", "V1"}, {"min", 7}}});
+        // Two nets from M1 pads to M2 pads 8 µm apart: from the pads' middles
+        // their cuts would be 6 µm apart, so one via keeps off the other's.
+        Problem p = problemOf(tech(o));
+        QCOMPARE(p.tech.vias[0].spacing, 7.0);
+        for (const double y : {0.0, 8.0}) {
+            pad(p, 0, 0, y);
+            pad(p, 1, 100, y);
+        }
+        p.nets = {net("a", at(p, 0, 0), at(p, 100, 0)), net("b", at(p, 0, 8), at(p, 100, 8))};
+        Verification v;
+        const Result r = routeAndCheck(p, &v);
+        QCOMPARE(r.routed(), 2);
+        QVERIFY2(v.clean(), qPrintable(describe(v)));
+        QVERIFY(viaCount(r) >= 2);
+        // A cut of the array's already there by a's pad on M2: a's V1 keeps
+        // 7 µm from it whichever via made it.
+        Problem q = problemOf(tech(o));
+        pad(q, 0, 0, 0);
+        pad(q, 1, 100, 0);
+        q.cuts.append({rect(q, 99.5, 6, 100.5, 7), 1});
+        q.nets = {net("a", at(q, 0, 0), at(q, 100, 0))};
+        Verification w;
+        const Result s = routeAndCheck(q, &w);
+        QCOMPARE(s.routed(), 1);
+        QVERIFY2(w.clean(), qPrintable(describe(w)));
+        QVERIFY(viaCount(s) >= 1);
+        // A cut layer for two pairs of metals is refused.
+        QJsonObject three = techJson();
+        QJsonArray metals = three.value("metals").toArray();
+        metals.append(QJsonObject{{"name", "M3"}, {"layer", "4/0"}, {"direction", "h"}});
+        three.insert("metals", metals);
+        QJsonArray vias = three.value("vias").toArray();
+        vias.append(QJsonObject{{"name", "V2"}, {"layer", "3/0"}, {"between", QJsonArray{"M2", "M3"}}, {"size", 2}, {"enclosure", 1}});
+        three.insert("vias", vias);
+        QString e;
+        readTechnology(three, &e);
+        QVERIFY2(e.contains("V1") && e.contains("V2") && e.contains("3/0"), qPrintable(e));
+    }
+
     void padsArePairedByLeastDistance()
     {
         const QVector<Pt> starts = {{0, 0}, {0, 10}, {0, 20}};

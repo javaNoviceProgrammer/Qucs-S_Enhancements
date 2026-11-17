@@ -361,6 +361,11 @@ Technology readTechnology(const QJsonObject& o, QString* error)
         if (a > b) std::swap(a, b);
         if (b != a + 1) return fail(via.name + QStringLiteral(": a via joins two neighbouring metals"));
         via.lower = a;
+        // One cut layer joins one pair of metals (vias of a pair may share it).
+        for (const Via& other : std::as_const(t.vias))
+            if (other.layer == via.layer && other.lower != via.lower)
+                return fail(QStringLiteral("%1 and %2 are both on %3 but join different metals: a cut layer joins one pair")
+                                .arg(other.name, via.name, via.layer.text()));
         if (!length(v, "size", &via.size, &e, via.name, true, true)) return fail(e);
         if (v.contains(QLatin1String("cuts"))) {
             const QJsonArray cuts = v.value(QLatin1String("cuts")).toArray();
