@@ -52,8 +52,31 @@ struct MeshCell {
     /// its centroid -, a square turned 45 degrees read its C 8, 3.5 and
     /// 1.9 % over the square's at cells of a fifth, a tenth and a
     /// twentieth of its side.
+    /// A strip's cell (Conductor::spine) lies in the frame of its segment of
+    /// the centreline: \a angle the way that segment runs (radians from x),
+    /// \a frame its cell's size along it and across it, as a rectangle of
+    /// its own area. Nought and empty: a cell of the layout's own axes.
+    double angle = 0;
+    QSizeF frame;
+    bool turned() const { return frame.isValid() && angle != 0; }
+    /// \a p (µm, as the outline) in the cell's frame: turned about its centre
+    /// by -angle, so that charged() is a rectangle of that frame's axes
+    /// about it. As it is for a cell of the layout's own axes.
+    QPointF intoFrame(QPointF p) const { return turnedAbout(p, centre, -angle); }
+    /// \a p turned about \a about by \a by (radians): what a turned cell's
+    /// frame takes a point to, in any units.
+    static QPointF turnedAbout(QPointF p, QPointF about, double by)
+    {
+        if (by == 0) return p;
+        const double c = std::cos(by), s = std::sin(by), x = p.x() - about.x(), y = p.y() - about.y();
+        return QPointF(about.x() + c * x - s * y, about.y() + s * x + c * y);
+    }
+    /// The rectangle its charge is spread over, in its own frame (see
+    /// above): a turned cell's, of its frame's size about its centre - the
+    /// solvers' closed forms taken at a point turned into that frame.
     QRectF charged() const
     {
+        if (frame.isValid()) return QRectF(centre - QPointF(frame.width() / 2, frame.height() / 2), frame);
         const QRectF box = outline.boundingRect();
         const double whole = box.width() * box.height();
         if (!(area > 0) || !(whole > 0) || area >= (1 - 1e-9) * whole) return box;

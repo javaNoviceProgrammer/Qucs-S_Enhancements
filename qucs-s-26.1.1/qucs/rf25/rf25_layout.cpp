@@ -222,6 +222,146 @@ QPolygonF simplifiedOutline(const QPolygonF& polygon, double tolerance, double* 
     return out;
 }
 
+bool stripOf(const QPolygonF& outline, double tolerance, QPolygonF* spine, double* width)
+{
+    QList<QPointF> p(outline.begin(), outline.end());
+    while (p.size() > 1 && p.first() == p.last()) p.removeLast();
+    const int count = int(p.size());
+    if (count < 4 || count % 2 != 0) return false;
+    // (Every side along x or y: the mesh's rectangles, not a strip.)
+    bool slanted = false;
+    for (int i = 0; i < count && !slanted; ++i) {
+        const QPointF d = p.at((i + 1) % count) - p.at(i);
+        slanted = std::abs(d.x()) > tolerance && std::abs(d.y()) > tolerance;
+    }
+    if (!slanted) return false;
+    const int n = count / 2;
+    const double tol = std::max(tolerance, 0.0);
+    const auto dot = [](QPointF a, QPointF b) { return a.x() * b.x() + a.y() * b.y(); };
+    const auto cross = [](QPointF a, QPointF b) { return a.x() * b.y() - a.y() * b.x(); };
+    const auto length = [](QPointF d) { return std::hypot(d.x(), d.y()); };
+    QPolygonF best;
+    double bestWidth = 0, bestLength = -1;
+    // Each corner in turn as the start of one side: the other side runs back
+    // from the corner before it, an end between the two.
+    for (int k = 0; k < count; ++k) {
+        const auto a = [&](int j) { return p.at((k + j) % count); };
+        const auto b = [&](int j) { return p.at(((k - 1 - j) % count + count) % count); };
+        const double w = length(a(0) - b(0));
+        if (!(w > 2 * tol)) continue;
+        bool ok = true;
+        double along = 0, side = 0, widths = 0;
+        QPolygonF centre;
+        for (int j = 0; j < n && ok; ++j) centre << (a(j) + b(j)) / 2;
+        for (int j = 0; j + 1 < n && ok; ++j) {
+            const QPointF c = centre.at(j + 1) - centre.at(j);
+            const double l = length(c);
+            if (!(l > tol)) {
+                ok = false;
+                break;
+            }
+            const QPointF t = c / l, normal(-t.y(), t.x());
+            const QPointF da = a(j + 1) - a(j), db = b(j + 1) - b(j);
+            // (Both sides the centreline's way, each parallel to it, and the
+            //  two its width apart - the same side of it all along.)
+            if (!(dot(da, t) > tol) || !(dot(db, t) > tol) || std::abs(cross(t, da)) > tol || std::abs(cross(t, db)) > tol) {
+                ok = false;
+                break;
+            }
+            const double apart = dot(a(j) - b(j), normal);
+            if (std::abs(std::abs(apart) - w) > tol || (j > 0 && apart * side < 0)) ok = false;
+            side = apart;
+            widths += std::abs(apart);
+            // (Its ends square to their segments.)
+            if (j == 0 && std::abs(dot(a(0) - b(0), t)) > tol) ok = false;
+            if (j + 2 == n && (std::abs(dot(a(n - 1) - b(n - 1), t)) > tol || std::abs(length(a(n - 1) - b(n - 1)) - w) > tol)) ok = false;
+            along += l;
+        }
+        if (ok && along > bestLength) {
+            best = centre;
+            // (Its width the mean of its segments' - each side's distance
+            //  from the other -, steadier than one end's where its corners
+            //  were snapped to a grid.)
+            bestWidth = widths / (n - 1);
+            bestLength = along;
+        }
+    }
+    if (bestLength < 0) return false;
+    if (spine != nullptr) *spine = best;
+    if (width != nullptr) *width = bestWidth;
+    return true;
+}
+
+QPolygonF simplifiedSpine(const QPolygonF& spine, double tolerance, double* moved)
+{
+    if (moved != nullptr) *moved = 0;
+    const int n = int(spine.size());
+    if (!(tolerance > 0) || n <= 2) return spine;
+    const auto distance = [](QPointF q, QPointF a, QPointF b) {
+        const QPointF d = b - a;
+        const double len2 = d.x() * d.x() + d.y() * d.y();
+        if (!(len2 > 0)) return std::hypot(q.x() - a.x(), q.y() - a.y());
+        const double t = std::clamp(((q.x() - a.x()) * d.x() + (q.y() - a.y()) * d.y()) / len2, 0.0, 1.0);
+        return std::hypot(q.x() - a.x() - t * d.x(), q.y() - a.y() - t * d.y());
+    };
+    QList<bool> kept(n, false);
+    kept[0] = kept[n - 1] = true;
+    double worst = 0;
+    QList<std::pair<int, int>> chains{{0, n - 1}};
+    while (!chains.isEmpty()) {
+        const auto [from, to] = chains.takeLast();
+        if (to - from < 2) continue;
+        int far = -1;
+        double most = -1;
+        for (int i = from + 1; i < to; ++i) {
+            const double d = distance(spine.at(i), spine.at(from), spine.at(to));
+            if (d > most) {
+                most = d;
+                far = i;
+            }
+        }
+        if (most > tolerance) {
+            kept[far] = true;
+            chains.push_back({from, far});
+            chains.push_back({far, to});
+        } else {
+            worst = std::max(worst, most);
+        }
+    }
+    QPolygonF out;
+    for (int i = 0; i < n; ++i)
+        if (kept.at(i)) out << spine.at(i);
+    if (moved != nullptr) *moved = worst;
+    return out;
+}
+
+QPolygonF stripOutline(const QPolygonF& spine, double width)
+{
+    const int n = int(spine.size());
+    if (n < 2 || !(width > 0)) return {};
+    const auto unit = [](QPointF d) { return d / std::hypot(d.x(), d.y()); };
+    const auto left = [](QPointF t) { return QPointF(-t.y(), t.x()); };
+    QList<QPointF> l, r;
+    for (int i = 0; i < n; ++i) {
+        QPointF offset;
+        if (i == 0 || i == n - 1) {
+            offset = left(unit(i == 0 ? spine.at(1) - spine.at(0) : spine.at(n - 1) - spine.at(n - 2)));
+        } else {
+            // (Mitred: along the bisector, as far as keeps each side its
+            //  half width off its own segment.)
+            const QPointF t1 = unit(spine.at(i) - spine.at(i - 1)), t2 = unit(spine.at(i + 1) - spine.at(i));
+            const QPointF normal = left(unit(t1 + t2));
+            offset = normal / (normal.x() * left(t1).x() + normal.y() * left(t1).y());
+        }
+        l << spine.at(i) + offset * (width / 2);
+        r << spine.at(i) - offset * (width / 2);
+    }
+    QPolygonF out;
+    for (const QPointF& q : std::as_const(l)) out << q;
+    for (qsizetype i = r.size() - 1; i >= 0; --i) out << r.at(i);
+    return out;
+}
+
 QPolygonF withoutJogs(const QPolygonF& polygon, double under, int* removed)
 {
     QPolygonF p = polygon;
@@ -1181,8 +1321,50 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
         // to 170,000 cells where 24 made 7,000 - as one of as few as keep the outline within the
         // tolerance. The corners of a shape that is no curve are far from
         // the line between their neighbours, and stay.
+        //
+        // A strip - a path's outline, or a polygon drawn as one - is found
+        // first, on the outline as drawn: its centreline thinned in place of
+        // its outline, and the outline made again of it, so that its two
+        // sides stay its width apart (thinned apart, its sides' corners no
+        // longer came in pairs across it). The mesh cuts it along that
+        // centreline, in cells of its own frame.
+        QList<QPolygonF> spines(shapes.size());
+        QList<double> widths(shapes.size(), 0);
+        if (of->kind == Layer::Metal) {
+            for (int i = 0; i < shapes.size(); ++i) {
+                QPolygonF& s = shapes[i];
+                const QRectF box = s.boundingRect();
+                const double within = std::max({1e-6 * std::max(box.width(), box.height()), 2 * grid, 1e-6 * 1e-6 / perUnit});
+                QPolygonF spine;
+                double width = 0;
+                if (!stripOf(s, within, &spine, &width)) continue;
+                if (how.simplify) {
+                    const double tolerance = how.curveTolerance > 0 ? how.curveTolerance / perUnit : std::min(0.1e-6 / perUnit, 0.01 * width);
+                    double moved = 0;
+                    const QPolygonF thinner = simplifiedSpine(spine, tolerance, &moved);
+                    const QPolygonF outline = stripOutline(thinner, width);
+                    if (thinner.size() < spine.size() && stripOf(outline, within)) {
+                        out.report.cornersDropped += int(2 * (spine.size() - thinner.size()));
+                        out.report.simplifiedMost = std::max(out.report.simplifiedMost, moved * perUnit * 1e6);
+                        ++out.report.simplified;
+                        spine = thinner;
+                        s = outline;
+                    }
+                }
+                // (Its outline made of its centreline and width, thinned or
+                //  not, so that the cells cut along it tile it exactly - as
+                //  drawn it is within the grid of that.)
+                const QPolygonF made = stripOutline(spine, width);
+                if (!stripOf(made, within)) continue;
+                s = made;
+                spines[i] = spine;
+                widths[i] = width;
+            }
+        }
         if (how.simplify) {
-            for (QPolygonF& s : shapes) {
+            for (int i = 0; i < shapes.size(); ++i) {
+                if (widths.at(i) > 0) continue;
+                QPolygonF& s = shapes[i];
                 const double around = perimeterOf(s);
                 const double tolerance = how.curveTolerance > 0 ? how.curveTolerance / perUnit
                                          : around > 0 ? std::min(0.1e-6 / perUnit, 0.01 * 2 * areaOf(s) / around) : 0;
@@ -1199,12 +1381,21 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
 
         // Slivers: fill, assist shapes and the crumbs a boolean leaves.
         if (how.dropSlivers && sliverWidth > 0) {
-            QList<QPolygonF> kept;
+            QList<QPolygonF> kept, keptSpines;
+            QList<double> keptWidths;
             int dropped = 0;
-            for (const QPolygonF& s : std::as_const(shapes)) {
-                if (narrowness(s) < sliverWidth || areaOf(s) < sliverWidth * sliverWidth) ++dropped;
-                else kept << s;
+            for (int i = 0; i < shapes.size(); ++i) {
+                const QPolygonF& s = shapes.at(i);
+                if (narrowness(s) < sliverWidth || areaOf(s) < sliverWidth * sliverWidth) {
+                    ++dropped;
+                    continue;
+                }
+                kept << s;
+                keptSpines << spines.at(i);
+                keptWidths << widths.at(i);
             }
+            spines = keptSpines;
+            widths = keptWidths;
             if (dropped > 0) {
                 out.report.slivers += dropped;
                 out.report.lines << tr("%1: dropped %2 shape(s) thinner than %3 µm.")
@@ -1213,11 +1404,15 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
             shapes = kept;
         }
 
-        for (const QPolygonF& s : std::as_const(shapes)) {
+        for (int i = 0; i < shapes.size(); ++i) {
             Conductor c;
             c.layer = layer;
-            c.outline = s;
+            c.outline = shapes.at(i);
             c.fill = isFill;
+            if (widths.at(i) > 0) {
+                c.spine = spines.at(i);
+                c.spineWidth = widths.at(i);
+            }
             out.conductors << c;
         }
     }

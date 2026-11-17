@@ -10,6 +10,8 @@
 #include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_inductance.h"
+
+#include <QSet>
 #include "rf25/rf25_layout.h"
 
 namespace rf = qucs_s::rf25;
@@ -188,21 +190,40 @@ private slots:
                 QVERIFY2(processed.report.simplifiedMost > 0 && processed.report.simplifiedMost <= 0.08 + 1e-9,
                          qPrintable(QString::number(processed.report.simplifiedMost)));
             }
+            // (A strip: its centreline thinned, its outline made again of it,
+            //  its two sides its width apart.)
+            const rf::Conductor& spiral = processed.conductors.first();
+            QVERIFY(spiral.isStrip());
+            // (Its width within the grid its corners were snapped to.)
+            QVERIFY2(std::abs(spiral.spineWidth - 8) < 2e-3, qPrintable(QString::number(spiral.spineWidth, 'g', 9)));
+            QVERIFY(rf::stripOf(spiral.outline, 2e-3));
             rf::MeshSettings how;
             how.cellsAcross = 4;
             const rf::Mesh mesh = rf::meshOf(processed.conductors, how, stack, 14e9);
-            QVERIFY2(says(mesh.lines, "put on one cut"), qPrintable(mesh.lines.join(" | ")));
-            // (Its outline within the curves' tolerance of itself, 0.08 µm, its
-            //  neighbours moving too.)
+            QVERIFY2(says(mesh.lines, "1 strip(s) cut along their centrelines"), qPrintable(mesh.lines.join(" | ")));
+            // (Its cells tile its outline: their areas its own.)
+            double area = 0;
+            for (const rf::MeshCell& cell : mesh.cells) area += cell.area;
+            QVERIFY2(std::abs(area / rf::areaOf(spiral.outline) - 1) < 1e-9, qPrintable(QString::number(area / rf::areaOf(spiral.outline) - 1)));
+            // (Two cells side by side, bent at a corner of its centreline,
+            //  share a side of several edges: one run, as wide as all of
+            //  them, not one for each.)
             {
-                static const QRegularExpression offSpiral(QStringLiteral("the outline ([0-9.e+-]+) µm at most off itself"));
-                const QRegularExpressionMatch match = offSpiral.match(mesh.lines.join(' '));
-                QVERIFY2(match.hasMatch() && match.captured(1).toDouble() <= 0.1, qPrintable(mesh.lines.join(" | ")));
+                QList<QPair<int, int>> ends;
+                const QList<rf::Filament> runs = rf::runsOf(mesh, processed.conductors, stack, 1e-6, &ends, false);
+                QSet<QPair<int, int>> once(ends.begin(), ends.end());
+                QCOMPARE(int(once.size()), int(ends.size()));
+                double bent = 0;
+                for (const rf::MeshCell& cell : mesh.cells) bent = std::max(bent, double(cell.outline.size()));
+                QVERIFY2(n == 24 || bent > 4, qPrintable(QStringLiteral("%1 a turn: no cell spans a corner").arg(n)));
             }
-            qWarning("%d a turn: %d cells", n, int(mesh.cells.size()));
+            qWarning("%d a turn: %d cells, %d segments", n, int(mesh.cells.size()), int(spiral.spine.size() - 1));
             cells << int(mesh.cells.size());
         }
-        QVERIFY2(*std::max_element(cells.begin(), cells.end()) <= 6 * *std::min_element(cells.begin(), cells.end()),
+        // (Its cells its length's, whatever its segments: within 1.5 times of
+        //  each other, where cut into the parts between its corners they were
+        //  6,692, 15,912 and 26,538.)
+        QVERIFY2(*std::max_element(cells.begin(), cells.end()) <= 1.5 * *std::min_element(cells.begin(), cells.end()),
                  qPrintable(QStringLiteral("%1, %2, %3 cells").arg(cells.at(0)).arg(cells.at(1)).arg(cells.at(2))));
         // A disc of 100 µm, and a plane of 1 mm with a round opening of 100,
         // keyholed, each of 180 segments: snapped by a twentieth of their
