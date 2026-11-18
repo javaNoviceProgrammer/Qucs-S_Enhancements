@@ -204,6 +204,7 @@ struct MagneticState {
     double E[3] = {0, 0, 0}, Ei[3] = {0, 0, 0};
     double q = 0, qm = 0;
     double sigma = 0;   ///< the conductivity (a tensor's diagonal's mean)
+    double V = 0, Vi = 0;   ///< the electric potential in a conductor (the frequency domain's; and currents asked)
 };
 /// Field \a f's (a magnetic field's) at \a ev's point; false where it is
 /// not solved. J, E and the resistive losses only where \a currents (the

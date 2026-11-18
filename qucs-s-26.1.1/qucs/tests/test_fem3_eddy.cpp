@@ -516,7 +516,8 @@ private slots:
         // (At rest the coil carries its currents physics' J, whose current
         // is its curved section's, the edge elements' straight: L a part in
         // a hundred low.)
-        QVERIFY2(std::abs(l0 - Ldc) < 2e-2 * Ldc, qPrintable(QStringLiteral("L at 10 Hz %1, at rest %2").arg(l0).arg(Ldc)));
+        // (At 0.2 mm, a sanitized build's, some 3 % low.)
+        QVERIFY2(std::abs(l0 - Ldc) < (coarse() ? 5e-2 : 2e-2) * Ldc, qPrintable(QStringLiteral("L at 10 Hz %1, at rest %2").arg(l0).arg(Ldc)));
     }
 
     // The coax of the DC inductance's test (core 0.5 mm, shell 1.5 to 1.8
@@ -529,14 +530,17 @@ private slots:
     void aCoax()
     {
         const double a = 0.5e-3, b = 1.5e-3, c = 1.8e-3, sigma = 5.8e7;
-        const double hmax = coarse() ? 0.2 : 0.12;
-        const QList<double> fs{10, 2e4, 1e5};
+        // (A sanitized build's 0.25 mm, 1 and 2 mm long, two frequencies: at
+        // 0.2 mm, 2 and 4 mm long, three, 210 s under ASan, QtTest's limit
+        // 300.)
+        const double hmax = slowBuild() ? 0.25 : coarse() ? 0.2 : 0.12;
+        const QList<double> fs = slowBuild() ? QList<double>{10, 1e5} : QList<double>{10, 2e4, 1e5};
         QStringList texts;
         for (double f : fs) texts << QString::number(f, 'g', 17);
         // (The shell's formula at DC: its resistance.)
         QVERIFY(std::abs(outerImpedance(b, c, sigma, 1e-3).real() * sigma * M_PI * (c * c - b * b) - 1) < 1e-6);
         QVERIFY(std::abs(internalImpedance(a, sigma, 1e-3).real() * sigma * M_PI * a * a - 1) < 1e-6);
-        const int lengths[2] = {2, 4};
+        const int lengths[2] = {slowBuild() ? 1 : 2, slowBuild() ? 2 : 4};
         std::vector<std::vector<cd>> Z(2);
         for (int k = 0; k < 2; ++k) {
             QString et, mf;
@@ -572,7 +576,7 @@ private slots:
                           * (std::log(b / a) + 0.25 + c * c * c * c * std::log(c / b) / ((c * c - b * b) * (c * c - b * b)) - (3 * c * c - b * b) / (4 * (c * c - b * b)));
         for (int i = 0; i < int(fs.size()); ++i) {
             const double f = fs[i], w = 2 * M_PI * f;
-            const cd per = (Z[1][std::size_t(i)] - Z[0][std::size_t(i)]) / 2e-3;
+            const cd per = (Z[1][std::size_t(i)] - Z[0][std::size_t(i)]) / ((lengths[1] - lengths[0]) * 1e-3);
             const cd want = internalImpedance(a, sigma, f) + outerImpedance(b, c, sigma, f) + cd(0, w * Mu0 / (2 * M_PI) * std::log(b / a));
             info(QStringLiteral("coax at %1 Hz: dR/dlen %2 Ω/m (exact %3), dL/dlen %4 nH/mm (exact %5; DC %6)")
                      .arg(f)
@@ -764,6 +768,27 @@ private slots:
         const double jphi = valueAt(sv.s(), QStringLiteral("(x*mf.Jy - y*mf.Jx)/sqrt(x^2 + y^2)"), 4.9, 0.3, 1.5);
         info(QStringLiteral("at the disc's rim: Jr %1, Jφ %2 A/m²").arg(jr).arg(jphi));
         QVERIFY2(std::abs(jr) < 0.05 * std::abs(jphi), qPrintable(QStringLiteral("Jr %1, Jφ %2").arg(jr).arg(jphi)));
+        // (Fed nothing, its potential's constant held: nought, its field
+        // round the axis, at every point of it.)
+        const double scale = std::hypot(valueAt(sv.s(), QStringLiteral("mf.Ex"), 4.9, 0.3, 1.5), valueAt(sv.s(), QStringLiteral("mf.Ey"), 4.9, 0.3, 1.5)) * 5e-3;
+        for (const auto& [x, y] : {std::pair{0.5, 0.2}, std::pair{-3.0, 2.0}, std::pair{4.0, -1.0}}) {
+            const double v = std::hypot(valueAt(sv.s(), QStringLiteral("mf.V"), x, y, 1.5), valueAt(sv.s(), QStringLiteral("mf.V_im"), x, y, 1.5));
+            QVERIFY2(v < 2e-2 * scale, qPrintable(QStringLiteral("|V| %1 V at (%2, %3), |E| r %4 V").arg(v).arg(x).arg(y).arg(scale)));
+        }
+    }
+
+    // The wire's ends on faces where A is not held (a Perfect Magnetic
+    // Conductor, not insulated): refused, its terminal named - the voltage
+    // between terminal and ground is not one value there.
+    void aTerminalWhereAIsFree()
+    {
+        QString et, mf;
+        Model m = roundWire(0.2, 0.5, 1.5, 1, &et, &mf);
+        for (const char* side : {"bottom", "top"})
+            addFeature(m, mf, QStringLiteral("magnetic/pmc"), ofSide(QStringLiteral("air"), QString::fromLatin1(side)));
+        frequencyStep(m, QStringLiteral("10[Hz]"), false);
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.contains(QStringLiteral("terminal or ground")) && sv.error.contains(QStringLiteral("Magnetic Insulation")), qPrintable(why(sv)));
     }
 
     // A heat physics of the eddy currents' losses (Heat Source mf.Qrh): its
@@ -773,7 +798,9 @@ private slots:
     void heatOfTheLosses()
     {
         QString et, mf;
-        Model m = roundWire(0.2, 0.5, 1.5, 1, &et, &mf, 6);
+        // (Sanitized: coarser, fewer layers - its cycle's solves past
+        // QtTest's 300 s at 0.2 mm and 6.)
+        Model m = roundWire(slowBuild() ? 0.3 : 0.2, 0.5, 1.5, 1, &et, &mf, slowBuild() ? 4 : 6);
         coilOf(m, mf, QStringLiteral("1"))->props.insert(QStringLiteral("I0"), QStringLiteral("10[A]"));
         Node ht = m.make(QStringLiteral("heat"));
         ht.props.insert(QStringLiteral("order"), QStringLiteral("1"));
@@ -789,8 +816,11 @@ private slots:
         addFeature(m, h, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("wire"), QStringLiteral("top")), {{QStringLiteral("T0"), QStringLiteral("293.15[K]")}});
         addFeature(m, h, QStringLiteral("heat/source"), objects(QStringLiteral("wire")), {{QStringLiteral("Q0"), QStringLiteral("mf.Qrh")}});
         frequencyStep(m, QStringLiteral("10[Hz], 100[kHz]"));
+        QElapsedTimer t;
+        t.start();
         const Solved sv = solve(m);
         QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+        info(QStringLiteral("heat: two frequencies in %1 s").arg(t.elapsed() / 1000.0));
         double r0[2];
         for (int k = 0; k < 2; ++k) {
             sv.s().select(k);
@@ -804,7 +834,9 @@ private slots:
                    {{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("mur"), QStringLiteral("1")},
                     {QStringLiteral("sigma"), QStringLiteral("5.8e7[S/m]/(1 + 0.0039[1/K]*(%1.T - 293.15[K]))").arg(h)}});
         frequencyStep(m, QStringLiteral("10[Hz]"));
+        t.restart();
         const Solved hot = solve(m);
+        info(QStringLiteral("heat: σ of T in %1 s").arg(t.elapsed() / 1000.0));
         QVERIFY2(hot.error.isEmpty(), qPrintable(why(hot)));
         const double r = global(hot.s(), QStringLiteral("mf.R_1"));
         const double volume = integral(hot.s(), QStringLiteral("1"), QStringLiteral("mf.sigma > 0"));

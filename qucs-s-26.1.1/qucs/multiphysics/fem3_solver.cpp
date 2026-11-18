@@ -388,6 +388,16 @@ void Solution3::defineMagnetic(int f)
                S st;
                return detail3::magneticStateAt(e, f, st) ? st.qm : NaN;
            });
+    define(p + QStringLiteral("V"), Dim::voltage(), tr("electric potential in a conductor (the frequency domain's), its real part"), K::Derived, f, 0, 1,
+           [f](PointEvaluator3& e) {
+               S st;
+               return detail3::magneticStateAt(e, f, st, true) ? st.V : NaN;
+           });
+    define(p + QStringLiteral("V_im"), Dim::voltage(), tr("electric potential in a conductor, its imaginary part"), K::Derived, f, 0, 1,
+           [f](PointEvaluator3& e) {
+               S st;
+               return detail3::magneticStateAt(e, f, st, true) ? st.Vi : NaN;
+           });
     define(p + QStringLiteral("sigma"), Dim::of(-3, -1, 3, 2), tr("electrical conductivity (a tensor's diagonal's mean; 0 in a coil of turns)"),
            K::Derived, f, 0, 1, [f](PointEvaluator3& e) {
                S st;
