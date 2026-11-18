@@ -150,19 +150,31 @@ QList<Conductor> asSolid(const QList<Conductor>& conductors)
     QList<Conductor> out = conductors;
     for (Conductor& c : out) {
         if (!(c.share < 1) || !(c.share > 0)) continue;
-        // (Its centroid: the polygon's, by its signed triangles.)
-        double twice = 0, cx = 0, cy = 0;
-        for (int i = 0; i < c.outline.size(); ++i) {
-            const QPointF a = c.outline.at(i), b = c.outline.at((i + 1) % c.outline.size());
-            const double cross = a.x() * b.y() - b.x() * a.y();
-            twice += cross;
-            cx += (a.x() + b.x()) * cross;
-            cy += (a.y() + b.y()) * cross;
+        // Thinned in place to the vias' area: each step takes off (extra
+        // area)/(perimeter), which overshoots on a shape with corners, so it
+        // is repeated until within a per cent or it stops helping - so that a
+        // ring of vias stays a ring over its metals and a row a row, where
+        // scaled about its centroid a ring fell inside its own hole and a row
+        // lost its ends (the review of 31dbfeb6).
+        const double area = areaOf(c.outline), wanted = area * c.share;
+        QList<QPolygonF> one{c.outline};
+        double after = area;
+        for (int step = 0; step < 8 && after > wanted * 1.01; ++step) {
+            double around = 0;
+            for (const QPolygonF& s : std::as_const(one)) around += perimeterOf(s);
+            if (!(around > 0)) break;
+            const QList<QPolygonF> smaller = offsetOf(one, -(after - wanted) / around);
+            double shrunk = 0;
+            for (const QPolygonF& s : smaller) shrunk += areaOf(s);
+            if (smaller.isEmpty() || shrunk < wanted * 0.98 || shrunk >= after) break;
+            one = smaller;
+            after = shrunk;
         }
-        if (!(std::abs(twice) > 0)) continue;
-        const QPointF middle(cx / (3 * twice), cy / (3 * twice));
-        const double scale = std::sqrt(c.share);
-        for (QPointF& p : c.outline) p = middle + scale * (p - middle);
+        // (One conductor for one: the largest piece, where a step parted it.)
+        int best = 0;
+        for (int k = 1; k < one.size(); ++k)
+            if (areaOf(one.at(k)) > areaOf(one.at(best))) best = k;
+        c.outline = one.at(best);
         c.share = 1;
     }
     return out;

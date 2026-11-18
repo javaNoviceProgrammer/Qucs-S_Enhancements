@@ -1293,8 +1293,9 @@ private slots:
         QVERIFY(e.notes.join(QLatin1Char('\n')).contains(QLatin1String("1 via shape(s) that are no rectangles")));
         // A via farm merged into its footprint, 8 µm square, a quarter of it
         // metal (Conductor::share - P44 of the open items of 8 November):
-        // written as its metal, 4 µm square about its middle, not as solid
-        // metal over the footprint.
+        // written as its metal thinned in place, 4 µm square about its middle
+        // (within a per cent), not as solid metal over the footprint - and
+        // said.
         {
             Conductor farm = box(QStringLiteral("V0"), 141, -4, 149, 4);
             farm.share = 0.25;
@@ -1303,10 +1304,12 @@ private slots:
             int metal = 0, footprint = 0;
             for (const auto& [number, polygon] : f.gdsShapes) {
                 const QRectF bound = polygon.boundingRect();
-                if (std::abs(bound.width() - 4) < 1e-9 && std::abs(bound.height() - 4) < 1e-9 && std::abs(bound.center().x() - 145) < 1e-9) ++metal;
+                if (std::abs(bound.width() - 4) < 0.05 && std::abs(bound.height() - 4) < 0.05 && std::abs(bound.center().x() - 145) < 1e-6) ++metal;
                 if (std::abs(bound.width() - 8) < 1e-9 && std::abs(bound.height() - 8) < 1e-9) ++footprint;
             }
             QVERIFY2(metal == 1 && footprint == 0, qPrintable(QStringLiteral("%1 %2").arg(metal).arg(footprint)));
+            QVERIFY2(f.notes.join(QLatin1Char(' ')).contains(QStringLiteral("merged via farm(s) written as their metal thinned in place")),
+                     qPrintable(f.notes.join(QLatin1Char(' '))));
         }
         QTemporaryDir dir;
         const Ran ran = runScript(written(e, dir.path()), dir.path());

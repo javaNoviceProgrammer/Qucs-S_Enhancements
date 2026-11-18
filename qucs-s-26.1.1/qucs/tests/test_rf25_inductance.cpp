@@ -921,8 +921,8 @@ private slots:
     // the review's capacitor). Two plates 60 µm square of 0.2 µm metal, one
     // on M1 and one on M2, each fed by a strip 40 µm long, 36 vias of 2 µm on a 10 µm
     // pitch between them; R at direct current end to end, unmerged, merged,
-    // and merged as solid metal (asSolid(): the old shrunk block) - 0.5158,
-    // 0.5169 and 0.5562 Ohm.
+    // and merged as solid metal (asSolid(): the old shrunk block, thinned in
+    // place) - 0.5158, 0.5169 and 0.5581 Ohm.
     void aViaFarmMergedFeedsItsPlateAcrossItsArea()
     {
         rf::Stack two = grounded(1, 100e-6, 0.2e-6, 5.8e7);

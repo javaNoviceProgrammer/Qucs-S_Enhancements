@@ -406,8 +406,8 @@ private slots:
                  qPrintable(QStringLiteral("%1 µm² of %2").arg(got).arg(wanted)));
         QVERIFY2(footprint > 2 * wanted && footprint < 1.1, qPrintable(QStringLiteral("%1 µm²").arg(footprint)));
         QVERIFY2(std::abs(done.report.areaKept - wanted / footprint) < 1e-6, qPrintable(QString::number(done.report.areaKept)));
-        // As solid metal, for an export (asSolid()): the footprint scaled
-        // about its middle to the vias' area, one shape for one.
+        // As solid metal, for an export (asSolid()): the footprint thinned in
+        // place to the vias' area, within a per cent, one shape for one.
         const QList<rf::Conductor> solid = rf::asSolid(done.conductors);
         QCOMPARE(solid.size(), done.conductors.size());
         double solidArea = 0;
@@ -415,7 +415,36 @@ private slots:
             QCOMPARE(c.share, 1.0);
             solidArea += c.area();
         }
-        QVERIFY2(std::abs(solidArea - wanted) / wanted < 1e-6, qPrintable(QStringLiteral("%1 µm² of %2").arg(solidArea).arg(wanted)));
+        QVERIFY2(std::abs(solidArea - wanted) / wanted < 0.02, qPrintable(QStringLiteral("%1 µm² of %2").arg(solidArea).arg(wanted)));
+        // A ring of vias round a guard ring (100 µm across, 4 µm wide, a
+        // quarter metal) and a row along a strip (100 by 2 µm, half): each
+        // thinned within its footprint, the ring still a ring over its metal
+        // and the row as long - where scaled about its middle the ring fell
+        // inside its own hole and the row lost its ends (the review of
+        // 31dbfeb6).
+        {
+            rf::Conductor ring;
+            ring.layer = QStringLiteral("V1");
+            ring.outline = QPolygonF({QPointF(0, 0), QPointF(100, 0), QPointF(100, 100), QPointF(0, 100), QPointF(0, 50), QPointF(4, 50),
+                                      QPointF(4, 96), QPointF(96, 96), QPointF(96, 4), QPointF(4, 4), QPointF(4, 50), QPointF(0, 50)});
+            ring.share = 0.25;
+            rf::Conductor row;
+            row.layer = QStringLiteral("V1");
+            row.outline = QPolygonF(QRectF(0, 200, 100, 2));
+            row.share = 0.5;
+            const QList<rf::Conductor> made = rf::asSolid({ring, row});
+            QCOMPARE(made.size(), 2);
+            for (int k = 0; k < 2; ++k) {
+                const rf::Conductor& was = k == 0 ? ring : row;
+                const double metal = was.area() * was.share;
+                QVERIFY2(std::abs(made.at(k).area() - metal) / metal < 0.02, qPrintable(QStringLiteral("%1 of %2 µm²").arg(made.at(k).area()).arg(metal)));
+                for (const QPointF& p : made.at(k).outline)
+                    QVERIFY2(was.outline.containsPoint(p, Qt::OddEvenFill), qPrintable(QStringLiteral("%1, %2 outside").arg(p.x()).arg(p.y())));
+            }
+            const QRectF ringBox = made.at(0).outline.boundingRect(), rowBox = made.at(1).outline.boundingRect();
+            QVERIFY2(ringBox.width() > 96 && ringBox.height() > 96, qPrintable(QStringLiteral("%1 by %2").arg(ringBox.width()).arg(ringBox.height())));
+            QVERIFY2(rowBox.width() > 99, qPrintable(QString::number(rowBox.width())));
+        }
 
         // Without that choice the union is solid metal - more than the vias
         // were, which is the honest alternative.

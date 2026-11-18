@@ -554,8 +554,9 @@ private slots:
         }
         // A via farm merged into its footprint, 40 µm square, a quarter of it
         // metal (Conductor::share - P44 of the open items of 8 November):
-        // written as its metal, the 20 µm square about its middle that the
-        // via above is, not as solid metal over the footprint.
+        // written as its metal thinned in place, the 20 µm square about its
+        // middle that the via above is (within a per cent), not as solid
+        // metal over the footprint - and said.
         Conductor farm = box(QStringLiteral("V1"), 30, 30, 70, 70);
         farm.share = 0.25;
         PalaceOptions options;
@@ -566,7 +567,9 @@ private slots:
         const Msh m = readMsh(e.mesh);
         QVERIFY2(m.error.isEmpty(), qPrintable(m.error));
         const double v1 = m.areaOf(m.tagOf(2, QStringLiteral("V1")));
-        QVERIFY2(std::abs(v1 - 4 * 20 * 10) < 1e-6, qPrintable(QString::number(v1)));
+        QVERIFY2(std::abs(v1 / (4 * 20 * 10) - 1) < 0.01, qPrintable(QString::number(v1)));
+        QVERIFY2(e.notes.join(QLatin1Char(' ')).contains(QStringLiteral("merged via farm(s) written as their metal thinned in place")),
+                 qPrintable(e.notes.join(QLatin1Char(' '))));
     }
 
     // An internal port whose To metal is under its From, the metals thick:

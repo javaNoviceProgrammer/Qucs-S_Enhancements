@@ -183,7 +183,17 @@ PalaceExport palaceExportOf(const Model& model, const QList<Conductor>& given, c
     // (A merged via farm's footprint as its metal: this solver takes a shape
     //  as solid - asSolid().)
     const QList<Conductor> conductors = asSolid(given);
+
     PalaceExport out;
+    // (A merged via farm: written as its metal thinned in place, which a
+    //  solver of solid shapes takes as a block - its resistance, not the
+    //  vias' spread over their footprint as RF 2.5D solves them. Said.)
+    int farms = 0;
+    for (const Conductor& c : given) farms += c.share < 1 ? 1 : 0;
+    if (farms > 0)
+        out.notes << tr("%1 merged via farm(s) written as their metal thinned in place within their footprint: this solver "
+                        "reads that block's resistance, where RF 2.5D takes the vias' spread over the footprint. For a "
+                        "like comparison, export with the vias unmerged (Processing: Merge nearby vias off).").arg(farms);
     out.name = name.trimmed().isEmpty() ? QStringLiteral("rf25") : name.trimmed();
     const Stack stack = model.stack();
     if (!stack.ok()) out.problems << tr("The stack cannot be written as it stands: %1").arg(stack.problems.join(QLatin1Char(' ')));

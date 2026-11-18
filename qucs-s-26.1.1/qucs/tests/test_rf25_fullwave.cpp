@@ -1097,7 +1097,8 @@ private slots:
     // 60 µm square of 0.2 µm metal on M1 and M2, fed by strips 40 µm long,
     // 36 vias of 2 µm on a 10 µm pitch between them, 100 µm of vacuum over a
     // ground; the series resistance, -1/Y12's, at 1 GHz: 0.5175, 0.5182 Ohm
-    // merged and 0.5590 merged as solid metal (asSolid(): the old shrunk block).
+    // merged and 0.5588 merged as solid metal (asSolid(): the old shrunk block,
+    // thinned in place).
     void aViaFarmMergedFeedsItsPlateAcrossItsAreaFullWave()
     {
         rf::Stack two = grounded(1, 100e-6, 0, 0.2e-6, 5.8e7);
