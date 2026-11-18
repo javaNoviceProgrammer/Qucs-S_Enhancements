@@ -61,15 +61,15 @@ rf::Layers substrate(double epsr, double oxide = 0)
     return l;
 }
 
-/// A square plate of \a w µm at \a z, in cells of 12.5 µm.
-QList<rf::ChargedCell> plate(double w, double z)
+/// A square plate of \a w µm at \a z, in cells of \a cell µm.
+QList<rf::ChargedCell> plate(double w, double z, double cell = 12.5)
 {
     QList<rf::ChargedCell> cells;
-    const int n = int(std::lround(w / 12.5));
+    const int n = int(std::lround(w / cell));
     for (int i = 0; i < n; ++i)
         for (int j = 0; j < n; ++j) {
             rf::ChargedCell c;
-            c.rect = QRectF(i * 12.5e-6, j * 12.5e-6, 12.5e-6, 12.5e-6);
+            c.rect = QRectF(i * cell * 1e-6, j * cell * 1e-6, cell * 1e-6, cell * 1e-6);
             c.z = z;
             cells << c;
         }
@@ -485,18 +485,27 @@ private slots:
         low.name = QStringLiteral("LOW");
         top.name = QStringLiteral("SUB");
         layers.slabs << low << top;
-        const QList<rf::ChargedCell> cells = plate(100, 50e-6);
+        // (Under the sanitizers the mesa alone, in cells of 25 µm: at 12.5
+        // each of the three region solves under the lid is some 215
+        // processor-seconds here, and the function went past QtTest's 900 s
+        // on CI's runner. A layer ending on the ground, as the mirror's does,
+        // is aSubstrateThatEndsIsSolvedByItsRegion's there.)
+        const bool slow = slowBuild();
+        const QList<rf::ChargedCell> cells = plate(100, 50e-6, slow ? 25 : 12.5);
         const double whole = capacitance(coefficients(layers, cells));
         rf::Layers air = layers;
         air.slabs[1].epsr = 1;
         const double bare = capacitance(coefficients(air, cells));
         QStringList said;
-        const double everywhere = ended(layers, cells, {square(-1e6, 1e6)}, 1, &said);
-        QVERIFY2(std::abs(everywhere / whole - 1) < 5e-3,
-                 qPrintable(QStringLiteral("%1 against %2 fF | %3").arg(everywhere * 1e15).arg(whole * 1e15).arg(said.join(" | "))));
+        if (!slow) {
+            const double everywhere = ended(layers, cells, {square(-1e6, 1e6)}, 1, &said);
+            QVERIFY2(std::abs(everywhere / whole - 1) < 5e-3,
+                     qPrintable(QStringLiteral("%1 against %2 fF | %3").arg(everywhere * 1e15).arg(whole * 1e15).arg(said.join(" | "))));
+        }
         const double mesa = ended(layers, cells, {square(-20, 120)}, 1, &said);
         QVERIFY2(mesa > bare && mesa < whole * 1.005,
                  qPrintable(QStringLiteral("a mesa: %1 fF (air %2, whole %3) | %4").arg(mesa * 1e15).arg(bare * 1e15).arg(whole * 1e15).arg(said.join(" | "))));
+        if (slow) return;
         // And the lid is the ground's mirror: the plate midway, the layer
         // under it ending to the same mesa is the layer over it ending.
         rf::Layers mirrored = layers;
@@ -533,7 +542,10 @@ private slots:
     // ever less.
     void anOxideOverTheSubstratesFace()
     {
-        for (const double oxide : {1.0, 10.0}) {
+        // (Under the sanitizers the thin oxide alone: the two are some 330
+        // processor-seconds here, past QtTest's 900 s on CI's runner by the
+        // rate of the functions before them there.)
+        for (const double oxide : slowBuild() ? QList<double>{1.0} : QList<double>{1.0, 10.0}) {
             const rf::Layers layers = substrate(9.8, oxide);
             const QList<rf::ChargedCell> cells = plate(100, 100e-6 + oxide * 1e-6);
             const double whole = capacitance(coefficients(layers, cells));

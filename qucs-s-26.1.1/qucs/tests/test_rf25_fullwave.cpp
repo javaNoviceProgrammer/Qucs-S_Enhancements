@@ -532,24 +532,29 @@ class TestRf25Fullwave : public QObject
     Q_OBJECT
 
 private slots:
-    // Its functions in two ctest entries on a sanitized build - each its own
-    // time limit, the two at once: QUCS_TEST_PART 1 those before
-    // aViaBetweenTwoMetalsJoinsThem, 2 it and those after, unset all (G9's
-    // ports' paths, a via's vertical kernels in every solve, took the one
-    // entry to 1150 s sanitized here: the two some 550 and 600).
+    // Its functions in three ctest entries - each its own time limit, the
+    // three at once: QUCS_TEST_PART 1 those before
+    // aCorrectionHeldAsItsFactorsIsTheCorrection, 2 it and those before
+    // aBoxIsInTheFullWave, 3 it and those after, unset all. Under the
+    // sanitizers some 940, 870 and 860 processor-seconds here (18 November;
+    // the two parts there were till then, split at
+    // aViaBetweenTwoMetalsJoinsThem, 2,640 and 22, the first 2,686 s of its
+    // 2,700 on CI's runner).
     void init()
     {
         const QByteArray part = qgetenv("QUCS_TEST_PART");
         if (part.isEmpty()) return;
         const QMetaObject* mo = metaObject();
-        int split = -1, here = -1;
+        int second = -1, third = -1, here = -1;
         for (int k = mo->methodOffset(); k < mo->methodCount(); ++k) {
             const QByteArray name = mo->method(k).name();
-            if (name == "aViaBetweenTwoMetalsJoinsThem") split = k;
+            if (name == "aCorrectionHeldAsItsFactorsIsTheCorrection") second = k;
+            if (name == "aBoxIsInTheFullWave") third = k;
             if (name == QTest::currentTestFunction()) here = k;
         }
-        if (split < 0 || here < 0) return;
-        if ((part == "2") != (here >= split)) QSKIP("in the test's other part (QUCS_TEST_PART)");
+        if (second < 0 || third < 0 || here < 0) return;
+        const int in = here >= third ? 3 : here >= second ? 2 : 1;
+        if (part != QByteArray::number(in)) QSKIP("in the test's other part (QUCS_TEST_PART)");
     }
 
     // The sheet impedance between its two limits, and S from Z where both
@@ -1446,7 +1451,7 @@ private slots:
     // A dispersive substrate that ends at its shapes: the full wave's
     // correction for its shapes is made once, of statics, so inside them it
     // is its permittivity as given at every frequency - and the answer says
-    // so (the review of 3789cfcb: nothing said it).
+    // so (the review of 357538a7: nothing said it).
     void aDispersiveLayerThatEndsSaysHowItIsTaken()
     {
         rf::Stack stack = grounded(9.8, 100e-6, 0.01, 1e-6, 5.8e7);
@@ -1470,7 +1475,7 @@ private slots:
         const rf::FullWave u = rf::fullWaveOf(mesh, conductors, uniaxial, {edgePort(QPointF(0, 50)), edgePort(QPointF(600, 50))}, {5e9}, 1e-6, &control);
         QVERIFY2(!u.ok() && u.problems.join(' ').contains(QStringLiteral("SUB is uniaxial and ends at its shapes")), qPrintable(why(u)));
         // Nor a magnetic one, which would be magnetic across the whole plane
-        // (the review of fa249cbd) - a magnetic loss alone the same.
+        // (the review of 975d4569) - a magnetic loss alone the same.
         for (const auto& [mur, mtand] : {std::pair{3.0, 0.0}, std::pair{1.0, 0.05}}) {
             rf::Stack magnetic = grounded(9.4, 100e-6, 0, 1e-6, 5.8e7);
             for (rf::Layer& l : magnetic.layers)
@@ -2507,7 +2512,7 @@ private slots:
         line(grounded(4, 100e-6), 1000, 100, 4, 100e-6, 4, {fl}, &plain);
         QVERIFY(lp.epsilonEff > 1.5 * rf::lineParameters(plain, 0, 1000e-6, fl).epsilonEff);
         // A magnetic loss alone, mu_r 1: the quasi-static solve says it
-        // leaves it out (the review of fa249cbd).
+        // leaves it out (the review of 975d4569).
         rf::Stack lossy = grounded(4, 100e-6);
         for (rf::Layer& layer : lossy.layers)
             if (layer.kind == rf::Layer::Substrate) layer.mtand = 0.05;
@@ -2890,7 +2895,7 @@ private slots:
             rf::portsOf(m, &problem);
             QVERIFY2(problem.contains(QStringLiteral("nought or above")), qPrintable(problem));
             ports->children.back().props.insert(QStringLiteral("r"), QStringLiteral("47"));
-            // An element is no port elsewhere either (the review of 8abc6cbb):
+            // An element is no port elsewhere either (the review of 705280f8):
             // the quasi-static loop's two ends are the model's two measuring
             // ports, the element listed before them; and a TRL calibration of
             // the two-port it is is not refused as a three-port.
