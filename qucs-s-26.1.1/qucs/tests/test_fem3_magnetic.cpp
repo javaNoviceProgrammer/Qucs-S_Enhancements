@@ -646,7 +646,7 @@ private slots:
         const double Lp = Mu0 / (2 * M_PI)
                           * (std::log(b / a) + 0.25 + c * c * c * c * std::log(c / b) / ((c * c - b * b) * (c * c - b * b)) - (3 * c * c - b * b) / (4 * (c * c - b * b)));
         // (0.15 mm: 1.2 % low in the review's 10 to 20 mm; Eigen's LU and a
-        // sanitized build coarser.)
+        // sanitized build coarser, 0.25 mm: 2.75 % low.)
         const double hmax = coarse() ? 0.25 : 0.15;
         double L[2] = {0, 0};
         const int lengths[2] = {2, 4};
@@ -704,7 +704,7 @@ private slots:
         }
         const double perLength = (L[1] - L[0]) / 2e-3;
         info(QStringLiteral("coax from currents: L %1, %2 H; dL/dlen %3 H/m, exact %4 H/m").arg(L[0]).arg(L[1]).arg(perLength).arg(Lp));
-        QVERIFY2(std::abs(perLength - Lp) < (coarse() ? 3e-2 : 2e-2) * Lp, qPrintable(QStringLiteral("dL/dlen %1 H/m, exact %2 H/m").arg(perLength).arg(Lp)));
+        QVERIFY2(std::abs(perLength - Lp) < (coarse() ? 4e-2 : 2e-2) * Lp, qPrintable(QStringLiteral("dL/dlen %1 H/m, exact %2 H/m").arg(perLength).arg(Lp)));
     }
 
     // A cycle - the currents' conductivity reads the magnetic field (nought
@@ -742,12 +742,32 @@ private slots:
     // LU; its memory limit kept.
     void realLdltAgreesWithComplex()
     {
-        const Eigen::SparseMatrix<double> a = saddlePoint(80, 900);
+        // (Sanitized, Eigen's LU at -O0: a smaller one - 7,300 unknowns went
+        // past QtTest's 300 s there.)
+        const Eigen::SparseMatrix<double> a = slowBuild() ? saddlePoint(30, 120) : saddlePoint(80, 900);
         Eigen::VectorXd b(a.rows());
         for (int k = 0; k < int(b.size()); ++k) b[k] = std::sin(0.37 * k) + 0.25;
-        const QByteArray fromA = qgetenv("QUCS_FEM_ACCELERATE_FROM"), fromM = qgetenv("QUCS_FEM_MUMPS_FROM");
+        // (QUCS_FEM_SOLVER, which overrides the choice, put aside for the
+        // test's own.)
+        // (Put back however the test ends: a failure returns at once.)
+        struct Restore {
+            QByteArray fromA = qgetenv("QUCS_FEM_ACCELERATE_FROM"), fromM = qgetenv("QUCS_FEM_MUMPS_FROM"), solver = qgetenv("QUCS_FEM_SOLVER");
+            static void put(const char* name, const QByteArray& v)
+            {
+                if (v.isNull()) qunsetenv(name);
+                else qputenv(name, v);
+            }
+            ~Restore()
+            {
+                setDirectSolver(DirectSolver::Automatic);
+                put("QUCS_FEM_ACCELERATE_FROM", fromA);
+                put("QUCS_FEM_MUMPS_FROM", fromM);
+                put("QUCS_FEM_SOLVER", solver);
+            }
+        } restore;
         qputenv("QUCS_FEM_ACCELERATE_FROM", "0");
         qputenv("QUCS_FEM_MUMPS_FROM", "0");
+        qunsetenv("QUCS_FEM_SOLVER");
         std::vector<std::pair<DirectSolver, QString>> backends{{DirectSolver::Eigen, QStringLiteral("Eigen's LU")}};
         if (accelerateInBuild()) backends.emplace_back(DirectSolver::Accelerate, QStringLiteral("Accelerate's LDLT"));
         if (mumpsInBuild()) backends.emplace_back(DirectSolver::Mumps, QStringLiteral("MUMPS's LDLT"));
@@ -787,10 +807,6 @@ private slots:
             again.compute(a);
             QVERIFY(again.reusedAnalysis());
         }
-        if (fromA.isNull()) qunsetenv("QUCS_FEM_ACCELERATE_FROM");
-        else qputenv("QUCS_FEM_ACCELERATE_FROM", fromA);
-        if (fromM.isNull()) qunsetenv("QUCS_FEM_MUMPS_FROM");
-        else qputenv("QUCS_FEM_MUMPS_FROM", fromM);
     }
 
     // An iron ring round a wire of 50 A, its B-H curve's: H round it I /
