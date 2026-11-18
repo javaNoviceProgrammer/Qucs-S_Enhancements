@@ -1916,7 +1916,12 @@ private slots:
         const QList<rf::Conductor> climbing = {strip(0, 0, 1000, w), on(m2, 1000 - w, 0, 1000, w), on(QStringLiteral("V1"), 1000 - w, 0, w, w)};
         cases << Case{"via", climbing, evenly(climbing, 2, 100e-6, 2), lossyGround(withVia(twoMetals(), QStringLiteral("V1"), m1, m2)),
                       {edgePort(QPointF(0, w / 2), m1), edgePort(QPointF(2000 - w, w / 2), m2)}};
-        const QList<double> fs = {1e8, 1e9, 5e9, 10e9, 15e9, 20e9, 25e9, 30e9, 35e9, 40e9, 45e9, 50e9};
+        // (Three frequencies under the sanitizers, from the lowest to the
+        // highest: the three cases' twelve each, three times over, went past
+        // QtTest's 900 s on CI's sanitized Linux job, where L D L^T is not
+        // Accelerate's and every solve is the LU.)
+        const QList<double> fs = slowBuild() ? QList<double>{1e8, 25e9, 50e9}
+                                             : QList<double>{1e8, 1e9, 5e9, 10e9, 15e9, 20e9, 25e9, 30e9, 35e9, 40e9, 45e9, 50e9};
         for (const Case& c : cases) {
             const auto solve = [&c, &fs](int symmetric) {
                 rf::FullWaveControl control;
@@ -1929,7 +1934,9 @@ private slots:
             QVERIFY(!lu.symmetricLu);
             QCOMPARE(ldl.symmetricLu, rf::luOnAccelerate());
             QCOMPARE(says(ldl.lines, "L D L^T"), ldl.symmetricLu);
-            QCOMPARE(automatic.symmetricLu, rf::luOnAccelerate() && std::thread::hardware_concurrency() >= 12);
+            // (Where it would solve twelve frequencies or more at once: the
+            // machine's threads and the sweep's frequencies both.)
+            QCOMPARE(automatic.symmetricLu, rf::luOnAccelerate() && std::thread::hardware_concurrency() >= 12 && fs.size() >= 12);
             double most = 0;
             for (int k = 0; k < fs.size(); ++k)
                 for (int i = 0; i < 2; ++i)
