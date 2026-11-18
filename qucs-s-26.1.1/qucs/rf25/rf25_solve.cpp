@@ -567,6 +567,7 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
         // L of a uniform line is all that can be said.
         QList<QPointF> at;
         QList<QPair<QString, QString>> metals;   // (each end's: an edge port's conductor twice; an internal port's from and to)
+        QList<const Node*> ends;                 // (each end's port)
         for (const Node& port : model.ports().children) {
             if (!port.enabled) continue;
             if (port.type != QLatin1String("rf_edge_port") && port.type != QLatin1String("rf_internal_port")) continue;
@@ -584,6 +585,35 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
                 metals << qMakePair(metal, metal);
             } else {
                 metals << qMakePair(textOf(port, QStringLiteral("from")), textOf(port, QStringLiteral("to")));
+            }
+            ends << &port;
+        }
+        // One port that returns through a terminal it names: the loop from
+        // the port to that terminal - the model a full-wave solve of the
+        // loop takes, its one port returning through its other end, serving
+        // the loop inductance too, where it wanted two ports, and a full wave
+        // of two refused a terminal on the other's cells (the production-
+        // readiness review).
+        QString through;
+        if (at.size() == 1 && textOf(*ends.first(), QStringLiteral("return")) == QLatin1String("terminals")) {
+            for (const QString& name : namesOf(*ends.first(), QStringLiteral("returns"))) {
+                const Node* terminal = nullptr;
+                for (const Node& n : model.ports().children)
+                    if (n.enabled && n.type == QLatin1String("rf_terminal") && portName(n) == name) {
+                        terminal = &n;
+                        break;
+                    }
+                if (terminal == nullptr) continue;
+                bool ok = true;
+                const double x = numberOf(*terminal, QStringLiteral("x"), model, 0, &ok);
+                if (!ok) continue;
+                const double y = numberOf(*terminal, QStringLiteral("y"), model, 0, &ok);
+                if (!ok) continue;
+                at << QPointF(x, y) / 1e-6;
+                const QString metal = textOf(*terminal, QStringLiteral("metal")).trimmed();
+                metals << qMakePair(metal, metal);
+                through = name;
+                break;
             }
         }
         if (at.size() >= 2) {
@@ -615,6 +645,8 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
             job.frequency = topFrequency(model);
             if (at.size() > 2)
                 job.portsSaid = tr("%1 ports: the loop is taken from the first two.").arg(at.size());
+            else if (!through.isEmpty())
+                job.portsSaid = tr("One port, returning through %1: the loop is taken from the port to %1.").arg(through);
         } else {
             job.portsSaid = at.size() == 1 ? tr("One port: a loop's inductance wants two, so that a current has "
                                                  "somewhere to go in and somewhere to come out.")

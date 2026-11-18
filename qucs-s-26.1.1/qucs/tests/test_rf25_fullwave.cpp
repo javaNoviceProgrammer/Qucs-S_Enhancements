@@ -1045,6 +1045,51 @@ private slots:
                  qPrintable(QStringLiteral("%1 %2").arg(skin.at(0)).arg(skin.at(1))));
     }
 
+    // One model for the loop inductance and the full wave (the production-
+    // readiness review): a loop's one port that returns
+    // through a terminal at its other end - as the full wave takes a loop -
+    // makes the loop's two ends, the port's and the terminal's, on the
+    // terminal's metal; where it named none, one port is no loop, as before.
+    void aPortReturningThroughATerminalMakesTheLoop()
+    {
+        rf::Model m = rf::Model::blank();
+        rf::Node* ports = nullptr;
+        for (rf::Node& n : m.root.children)
+            if (n.type == QStringLiteral("rf_ports")) ports = &n;
+        QVERIFY(ports != nullptr);
+        ports->children.clear();
+        rf::Node p1 = m.make(QStringLiteral("rf_edge_port"));
+        p1.label = QStringLiteral("P1");
+        p1.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+        p1.props.insert(QStringLiteral("x"), QStringLiteral("10[um]"));
+        p1.props.insert(QStringLiteral("return"), QStringLiteral("terminals"));
+        p1.props.insert(QStringLiteral("returns"), QStringLiteral("T1"));
+        rf::Node t1 = m.make(QStringLiteral("rf_terminal"));
+        t1.label = QStringLiteral("T1");
+        t1.props.insert(QStringLiteral("metal"), QStringLiteral("M1"));
+        t1.props.insert(QStringLiteral("x"), QStringLiteral("90[um]"));
+        t1.props.insert(QStringLiteral("y"), QStringLiteral("5[um]"));
+        ports->children.push_back(p1);
+        ports->children.push_back(t1);
+        rf::Processed processed;
+        processed.conductors << strip(0, 0, 100, 10);
+        rf::SolveRequest quasi;
+        quasi.solver = QStringLiteral("quasi_static");
+        rf::SolveJob job;
+        rf::setUpSolve(job, m, processed, rf::Mesh(), quasi, QString());
+        QVERIFY(job.loop);
+        QCOMPARE(job.in, QPointF(10, 0));
+        QCOMPARE(job.out, QPointF(90, 5));
+        QCOMPARE(job.outLayer, QStringLiteral("M1"));
+        QVERIFY2(job.portsSaid.contains(QStringLiteral("returning through T1")), qPrintable(job.portsSaid));
+        // (Its returns naming no terminal: no loop.)
+        ports->children.front().props.insert(QStringLiteral("returns"), QStringLiteral("T9"));
+        rf::SolveJob none;
+        rf::setUpSolve(none, m, processed, rf::Mesh(), quasi, QString());
+        QVERIFY(!none.loop);
+        QVERIFY2(none.portsSaid.contains(QStringLiteral("One port")), qPrintable(none.portsSaid));
+    }
+
     // A via farm merged feeds its plate across its area in the full wave too
     // (P44 of the open items of 8 November: a capacitor's plate fed by 544
     // vias read 1.21 Ohm in series merged, 0.774 unmerged): the vias' runs
