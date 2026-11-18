@@ -1677,13 +1677,22 @@ QSet<int> resolve3(const Topology3& t, const Model& model, Level level, const QJ
             else if (side == QLatin1String("top")) dirs.push_back({0, 0, 1});
             else problems << tr("a side is left, right, front, back, bottom or top, not %1").arg(side);
         }
+        // ("own": the faces of the objects' own domains alone - not of the
+        // solids nested in them: a shell's floor its annulus, not the floors
+        // of the gap and the core inside it too.)
+        const bool own = rule.value(QStringLiteral("own")).toBool();
+        auto held = [&](int d) {
+            if (d < 0) return false;
+            const Topology3::Domain& dm = t.domains[std::size_t(d)];
+            return own ? objs.contains(dm.owner) : dm.objects.intersects(objs);
+        };
         QSet<int> faces;
         for (int f = 0; f < int(t.faces.size()); ++f) {
             const Topology3::Face& fc = t.faces[std::size_t(f)];
             if (!fc.objects.intersects(objs)) continue;
+            if (own && !held(fc.back) && !held(fc.front)) continue;
             if (!sides.isEmpty()) {
                 // Facing a side: the normal out of the solids' domain.
-                auto held = [&](int d) { return d >= 0 && t.domains[std::size_t(d)].objects.intersects(objs); };
                 const bool backIn = held(fc.back), frontIn = held(fc.front);
                 if (backIn == frontIn) continue;
                 const Vec3 nrm = t.normalAt(f, backIn ? fc.back : fc.front);
@@ -1828,7 +1837,7 @@ QString describeSelection3(const QJsonObject& rule, Level level)
     else if (rule.contains(QStringLiteral("only"))) text = tr("the %1 of %2 alone").arg(plural, names(rule.value(QStringLiteral("only"))));
     else if (rule.contains(QStringLiteral("layer"))) text = tr("the %1 of layer %2").arg(plural, names(rule.value(QStringLiteral("layer"))));
     else if (rule.contains(QStringLiteral("of"))) {
-        text = tr("the %1 of %2").arg(plural, names(rule.value(QStringLiteral("of"))));
+        text = (rule.value(QStringLiteral("own")).toBool() ? tr("the %1 of %2's own domains") : tr("the %1 of %2")).arg(plural, names(rule.value(QStringLiteral("of"))));
         if (rule.contains(QStringLiteral("side"))) {
             const QJsonValue side = rule.value(QStringLiteral("side"));
             text += tr(" (%1)").arg(side.isArray() ? names(side) : side.toString());

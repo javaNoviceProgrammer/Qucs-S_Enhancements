@@ -45,8 +45,11 @@
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QToolButton>
+#include <QTimer>
 #include <QTreeWidget>
 #include <QUndoStack>
+
+#include <algorithm>
 
 #include "config.h"
 #include "apptheme.h"
@@ -699,12 +702,23 @@ private slots:
         int slept = 0;
         const QMetaObject::Connection s = connect(QAbstractEventDispatcher::instance(), &QAbstractEventDispatcher::aboutToBlock, this,
                                                   [&slept] { ++slept; });
+        // (What it is doing, as fem_describe's "at work" says it: the
+        //  physics and its phase, not "Solving" alone.)
+        QStringList progress;
+        QTimer poll;
+        connect(&poll, &QTimer::timeout, this, [&] {
+            if (const QString p = doc->jobProgress(); !p.isEmpty() && !progress.contains(p)) progress << p;
+        });
+        poll.start(5);
         const double before = threadCpuMs();
         QVERIFY(doc->waitForIdle(300000));
         const double used = threadCpuMs() - before;
         const qint64 wall = t.elapsed();
+        poll.stop();
         disconnect(c);
         disconnect(s);
+        const bool told = std::any_of(progress.begin(), progress.end(), [](const QString& p) { return p.startsWith(QStringLiteral("Solving: ")) && p.contains(QStringLiteral(": solving")); });
+        QVERIFY2(told, qPrintable(progress.join(QLatin1Char('\n'))));
         qInfo("solved in %lld ms, the GUI thread busy %.0f ms of it, asleep %d times", wall, used, slept);
         QVERIFY2(slept >= wall / 100, qPrintable(QStringLiteral("the run loop slept %1 times in %2 ms").arg(slept).arg(wall)));
         QVERIFY2(ended >= 0 && wall - ended < 500, qPrintable(QStringLiteral("solved at %1 ms, the wait back at %2").arg(ended).arg(wall)));
@@ -1408,7 +1422,20 @@ private slots:
         QJsonArray rows;
         rows.append(QJsonArray{QStringLiteral("q"), QStringLiteral("1e4, 2e4"), QStringLiteral("W/m^2")});
         r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "add"}, {"parent", study}, {"type", "sweep"}, {"props", QJsonObject{{"parameters", rows}}}});
-        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(!failed(r) && !json(r).contains(QStringLiteral("check")), qPrintable(text(r)));
+        // Its row without q's unit: said as it is written, not first at the
+        // solve; put back.
+        QString sweep;
+        for (const FNode& c : doc->model().root.children)
+            if (c.type == QLatin1String("study"))
+                for (const FNode& st : c.children)
+                    if (st.type == QLatin1String("sweep")) sweep = st.tag;
+        QJsonArray bare;
+        bare.append(QJsonArray{QStringLiteral("q"), QStringLiteral("1e4, 2e4"), QString()});
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "set"}, {"tag", sweep}, {"props", QJsonObject{{"parameters", bare}}}});
+        QVERIFY2(!failed(r) && QJsonDocument(json(r).value(QStringLiteral("check")).toArray()).toJson().contains("give its values a unit"), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "set"}, {"tag", sweep}, {"props", QJsonObject{{"parameters", rows}}}});
+        QVERIFY2(!failed(r) && !json(r).contains(QStringLiteral("check")), qPrintable(text(r)));
         r = call(QStringLiteral("fem_solve"), {{"path", file}});
         QVERIFY2(!failed(r) && json(r).value(QStringLiteral("sweep")).toArray().size() == 2, qPrintable(text(r)));
         r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "ht.Tmax"}, {"all", true}});

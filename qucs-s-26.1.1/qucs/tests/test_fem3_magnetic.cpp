@@ -265,7 +265,8 @@ struct Solved {
     Solution3& s() const { return *r.solution; }
 };
 
-Solved solve(const Model& m)
+/// \a m solved (its progress told to \a progress).
+Solved solve(const Model& m, const Progress& progress = {})
 {
     Solved out;
     const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
@@ -280,7 +281,7 @@ Solved solve(const Model& m)
         return out;
     }
     out.mesh = mb.mesh;
-    out.r = solveStudy3(m, ps, mb.mesh);
+    out.r = solveStudy3(m, ps, mb.mesh, QString(), progress);
     out.error = out.r.error;
     return out;
 }
@@ -647,10 +648,16 @@ private slots:
         const double hmax = coarse() ? 0.25 : 0.15;
         double L[2] = {0, 0};
         const int lengths[2] = {2, 4};
+        QStringList told;
+        const Progress progress = [&told](double, const QString& what) {
+            if (told.isEmpty() || told.back() != what) told << what;
+            return true;
+        };
         for (int k = 0; k < 2; ++k) {
             QString et, mf;
             const Model m = shortedCoax(hmax, lengths[k], &et, &mf);
-            const Solved sv = solve(m);
+            told.clear();
+            const Solved sv = solve(m, progress);
             QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
             L[k] = global(sv.s(), QStringLiteral("mf.L_1"));
             const QStringList& log = sv.s().log;
@@ -658,6 +665,17 @@ private slots:
             QVERIFY2(!log.join(QLatin1Char('\n')).contains(QStringLiteral(", iteration 1:")), qPrintable(log.join(QLatin1Char('\n'))));
             QVERIFY2(linesOf(log, mfName, QStringLiteral("factorized in")) == 1, qPrintable(log.join(QLatin1Char('\n'))));
             QVERIFY2(linesOf(log, mfName, QStringLiteral("assembled in")) == 1, qPrintable(log.join(QLatin1Char('\n'))));
+            // Its progress told each physics and its phase: the currents
+            // solved, then the field factorized (no pass: solved once).
+            const QString ecName = m.find(et)->name();
+            const auto at = [&told](const QString& text) {
+                for (int i = 0; i < told.size(); ++i)
+                    if (told[i].contains(text)) return i;
+                return -1;
+            };
+            const int currents = at(ecName + QStringLiteral(": solving")), factorizing = at(mfName + QStringLiteral(": factorizing, "));
+            QVERIFY2(currents >= 0 && factorizing > currents && at(QStringLiteral("(pass")) < 0, qPrintable(told.join(QLatin1Char('\n'))));
+            QVERIFY2(told[factorizing].contains(QStringLiteral(" unknowns")), qPrintable(told[factorizing]));
         }
         const double perLength = (L[1] - L[0]) / 2e-3;
         info(QStringLiteral("coax from currents: L %1, %2 H; dL/dlen %3 H/m, exact %4 H/m").arg(L[0]).arg(L[1]).arg(perLength).arg(Lp));
@@ -674,13 +692,21 @@ private slots:
         Model m = shortedCoax(0.3, 1, &et, &mf);
         for (Node& c : m.find(et)->children)
             if (c.type == QLatin1String("currents/conservation")) c.props.insert(QStringLiteral("sigma"), QStringLiteral("5.8e7[S/m]*(1 + 0*mf.normB/1[T])"));
-        const Solved sv = solve(m);
+        QStringList told;
+        const Solved sv = solve(m, [&told](double, const QString& what) {
+            told << what;
+            return true;
+        });
         QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
         const QStringList& log = sv.s().log;
         const QString mfName = m.find(mf)->name();
         QVERIFY2(log.join(QLatin1Char('\n')).contains(QStringLiteral("iteration 2")), qPrintable(log.join(QLatin1Char('\n'))));
         QVERIFY2(linesOf(log, mfName, QStringLiteral("factorized in")) == 1, qPrintable(log.join(QLatin1Char('\n'))));
         QVERIFY2(linesOf(log, mfName, QStringLiteral("factors kept")) >= 1, qPrintable(log.join(QLatin1Char('\n'))));
+        // (Its progress: each pass said.)
+        const QString all = told.join(QLatin1Char('\n'));
+        QVERIFY2(all.contains(mfName + QStringLiteral(": factorizing, ")) && all.contains(QStringLiteral("(pass 1)")) && all.contains(QStringLiteral("(pass 2)")),
+                 qPrintable(all));
         QVERIFY(global(sv.s(), QStringLiteral("mf.L_1")) > 0);
     }
 

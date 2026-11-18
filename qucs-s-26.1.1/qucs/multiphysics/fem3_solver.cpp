@@ -1001,6 +1001,7 @@ bool solveTogether(Problems3& problems, const std::vector<int>& subset, const st
                 const std::vector<double> before = f.values;
                 detail3::Options3 oi = optionsOf(i);
                 if (coupled) oi.pass = it + 1;
+                if (const Node* n = problems[std::size_t(i)]->node()) oi.tell(tr("%1: solving").arg(n->name()));
                 if (!problems[std::size_t(i)]->solve(oi, error)) return false;
                 double num = 0, den = 0;
                 for (std::size_t k = 0; k < f.values.size() && k < before.size(); ++k) {
@@ -2000,6 +2001,11 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         // (How far it is, as last told: what a solve's check of Cancel says.)
         auto at = std::make_shared<std::pair<double, QString>>(from + 0.5 * span, step.name());
         o.cancelled = [progress, at] { return progress && !progress(at->first, at->second); };
+        // (Each physics and its phase told: the step's name, then what.)
+        o.status = [progress, at, stepName = step.name()](const QString& what) {
+            at->second = stepName + QStringLiteral(": ") + what;
+            if (progress) (void)progress(at->first, at->second);
+        };
         if (progress && !progress(from, step.name())) {
             out.error = tr("cancelled");
             return out;

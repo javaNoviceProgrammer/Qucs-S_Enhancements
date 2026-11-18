@@ -579,7 +579,9 @@ QString formatText3D()
         "name, layout layer, z and thickness in µm, a layout's \"file\" and \"cell\"); \"union\", \"difference\" and "
         "\"intersection\" of solids, \"form union\" last; where solids meet, the overlap is a domain of its own. Selections at the "
         "levels domain, boundary (a face: a floor, normal along z, or a wall), edge and point: {\"of\": [\"blk1\"], \"side\": "
-        "\"top\"} - top, bottom, left, right, front (-y), back -, {\"only\": [...]}, {\"numbers\": [...]}, {\"box\": ...}. Its "
+        "\"top\"} - top, bottom, left, right, front (-y), back; the faces of every domain inside blk1, solids nested in it too, "
+        "unless \"own\": true (blk1's own domains alone: a shell's floor its annulus, not the floors of a core inside it) -, "
+        "{\"only\": [...]}, {\"numbers\": [...]}, {\"box\": ...}. Its "
         "mesh: the plan's triangles (\"size\", mesh/size) drawn up as prisms in layers, \"mesh/zdistribution\" (\"count\" prisms "
         "across its domains' height). Physics: heat, electrostatics, currents and solid mechanics (\"solid\": u, v, w on "
         "order 2 prisms by default; Prescribed Displacement's z and w0, Boundary Load's Fz, Body Load's fz, a user's \"rho\") with "
@@ -1416,6 +1418,7 @@ QJsonObject QucsControl::femModel(const QJsonObject& args)
                         {QStringLiteral("title"), titleOf(doc)},
                         {QStringLiteral("geometry"), why.isEmpty() ? tr("built") : why}};
         if (!notes.isEmpty()) out.insert(QStringLiteral("note"), notes.join(QStringLiteral("; ")));
+        if (const QStringList sweeps = sweepProblems(doc->model()); !sweeps.isEmpty()) out.insert(QStringLiteral("check"), QJsonArray::fromStringList(sweeps));
         return jsonResult(out);
     }
     if (action == QLatin1String("materials")) {
@@ -1792,6 +1795,9 @@ QJsonObject QucsControl::femEdit(const QJsonObject& args)
     } else {
         return errorResult(tr("'action' is add, set, delete, move or parameters."));
     }
+    // A sweep's rows checked as they are written, not only when solved (a
+    // length swept without its unit).
+    checked << sweepProblems(m);
     if (three) {
         // A 3D model stays one; its geometry built again in the background
         // (fem_build waits for it, and says its domains).
@@ -3732,10 +3738,13 @@ QJsonObject QucsControl::fem3Model(const QJsonObject& args, Multiphysics3DDoc* d
             a_app->titleDocumentTab(made);
         }
         if (made->geometryStale()) made->requestGeometry();
-        return jsonResult(QJsonObject{{QStringLiteral("file"), made->getDocName().isEmpty() ? tr("(not saved yet)") : QDir::toNativeSeparators(made->getDocName())},
-                                      {QStringLiteral("title"), titleOf(made)},
-                                      {QStringLiteral("space"), QStringLiteral("3D")},
-                                      {QStringLiteral("geometry"), geometry3Said(made)}});
+        QJsonObject out{{QStringLiteral("file"), made->getDocName().isEmpty() ? tr("(not saved yet)") : QDir::toNativeSeparators(made->getDocName())},
+                        {QStringLiteral("title"), titleOf(made)},
+                        {QStringLiteral("space"), QStringLiteral("3D")},
+                        {QStringLiteral("geometry"), geometry3Said(made)}};
+        // (A sweep's rows checked as written: a length without its unit.)
+        if (const QStringList sweeps = sweepProblems(*m); !sweeps.isEmpty()) out.insert(QStringLiteral("check"), QJsonArray::fromStringList(sweeps));
+        return jsonResult(out);
     }
     if (action == QLatin1String("open")) {
         const QString file = absolute(given);

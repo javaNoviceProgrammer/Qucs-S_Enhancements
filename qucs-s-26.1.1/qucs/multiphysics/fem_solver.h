@@ -533,6 +533,11 @@ struct SweepPlan {
 /// error, where a row names no parameter, its values or its unit do not
 /// read, or the combinations do not match.
 std::optional<SweepPlan> sweepPlan(const Model& model, const Node& sweep, const ParameterScope& parameters, QString* error);
+/// What sweepPlan() would refuse in each enabled Parametric Sweep of \a
+/// model's studies - a row without the unit its parameter has, a parameter
+/// not there -, said when the sweep is written (fem_model, fem_edit), not
+/// only when it is solved.
+QStringList sweepProblems(const Model& model);
 
 /// A list of values as a sweep or a time step gives them: "1, 2, 5",
 /// "range(0, 0.1, 1)" (start, step, stop), "linspace(0, 1, 11)", with units

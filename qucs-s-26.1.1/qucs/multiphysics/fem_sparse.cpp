@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -1283,6 +1284,7 @@ QString SparseComplexLdlt::name() const
 struct SparseRealLdlt::Impl {
     Backend backend = Backend::Eigen;
     double limit = 0, bytes = 0;
+    double analysisSeconds = 0, factorSeconds = 0;
     Eigen::ComputationInfo info = Eigen::InvalidInput;
     std::string error;
     bool reusedAnalysis = false;
@@ -1337,8 +1339,12 @@ void SparseRealLdlt::compute(const Matrix& a)
     Impl& d = *a_impl;
     d.error.clear();
     d.bytes = 0;
+    d.analysisSeconds = d.factorSeconds = 0;
     d.reusedAnalysis = false;
     d.lu.reset();
+    using Clock = std::chrono::steady_clock;
+    const auto since = [](Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); };
+    Clock::time_point started = Clock::now();
     d.mumps.reset();
     d.mumpsFactored = false;
 #if defined(QUCS_ACCELERATE)
@@ -1366,10 +1372,14 @@ void SparseRealLdlt::compute(const Matrix& a)
             d.info = Eigen::InvalidInput;
             return;
         }
+        d.analysisSeconds = since(started);
         d.bytes = d.mumps->bytes();
         if (d.pastLimit()) return;
         ++usedMumpsLdlt;
-        if (!d.mumps->factorize(values)) {
+        started = Clock::now();
+        const bool factored = d.mumps->factorize(values);
+        d.factorSeconds = since(started);
+        if (!factored) {
             d.error = d.mumps->error();
             d.info = Eigen::NumericalIssue;
             return;
@@ -1407,6 +1417,9 @@ void SparseRealLdlt::compute(const Matrix& a)
         if (!d.reusedAnalysis) {
             SparseSymbolicFactorOptions so = symbolicOptions();
             so.orderMethod = SparseOrderMetis;
+            // (Its default LDLT, threshold partial pivoting: the supernodal
+            // Bunch-Kaufman one, which pivots within a supernode alone, left a
+            // coax's saddle point a backward error of 9e-6.)
             d.symbolic = SparseFactor(SparseFactorizationLDLT, d.structure(), so);
             if (d.symbolic.status == SparseStatusOK) {
                 std::lock_guard<std::mutex> lock(kept.lock);
@@ -1419,6 +1432,7 @@ void SparseRealLdlt::compute(const Matrix& a)
             }
         }
         d.analysed = d.symbolic.status == SparseStatusOK;
+        d.analysisSeconds = since(started);
         if (!d.analysed) {
             d.error = statusText(d.symbolic.status);
             SparseCleanup(d.symbolic);
@@ -1429,7 +1443,9 @@ void SparseRealLdlt::compute(const Matrix& a)
         if (d.pastLimit()) return;
         SparseMatrix_Double m{d.structure(), d.lower.valuePtr()};
         ++usedAccelerateLdlt;
+        started = Clock::now();
         d.numeric = SparseFactor(d.symbolic, m);
+        d.factorSeconds = since(started);
         d.factored = d.numeric.status == SparseStatusOK;
         if (!d.factored) {
             d.error = statusText(d.numeric.status);
@@ -1450,6 +1466,7 @@ void SparseRealLdlt::compute(const Matrix& a)
     d.backend = Backend::Eigen;
     d.lu = std::make_unique<SparseLu<double>>();
     d.lu->compute(a);
+    d.factorSeconds = since(started);
     d.info = d.lu->info();
     if (d.info != Eigen::Success) d.error = d.lu->lastErrorMessage();
 }
@@ -1510,6 +1527,16 @@ void SparseRealLdlt::setMemoryLimit(double bytes)
 double SparseRealLdlt::factorBytes() const
 {
     return a_impl->bytes;
+}
+
+double SparseRealLdlt::analysisSeconds() const
+{
+    return a_impl->analysisSeconds;
+}
+
+double SparseRealLdlt::factorSeconds() const
+{
+    return a_impl->factorSeconds;
 }
 
 bool SparseRealLdlt::reusedAnalysis() const

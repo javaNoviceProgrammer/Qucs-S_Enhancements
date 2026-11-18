@@ -58,6 +58,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <new>
 
 using namespace qucs_s::fem;
@@ -146,6 +147,16 @@ struct Multiphysics3DDoc::Job {
     quint64 revision = 0;
     std::atomic<bool> cancel{false};
     std::atomic<int> permille{0};
+    /// What the solve is doing, as its progress last told (the physics and
+    /// its phase: "Stationary: Magnetic Fields: factorizing, …"), for the
+    /// stage line and fem_describe's "at work".
+    mutable std::mutex whatLock;
+    QString what;
+    QString doing() const
+    {
+        std::lock_guard<std::mutex> lock(whatLock);
+        return what;
+    }
     QThread* thread = nullptr;
     QElapsedTimer started;
 };
@@ -201,7 +212,11 @@ Multiphysics3DDoc::Multiphysics3DDoc(QucsApp* app, const QString& name) : QFrame
     a_progressTimer = new QTimer(this);
     a_progressTimer->setInterval(100);
     connect(a_progressTimer, &QTimer::timeout, this, [this] {
-        if (a_job) a_progress->setValue(a_job->permille.load());
+        if (!a_job) return;
+        a_progress->setValue(a_job->permille.load());
+        // (A solve's stage: what it is doing, as last told.)
+        if (a_job->solve)
+            if (const QString what = a_job->doing(); !what.isEmpty()) a_stage->setText(tr("Solving: %1").arg(what));
     });
     // A drawing or a layout the geometry reads, changed: built again.
     a_watcher = new QFileSystemWatcher(this);
@@ -759,7 +774,10 @@ bool Multiphysics3DDoc::idle() const
 QString Multiphysics3DDoc::jobProgress() const
 {
     if (!a_job) return {};
-    return tr("%1, %2 %").arg(a_stage->text()).arg(a_job->permille.load() / 10);
+    // (A solve's: the physics and its phase as last told - a review had "Solving, 64 %" alone for most of an hour.)
+    const QString what = a_job->solve ? a_job->doing() : QString();
+    const QString stage = what.isEmpty() ? a_stage->text() : tr("Solving: %1").arg(what);
+    return tr("%1, %2 %").arg(stage).arg(a_job->permille.load() / 10);
 }
 
 double Multiphysics3DDoc::jobFraction() const
@@ -862,8 +880,12 @@ void Multiphysics3DDoc::startJob(bool mesh, bool solve)
             if (job->solve)
                 job->study = runStudy3(
                     job->model, job->parameters, job->topology, job->givenMesh, job->studyTag,
-                    [job, meshShare](double fraction, const QString&) {
+                    [job, meshShare](double fraction, const QString& what) {
                         job->permille = int(1000 * (meshShare + (1 - meshShare) * fraction));
+                        {
+                            std::lock_guard<std::mutex> lock(job->whatLock);
+                            job->what = what;
+                        }
                         return !job->cancel.load();
                     },
                     job->asked);
