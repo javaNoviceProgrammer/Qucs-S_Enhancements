@@ -532,24 +532,29 @@ class TestRf25Fullwave : public QObject
     Q_OBJECT
 
 private slots:
-    // Its functions in two ctest entries on a sanitized build - each its own
-    // time limit, the two at once: QUCS_TEST_PART 1 those before
-    // aViaBetweenTwoMetalsJoinsThem, 2 it and those after, unset all (G9's
-    // ports' paths, a via's vertical kernels in every solve, took the one
-    // entry to 1150 s sanitized here: the two some 550 and 600).
+    // Its functions in three ctest entries - each its own time limit, the
+    // three at once: QUCS_TEST_PART 1 those before
+    // aCorrectionHeldAsItsFactorsIsTheCorrection, 2 it and those before
+    // aBoxIsInTheFullWave, 3 it and those after, unset all. Under the
+    // sanitizers some 940, 870 and 860 processor-seconds here (18 November;
+    // the two parts there were till then, split at
+    // aViaBetweenTwoMetalsJoinsThem, 2,640 and 22, the first 2,686 s of its
+    // 2,700 on CI's runner).
     void init()
     {
         const QByteArray part = qgetenv("QUCS_TEST_PART");
         if (part.isEmpty()) return;
         const QMetaObject* mo = metaObject();
-        int split = -1, here = -1;
+        int second = -1, third = -1, here = -1;
         for (int k = mo->methodOffset(); k < mo->methodCount(); ++k) {
             const QByteArray name = mo->method(k).name();
-            if (name == "aViaBetweenTwoMetalsJoinsThem") split = k;
+            if (name == "aCorrectionHeldAsItsFactorsIsTheCorrection") second = k;
+            if (name == "aBoxIsInTheFullWave") third = k;
             if (name == QTest::currentTestFunction()) here = k;
         }
-        if (split < 0 || here < 0) return;
-        if ((part == "2") != (here >= split)) QSKIP("in the test's other part (QUCS_TEST_PART)");
+        if (second < 0 || third < 0 || here < 0) return;
+        const int in = here >= third ? 3 : here >= second ? 2 : 1;
+        if (part != QByteArray::number(in)) QSKIP("in the test's other part (QUCS_TEST_PART)");
     }
 
     // The sheet impedance between its two limits, and S from Z where both

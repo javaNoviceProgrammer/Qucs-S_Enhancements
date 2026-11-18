@@ -247,7 +247,11 @@ jobs:
       #   solves of this runner, without Accelerate, four to six times that.
       #   The other seven were made to fit: smaller cases or waits that
       #   grow with the scale under the sanitizers, the 3D time-domain
-      #   suite's factorizations MUMPS's.
+      #   suite's factorizations MUMPS's. On their first run here (ed438d66's, 184 of 185
+      #   passed) two more: test_rf25_dielectric's lid case past QtTest's
+      #   900 s, its mesa alone under the sanitizers since and its oxide
+      #   case's thin oxide alone, and test_rf25_fullwave's first part at
+      #   2,686 s of its 2,700, its functions in three parts since.
       # Each comes back once it is fixed or fits.
       - name: Unit tests (QtTest, headless)
         run: |
