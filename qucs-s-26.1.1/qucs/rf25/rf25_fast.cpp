@@ -161,14 +161,16 @@ int ClusterTree::split(int begin, int end, const QList<Box>& items, int leaf)
     return index;
 }
 
-HMatrix::HMatrix(const ClusterTree* rows, const ClusterTree* columns, bool symmetric, double eta)
+template <typename T>
+HMatrixOf<T>::HMatrixOf(const ClusterTree* rows, const ClusterTree* columns, bool symmetric, double eta)
     : a_rows(rows), a_columns(columns), a_symmetric(symmetric), a_eta(eta)
 {
     if (rows == nullptr || columns == nullptr || rows->nodes().empty() || columns->nodes().empty()) return;
     build(0, 0);
 }
 
-void HMatrix::build(int row, int column)
+template <typename T>
+void HMatrixOf<T>::build(int row, int column)
 {
     const ClusterTree::Node& r = a_rows->nodes()[std::size_t(row)];
     const ClusterTree::Node& c = a_columns->nodes()[std::size_t(column)];
@@ -214,7 +216,8 @@ void HMatrix::build(int row, int column)
     build(r.child[1], c.child[1]);
 }
 
-bool HMatrix::fill(const Entry& entry, double tolerance, int threads, const std::atomic_bool* stop)
+template <typename T>
+bool HMatrixOf<T>::fill(const Entry& entry, double tolerance, int threads, const std::atomic_bool* stop)
 {
     a_threads = std::max(1, threads);
     // The largest blocks first, so that the threads end together.
@@ -265,31 +268,34 @@ bool HMatrix::fill(const Entry& entry, double tolerance, int threads, const std:
     return !halted;
 }
 
-void HMatrix::multiply(const VectorC& x, VectorC& y, Complex scale) const
+template <typename T>
+void HMatrixOf<T>::multiply(const Vector& x, Vector& y, T scale) const
 {
     apply(x, y, scale, false);
 }
 
-void HMatrix::multiplyTransposed(const VectorC& x, VectorC& y, Complex scale) const
+template <typename T>
+void HMatrixOf<T>::multiplyTransposed(const Vector& x, Vector& y, T scale) const
 {
     apply(x, y, scale, a_symmetric ? false : true);
 }
 
-void HMatrix::apply(const VectorC& x, VectorC& y, Complex scale, bool transposed) const
+template <typename T>
+void HMatrixOf<T>::apply(const Vector& x, Vector& y, T scale, bool transposed) const
 {
     if (a_blocks.empty()) return;
     const ClusterTree* in = transposed ? a_rows : a_columns;
     const ClusterTree* out = transposed ? a_columns : a_rows;
-    VectorC xp(in->items());
+    Vector xp(in->items());
     for (int p = 0; p < in->items(); ++p) xp[p] = x[in->order()[std::size_t(p)]];
     // Shared over threads only where there is work enough to pay for them:
     // each its own sum, added together at the end.
     double work = 0;
     for (const Block& b : a_blocks) work += double(b.dense.size() + b.u.size() + b.v.size());
     const int threads = work > 2e5 ? std::min(a_threads, int(a_blocks.size())) : 1;
-    std::vector<VectorC> partial(std::size_t(threads), VectorC::Zero(out->items()));
+    std::vector<Vector> partial(std::size_t(threads), Vector::Zero(out->items()));
     const auto job = [this, &xp, &partial, threads, transposed](int t) {
-        VectorC& yp = partial[std::size_t(t)];
+        Vector& yp = partial[std::size_t(t)];
         for (std::size_t k = std::size_t(t); k < a_blocks.size(); k += std::size_t(threads)) {
             const Block& b = a_blocks[k];
             const ClusterTree::Node& r = a_rows->nodes()[std::size_t(b.row)];
@@ -323,29 +329,34 @@ void HMatrix::apply(const VectorC& x, VectorC& y, Complex scale, bool transposed
     for (int p = 0; p < out->items(); ++p) y[out->order()[std::size_t(p)]] += scale * partial[0][p];
 }
 
-double HMatrix::bytes() const
+template <typename T>
+double HMatrixOf<T>::bytes() const
 {
     double sum = 0;
-    for (const Block& b : a_blocks) sum += 16.0 * double(b.dense.size() + b.u.size() + b.v.size());
+    for (const Block& b : a_blocks) sum += double(sizeof(T)) * double(b.dense.size() + b.u.size() + b.v.size());
     return sum;
 }
 
-double HMatrix::denseBytes() const
+template <typename T>
+double HMatrixOf<T>::denseBytes() const
 {
     const double n = double(rows()), m = double(columns());
-    return a_symmetric ? 8.0 * n * (n + 1) : 16.0 * n * m;
+    return a_symmetric ? double(sizeof(T)) * n * (n + 1) / 2 : double(sizeof(T)) * n * m;
 }
 
-double HMatrix::denseBlockBytes() const
+template <typename T>
+double HMatrixOf<T>::denseBlockBytes() const
 {
     double sum = 0;
     for (const Block& b : a_blocks)
         if (!b.lowRank)
-            sum += 16.0 * double(a_rows->nodes()[std::size_t(b.row)].size()) * double(a_columns->nodes()[std::size_t(b.column)].size());
+            sum += double(sizeof(T)) * double(a_rows->nodes()[std::size_t(b.row)].size())
+                   * double(a_columns->nodes()[std::size_t(b.column)].size());
     return sum;
 }
 
-double HMatrix::lowRankSpan() const
+template <typename T>
+double HMatrixOf<T>::lowRankSpan() const
 {
     double sum = 0;
     for (const Block& b : a_blocks)
@@ -354,7 +365,8 @@ double HMatrix::lowRankSpan() const
     return sum;
 }
 
-int HMatrix::largestRank() const
+template <typename T>
+int HMatrixOf<T>::largestRank() const
 {
     int k = 0;
     for (const Block& b : a_blocks)
@@ -362,7 +374,8 @@ int HMatrix::largestRank() const
     return k;
 }
 
-double HMatrix::meanRank() const
+template <typename T>
+double HMatrixOf<T>::meanRank() const
 {
     double ranked = 0, spanned = 0;
     for (const Block& b : a_blocks)
@@ -374,21 +387,28 @@ double HMatrix::meanRank() const
     return spanned > 0 ? ranked / spanned : 0;
 }
 
-int HMatrix::lowRankBlocks() const
+template <typename T>
+int HMatrixOf<T>::lowRankBlocks() const
 {
     int count = 0;
     for (const Block& b : a_blocks) count += b.lowRank ? 1 : 0;
     return count;
 }
 
-bool crossApproximation(const HMatrix::Entry& entry, const int* rows, int m, const int* columns, int n, double tolerance,
-                        int most, Eigen::MatrixXcd* u, Eigen::MatrixXcd* v)
+namespace {
+
+template <typename T>
+bool crossApproximationOf(const std::function<T(int, int)>& entry, const int* rows, int m, const int* columns, int n,
+                          double tolerance, int most, Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>* u,
+                          Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>* v)
 {
-    std::vector<VectorC> us, vs;
+    using Vector = Eigen::Matrix<T, Eigen::Dynamic, 1>;
+    using Matrix = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>;
+    std::vector<Vector> us, vs;
     std::vector<char> used(std::size_t(m), 0);
     double held = 0;   // the Frobenius norm squared of the sum so far
     int row = m / 2, misses = 0, slight = 0;
-    VectorC r(n), c(m);
+    Vector r(n), c(m);
     while (true) {
         // The row's residual: what the sum so far leaves of it.
         for (int j = 0; j < n; ++j) r[j] = entry(rows[row], columns[j]);
@@ -425,7 +445,7 @@ bool crossApproximation(const HMatrix::Entry& entry, const int* rows, int m, con
             continue;
         }
         misses = 0;
-        const VectorC vk = r / r[pivot];
+        const Vector vk = r / r[pivot];
         for (int i = 0; i < m; ++i) c[i] = entry(rows[i], columns[pivot]);
         for (std::size_t l = 0; l < us.size(); ++l) c -= vs[l][pivot] * us[l];
         double cross = 0;
@@ -457,7 +477,7 @@ bool crossApproximation(const HMatrix::Entry& entry, const int* rows, int m, con
         row = next;
     }
     const int k = int(us.size());
-    Eigen::MatrixXcd a(m, k), b(n, k);
+    Matrix a(m, k), b(n, k);
     for (int l = 0; l < k; ++l) {
         a.col(l) = us[std::size_t(l)];
         b.col(l) = vs[std::size_t(l)];
@@ -470,11 +490,11 @@ bool crossApproximation(const HMatrix::Entry& entry, const int* rows, int m, con
     // Recompressed: A = Qa Ra, B = Qb Rb, so the block is Qa (Ra Rb^T) Qb^T,
     // and the small core's singular values say how many of its outer
     // products the tolerance wants.
-    const Eigen::HouseholderQR<Eigen::MatrixXcd> qa(a), qb(b);
+    const Eigen::HouseholderQR<Matrix> qa(a), qb(b);
     const int ka = std::min(m, k), kb = std::min(n, k);
-    const Eigen::MatrixXcd ra = qa.matrixQR().topRows(ka).triangularView<Eigen::Upper>();
-    const Eigen::MatrixXcd rb = qb.matrixQR().topRows(kb).triangularView<Eigen::Upper>();
-    const Eigen::JacobiSVD<Eigen::MatrixXcd> svd(ra * rb.transpose(), Eigen::ComputeThinU | Eigen::ComputeThinV);
+    const Matrix ra = qa.matrixQR().topRows(ka).template triangularView<Eigen::Upper>();
+    const Matrix rb = qb.matrixQR().topRows(kb).template triangularView<Eigen::Upper>();
+    const Eigen::JacobiSVD<Matrix> svd(ra * rb.transpose(), Eigen::ComputeThinU | Eigen::ComputeThinV);
     const Eigen::VectorXd& s = svd.singularValues();
     const double total = s.squaredNorm();
     double tail = 0;
@@ -483,12 +503,31 @@ bool crossApproximation(const HMatrix::Entry& entry, const int* rows, int m, con
         tail += s[keep - 1] * s[keep - 1];
         --keep;
     }
-    const Eigen::MatrixXcd thinA = qa.householderQ() * Eigen::MatrixXcd::Identity(m, ka);
-    const Eigen::MatrixXcd thinB = qb.householderQ() * Eigen::MatrixXcd::Identity(n, kb);
-    *u = thinA * (svd.matrixU().leftCols(keep) * s.head(keep).cast<Complex>().asDiagonal());
+    const Matrix thinA = qa.householderQ() * Matrix::Identity(m, ka);
+    const Matrix thinB = qb.householderQ() * Matrix::Identity(n, kb);
+    *u = thinA * (svd.matrixU().leftCols(keep) * s.head(keep).template cast<T>().asDiagonal());
     *v = thinB * svd.matrixV().leftCols(keep).conjugate();
     return true;
 }
+
+} // namespace
+
+bool crossApproximation(const HMatrix::Entry& entry, const int* rows, int m, const int* columns, int n, double tolerance,
+                        int most, Eigen::MatrixXcd* u, Eigen::MatrixXcd* v)
+{
+    return crossApproximationOf<Complex>(entry, rows, m, columns, n, tolerance, most, u, v);
+}
+
+bool crossApproximation(const HMatrixReal::Entry& entry, const int* rows, int m, const int* columns, int n, double tolerance,
+                        int most, Eigen::MatrixXd* u, Eigen::MatrixXd* v)
+{
+    return crossApproximationOf<double>(entry, rows, m, columns, n, tolerance, most, u, v);
+}
+
+// (After the members' definitions: an explicit instantiation makes only
+//  what is defined before it.)
+template class HMatrixOf<Complex>;
+template class HMatrixOf<double>;
 
 Gmres gmres(const Operator& apply, const Operator& precondition, const VectorC& b, VectorC& x, double tolerance,
             int restart, int most, const std::atomic_bool* stop, const std::function<void(int, double)>& progress)

@@ -463,6 +463,17 @@ private slots:
             const QRegularExpressionMatch at = QRegularExpression(QStringLiteral("GMRES at most (\\d+) iteration")).match(compressed.lines.join(' '));
             QVERIFY2(at.hasMatch() && at.captured(1).toInt() <= 20, qPrintable(compressed.lines.join(" | ")));
         }
+        // (P held real, as it is: under half the dense matrix's 8 n^2 bytes
+        //  on this mesh, where held complex it took as much as that; and the
+        //  dense size said a real matrix's.)
+        {
+            const QRegularExpressionMatch at =
+                QRegularExpression(QStringLiteral("P held in ([0-9.]+) MB where dense it would take ([0-9.]+) MB")).match(compressed.lines.join(' '));
+            QVERIFY2(at.hasMatch(), qPrintable(compressed.lines.join(" | ")));
+            const double held = at.captured(1).toDouble(), denseMb = at.captured(2).toDouble();
+            const double real = 8.0 * double(mesh.cells.size()) * double(mesh.cells.size()) / (1024 * 1024);
+            QVERIFY2(std::abs(denseMb / real - 1) < 0.01 && held < 0.6 * denseMb, qPrintable(compressed.lines.join(" | ")));
+        }
         // (Its near field past a cap of pairs: held within a side - 18,810
         //  pairs of the 34,203, GMRES 17 iterations -, and past even half a
         //  side the diagonal alone - 32 -, said, and the answer the same.)
