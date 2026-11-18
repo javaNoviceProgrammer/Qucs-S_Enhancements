@@ -308,13 +308,18 @@ qucs_add_test(test_rf25_fullwave)
 # quarters of its 900 times 3: its functions in two parts since, each its
 # own limit and the two at once, its init() skipping the other part's -
 # some 550 and 600 s here; 293 and 403 since the stack's tables are kept
-# between solves, the same day.)
+# between solves, the same day. Three parts since 18 November: the first had
+# grown to 2,686 s of its 2,700 on CI's runner, 2,640 processor-seconds
+# sanitized here against the second's 22 - its heavy functions Release's -,
+# and the three are some 940, 870 and 860; see the test's init().)
 set_tests_properties(test_rf25_fullwave PROPERTIES TIMEOUT 900)
 set_property(TEST test_rf25_fullwave APPEND PROPERTY ENVIRONMENT "QUCS_TEST_PART=1")
-add_test(NAME test_rf25_fullwave_2 COMMAND test_rf25_fullwave)
-set_tests_properties(test_rf25_fullwave_2 PROPERTIES
-  ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;QUCS_CLAUDE=/nonexistent/claude;QUCS_GH=/nonexistent/gh;QUCS_TEST_PART=2"
-  TIMEOUT 900)
+foreach(_qucs_part 2 3)
+  add_test(NAME test_rf25_fullwave_${_qucs_part} COMMAND test_rf25_fullwave)
+  set_tests_properties(test_rf25_fullwave_${_qucs_part} PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;QUCS_CLAUDE=/nonexistent/claude;QUCS_GH=/nonexistent/gh;QUCS_TEST_PART=${_qucs_part}"
+    TIMEOUT 900)
+endforeach()
 qucs_add_test(test_rf25_returns)
 qucs_add_test(test_rf25_hfss)
 qucs_add_test(test_rf25_export)
@@ -620,8 +625,8 @@ if(APPLE)
   # by Eigen's LU, on one thread: the eigenmode expansion's cuts. Its threads
   # function went past QtTest's 300 s there on v27.0.9's tag run, split
   # since, its heaviest half 98 s by Eigen's LU on an M2 Ultra. The same
-  # 900 s as the tests above. test_rf25_fullwave_2's thick comb, given it
-  # too, swapped for 800 s and more on the runner: left out where Eigen's LU
+  # 900 s as the tests above. test_rf25_fullwave's thick comb (its second
+  # part then, its third since 18 November), given it too, swapped for 800 s and more on the runner: left out where Eigen's LU
   # is, its 300 s again.)
   set_property(TEST test_fem3_eme APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_memory_ms}")
 endif()
