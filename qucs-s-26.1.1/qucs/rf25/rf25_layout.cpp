@@ -155,26 +155,34 @@ QList<Conductor> asSolid(const QList<Conductor>& conductors)
         // is repeated until within a per cent or it stops helping - so that a
         // ring of vias stays a ring over its metals and a row a row, where
         // scaled about its centroid a ring fell inside its own hole and a row
-        // lost its ends (the review of 31dbfeb6).
+        // lost its ends (the review of 31dbfeb6). One piece always.
         const double area = areaOf(c.outline), wanted = area * c.share;
         QList<QPolygonF> one{c.outline};
         double after = area;
-        for (int step = 0; step < 8 && after > wanted * 1.01; ++step) {
+        for (int step = 0; step < 16 && after > wanted * 1.01; ++step) {
             double around = 0;
             for (const QPolygonF& s : std::as_const(one)) around += perimeterOf(s);
             if (!(around > 0)) break;
-            const QList<QPolygonF> smaller = offsetOf(one, -(after - wanted) / around);
+            // (Never past a step that parts it: two pads' arrays joined by a
+            //  row along their trace lost the row and a pad, and the export
+            //  its connection - the review of 62c7f001. A step that would is
+            //  halved, as far as it keeps the shape whole; kept whole, its
+            //  metal is then more than the vias', which the exports say.)
+            double by = (after - wanted) / around;
+            QList<QPolygonF> smaller;
             double shrunk = 0;
-            for (const QPolygonF& s : smaller) shrunk += areaOf(s);
+            for (int half = 0; half < 6; ++half, by /= 2) {
+                smaller = offsetOf(one, -by);
+                shrunk = 0;
+                for (const QPolygonF& s : std::as_const(smaller)) shrunk += areaOf(s);
+                if (!smaller.isEmpty() && smaller.size() == one.size()) break;
+                smaller.clear();
+            }
             if (smaller.isEmpty() || shrunk < wanted * 0.98 || shrunk >= after) break;
             one = smaller;
             after = shrunk;
         }
-        // (One conductor for one: the largest piece, where a step parted it.)
-        int best = 0;
-        for (int k = 1; k < one.size(); ++k)
-            if (areaOf(one.at(k)) > areaOf(one.at(best))) best = k;
-        c.outline = one.at(best);
+        c.outline = one.first();
         c.share = 1;
     }
     return out;

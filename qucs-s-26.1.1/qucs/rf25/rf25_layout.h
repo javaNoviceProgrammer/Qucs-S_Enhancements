@@ -139,7 +139,8 @@ struct Conductor {
 
 /// \a conductors with each merged via farm's footprint (Conductor::share
 /// below one) its metal: the outline thinned in place to the vias' own area
-/// (within a per cent), one conductor for one, the share one - for an export
+/// (within a per cent) - or as near as it goes without parting, so that a
+/// footprint stays one piece -, one conductor for one, the share one - for an export
 /// to a solver that takes a shape as solid metal (Palace, HFSS), which then
 /// reads the thinned block's resistance, not the vias' spread over the
 /// footprint: unmerged vias are its like.

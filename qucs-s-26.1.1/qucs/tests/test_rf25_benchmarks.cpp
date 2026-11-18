@@ -177,7 +177,10 @@ private slots:
     // P20). Each within 10 % of the measured, the paper's own expressions'
     // spread, and within 1.5 % of its own answer today, so that a drift is
     // caught (today: L02 +0.7 %, L05 -0.7, L16 -1.2, L55 +1.0, L56 -0.7, L57
-    // +8.3, L58 +3.9, L59 -1.6, L60 +0.9, L61 +2.1 against the measured).
+    // +8.3, L58 +3.9, L59 -1.6, L60 +0.9, L61 +2.1 against the measured). (L57's
+    // +8.3 % is the measurement's: ASITIC reads it 7.7 % over too. The
+    // measured values here, not ASITIC's - L61 7.30 measured, where
+    // test_rf25_inductance holds ASITIC's 7.44.)
     void mohansSpiralsAreTheirMeasuredInductance_data()
     {
         QTest::addColumn<int>("sides");
