@@ -23,6 +23,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -696,12 +697,12 @@ bool RF25Doc::drawShapes(const QJsonArray& edits, QStringList* done, QString* er
         for (const QJsonValue& row : std::as_const(rows)) {
             const QJsonArray cells = row.toArray();
             if (cells.size() < 3) continue;
-            const QString to = cells.at(2).toString().trimmed();
+            const QString to = tableCell(cells.at(2)).trimmed();
             if (to == layer.name || to == layer.tag)
-                return QStringLiteral("%1/%2").arg(cells.at(0).toString().trimmed(), cells.at(1).toString().trimmed());
+                return QStringLiteral("%1/%2").arg(tableCell(cells.at(0)).trimmed(), tableCell(cells.at(1)).trimmed());
         }
         int next = 1;
-        for (const QJsonValue& row : std::as_const(rows)) next = std::max(next, row.toArray().at(0).toString().toInt() + 1);
+        for (const QJsonValue& row : std::as_const(rows)) next = std::max(next, tableCell(row.toArray().at(0)).toInt() + 1);
         if (a_layout && !begun)
             for (const auto& l : a_layout->layers) next = std::max(next, int(l.key.layer) + 1);
         rows.append(QJsonArray{QString::number(next), QStringLiteral("0"), layer.name});
@@ -714,9 +715,9 @@ bool RF25Doc::drawShapes(const QJsonArray& edits, QStringList* done, QString* er
         for (const QJsonValue& row : std::as_const(rows)) {
             const QJsonArray cells = row.toArray();
             if (cells.size() < 3) continue;
-            const QString to = cells.at(2).toString().trimmed();
+            const QString to = tableCell(cells.at(2)).trimmed();
             if (to == layer.name || to == layer.tag)
-                keys.insert(QStringLiteral("%1/%2").arg(cells.at(0).toString().trimmed(), cells.at(1).toString().trimmed()));
+                keys.insert(QStringLiteral("%1/%2").arg(tableCell(cells.at(0)).trimmed(), tableCell(cells.at(1)).trimmed()));
         }
         return keys;
     };
@@ -730,8 +731,21 @@ bool RF25Doc::drawShapes(const QJsonArray& edits, QStringList* done, QString* er
                 }
         if (name.isEmpty()) name = drawLayer();
         const Layer* l = stack.named(name);
+        // (Or the file's layer/datatype - "1/0" - where the map sends it to
+        //  one: refused as "no layer of the stack".)
+        static const QRegularExpression fileLayer(QStringLiteral("^\\s*(\\d+)\\s*/\\s*(\\d+)\\s*$"));
+        if (const QRegularExpressionMatch key = fileLayer.match(name); l == nullptr && key.hasMatch())
+            for (const QJsonValue& row : std::as_const(rows)) {
+                const QJsonArray cells = row.toArray();
+                if (cells.size() >= 3 && tableCell(cells.at(0)).trimmed().toInt() == key.captured(1).toInt()
+                    && tableCell(cells.at(1)).trimmed().toInt() == key.captured(2).toInt()) {
+                    l = stack.named(tableCell(cells.at(2)).trimmed());
+                    break;
+                }
+            }
         if (l == nullptr) {
-            *why = name.isEmpty() ? tr("the stack has no metal to draw on") : tr("%1 is no layer of the stack").arg(name);
+            *why = name.isEmpty() ? tr("the stack has no metal to draw on")
+                                  : tr("%1 is no layer of the stack, nor a layer/datatype the layer map sends to one").arg(name);
             return nullptr;
         }
         if (via && l->kind != Layer::Via) {
@@ -925,8 +939,8 @@ bool RF25Doc::deleteSelectedShape(QString* why)
         for (const QJsonValue& row : map->props.value(QLatin1String("rows")).toArray()) {
             const QJsonArray cells = row.toArray();
             if (cells.size() >= 3
-                && QStringLiteral("%1/%2").arg(cells.at(0).toString().trimmed(), cells.at(1).toString().trimmed()) == key)
-                to = cells.at(2).toString().trimmed();
+                && QStringLiteral("%1/%2").arg(tableCell(cells.at(0)).trimmed(), tableCell(cells.at(1)).trimmed()) == key)
+                to = tableCell(cells.at(2)).trimmed();
         }
     if (to.isEmpty() || a_model.stack().named(to) == nullptr)
         return fail(tr("That shape is on %1, which the layer map sends to no layer of the stack: it is deleted in the layout's own tab.").arg(key));

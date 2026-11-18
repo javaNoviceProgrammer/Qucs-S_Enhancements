@@ -967,6 +967,29 @@ private slots:
         }
     }
 
+    // A compressed solve that does not converge at a low frequency says what
+    // can be done: the loop inductance
+    // for L and R at direct current, the charges' term so far over the
+    // currents' - and "solve it dense" only where a dense solve is not past
+    // its limit, where it was said of 11,800 runs that dense then refused.
+    void aSolveThatDoesNotConvergeSaysWhatCanBeDone()
+    {
+        const rf::Stack st = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
+        const QList<rf::Conductor> cs{strip(0, 0, 2000, 100)};
+        const rf::Mesh mesh = meshed(cs, 4, 100e-6, 4);
+        for (const bool small : {false, true}) {
+            rf::FullWaveControl control;
+            control.matrix = rf::FullWaveControl::Matrix::Compressed;
+            control.mostIterations = 2;
+            if (small) control.mostUnknowns = 10;
+            const rf::FullWave w = rf::fullWaveOf(mesh, cs, st, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))}, {1.0}, 1e-6, &control);
+            const QString said = w.problems.join(QLatin1Char(' '));
+            QVERIFY2(said.contains(QStringLiteral("did not converge")) && said.contains(QStringLiteral("rf25_inductance gives L and R at direct current")),
+                     qPrintable(said));
+            QVERIFY2(said.contains(QStringLiteral("solve it dense")) != small, qPrintable(said));
+        }
+    }
+
     // A layer that ends, its correction held as its factors - as past 5000
     // cells, a calibration's long strips over a mesa - is the correction held
     // whole: compressed and dense alike, the same S. Held as its factors, its

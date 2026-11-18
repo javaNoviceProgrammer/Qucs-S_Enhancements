@@ -1314,7 +1314,17 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
     out.insert(QStringLiteral("cells"), ind->nodes);
     QJsonArray said;
     for (const QString& line : model->preparedLines()) said.append(line);
-    for (const QString& line : ind->lines) said.append(line);
+    // (Its Q line the frequency asked for's, as "Q" is: it said Q at the
+    //  study's top beside a "Q" of the one asked for - 6.91e+03 at 0.1 GHz
+    //  beside 690.7 at 10 MHz, a smaller point of a review.)
+    for (const QString& line : ind->lines) {
+        if (asked > 0 && ind->rDc > 0 && line.startsWith(QLatin1String("Q is ")))
+            said.append(tr("Q is %1 at %2 GHz, of that inductance over the resistance at direct current.")
+                            .arg(2 * M_PI * asked * ind->l / ind->rDc, 0, 'g', 3)
+                            .arg(asked / 1e9, 0, 'g', 3));
+        else
+            said.append(line);
+    }
     out.insert(QStringLiteral("what it did"), said);
     out.insert(QStringLiteral("note"),
                tr("Ruehli's partial inductances over the runs of current the mesh's shared edges give, with the "

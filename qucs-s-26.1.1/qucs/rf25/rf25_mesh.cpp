@@ -107,6 +107,10 @@ constexpr double kPlateGap = 0.1;
 /// on one cut (piecesOf()): no part is thinner than that.
 constexpr double kCornersMerged = 0.05;
 
+/// How thick against its narrowest conductor a metal is before the full
+/// wave's inductance is said to read high at a low frequency.
+constexpr double kThickForInductance = 0.2;
+
 /// Lines of two pieces that meet nearer than this share of the finest space
 /// of any piece's own grid are one line (shareLines(), meshOf()).
 constexpr double kMergeShare = 0.25;
@@ -1850,6 +1854,42 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             if (!metal->twoSheets && !metal->automatic) wallsWarned << it.key();
             mesh.warnings << w;
             mesh.lines << w;
+        }
+    }
+    // A metal thick against its own width: the full wave's inductance at a
+    // low frequency reads high, and the more the thicker (P51: a square loop of wire 0.5 by 0.5 mm, 24.2 nH,
+    // read 33.4 as a sheet and 24.5 to 26.7 as its two faces, the more the
+    // finer its cells across). A sheet's field is of no thickness, and its
+    // surface impedance adds the inside of a slab on top; two faces' surface
+    // impedance holds the inside of a wide slab, twice what a wire this
+    // narrow holds. The loop inductance (rf25_inductance) takes each run as
+    // the bar it is.
+    {
+        QMap<QString, double> narrowest;
+        for (const Conductor& c : conductors) {
+            const double around = perimeterOf(c.outline), width = around > 0 ? 2 * areaOf(c.outline) / around : 0;
+            if (width > 0 && (!narrowest.contains(c.layer) || width < narrowest.value(c.layer))) narrowest.insert(c.layer, width);
+        }
+        for (auto it = narrowest.constBegin(); it != narrowest.constEnd(); ++it) {
+            const Layer* metal = stack.named(it.key());
+            if (metal == nullptr || metal->kind != Layer::Metal || !(metal->thickness > 0)) continue;
+            const double t = metal->thickness / perUnit, w = it.value();
+            if (t < kThickForInductance * w) continue;
+            const QString said = metal->twoSheets || metal->automatic
+                                     ? tr("%1 is %2 µm thick on conductors as narrow as %3 µm: solved as its two faces, their "
+                                          "surface impedance holds the inside of a wide slab, more than a conductor this narrow "
+                                          "does, so the full wave's inductance at a low frequency reads high - some 5 to 10 % on "
+                                          "a wire as thick as it is wide, the more the finer its cells across. rf25_inductance "
+                                          "takes it as the bar it is.")
+                                           .arg(it.key()).arg(t, 0, 'g', 3).arg(w, 0, 'g', 3)
+                                     : tr("%1 is %2 µm thick on conductors as narrow as %3 µm: as a sheet its field is of no "
+                                          "thickness, and its surface impedance adds the inside of a slab on top, so the full "
+                                          "wave's inductance at a low frequency reads high - some 40 % on a wire as thick as it "
+                                          "is wide, by about (mu0/2pi) ln((w + t)/w) a metre and the inside's mu0 t/12 a square. "
+                                          "Solved as faces (the metal's Solved as) it is nearer; rf25_inductance takes it as the bar it is.")
+                                           .arg(it.key()).arg(t, 0, 'g', 3).arg(w, 0, 'g', 3);
+            mesh.warnings << said;
+            mesh.lines << said;
         }
     }
     // A sheet thick against how high it stands over the ground: its walls and

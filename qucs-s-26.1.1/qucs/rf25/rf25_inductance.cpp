@@ -267,10 +267,17 @@ double Filament::resistance() const
     return length() / (sigma * area);
 }
 
-double selfDistance(double width)
+double selfDistance(double width, double thickness)
 {
     if (!(width > 0)) return 0;
-    return width * std::exp(-1.5);
+    if (!(thickness > 1e-9 * width)) return width * std::exp(-1.5);
+    // (Grover's, of a rectangle w by t: ln g = ln sqrt(w^2 + t^2)
+    //  - (w^2/12t^2) ln(1 + t^2/w^2) - (t^2/12w^2) ln(1 + w^2/t^2)
+    //  + (2w/3t) atan(t/w) + (2t/3w) atan(w/t) - 25/12.)
+    const double w = width, t = thickness, w2 = w * w, t2 = t * t;
+    const double lng = 0.5 * std::log(w2 + t2) - w2 / (12 * t2) * std::log1p(t2 / w2) - t2 / (12 * w2) * std::log1p(w2 / t2)
+                       + 2 * w / (3 * t) * std::atan(t / w) + 2 * t / (3 * w) * std::atan(w / t) - 25.0 / 12;
+    return std::exp(lng);
 }
 
 double partialInductance(const Filament& a, const Filament& b)
@@ -307,17 +314,19 @@ double partialInductance(const Filament& a, const Filament& b)
 
     const bool same = &a == &b;
     const double widest = std::max(breadthOf(a), breadthOf(b));
+    // (Bars: their current through their thickness too - Filament::bar.)
+    const double tallest = std::max(a.bar, b.bar);
     // The same run, or two runs on the same axis - consecutive pieces of
     // one strip - have no distance between their axes, so the distance
     // that stands in for it is the cross-section's own geometric mean.
     // It is what makes a strip cut into pieces add back up to the whole.
     if (same || apart <= 1e-9 * std::max(widest, la)) {
-        const double rho = selfDistance(widest);
+        const double rho = selfDistance(widest, tallest);
         if (!(rho > 0)) return 0;
         return sign * kMu0 / (4 * M_PI) * parallelPair(la, lb, d, rho);
     }
     // Far enough apart that the widths do not matter: between the axes.
-    if (apart > kNearWidths * widest || !(breadthOf(a) > 0) || !(breadthOf(b) > 0))
+    if (apart > kNearWidths * std::max(widest, tallest) || !(breadthOf(a) > 0) || !(breadthOf(b) > 0))
         return sign * kMu0 / (4 * M_PI) * parallelPair(la, lb, d, apart);
     // Near, and one of them standing upright - a wall's strip beside its
     // face's, or another wall's -: the double integral averaged over both
@@ -349,6 +358,27 @@ double partialInductance(const Filament& a, const Filament& b)
         return sign * kMu0 / (4 * M_PI) * (smooth - K * meanLogBetween(sa, sb));
     }
 
+    // Near, and bars: over both cross-sections, their widths and their
+    // thicknesses - each bar up from its run's height -, four points each
+    // way. Across the widths alone, a wire cut into cells taller than they
+    // are wide had each cell's neighbours as strips side by side, a tenth of
+    // their height apart.
+    if (tallest > 0) {
+        const Vector wa = widthOf(a), wb = widthOf(b);
+        double sum = 0;
+        for (int i = 0; i < 4; ++i)
+            for (int j = 0; j < 4; ++j) {
+                const Vector across = offset + wa * (kGaussAt[i] * a.width) - wb * (kGaussAt[j] * b.width);
+                const double inPlane = std::hypot(across.x, across.y);
+                for (int k = 0; k < 4; ++k)
+                    for (int m = 0; m < 4; ++m) {
+                        const double dz = across.z + (kGaussAt[m] + 0.5) * b.bar - (kGaussAt[k] + 0.5) * a.bar;
+                        const double rho = std::max(std::hypot(inPlane, dz), 1e-12 * std::max(widest, tallest));
+                        sum += kGaussWeight[i] * kGaussWeight[j] * kGaussWeight[k] * kGaussWeight[m] * parallelPair(la, lb, d, rho);
+                    }
+            }
+        return sign * kMu0 / (4 * M_PI) * sum;
+    }
     // Near: the distance averaged across both widths, which is where a
     // neighbour's own breadth is most of the answer.
     const Vector wa = widthOf(a), wb = widthOf(b);
@@ -821,9 +851,14 @@ bool compressedL(LoopL& l, const QList<Filament>& runs, int threads, const std::
         } else {
             // A run covers the halves of its two cells it joins: from one
             // centre to the other, as wide as the edge between them.
-            const double nx = -y * f.width / 2, ny = x * f.width / 2;
-            box = Box::of(f.from.x() - nx, f.from.y() - ny, f.z0, f.from.x() + nx, f.from.y() + ny, f.z0)
-                      .united(Box::of(f.to.x() - nx, f.to.y() - ny, f.z0, f.to.x() + nx, f.to.y() + ny, f.z0));
+            // A bar's its thickness up too (Filament::bar): what is near it
+            // and what is far is judged by its cross-section, which a wire
+            // cut into cells taller than they are wide is mostly - judged
+            // by their widths alone, its runs' clusters were "far" a fifth
+            // of a bar's height apart, and GMRES stood still.
+            const double nx = -y * f.width / 2, ny = x * f.width / 2, top = f.z0 + f.bar;
+            box = Box::of(f.from.x() - nx, f.from.y() - ny, f.z0, f.from.x() + nx, f.from.y() + ny, top)
+                      .united(Box::of(f.to.x() - nx, f.to.y() - ny, f.z0, f.to.x() + nx, f.to.y() + ny, top));
         }
         boxes << box;
         if (std::abs(x) > 1e-9) {
@@ -844,8 +879,23 @@ bool compressedL(LoopL& l, const QList<Filament>& runs, int threads, const std::
     // million pairs, and the triplets and matrix made of them took the
     // machine past 60 GB.
     bool over = false;
+    // (A bar's near field its cross-section's, not its width's: nearPairs()
+    //  measures in the plane, so its box grown there by its thickness. Taken
+    //  by their widths, a wire's cells taller than they are wide - their own
+    //  geometric mean distance nearly their neighbours' - left the near
+    //  field's LU too little of L to precondition with, and GMRES stood at a
+    //  residual of 0.8.)
+    QList<Box> reach = boxes;
+    for (int a = 0; a < runs.size(); ++a) {
+        const double grow = runs.at(a).bar / 2;
+        if (!(grow > 0)) continue;
+        for (int k = 0; k < 2; ++k) {
+            reach[a].lo[k] -= grow;
+            reach[a].hi[k] += grow;
+        }
+    }
     const QList<QPair<int, int>> near =
-        nearPairs(boxes, nullptr, kLoopNear, nearBytes > 0 ? qint64(nearBytes / kLoopBytesPerNearPair) : 0, &over);
+        nearPairs(reach, nullptr, kLoopNear, nearBytes > 0 ? qint64(nearBytes / kLoopBytesPerNearPair) : 0, &over);
     if (over) {
         if (nearOver != nullptr) *nearOver = true;
         return false;
@@ -912,6 +962,13 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     QList<QPair<int, int>> ends;
     int clashes = 0;
     out.runs = runsOf(mesh, conductors, stack, micrometre, &ends, true, &clashes);
+    // (Each run in the plane a bar, its metal's thickness through: its
+    // current even across its cross-section, as at the low frequency this is
+    // solved for - Filament::bar. Its metal "Solved as" its two faces or a
+    // sheet is the full wave's, whose field of the thickness its faces and
+    // surface impedance hold.)
+    for (Filament& f : out.runs)
+        if (f.z0 == f.z1 && !(f.rise > 0) && f.thickness > 0) f.bar = f.thickness;
     // (Cells too thin to tell their edges apart: a run lost at each, and the
     //  path broken where a column of them crossed it - A review, a spiral's loop "solved" at 0.015 Ohm of its 8.7.)
     const QString clashSaid = clashes > 0 ? tr(" %1 edge(s) between cells under a nanometre across could not be told "

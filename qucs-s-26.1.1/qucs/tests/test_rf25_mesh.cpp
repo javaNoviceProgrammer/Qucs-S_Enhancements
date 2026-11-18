@@ -285,6 +285,31 @@ private slots:
     }
 
     // The settings: what the node says, and what it cannot say.
+    // A metal thick against its own width says the full wave's inductance
+    // at a low frequency reads high - as a sheet, and as its two faces - and
+    // that the loop inductance takes it as the bar it is (a square wire as thick as it is wide, 38 % high as a
+    // sheet). A metal thin against its width says nothing of it.
+    void aMetalThickAgainstItsWidthSaysItsInductanceReadsHigh()
+    {
+        rf::Model m = stacked();
+        set(*m.stackNode().child(QStringLiteral("rf_metal")), "thickness", QStringLiteral("5[um]"));
+        rf::Stack stack = m.stack();
+        rf::MeshSettings how;
+        how.cellsAcross = 3;
+        const QList<rf::Conductor> wire{on(QStringLiteral("M1"), 0, 0, 500, 10)};
+        const rf::Mesh sheet = rf::meshOf(wire, how, stack, 1e9);
+        QVERIFY2(says(sheet.warnings, "as a sheet its field is of no thickness") && says(sheet.warnings, "rf25_inductance takes it as the bar it is"),
+                 qPrintable(sheet.warnings.join(" | ")));
+        for (rf::Layer& l : stack.layers)
+            if (l.name == QLatin1String("M1")) l.twoSheets = true;
+        const rf::Mesh faces = rf::meshOf(wire, how, stack, 1e9);
+        QVERIFY2(says(faces.warnings, "solved as its two faces, their surface impedance holds the inside of a wide slab"),
+                 qPrintable(faces.warnings.join(" | ")));
+        // (Thin against its width: nothing said.)
+        const rf::Mesh wide = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 500, 100)}, how, m.stack(), 1e9);
+        QVERIFY2(!says(wide.warnings, "inductance at a low frequency reads high"), qPrintable(wide.warnings.join(" | ")));
+    }
+
     void theMeshSettingsAreReadAndChecked()
     {
         rf::Model m = stacked();
@@ -768,7 +793,9 @@ private slots:
                 }
             const rf::Mesh mesh = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 40, 1), on(QStringLiteral("M1"), 0, 1 + gapUm, 40, 1)},
                                              how, stack, 100e9);
-            return mesh.warnings.join(QStringLiteral(" | "));
+            // (The gaps' warning alone: a metal thick against its 1 µm width
+            //  says its inductance reads high too, which is another's.)
+            return mesh.warnings.filter(QStringLiteral("beside gaps")).join(QStringLiteral(" | "));
         };
         for (const bool faces : {false, true}) {
             const QString one = warned(1, 1, faces);
