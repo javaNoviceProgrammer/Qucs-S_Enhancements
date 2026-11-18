@@ -112,6 +112,7 @@ QString directSolverName();
 struct SolverUse {
     long long accelerateLu = 0, eigenLu = 0, accelerateCholesky = 0, eigenCholesky = 0, iterative = 0;
     long long mumpsLu = 0, mumpsLdlt = 0, mumpsCholesky = 0, strumpackLu = 0;
+    long long accelerateLdlt = 0;   ///< a real symmetric indefinite one's (SparseRealLdlt)
 };
 SolverUse solverUse();
 /// Conjugate gradients' solves (a LinearSystem's), counted.
@@ -280,6 +281,54 @@ public:
     /// Accelerate's: its analysis (METIS's ordering, the symbolic
     /// factorization) the one kept from the last factorization of the same
     /// pattern - a sweep's wavelengths after its first -, not made again.
+    bool reusedAnalysis() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> a_impl;
+};
+
+/*!
+ * A sparse LDLᵀ of a real symmetric matrix that may be indefinite - a
+ * saddle point's, the 3D magnetostatics' with its gauge's multiplier, which
+ * was factorized as a complex symmetric one before, some four times the
+ * work and twice the memory. By the backend a
+ * Cholesky takes (choleskyBackend()), from its size up (backendFrom()):
+ * Accelerate's LDLᵀ (threshold partial pivoting, 1 x 1 and 2 x 2 pivots;
+ * METIS's ordering; macOS 10.13 and later, not only where its LU is),
+ * MUMPS's LDLᵀ with pivoting (its sym = 2), else a real SparseLu (Eigen's or
+ * STRUMPACK's - Eigen has no sparse LDLᵀ that pivots). The matrix given
+ * whole (its lower triangle read). Each factorization checked by a solve:
+ * a backward error of 1e-6 or more (a singular matrix factorized, a pivot
+ * replaced) a failure.
+ */
+class SparseRealLdlt
+{
+public:
+    using Matrix = Eigen::SparseMatrix<double>;
+    SparseRealLdlt();
+    ~SparseRealLdlt();
+    SparseRealLdlt(const SparseRealLdlt&) = delete;
+    SparseRealLdlt& operator=(const SparseRealLdlt&) = delete;
+
+    void compute(const Matrix& a);
+    Eigen::ComputationInfo info() const;
+    std::string lastErrorMessage() const;
+    Eigen::VectorXd solve(const Eigen::VectorXd& b) const;
+    Eigen::MatrixXd solveMany(const Eigen::MatrixXd& b) const;
+    /// "Accelerate's LDLT", "MUMPS's LDLT", or the LU's ("Eigen's LU",
+    /// "STRUMPACK's LU").
+    QString name() const;
+    /// Which, as factorized last.
+    Backend backend() const;
+    /// As SparseComplexLdlt's: Accelerate's and MUMPS's factors and
+    /// workspace (bytes, 0 another's), and past \a bytes (0: no limit) not
+    /// factorized - info() a failure, lastErrorMessage() what it would take.
+    /// Before compute().
+    void setMemoryLimit(double bytes);
+    double factorBytes() const;
+    /// Accelerate's: its analysis the one kept from the last real LDLᵀ of the
+    /// same pattern (a sweep's points on one mesh), not made again.
     bool reusedAnalysis() const;
 
 private:

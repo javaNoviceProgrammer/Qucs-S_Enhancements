@@ -125,7 +125,7 @@ private:
     // the next solve - a cycle's next pass, a step in time's next step at
     // rest, of a linear model - solved with it, not factorized again (a coil's 1.7 M unknowns factorized twice, 2739
     // s and 717 s, for one solve).
-    std::unique_ptr<SparseComplexLdlt> a_lu;
+    std::unique_ptr<SparseRealLdlt> a_lu;
     Eigen::SparseMatrix<double> a_factored;
 };
 
@@ -785,16 +785,17 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
     std::vector<double> psi(std::size_t(ns.size()), 0.0);
     const int rounds = a_nonlinear ? std::max(2, o.maxIterations) : 1;
     bool converged = !a_nonlinear;
-    // The saddle point is symmetric and indefinite: an LDLᵀ with pivoting
-    // (Accelerate's, of a complex symmetric matrix its imaginary parts
-    // nought) - an LU of a solenoid's 53,705 unknowns took 18.6 s.
+    // The saddle point is real, symmetric and indefinite: a real LDLᵀ with
+    // pivoting (an LU of a solenoid's 53,705 unknowns took 18.6 s; the
+    // complex symmetric LDLᵀ it was factorized by before, its imaginary
+    // parts nought, some four times the work of the real one).
     // (One step of iterative refinement against the matrix: the pivots of a
     // saddle point scaled as it is lose a digit or two.)
     double residual = 0;
     const auto solveWith = [this, &residual](const Eigen::VectorXd& b) -> Eigen::VectorXd {
-        Eigen::VectorXd x = a_lu->solve(b.cast<std::complex<double>>()).real();
+        Eigen::VectorXd x = a_lu->solve(b);
         const Eigen::VectorXd r0 = b - a_factored * x;
-        x += a_lu->solve(r0.cast<std::complex<double>>()).real();
+        x += a_lu->solve(r0);
         const double bn = b.norm();
         residual = bn > 0 ? (b - a_factored * x).norm() / bn : 0;
         return x;
@@ -815,8 +816,8 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
         } else {
             a_lu.reset();
             a_factored = Eigen::SparseMatrix<double>();
-            auto lu = std::make_unique<SparseComplexLdlt>();
-            lu->compute(M.cast<std::complex<double>>());
+            auto lu = std::make_unique<SparseRealLdlt>();
+            lu->compute(M);
             a_s.log << tr("%1: assembled in %2 s, %3 nonzeros; factorized in %4 s")
                            .arg(name)
                            .arg(assembled / 1000.0, 0, 'f', 2)

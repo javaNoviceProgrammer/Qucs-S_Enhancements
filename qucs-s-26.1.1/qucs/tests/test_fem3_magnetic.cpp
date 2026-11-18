@@ -74,15 +74,46 @@ bool slowBuild()
     return false;
 }
 
-/// Whether the saddle point's LDLT is not Accelerate's: Eigen's LU of it
-/// (CI's macOS 15, Linux below MUMPS's size, QUCS_FEM_SOLVER=eigen), or a
-/// sanitized build. There the meshes are coarser: by Eigen's LU the loop
-/// took 140 s and the solenoid 210 s on an M2 Ultra (Accelerate's: 3.6 s),
-/// and CI's macOS runner, some 1.5 times slower, cut the solenoid at 300 s;
-/// sanitized on CI's Linux job uniformInZ alone went past 900 s.
+/// Whether the saddle point's LDLT may not be Accelerate's: off macOS (an
+/// LU of Eigen's below MUMPS's size), QUCS_FEM_SOLVER=eigen, or a sanitized
+/// build. There the meshes are coarser: by Eigen's LU of the complex
+/// matrix the loop took 140 s and the solenoid 210 s on an M2 Ultra
+/// (Accelerate's: 3.6 s), and CI's macOS runner, some 1.5 times slower, cut
+/// the solenoid at 300 s; sanitized on CI's Linux job uniformInZ alone went
+/// past 900 s. (Accelerate's real LDLT is macOS 10.13's: CI's macOS 15
+/// too.)
 bool coarse()
 {
-    return slowBuild() || !acceleratedLu();
+    return slowBuild() || choleskyBackend() != Backend::Accelerate;
+}
+
+/// A saddle point [K Bᵀ; B 0]: K a grid's Laplacian (\a side² unknowns, its
+/// edge held), B a constraint on each of \a constraints pairs of them -
+/// symmetric, indefinite, nonsingular, as the magnetostatics' gauge makes
+/// its system.
+Eigen::SparseMatrix<double> saddlePoint(int side, int constraints)
+{
+    const int n = side * side;
+    std::vector<Eigen::Triplet<double>> t;
+    for (int i = 0; i < side; ++i)
+        for (int j = 0; j < side; ++j) {
+            const int k = i * side + j;
+            t.emplace_back(k, k, 4.0);
+            if (i > 0) t.emplace_back(k, k - side, -1.0);
+            if (i + 1 < side) t.emplace_back(k, k + side, -1.0);
+            if (j > 0) t.emplace_back(k, k - 1, -1.0);
+            if (j + 1 < side) t.emplace_back(k, k + 1, -1.0);
+        }
+    for (int c = 0; c < constraints; ++c) {
+        const int p = (c * 7919) % n, q = (p + 1 + (c * 104729) % (n - 1)) % n;
+        t.emplace_back(n + c, p, 1.0);
+        t.emplace_back(p, n + c, 1.0);
+        t.emplace_back(n + c, q, -0.5);
+        t.emplace_back(q, n + c, -0.5);
+    }
+    Eigen::SparseMatrix<double> m(n + constraints, n + constraints);
+    m.setFromTriplets(t.begin(), t.end());
+    return m;
 }
 
 Model model3d(double hmax)
@@ -651,6 +682,64 @@ private slots:
         QVERIFY2(linesOf(log, mfName, QStringLiteral("factorized in")) == 1, qPrintable(log.join(QLatin1Char('\n'))));
         QVERIFY2(linesOf(log, mfName, QStringLiteral("factors kept")) >= 1, qPrintable(log.join(QLatin1Char('\n'))));
         QVERIFY(global(sv.s(), QStringLiteral("mf.L_1")) > 0);
+    }
+
+    // The real LDLT of a saddle point the complex path's (the complex
+    // symmetric LDLT of the same matrix, its imaginary parts nought, which
+    // the magnetostatics took before) to rounding, by each backend this
+    // build has - Accelerate's from its size (here from 0), MUMPS's, Eigen's
+    // LU; its memory limit kept.
+    void realLdltAgreesWithComplex()
+    {
+        const Eigen::SparseMatrix<double> a = saddlePoint(80, 900);
+        Eigen::VectorXd b(a.rows());
+        for (int k = 0; k < int(b.size()); ++k) b[k] = std::sin(0.37 * k) + 0.25;
+        const QByteArray fromA = qgetenv("QUCS_FEM_ACCELERATE_FROM"), fromM = qgetenv("QUCS_FEM_MUMPS_FROM");
+        qputenv("QUCS_FEM_ACCELERATE_FROM", "0");
+        qputenv("QUCS_FEM_MUMPS_FROM", "0");
+        std::vector<std::pair<DirectSolver, QString>> backends{{DirectSolver::Eigen, QStringLiteral("Eigen's LU")}};
+        if (accelerateInBuild()) backends.emplace_back(DirectSolver::Accelerate, QStringLiteral("Accelerate's LDLT"));
+        if (mumpsInBuild()) backends.emplace_back(DirectSolver::Mumps, QStringLiteral("MUMPS's LDLT"));
+        for (const auto& [solver, name] : backends) {
+            setDirectSolver(solver);
+            SparseRealLdlt real;
+            real.compute(a);
+            QVERIFY2(real.info() == Eigen::Success, qPrintable(name + QStringLiteral(": ") + QString::fromStdString(real.lastErrorMessage())));
+            QCOMPARE(real.name(), name);
+            SparseComplexLdlt complex;
+            complex.compute(a.cast<std::complex<double>>());
+            QVERIFY2(complex.info() == Eigen::Success, qPrintable(QString::fromStdString(complex.lastErrorMessage())));
+            const Eigen::VectorXd x = real.solve(b), y = complex.solve(b.cast<std::complex<double>>()).real();
+            const double gap = (x - y).norm() / y.norm(), residual = (b - a * x).norm() / b.norm();
+            info(QStringLiteral("%1: |x - x_complex| / |x| %2, residual %3").arg(name).arg(gap).arg(residual));
+            QVERIFY2(gap < 1e-10 && residual < 1e-10, qPrintable(QStringLiteral("%1: %2, %3").arg(name).arg(gap).arg(residual)));
+            // (Many right-hand sides at once: each the one's.)
+            Eigen::MatrixXd B(a.rows(), 2);
+            B.col(0) = b;
+            B.col(1) = 2 * b;
+            const Eigen::MatrixXd X = real.solveMany(B);
+            QVERIFY((X.col(0) - x).norm() < 1e-12 * x.norm() && (X.col(1) - 2 * x).norm() < 1e-12 * x.norm());
+            // The memory limit (where the backend says its factors' size).
+            if (solver != DirectSolver::Eigen) {
+                QVERIFY(real.factorBytes() > 0);
+                SparseRealLdlt small;
+                small.setMemoryLimit(1024);
+                small.compute(a);
+                QVERIFY(small.info() != Eigen::Success);
+                QVERIFY2(QString::fromStdString(small.lastErrorMessage()).contains(QStringLiteral("past the limit")), small.lastErrorMessage().c_str());
+            }
+        }
+        setDirectSolver(DirectSolver::Automatic);
+        // (Accelerate's analysis kept for the same pattern.)
+        if (accelerateInBuild()) {
+            SparseRealLdlt again;
+            again.compute(a);
+            QVERIFY(again.reusedAnalysis());
+        }
+        if (fromA.isNull()) qunsetenv("QUCS_FEM_ACCELERATE_FROM");
+        else qputenv("QUCS_FEM_ACCELERATE_FROM", fromA);
+        if (fromM.isNull()) qunsetenv("QUCS_FEM_MUMPS_FROM");
+        else qputenv("QUCS_FEM_MUMPS_FROM", fromM);
     }
 
     // An iron ring round a wire of 50 A, its B-H curve's: H round it I /
