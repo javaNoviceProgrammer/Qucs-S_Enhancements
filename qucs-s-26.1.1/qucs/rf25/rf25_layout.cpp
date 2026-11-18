@@ -104,6 +104,42 @@ double perimeterOf(const QPolygonF& polygon)
     return length;
 }
 
+double breadthAcross(const QList<QPolygonF>& shapes, QPointF middle, QPointF across, double reach)
+{
+    const QPointF p0 = middle - reach * across, p1 = middle + reach * across, line = p1 - p0;
+    const QRectF span = QRectF(p0, p1).normalized().adjusted(-1e-9 * reach, -1e-9 * reach, 1e-9 * reach, 1e-9 * reach);
+    QList<const QPolygonF*> near;
+    QList<double> at{-reach, reach};
+    for (const QPolygonF& outline : shapes) {
+        if (!outline.boundingRect().intersects(span)) continue;
+        near << &outline;
+        for (int i = 0; i < outline.size(); ++i) {
+            const QPointF e0 = outline.at(i), e = outline.at((i + 1) % outline.size()) - e0, q = e0 - p0;
+            const double den = line.x() * e.y() - line.y() * e.x();
+            if (std::abs(den) < 1e-30) continue;   // (along the line: its ends are other sides' crossings)
+            const double u = (q.x() * e.y() - q.y() * e.x()) / den, v = (q.x() * line.y() - q.y() * line.x()) / den;
+            if (v >= 0 && v <= 1 && u > 0 && u < 1) at << (2 * u - 1) * reach;
+        }
+    }
+    std::sort(at.begin(), at.end());
+    const auto on = [&](double s) {
+        const QPointF point = middle + s * across;
+        for (const QPolygonF* outline : std::as_const(near))
+            if (outline->containsPoint(point, Qt::OddEvenFill)) return true;
+        return false;
+    };
+    // (The stretch holding the middle, then its neighbours outward while
+    //  they are on a shape too.)
+    int k = 0;
+    while (k + 2 < at.size() && at.at(k + 1) < 0) ++k;
+    const auto inside = [&](int i) { return at.at(i + 1) > at.at(i) && on(0.5 * (at.at(i) + at.at(i + 1))); };
+    if (!on(0) && !inside(k)) return 0;
+    int lo = k, hi = k;
+    while (lo > 0 && (at.at(lo) == at.at(lo - 1) || inside(lo - 1))) --lo;
+    while (hi + 2 < at.size() && (at.at(hi + 2) == at.at(hi + 1) || inside(hi + 1))) ++hi;
+    return at.at(hi + 1) - at.at(lo);
+}
+
 double conductorWidthOf(const QPolygonF& polygon)
 {
     const double area = areaOf(polygon), half = perimeterOf(polygon) / 4, d = half * half - area;

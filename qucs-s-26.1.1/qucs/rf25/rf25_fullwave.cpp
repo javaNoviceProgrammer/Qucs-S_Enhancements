@@ -4006,8 +4006,9 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     }
     // Each twin's breadth across its conductor at its middle - the stretch
     // of the line across the run that lies on its layer's shapes, joined
-    // where they touch, out to a hundred thicknesses -, and how much of a
-    // wide slab's inside its faces hold there (Context::inside).
+    // where they touch, out to a hundred thicknesses (breadthAcross()) -,
+    // and how much of a wide slab's inside its faces hold there
+    // (Context::inside).
     if (thick.any) {
         c.inside = QList<double>(c.planar, 1.0);
         for (int a = 0; a < c.planar; ++a) {
@@ -4017,45 +4018,10 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             const double length = std::hypot(d.x(), d.y());
             if (!(length > 0)) continue;
             const QPointF normal(-d.y() / length, d.x() / length), middle = (run.from + run.to) / (2 * micrometre);
-            const double reach = 100 * run.thickness / micrometre;
-            const QPointF p0 = middle - reach * normal, p1 = middle + reach * normal;
-            const QRectF line = QRectF(p0, p1).normalized().adjusted(-1e-9, -1e-9, 1e-9, 1e-9);
-            QList<std::pair<double, double>> on;   // (the stretches inside each shape, -reach to reach)
-            for (const int s : shapesOn.value(mesh.cells.at(ends.at(a).first).layer)) {
-                const QPolygonF& outline = conductors.at(s).outline;
-                if (!outline.boundingRect().intersects(line)) continue;
-                QList<double> at;
-                for (int i = 0; i < outline.size(); ++i) {
-                    const QPointF e0 = outline.at(i), e1 = outline.at((i + 1) % outline.size());
-                    const QPointF e = e1 - e0, q = e0 - p0, l = p1 - p0;
-                    const double den = l.x() * e.y() - l.y() * e.x();
-                    if (std::abs(den) < 1e-30) continue;
-                    const double u = (q.x() * e.y() - q.y() * e.x()) / den, v = (q.x() * l.y() - q.y() * l.x()) / den;
-                    if (v >= 0 && v < 1 && u >= 0 && u <= 1) at << (2 * u - 1) * reach;
-                }
-                std::sort(at.begin(), at.end());
-                if (outline.containsPoint(p0, Qt::OddEvenFill)) at.prepend(-reach);
-                if (at.size() % 2) at << reach;
-                for (int i = 0; i + 1 < at.size(); i += 2) on << std::make_pair(at.at(i), at.at(i + 1));
-            }
-            std::sort(on.begin(), on.end());
-            double lo = 0, hi = 0;
-            bool found = false;
-            for (const auto& [s0, s1] : on) {
-                if (!found) {
-                    if (s0 <= 0 && s1 >= 0) {
-                        lo = s0;
-                        hi = s1;
-                        found = true;
-                    }
-                    continue;
-                }
-                if (s0 <= hi + 1e-9 * reach) hi = std::max(hi, s1);
-            }
-            // (Stretches that start before it and reach it, joined below.)
-            for (auto it = on.crbegin(); found && it != on.crend(); ++it)
-                if (it->second >= lo - 1e-9 * reach && it->first < lo) lo = it->first;
-            const double breadth = found ? (hi - lo) * micrometre : run.width;
+            QList<QPolygonF> outlines;
+            for (const int s : shapesOn.value(mesh.cells.at(ends.at(a).first).layer)) outlines << conductors.at(s).outline;
+            const double across = breadthAcross(outlines, middle, normal, 100 * run.thickness / micrometre);
+            const double breadth = across > 0 ? across * micrometre : run.width;
             c.inside[a] = facesInside(std::max(breadth, run.width), run.thickness);
         }
     }

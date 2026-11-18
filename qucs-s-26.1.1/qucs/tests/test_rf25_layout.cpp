@@ -236,6 +236,35 @@ private slots:
         QVERIFY2(done.report.summary().contains(QStringLiteral("2 jog(s) under 0.02 µm")), qPrintable(done.report.summary()));
     }
 
+    // A conductor's breadth across a run (breadthAcross(), which a metal
+    // solved as its faces takes its inside by - P52 of the production-
+    // readiness review): the line's stretches on the shapes,
+    // joined where shapes touch, each judged by its middle - so that a corner
+    // the line runs through, which crossings paired in turn took twice, cuts
+    // nothing, and a gap does.
+    void aConductorsBreadthAcrossARunIsItsShapesJoined()
+    {
+        const QPolygonF bar(QRectF(0, 0, 10, 2)), above(QRectF(0, 2, 10, 3));
+        QCOMPARE(rf::breadthAcross({bar}, QPointF(5, 1), QPointF(0, 1), 100), 2.0);
+        // (Two shapes touching along a side: one conductor, 5 across.)
+        QCOMPARE(rf::breadthAcross({bar, above}, QPointF(5, 1), QPointF(0, 1), 100), 5.0);
+        QCOMPARE(rf::breadthAcross({above, bar}, QPointF(5, 4), QPointF(0, -1), 100), 5.0);
+        // (Along x: the bar alone 10; a triangle its corner on the bar's side
+        //  at (10, 1) joins it, 12; one with its corner 2 past, apart, 10.)
+        QCOMPARE(rf::breadthAcross({bar}, QPointF(5, 1), QPointF(1, 0), 100), 10.0);
+        const QPolygonF touching({QPointF(10, 1), QPointF(12, 0), QPointF(12, 2)});
+        const QPolygonF apart({QPointF(12, 1), QPointF(14, 0), QPointF(14, 2)});
+        QCOMPARE(rf::breadthAcross({bar, touching}, QPointF(5, 1), QPointF(1, 0), 100), 12.0);
+        QCOMPARE(rf::breadthAcross({bar, apart}, QPointF(5, 1), QPointF(1, 0), 100), 10.0);
+        // (A corner of another shape the line only grazes, beside the bar:
+        //  nothing added, the stretch past it judged by its middle.)
+        const QPolygonF grazed({QPointF(10, 1), QPointF(12, 3), QPointF(8, 3)});
+        QCOMPARE(rf::breadthAcross({bar, grazed}, QPointF(5, 1), QPointF(1, 0), 100), 10.0);
+        // (No further than the reach either way; nought off every shape.)
+        QCOMPARE(rf::breadthAcross({bar}, QPointF(5, 1), QPointF(1, 0), 3), 6.0);
+        QCOMPARE(rf::breadthAcross({bar}, QPointF(5, 9), QPointF(1, 0), 100), 0.0);
+    }
+
     void touchingShapesAreMergedIntoOne()
     {
         const rf::Stack stack = stacked().stack();

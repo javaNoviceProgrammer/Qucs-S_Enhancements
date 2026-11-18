@@ -47,6 +47,14 @@ double perimeterOf(const QPolygonF& polygon);
 /// than any rectangle a quarter of its perimeter. (Twice the area over the
 /// perimeter is half a square pad's side.)
 double conductorWidthOf(const QPolygonF& polygon);
+
+/// How far the line through \a middle along \a across (a unit vector) runs
+/// on \a shapes, joined where they touch, either way from \a middle and no
+/// further than \a reach each way (all in the shapes' units): nought where
+/// \a middle is on none. Each stretch between the line's crossings of the
+/// shapes' sides is on them where its middle is on any - so a side the line
+/// runs along, or a corner it grazes, cuts nothing.
+double breadthAcross(const QList<QPolygonF>& shapes, QPointF middle, QPointF across, double reach);
 /// How thick against its narrowest conductor (conductorWidthOf()) a metal is
 /// before its thickness is the inductance's: the full wave's said to read
 /// high at a low frequency, and the loop inductance's runs taken as bars
