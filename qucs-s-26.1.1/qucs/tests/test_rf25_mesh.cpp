@@ -308,6 +308,14 @@ private slots:
         // (Thin against its width: nothing said.)
         const rf::Mesh wide = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 500, 100)}, how, m.stack(), 1e9);
         QVERIFY2(!says(wide.warnings, "inductance at a low frequency reads high"), qPrintable(wide.warnings.join(" | ")));
+        // (Its width the wire's own - 10 µm, where twice its area over its
+        //  perimeter is 9.8 - and a square pad's its side: a pad 40 µm
+        //  across of this 5 µm metal, which twice its area over its
+        //  perimeter took for 20 µm wide, is thin against it - the review
+        //  of 54357932.)
+        QVERIFY2(says(sheet.warnings, "as narrow as 10 "), qPrintable(sheet.warnings.join(" | ")));
+        const rf::Mesh pad = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 40, 40)}, how, m.stack(), 1e9);
+        QVERIFY2(!says(pad.warnings, "inductance at a low frequency reads high"), qPrintable(pad.warnings.join(" | ")));
     }
 
     void theMeshSettingsAreReadAndChecked()
