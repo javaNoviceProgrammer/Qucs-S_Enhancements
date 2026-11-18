@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cmath>
 #include <complex>
+#include <numeric>
 #include <set>
 
 namespace rf = qucs_s::rf25;
@@ -143,6 +144,56 @@ private slots:
         QCOMPARE(int(u.cols()), 0);
         QVERIFY(!rf::crossApproximation(entry, rows.data(), int(rows.size()), columns.data(), int(columns.size()), 1e-12, 3, &u,
                                         &v));
+    }
+
+    // A real kernel - the static one, 1/R, the charge solve's - held real:
+    // its product the complex matrix's of the same kernel to rounding, the
+    // same blocks and ranks in half the memory; its cross approximation the
+    // block's to the tolerance; and a real matrix's dense size half a
+    // complex one's.
+    void aRealHMatrixIsTheComplexOneInHalfTheMemory()
+    {
+        const QList<rf::Box> cells = grid(40, 3e-3, 0) + grid(16, 1e-3, 1e-4, 0.5e-3, 0.5e-3);
+        const rf::ClusterTree tree(cells, 32);
+        rf::HMatrixReal real(&tree, &tree, false, 1.0);
+        rf::HMatrix complex(&tree, &tree, false, 1.0);
+        QVERIFY(real.fill([&cells](int i, int j) { return kernel(cells.at(i), cells.at(j), 0).real(); }, 1e-6, 4));
+        QVERIFY(complex.fill([&cells](int i, int j) { return kernel(cells.at(i), cells.at(j), 0); }, 1e-6, 4));
+        QVERIFY(real.lowRankBlocks() > 0);
+        QCOMPARE(real.lowRankBlocks(), complex.lowRankBlocks());
+        QCOMPARE(real.largestRank(), complex.largestRank());
+        QCOMPARE(real.bytes(), complex.bytes() / 2);
+        QCOMPARE(real.denseBytes(), complex.denseBytes() / 2);
+        QCOMPARE(rf::HMatrixReal(&tree, &tree, true, 1.0).denseBytes(), rf::HMatrix(&tree, &tree, true, 1.0).denseBytes() / 2);
+        const Eigen::VectorXcd xc = randomVector(int(cells.size()), 11);
+        const Eigen::VectorXd x = xc.real();
+        Eigen::VectorXd y = Eigen::VectorXd::Zero(cells.size()), t = y;
+        Eigen::VectorXcd yc = Eigen::VectorXcd::Zero(cells.size()), tc = yc;
+        real.multiply(x, y);
+        real.multiplyTransposed(x, t);
+        complex.multiply(x.cast<Complex>(), yc);
+        complex.multiplyTransposed(x.cast<Complex>(), tc);
+        QVERIFY2((y - yc.real()).norm() < 1e-12 * y.norm() && yc.imag().norm() == 0, qPrintable(QString::number((y - yc.real()).norm() / y.norm())));
+        QVERIFY2((t - tc.real()).norm() < 1e-12 * t.norm(), qPrintable(QString::number((t - tc.real()).norm() / t.norm())));
+        const Eigen::MatrixXd exact = dense(cells, cells, 0).real();
+        const double error = (y - exact * x).norm() / (exact * x).norm();
+        qWarning("%d cells, real: %.0f of %.0f kB, rank %d, error %.3g", int(cells.size()), real.bytes() / 1024, real.denseBytes() / 1024,
+                 real.largestRank(), error);
+        QVERIFY2(error < 1e-5, qPrintable(QString::number(error)));
+        // (Its scale, and += onto what is there.)
+        Eigen::VectorXd twice = y;
+        real.multiply(x, twice, 2.0);
+        QVERIFY((twice - 3 * y).norm() < 1e-12 * y.norm());
+        // (The block between two clusters apart, real.)
+        const QList<rf::Box> a = grid(12, 1e-3, 0), b = grid(12, 1e-3, 1e-4, 2.5e-3, 0.5e-3);
+        std::vector<int> rows(a.size()), columns(b.size());
+        std::iota(rows.begin(), rows.end(), 0);
+        std::iota(columns.begin(), columns.end(), 0);
+        Eigen::MatrixXd u, v;
+        QVERIFY(rf::crossApproximation(rf::HMatrixReal::Entry([&a, &b](int i, int j) { return kernel(a.at(i), b.at(j), 0).real(); }),
+                                       rows.data(), int(rows.size()), columns.data(), int(columns.size()), 1e-6, 72, &u, &v));
+        const Eigen::MatrixXd block = dense(a, b, 0).real();
+        QVERIFY2((block - u * v.transpose()).norm() < 2e-5 * block.norm(), qPrintable(QString::number((block - u * v.transpose()).norm() / block.norm())));
     }
 
     // The whole matrix: a planar mesh's cells at two heights, the

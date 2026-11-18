@@ -1338,10 +1338,12 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             boxes << Box::of(r.left(), r.top(), z, r.right(), r.bottom(), z);
         }
         const ClusterTree tree(boxes, 32);
-        HMatrix h(&tree, &tree, false, 1.0);
+        // (Real, as P is: held as complex it took twice the memory and the
+        //  time.)
+        HMatrixReal h(&tree, &tree, false, 1.0);
         const int threads = std::max(1, QThread::idealThreadCount());
         const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
-        if (!h.fill([&entry](int r, int c) { return Complex(entry(r, c), 0.0); }, 1e-6, threads, stop)) {
+        if (!h.fill([&entry](int r, int c) { return entry(r, c); }, 1e-6, threads, stop)) {
             out.problems << tr("Stopped.");
             return false;
         }
@@ -1379,9 +1381,18 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         const bool factored = lu.info() == Eigen::Success;
         const Eigen::VectorXd diagonal = m.diagonal();
         *hint = diagonal.maxCoeff() / std::max(1e-300, diagonal.minCoeff());
+        // (GMRES's vectors stay real, the right side, P and the
+        //  preconditioner all real: an imaginary part multiplied only where
+        //  there is one.)
         const Operator apply = [&h](const VectorC& x, VectorC& y) {
-            y = VectorC::Zero(x.size());
-            h.multiply(x, y);
+            Eigen::VectorXd re = Eigen::VectorXd::Zero(x.size());
+            h.multiply(x.real(), re);
+            y = re.cast<Complex>();
+            if (x.imag().squaredNorm() > 0) {
+                Eigen::VectorXd im = Eigen::VectorXd::Zero(x.size());
+                h.multiply(x.imag(), im);
+                y += Complex(0, 1) * im.cast<Complex>();
+            }
         };
         const Operator precondition = [&](const VectorC& x, VectorC& y) {
             if (factored) {
@@ -1418,7 +1429,7 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                          .arg(denseMost)
                          .arg(n)
                          .arg(h.bytes() / (1024 * 1024), 0, 'f', 1)
-                         .arg(h.denseBytes() / 2 / (1024 * 1024), 0, 'f', 1)
+                         .arg(h.denseBytes() / (1024 * 1024), 0, 'f', 1)
                          .arg(pairs.size())
                          .arg(factored ? QString() : tr(" (not factored: its diagonal instead)"))
                          .arg(most)

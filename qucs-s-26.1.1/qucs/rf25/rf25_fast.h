@@ -131,22 +131,26 @@ private:
  * than eta times their distance), and dense where the pair is two leaves
  * that are not. Indices are the items', not the trees' positions.
  */
-class HMatrix
+template <typename T>
+class HMatrixOf
 {
 public:
+    using Scalar = T;
+    using Vector = Eigen::Matrix<T, Eigen::Dynamic, 1>;
+    using Matrix = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>;
     /// The entry of row item \a row and column item \a column.
-    using Entry = std::function<Complex(int row, int column)>;
+    using Entry = std::function<T(int row, int column)>;
     struct Block {
         int row = 0, column = 0;    ///< nodes of the two trees
         bool lowRank = false;
-        Eigen::MatrixXcd dense;     ///< rows x columns, where not low rank
-        Eigen::MatrixXcd u, v;      ///< rows x k and columns x k, where it is
+        Matrix dense;     ///< rows x columns, where not low rank
+        Matrix u, v;      ///< rows x k and columns x k, where it is
     };
-    HMatrix() = default;
+    HMatrixOf() = default;
     /// The blocks of \a rows against \a columns (both kept by the caller,
     /// as long as this is); \a symmetric, of one tree against itself, its
     /// upper blocks alone.
-    HMatrix(const ClusterTree* rows, const ClusterTree* columns, bool symmetric, double eta);
+    HMatrixOf(const ClusterTree* rows, const ClusterTree* columns, bool symmetric, double eta);
 
     /*!
      * Each block filled from \a entry: a low-rank one by adaptive cross
@@ -159,9 +163,9 @@ public:
     bool fill(const Entry& entry, double tolerance, int threads = 1, const std::atomic_bool* stop = nullptr);
 
     /// y += scale H x, x and y by item.
-    void multiply(const VectorC& x, VectorC& y, Complex scale = 1.0) const;
+    void multiply(const Vector& x, Vector& y, T scale = 1.0) const;
     /// y += scale H^T x.
-    void multiplyTransposed(const VectorC& x, VectorC& y, Complex scale = 1.0) const;
+    void multiplyTransposed(const Vector& x, Vector& y, T scale = 1.0) const;
 
     int rows() const { return a_rows != nullptr ? a_rows->items() : 0; }
     int columns() const { return a_columns != nullptr ? a_columns->items() : 0; }
@@ -170,7 +174,8 @@ public:
     /// The trees its blocks' rows and columns are nodes of.
     const ClusterTree* rowTree() const { return a_rows; }
     const ClusterTree* columnTree() const { return a_columns; }
-    /// What its blocks hold, bytes; and what the dense matrix would.
+    /// What its blocks hold, bytes; and what the dense matrix would (a
+    /// symmetric one's upper half).
     double bytes() const;
     double denseBytes() const;
     /// Before filling: what its dense blocks will hold, bytes - the part
@@ -189,7 +194,7 @@ public:
 
 private:
     void build(int row, int column);
-    void apply(const VectorC& x, VectorC& y, Complex scale, bool transposed) const;
+    void apply(const Vector& x, Vector& y, T scale, bool transposed) const;
     const ClusterTree* a_rows = nullptr;
     const ClusterTree* a_columns = nullptr;
     bool a_symmetric = false;
@@ -197,6 +202,14 @@ private:
     int a_threads = 1;
     std::vector<Block> a_blocks;
 };
+
+/// The full wave's and the loop's, complex; the charge solve's, real - its
+/// potential coefficients are, and held as complex they took twice the
+/// memory and the time (step 5's review).
+using HMatrix = HMatrixOf<Complex>;
+using HMatrixReal = HMatrixOf<double>;
+extern template class HMatrixOf<Complex>;
+extern template class HMatrixOf<double>;
 
 /*!
  * An m x n block, rows \a rows and columns \a columns (items), as U V^T by
@@ -207,6 +220,8 @@ private:
  */
 bool crossApproximation(const HMatrix::Entry& entry, const int* rows, int m, const int* columns, int n, double tolerance,
                         int most, Eigen::MatrixXcd* u, Eigen::MatrixXcd* v);
+bool crossApproximation(const HMatrixReal::Entry& entry, const int* rows, int m, const int* columns, int n, double tolerance,
+                        int most, Eigen::MatrixXd* u, Eigen::MatrixXd* v);
 
 /*!
  * The pairs of \a a and \a b whose boxes are near: no further apart than
