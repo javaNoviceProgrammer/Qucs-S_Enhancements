@@ -313,7 +313,7 @@ struct StudyResult3 {
 /// reads (\a reads(i, j): physics i reads field j): groups, each after
 /// every group it reads; a group of more than one a cycle of what they read,
 /// solved in turn till they agree, any other solved once. Where nothing
-/// orders them, the subset's own order.
+/// orders them, the subset's own order (a group by its first member).
 std::vector<std::vector<int>> solveOrder3(const std::vector<int>& subset, const std::function<bool(int, int)>& reads);
 
 /// Solves study \a studyTag (the first when empty) of 3D \a model on \a mesh:

@@ -24,6 +24,7 @@
 #include <cmath>
 #include <limits>
 #include <mutex>
+#include <set>
 #include <thread>
 
 namespace qucs_s::fem {
@@ -932,20 +933,23 @@ using Problems3 = std::vector<std::unique_ptr<detail3::Problem3>>;
 
 std::vector<std::vector<int>> solveOrder3(const std::vector<int>& subset, const std::function<bool(int, int)>& reads)
 {
-    // Tarjan's strongly connected components of "i reads j" (j before i):
-    // each component found after every one it reads, so in the order they
-    // are found.
+    // Tarjan's strongly connected components of "i reads j" (by position in
+    // the subset), then the components in the order of what they read by
+    // Kahn's method, the ready one with the lowest position first: where
+    // nothing orders them, the subset's own order (0 reading 2 in {0, 1, 2}:
+    // 1, 2, 0).
     const int n = int(subset.size());
-    std::vector<int> index(std::size_t(n), -1), low(std::size_t(n), 0), stack;
+    std::vector<int> index(std::size_t(n), -1), low(std::size_t(n), 0), stack, component(std::size_t(n), -1);
     std::vector<char> onStack(std::size_t(n), 0);
-    std::vector<std::vector<int>> out;
+    std::vector<std::vector<int>> members;
     int next = 0;
+    const auto edge = [&](int v, int w) { return v != w && reads(subset[std::size_t(v)], subset[std::size_t(w)]); };
     std::function<void(int)> visit = [&](int v) {
         index[std::size_t(v)] = low[std::size_t(v)] = next++;
         stack.push_back(v);
         onStack[std::size_t(v)] = 1;
         for (int w = 0; w < n; ++w) {
-            if (w == v || !reads(subset[std::size_t(v)], subset[std::size_t(w)])) continue;
+            if (!edge(v, w)) continue;
             if (index[std::size_t(w)] < 0) {
                 visit(w);
                 low[std::size_t(v)] = std::min(low[std::size_t(v)], low[std::size_t(w)]);
@@ -954,21 +958,43 @@ std::vector<std::vector<int>> solveOrder3(const std::vector<int>& subset, const 
             }
         }
         if (low[std::size_t(v)] != index[std::size_t(v)]) return;
-        std::vector<int> component;
+        std::vector<int> group;
         int w = -1;
         do {
             w = stack.back();
             stack.pop_back();
             onStack[std::size_t(w)] = 0;
-            component.push_back(w);
+            component[std::size_t(w)] = int(members.size());
+            group.push_back(w);
         } while (w != v);
-        // (Within a cycle: the subset's own order.)
-        std::sort(component.begin(), component.end());
-        for (int& k : component) k = subset[std::size_t(k)];
-        out.push_back(std::move(component));
+        std::sort(group.begin(), group.end());
+        members.push_back(std::move(group));
     };
     for (int v = 0; v < n; ++v)
         if (index[std::size_t(v)] < 0) visit(v);
+    // What each component waits for: the components it reads, not yet out.
+    const int m = int(members.size());
+    std::vector<std::set<int>> waits(static_cast<std::size_t>(m));
+    for (int v = 0; v < n; ++v)
+        for (int w = 0; w < n; ++w)
+            if (edge(v, w) && component[std::size_t(v)] != component[std::size_t(w)])
+                waits[std::size_t(component[std::size_t(v)])].insert(component[std::size_t(w)]);
+    std::vector<std::vector<int>> out;
+    std::vector<char> done(static_cast<std::size_t>(m), 0);
+    for (int k = 0; k < m; ++k) {
+        int best = -1;
+        for (int c = 0; c < m; ++c) {
+            if (done[std::size_t(c)]) continue;
+            bool ready = true;
+            for (int d : waits[std::size_t(c)]) ready = ready && done[std::size_t(d)];
+            if (ready && (best < 0 || members[std::size_t(c)].front() < members[std::size_t(best)].front())) best = c;
+        }
+        // (A component always ready: the components' graph has no cycle.)
+        done[std::size_t(best)] = 1;
+        std::vector<int> group = members[std::size_t(best)];
+        for (int& v : group) v = subset[std::size_t(v)];
+        out.push_back(std::move(group));
+    }
     return out;
 }
 
@@ -1536,6 +1562,8 @@ bool eigenStep3(Problems3& problems, Solution3& s, const Node& node, const detai
     if (!atRest.empty()) {
         if (!solveTogether(problems, atRest, [&o](int) { return o; }, s, node.name(), error)) return false;
         for (int i : atRest) s.fields()[std::size_t(i)].solved = true;
+        // (Their factors let go before the modal solve makes its own.)
+        for (int i : atRest) problems[std::size_t(i)]->releaseFactors();
     }
     const int count = std::clamp(node.integer(QStringLiteral("count")), 1, 200);
     double shift = 0;
@@ -2058,6 +2086,10 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
             }
         }
         for (int i : subset) s->fields()[std::size_t(i)].solved = true;
+        // (What a step kept for its own next solves - a step in time's
+        // magnetic factors - let go at its end: not held through the next
+        // step, which may make factors of its own.)
+        for (auto& p : problems) p->releaseFactors();
         ++steps;
     }
     if (steps == 0) {

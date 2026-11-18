@@ -345,6 +345,10 @@ private slots:
     void initTestCase()
     {
         if (slowBuild() && !qEnvironmentVariableIsSet("QUCS_FEM_MUMPS_FROM")) qputenv("QUCS_FEM_MUMPS_FROM", "0");
+        // (Accelerate's likewise on a sanitized macOS build: a cycle's coax
+        // of some 15,000 unknowns, below its size, took 217 s by Eigen's LU
+        // at -O0, and two steps of it past QtTest's 300.)
+        if (slowBuild() && !qEnvironmentVariableIsSet("QUCS_FEM_ACCELERATE_FROM")) qputenv("QUCS_FEM_ACCELERATE_FROM", "0");
     }
 
     // A model uniform in z - an iron block of µr 100 beside a bar carrying
@@ -691,13 +695,13 @@ private slots:
             QRegularExpressionMatch unknowns, factors;
             for (const QString& line : log) {
                 if (!unknowns.hasMatch()) unknowns = QRegularExpression(QStringLiteral("^%1: (\\d+) unknowns").arg(mfName)).match(line);
-                if (!factors.hasMatch()) factors = QRegularExpression(QStringLiteral("its factors ([0-9.]+) GB")).match(line);
+                if (!factors.hasMatch()) factors = QRegularExpression(QStringLiteral("its factors ([0-9.]+) MB")).match(line);
             }
             QVERIFY2(unknowns.hasMatch(), qPrintable(log.join(QLatin1Char('\n'))));
             const double solved = unknowns.captured(1).toDouble();
             QVERIFY2(est->unknowns >= solved && est->unknowns < 1.5 * solved, qPrintable(QStringLiteral("%1 estimated, %2 solved").arg(est->unknowns).arg(solved)));
             if (choleskyBackend() == Backend::Accelerate && factors.hasMatch() && !coarse()) {
-                const double measured = factors.captured(1).toDouble() * 1073741824.0, estimated = est->directBytes / 2;
+                const double measured = factors.captured(1).toDouble() * 1048576.0, estimated = est->directBytes / 2;
                 info(QStringLiteral("magnetic factors: %1 MB estimated, %2 MB by Accelerate's analysis").arg(estimated / 1048576.0).arg(measured / 1048576.0));
                 QVERIFY2(estimated > 0.5 * measured && estimated < 2 * measured, qPrintable(QStringLiteral("%1 against %2 bytes").arg(estimated).arg(measured)));
             }
@@ -733,6 +737,26 @@ private slots:
         QVERIFY2(all.contains(mfName + QStringLiteral(": factorizing, ")) && all.contains(QStringLiteral("(pass 1)")) && all.contains(QStringLiteral("(pass 2)")),
                  qPrintable(all));
         QVERIFY(global(sv.s(), QStringLiteral("mf.L_1")) > 0);
+    }
+
+    // Two Stationary steps, each solving the field of the same matrix: the
+    // second factorizes its own - the first step's factors let go at its
+    // end, not held through the rest of the study (two large ones at once).
+    void factorsLetGoAtAStepsEnd()
+    {
+        QString et, mf;
+        Model m = shortedCoax(0.3, 1, &et, &mf);
+        for (Node& c : m.root.children)
+            if (c.type == QLatin1String("study")) {
+                Node second = m.make(QStringLiteral("stationary"));
+                c.children.push_back(second);
+            }
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+        const QStringList& log = sv.s().log;
+        const QString mfName = m.find(mf)->name();
+        QVERIFY2(linesOf(log, mfName, QStringLiteral("factorized in")) == 2 && linesOf(log, mfName, QStringLiteral("factors kept")) == 0,
+                 qPrintable(log.join(QLatin1Char('\n'))));
     }
 
     // The real LDLT of a saddle point the complex path's (the complex
