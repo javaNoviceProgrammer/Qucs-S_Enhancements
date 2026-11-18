@@ -1048,26 +1048,28 @@ private slots:
     // A coplanar line in air is as fast as light, whatever its cross-section
     // and its cells (P1 of the open items of 8 November): the signal 50 µm,
     // its gaps 2 and 5 µm, its grounds 160, 2 µm of metal as its two faces,
-    // at 10 GHz from two lengths. Its cells beside the gaps, 0.31 µm wide and
-    // 143 µm long, beside shorter ones: each pair's potential at its cells'
-    // centres, made symmetric by the mean of the two ways, read eps_eff 1.367
-    // and Z0 41.25 Ohm at 2 µm (the review's 1.093 at twelve across). Now
-    // the longer's mean potential of the shorter's charge: 1.0014 and 48.02
-    // at 2 µm, 1.0018 and 67.05 at 5 (1.008 and 47.85, 1.004 and 66.88 at
-    // twelve across). Z0 against a 2D boundary-element solve of the
-    // cross-section in air, its metal solid (cpw2d.py beside
-    // an earlier note): 47.26 and
-    // 66.45 Ohm.
+    // at 30 GHz from lines 0.5 and 1.5 mm long. Its cells beside the gaps,
+    // fractions of a micrometre wide and tens long, beside shorter ones: each
+    // pair's potential at its cells' centres, made symmetric by the mean of
+    // the two ways, read eps_eff 1.459 and Z0 40.29 Ohm at 2 µm (the review's
+    // 1.093, of 1 and 3 mm at 10 GHz, twelve across). Now the longer's mean
+    // potential of the shorter's charge: 1.0050 and 47.92 at 2 µm, 1.0013 and
+    // 67.07 at 5. Z0 against a 2D boundary-element solve of the cross-section
+    // in air, its metal solid (cpw2d.py beside an earlier note
+    // rf25-production-readiness.md): 47.26 and 66.45 Ohm. (At 30 GHz, not
+    // the review's 10: a third of the cells, 1.9 s here where 10 GHz took
+    // 8.6, and past five minutes under the sanitizers.)
     void aCoplanarLineInAirIsAsFastAsLight()
     {
         rf::Stack st = grounded(1, 100e-6, 0, 2e-6, 1e10);
         st.layers[0].variant = QStringLiteral("open");
         st.layers[2].twoSheets = true;
         const QString m1 = QStringLiteral("M1");
-        const double f = 1e10, k0 = 2 * M_PI * f / kC0;
+        const double L1 = 500, L2 = 1500;
+        const double f = 3e10, k0 = 2 * M_PI * f / kC0;
         for (const auto& [g, z2d] : {std::pair(2.0, 47.264), std::pair(5.0, 66.455)}) {
             QList<Matrix2> chains;
-            for (const double l : {1000.0, 3000.0}) {
+            for (const double l : {L1, L2}) {
                 const QList<rf::Conductor> cpw = {on(m1, 0, -25, l, 50), on(m1, 0, 25 + g, l, 160), on(m1, 0, -185 - g, l, 160)};
                 rf::MeshSettings how;
                 how.cellsAcross = 4;
@@ -1080,7 +1082,7 @@ private slots:
                 QVERIFY2(w.asymmetry < 1e-6, qPrintable(QString::number(w.asymmetry)));
                 chains << chainOf(zOf(w, 0));
             }
-            const TwoLine wave = twoLine(chains.at(0), chains.at(1), 1000e-6, 3000e-6, k0);
+            const TwoLine wave = twoLine(chains.at(0), chains.at(1), L1 * 1e-6, L2 * 1e-6, k0);
             const double eps = std::pow(wave.gamma.imag() / k0, 2), z0 = wave.z0.real();
             qWarning("a coplanar line in air, its gaps %g um: eps_eff %.4f, Z0 %.3f Ohm against %.3f", g, eps, z0, z2d);
             QVERIFY2(std::abs(eps - 1) < 0.01, qPrintable(QStringLiteral("eps_eff %1 at %2 um").arg(eps).arg(g)));
