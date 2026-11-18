@@ -37,10 +37,10 @@
 </Wires>
 <Diagrams>
   <Rect3D 590 838 492 428 3 #c0c0c0 1 00 1 1 1 9.33335 1 -3.3 0.5 0.3 1 -0.0013953 0.002 0.0153483 315 0 314 "V(nds) V" "" "">
-	<"ngspice/i(vprids)" #0000ff 2 3 0 0 1>
+	<"ngspice/sw1.i(vprids)" #0000ff 2 3 0 0 1>
   </Rect3D>
   <Rect 200 851 368 331 3 #c0c0c0 1 00 1 1 1 9.33335 1 -0.0013953 0.002 0.0153483 1 -1 0.5 1 315 0 225 "V(nds) V" "" "">
-	<"ngspice/i(vprids)" #0000ff 2 3 0 0 0>
+	<"ngspice/sw1.i(vprids)" #0000ff 2 3 0 0 0>
   </Rect>
 </Diagrams>
 <Paintings>
