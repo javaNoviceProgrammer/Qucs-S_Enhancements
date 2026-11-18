@@ -121,7 +121,23 @@ private:
     bool a_magnets = false;
     double a_energy = 0;
     std::vector<std::vector<double>> a_inductance;   // coils swept at 1 A each: [i][j]
+    // The last factorization, and the matrix it is of: a matrix the same at
+    // the next solve - a cycle's next pass, a step in time's next step at
+    // rest, of a linear model - solved with it, not factorized again (a coil's 1.7 M unknowns factorized twice, 2739
+    // s and 717 s, for one solve).
+    std::unique_ptr<SparseComplexLdlt> a_lu;
+    Eigen::SparseMatrix<double> a_factored;
 };
+
+/// The same matrix: its pattern and its values, bit for bit (both
+/// compressed, as setFromTriplets leaves them).
+bool sameMatrix(const Eigen::SparseMatrix<double>& a, const Eigen::SparseMatrix<double>& b)
+{
+    if (a.rows() != b.rows() || a.cols() != b.cols() || a.nonZeros() != b.nonZeros() || !a.isCompressed() || !b.isCompressed()) return false;
+    const auto nz = std::size_t(a.nonZeros());
+    return std::equal(a.outerIndexPtr(), a.outerIndexPtr() + a.cols() + 1, b.outerIndexPtr())
+           && std::equal(a.innerIndexPtr(), a.innerIndexPtr() + nz, b.innerIndexPtr()) && std::equal(a.valuePtr(), a.valuePtr() + nz, b.valuePtr());
+}
 
 // ------------------------------------------------------------------ Setup
 
@@ -772,17 +788,15 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
     // The saddle point is symmetric and indefinite: an LDLᵀ with pivoting
     // (Accelerate's, of a complex symmetric matrix its imaginary parts
     // nought) - an LU of a solenoid's 53,705 unknowns took 18.6 s.
-    SparseComplexLdlt lu;
     // (One step of iterative refinement against the matrix: the pivots of a
     // saddle point scaled as it is lose a digit or two.)
-    Eigen::SparseMatrix<double> matrix;
     double residual = 0;
-    const auto solveWith = [&lu, &matrix, &residual](const Eigen::VectorXd& b) -> Eigen::VectorXd {
-        Eigen::VectorXd x = lu.solve(b.cast<std::complex<double>>()).real();
-        const Eigen::VectorXd r0 = b - matrix * x;
-        x += lu.solve(r0.cast<std::complex<double>>()).real();
+    const auto solveWith = [this, &residual](const Eigen::VectorXd& b) -> Eigen::VectorXd {
+        Eigen::VectorXd x = a_lu->solve(b.cast<std::complex<double>>()).real();
+        const Eigen::VectorXd r0 = b - a_factored * x;
+        x += a_lu->solve(r0.cast<std::complex<double>>()).real();
         const double bn = b.norm();
-        residual = bn > 0 ? (b - matrix * x).norm() / bn : 0;
+        residual = bn > 0 ? (b - a_factored * x).norm() / bn : 0;
         return x;
     };
     for (int it = 0; it < rounds; ++it) {
@@ -796,18 +810,25 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
         clock.start();
         assemble(q, a, J, a_magnets, M, r, gaugeScale);
         const qint64 assembled = clock.elapsed();
-        lu.compute(M.cast<std::complex<double>>());
-        matrix = M;
-        if (it == 0)
+        if (a_lu && a_lu->info() == Eigen::Success && sameMatrix(M, a_factored)) {
+            a_s.log << tr("%1: assembled in %2 s; its matrix unchanged, its factors kept").arg(name).arg(assembled / 1000.0, 0, 'f', 2);
+        } else {
+            a_lu.reset();
+            a_factored = Eigen::SparseMatrix<double>();
+            auto lu = std::make_unique<SparseComplexLdlt>();
+            lu->compute(M.cast<std::complex<double>>());
             a_s.log << tr("%1: assembled in %2 s, %3 nonzeros; factorized in %4 s")
                            .arg(name)
                            .arg(assembled / 1000.0, 0, 'f', 2)
                            .arg(M.nonZeros())
                            .arg((clock.elapsed() - assembled) / 1000.0, 0, 'f', 2);
-        if (lu.info() != Eigen::Success) {
-            *error = tr("%1: its system could not be factorized (%2) - is A held somewhere (Magnetic Insulation, a Magnetic Potential)?")
-                         .arg(name, QString::fromStdString(lu.lastErrorMessage()));
-            return false;
+            if (lu->info() != Eigen::Success) {
+                *error = tr("%1: its system could not be factorized (%2) - is A held somewhere (Magnetic Insulation, a Magnetic Potential)?")
+                             .arg(name, QString::fromStdString(lu->lastErrorMessage()));
+                return false;
+            }
+            a_lu = std::move(lu);
+            a_factored = std::move(M);
         }
         if (it == 0)
             a_s.log << tr("%1: %2 unknowns (%3 of A on edge elements of order %4, %5 of the gauge's multiplier), %6")
@@ -816,7 +837,7 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
                            .arg(q.nA)
                            .arg(es.order())
                            .arg(q.nP)
-                           .arg(lu.name());
+                           .arg(a_lu->name());
         const Eigen::VectorXd x = solveWith(r);
         if (it == 0) a_s.log << tr("%1: relative residual %2, refined once").arg(name).arg(residual, 0, 'g', 2);
         if (!x.allFinite()) {

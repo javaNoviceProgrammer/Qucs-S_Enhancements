@@ -152,6 +152,64 @@ void addFeature(Model& m, const QString& physics, const QString& type, const QJs
     QVERIFY2(m.add(physics, f, -1, &why) != nullptr, qPrintable(why));
 }
 
+/// A cylinder of radius \a r from \a z0, \a h high.
+void addCylinderAt(Model& m, const QString& label, double r, double z0, double h)
+{
+    Node n = m.make(QStringLiteral("cylinder"));
+    n.label = label;
+    n.props.insert(QStringLiteral("center"), pairOf(0, 0));
+    n.props.insert(QStringLiteral("radius"), QString::number(r, 'g', 17));
+    n.props.insert(QStringLiteral("z"), QString::number(z0, 'g', 17));
+    n.props.insert(QStringLiteral("height"), QString::number(h, 'g', 17));
+    m.add(m.geometry().tag, n);
+}
+
+/// A coax \a len mm long shorted by an end cap 0.3 mm thick - its core 0.5
+/// mm, its shell 1.5 to 1.8 mm, copper - fed at z = 0 between its core and
+/// its shell by a currents physics, whose current a coil of a magnetic
+/// physics reads: mf.L_1 its DC inductance. (A layer a millimetre.)
+Model shortedCoax(double hmax, int len, QString* ecTag, QString* mfTag)
+{
+    Model m = model3d(hmax);
+    addCylinderAt(m, QStringLiteral("shell"), 1.8, 0, len);
+    addCylinderAt(m, QStringLiteral("gap"), 1.5, 0, len);
+    addCylinderAt(m, QStringLiteral("core"), 0.5, 0, len);
+    addCylinderAt(m, QStringLiteral("cap"), 1.8, len, 0.3);
+    for (const char* o : {"shell", "gap", "core"}) zDivisions(m, QString::fromLatin1(o), len);
+    zDivisions(m, QStringLiteral("cap"), 1);
+    const QJsonObject metal{{QStringLiteral("only"), QJsonArray{QStringLiteral("shell"), QStringLiteral("core"), QStringLiteral("cap")}}};
+    Node ec = m.make(QStringLiteral("currents"));
+    ec.props.insert(QStringLiteral("order"), QStringLiteral("2"));
+    ec.props.insert(QStringLiteral("selection"), metal);
+    const QString et = ec.tag;
+    m.add(m.component().tag, ec);
+    for (Node& c : m.find(et)->children)
+        if (c.type == QLatin1String("currents/conservation")) {
+            c.props.insert(QStringLiteral("source"), QStringLiteral("user"));
+            c.props.insert(QStringLiteral("sigma"), QStringLiteral("5.8e7[S/m]"));
+        }
+    // (The core's floor its terminal; the shell's own floor, an annulus -
+    // its side rule's floors less the gap's and the core's -, its ground.)
+    addFeature(m, et, QStringLiteral("currents/terminal"), ofSide(QStringLiteral("core"), QStringLiteral("bottom")), {{QStringLiteral("name"), QStringLiteral("1")}});
+    QJsonObject ground = ofSide(QStringLiteral("shell"), QStringLiteral("bottom"));
+    ground.insert(QStringLiteral("except"), ofSide(QStringLiteral("gap"), QStringLiteral("bottom")));
+    addFeature(m, et, QStringLiteral("currents/ground"), ground);
+    const QString mf = addMagnetic(m, 2);
+    addFeature(m, mf, QStringLiteral("magnetic/coil"), metal,
+               {{QStringLiteral("name"), QStringLiteral("1")}, {QStringLiteral("ec"), QJsonArray{et}}, {QStringLiteral("terminal"), QStringLiteral("1")}});
+    *ecTag = et;
+    *mfTag = mf;
+    return m;
+}
+
+/// The lines of \a log that begin with \a name and hold \a text.
+int linesOf(const QStringList& log, const QString& name, const QString& text)
+{
+    int n = 0;
+    for (const QString& line : log) n += line.startsWith(name + QStringLiteral(": ")) && line.contains(text) ? 1 : 0;
+    return n;
+}
+
 /// A domain feature on \a object of user's \a props (µr...).
 void addAmpere(Model& m, const QString& physics, const QString& object, const QJsonObject& props)
 {
@@ -539,6 +597,60 @@ private slots:
         // in the box, each its own.)
         QVERIFY2(l11 > 0 && l22 > 0 && std::abs(l12 - l21) < 1e-6 * l11 && l12 > 0 && l12 * l12 < l11 * l22,
                  qPrintable(QStringLiteral("%1 %2; %3 %4").arg(l11).arg(l12).arg(l21).arg(l22)));
+    }
+
+    // The DC inductance of a coax from a currents physics through a coil
+    // (nothing tested that path against an exact
+    // answer): its length's dL/dlen, from two lengths (their end caps' and
+    // feeds' the same), µ0/2π (ln(b/a) + 1/4 + c⁴ ln(c/b)/(c² - b²)² - (3c²
+    // - b²)/(4 (c² - b²))). Each physics solved once - the coil's magnetic
+    // field reads the currents, which read nothing of it: no iterations -,
+    // and the magnetic field's saddle point factorized once.
+    void dcInductanceFromCurrents()
+    {
+        const double a = 0.5e-3, b = 1.5e-3, c = 1.8e-3;
+        const double Lp = Mu0 / (2 * M_PI)
+                          * (std::log(b / a) + 0.25 + c * c * c * c * std::log(c / b) / ((c * c - b * b) * (c * c - b * b)) - (3 * c * c - b * b) / (4 * (c * c - b * b)));
+        // (0.15 mm: 1.2 % low in the review's 10 to 20 mm; Eigen's LU and a
+        // sanitized build coarser.)
+        const double hmax = coarse() ? 0.25 : 0.15;
+        double L[2] = {0, 0};
+        const int lengths[2] = {2, 4};
+        for (int k = 0; k < 2; ++k) {
+            QString et, mf;
+            const Model m = shortedCoax(hmax, lengths[k], &et, &mf);
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            L[k] = global(sv.s(), QStringLiteral("mf.L_1"));
+            const QStringList& log = sv.s().log;
+            const QString mfName = m.find(mf)->name();
+            QVERIFY2(!log.join(QLatin1Char('\n')).contains(QStringLiteral(", iteration 1:")), qPrintable(log.join(QLatin1Char('\n'))));
+            QVERIFY2(linesOf(log, mfName, QStringLiteral("factorized in")) == 1, qPrintable(log.join(QLatin1Char('\n'))));
+            QVERIFY2(linesOf(log, mfName, QStringLiteral("assembled in")) == 1, qPrintable(log.join(QLatin1Char('\n'))));
+        }
+        const double perLength = (L[1] - L[0]) / 2e-3;
+        info(QStringLiteral("coax from currents: L %1, %2 H; dL/dlen %3 H/m, exact %4 H/m").arg(L[0]).arg(L[1]).arg(perLength).arg(Lp));
+        QVERIFY2(std::abs(perLength - Lp) < (coarse() ? 3e-2 : 2e-2) * Lp, qPrintable(QStringLiteral("dL/dlen %1 H/m, exact %2 H/m").arg(perLength).arg(Lp)));
+    }
+
+    // A cycle - the currents' conductivity reads the magnetic field (nought
+    // times |B|: the answer the same) -: the two in turn till they agree,
+    // the magnetic matrix the same at each pass and factorized once, its
+    // factors kept for the next.
+    void aCycleFactorizesOnce()
+    {
+        QString et, mf;
+        Model m = shortedCoax(0.3, 1, &et, &mf);
+        for (Node& c : m.find(et)->children)
+            if (c.type == QLatin1String("currents/conservation")) c.props.insert(QStringLiteral("sigma"), QStringLiteral("5.8e7[S/m]*(1 + 0*mf.normB/1[T])"));
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+        const QStringList& log = sv.s().log;
+        const QString mfName = m.find(mf)->name();
+        QVERIFY2(log.join(QLatin1Char('\n')).contains(QStringLiteral("iteration 2")), qPrintable(log.join(QLatin1Char('\n'))));
+        QVERIFY2(linesOf(log, mfName, QStringLiteral("factorized in")) == 1, qPrintable(log.join(QLatin1Char('\n'))));
+        QVERIFY2(linesOf(log, mfName, QStringLiteral("factors kept")) >= 1, qPrintable(log.join(QLatin1Char('\n'))));
+        QVERIFY(global(sv.s(), QStringLiteral("mf.L_1")) > 0);
     }
 
     // An iron ring round a wire of 50 A, its B-H curve's: H round it I /

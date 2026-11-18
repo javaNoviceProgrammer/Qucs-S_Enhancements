@@ -44,6 +44,9 @@ struct Options3 {
     /// or Picard's iterations (picard).
     QString nonlinear = QStringLiteral("auto");
     std::function<bool()> cancelled;
+    /// The pass of physics solved in turn till they agree (a cycle of what
+    /// they read: 1, 2...); 0 solved once.
+    int pass = 0;
 };
 
 /*!
