@@ -138,9 +138,11 @@ struct Conductor {
 };
 
 /// \a conductors with each merged via farm's footprint (Conductor::share
-/// below one) its metal: the outline scaled about its centroid to the vias'
-/// own area, one conductor for one, the share one - for an export to a solver
-/// that takes a shape as solid metal (Palace, HFSS).
+/// below one) its metal: the outline thinned in place to the vias' own area
+/// (within a per cent), one conductor for one, the share one - for an export
+/// to a solver that takes a shape as solid metal (Palace, HFSS), which then
+/// reads the thinned block's resistance, not the vias' spread over the
+/// footprint: unmerged vias are its like.
 QList<Conductor> asSolid(const QList<Conductor>& conductors);
 
 /// What the processing did, in the order it did it.
@@ -152,7 +154,7 @@ struct LayoutReport {
     int mergedTo = 0;       ///< ...and how many it left
     int viasFrom = 0;       ///< vias a merge replaced...
     int viasTo = 0;         ///< ...and how many it left
-    double areaKept = 0;    ///< how much of the vias' area the merge kept (1: all)
+    double areaKept = 0;    ///< the vias' share of the footprints they were merged into (1: all metal)
     int slivers = 0;        ///< shapes dropped as too thin or too small
     int snapped = 0;        ///< shapes whose points moved to the grid
     int healed = 0;         ///< shapes a heal changed
