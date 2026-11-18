@@ -117,7 +117,12 @@ std::atomic_int g_mostDenseCorrection{0};
 constexpr int kMostCompressed = 2000000;
 /// GMRES short of kResidual: the residual below which its answer still
 /// stands, said doubtful (solveCompressed()); and the share of
-/// kMostIterations past which it is said to be near its limit.
+/// kMostIterations past which it is said to be near its limit. Of the
+/// eliminated system alone, whose ports' Z is variational, its error the
+/// residual's square: with the charges as unknowns of their own the Z is
+/// J^T V + Z_paths - e^T I, its error the residual's own, and an answer
+/// short of kResidual there is never kept - it falls back to the charges
+/// eliminated (kAugmentedMost).
 constexpr double kTrustedResidual = 1e-4;
 /// A dense sweep's systems factorized as L D L^T (rf25_dense.h) where the
 /// machine solves this many frequencies or more at once: there half an
@@ -2611,6 +2616,214 @@ void makeStatics(Context& c, int threads)
     }, sharedStatics);
 }
 
+/*!
+ * The runs split into loops and a tree (a solve at a low frequency): a spanning forest of the cells and the ground, the runs as
+ * its edges - its tree runs one to each cell but its roots, the rest each
+ * a loop, itself and the tree's path back between its ends. A loop leaves
+ * no charge, so that the charges' term, A^T P Q, is nought around it; and
+ * its rounding cancels there, each cell's potential taken once each way.
+ * Along a tree run it does not: where the cells' potentials are 10^11 V and
+ * the drops along the runs milliohms, as an open line's at 1 Hz, a run's
+ * row held the potentials' rounding, some 10^-5 V, and in the runs' basis no
+ * one scale for its rows weighed both that and the loops' drops. Split, the
+ * loops' rows are weighed against their drops and the tree runs' against
+ * the current the charge takes.
+ *
+ *     I = L i + T t          i each loop's current, t each tree run's own
+ *
+ * held in one vector by run - a loop's current at its own run, a tree run's
+ * at its - and made, and its transpose taken, along the tree, the loops
+ * never made: a sum over the subtree below each tree run, and a potential
+ * from each root. A component with a via to the ground is rooted there.
+ */
+class LoopTree
+{
+public:
+    explicit LoopTree(const Context& c) : a_c(c), a_ground(c.nc)
+    {
+        const int nodes = c.nc + 1;
+        QList<QList<int>> at(nodes);
+        for (int a = 0; a < c.nr; ++a) {
+            at[nodeOf(c.tail.at(a))] << a;
+            at[nodeOf(c.head.at(a))] << a;
+        }
+        a_tree.assign(std::size_t(c.nr), 0);
+        a_parent.assign(std::size_t(nodes), -1);
+        a_up.assign(std::size_t(nodes), -1);
+        a_component.assign(std::size_t(nodes), -1);
+        // (The ground first, so that every component that reaches it is
+        //  rooted on it, its potential nought.)
+        const auto grow = [&](int root) {
+            const int k = int(a_roots.size());
+            a_roots << root;
+            a_component[std::size_t(root)] = k;
+            a_order << root;
+            for (int n = int(a_order.size()) - 1; n < a_order.size(); ++n) {
+                const int u = a_order.at(n);
+                for (const int a : at.at(u)) {
+                    const int t = nodeOf(c.tail.at(a)), h = nodeOf(c.head.at(a));
+                    const int v = t == u ? h : t;
+                    if (a_component[std::size_t(v)] >= 0) continue;
+                    a_component[std::size_t(v)] = k;
+                    a_parent[std::size_t(v)] = u;
+                    a_up[std::size_t(v)] = a;
+                    a_tree[std::size_t(a)] = 1;
+                    a_order << v;
+                }
+            }
+        };
+        if (!at.at(a_ground).isEmpty()) grow(a_ground);
+        for (int i = 0; i < c.nc; ++i)
+            if (a_component[std::size_t(i)] < 0) grow(i);
+    }
+
+    bool tree(int run) const { return a_tree[std::size_t(run)] != 0; }
+    int components() const { return int(a_roots.size()); }
+    bool grounded(int component) const { return a_roots.at(component) == a_ground; }
+    int componentOf(int cell) const { return a_component[std::size_t(cell)]; }
+
+    /// I = L i + T t, of the loops' and the tree runs' currents by run.
+    VectorC currents(const VectorC& y) const
+    {
+        VectorC i = y;
+        VectorC in = VectorC::Zero(a_ground + 1);
+        for (int a = 0; a < a_c.nr; ++a) {
+            if (tree(a)) continue;
+            // (Its loop back along the tree, from its head to its tail.)
+            in[nodeOf(a_c.head.at(a))] += y[a];
+            in[nodeOf(a_c.tail.at(a))] -= y[a];
+        }
+        for (int n = int(a_order.size()) - 1; n >= 0; --n) {
+            const int v = a_order.at(n), a = a_up[std::size_t(v)];
+            if (a < 0) continue;
+            // (What comes up out of v's subtree, along its run's way.)
+            i[a] += nodeOf(a_c.tail.at(a)) == v ? in[v] : -in[v];
+            in[a_parent[std::size_t(v)]] += in[v];
+        }
+        return i;
+    }
+
+    /// [L T]^T w: each loop's sum of w around it, each tree run's own.
+    VectorC transposed(const VectorC& w) const
+    {
+        const VectorC phi = along(w);
+        VectorC out = w;
+        for (int a = 0; a < a_c.nr; ++a)
+            if (!tree(a)) out[a] = w[a] + phi[nodeOf(a_c.tail.at(a))] - phi[nodeOf(a_c.head.at(a))];
+        return out;
+    }
+
+    /// The currents' loops and tree runs, of the currents I: [L T]^-1 I.
+    VectorC ofCurrents(const VectorC& i) const
+    {
+        VectorC loops = i;
+        for (int a = 0; a < a_c.nr; ++a)
+            if (tree(a)) loops[a] = 0;
+        return i - (currents(loops) - loops);
+    }
+
+    /// w by run whose [L T]^T w is r: [L T]^-T r.
+    VectorC ofTransposed(const VectorC& r) const
+    {
+        VectorC w = r;
+        for (int a = 0; a < a_c.nr; ++a)
+            if (!tree(a)) w[a] = 0;
+        const VectorC phi = along(w);
+        for (int a = 0; a < a_c.nr; ++a)
+            if (!tree(a)) w[a] = r[a] - (phi[nodeOf(a_c.tail.at(a))] - phi[nodeOf(a_c.head.at(a))]);
+        return w;
+    }
+
+    /// The charge the tree runs' currents leave each cell, A T t: the
+    /// loops' none.
+    VectorC charges(const VectorC& y) const
+    {
+        VectorC q = VectorC::Zero(a_c.nc);
+        for (int a = 0; a < a_c.nr; ++a) {
+            if (!tree(a)) continue;
+            if (a_c.tail.at(a) >= 0) q[a_c.tail.at(a)] += y[a];
+            q[a_c.head.at(a)] -= y[a];
+        }
+        return q;
+    }
+
+    /// Each cell's potential from its component's root's, of the drops
+    /// along the tree runs, drop[a] its tail's less its head's.
+    VectorC potentials(const VectorC& drop) const
+    {
+        const VectorC phi = along(drop);
+        return -phi.head(a_c.nc);
+    }
+
+    /*!
+     * Each port's voltage J^T V of one solve, V each cell's potential taken
+     * along the tree: its component's root's, plus the drops along the tree
+     * runs from it - \a field, by run, each run's M I less its e, the field
+     * along the metal (Zs J + jw A); only the tree runs' are read. A
+     * grounded component's root is the ground's nought; a floating one's,
+     * its cells' mean of \a charged, P Q, less those drops - so that P's own
+     * error, a part in 10^5 compressed, is in its common potential alone,
+     * and a port's voltage against another's on its metal is the drops
+     * between them, to the currents' digits: of P Q's differences, at 10^11
+     * V on an open line at 1 Hz, it was their rounding. Each port's drive is
+     * summed on each component apart before it meets the root, so that the
+     * drops' digits are not rounded into a potential 10^14 times theirs.
+     */
+    VectorC voltages(const MatrixC& drive, const VectorC& field, const VectorC& charged) const
+    {
+        VectorC drop = field;
+        for (int a = 0; a < a_c.nr; ++a)
+            if (!tree(a)) drop[a] = 0;
+        const VectorC along = potentials(drop);
+        VectorC root = VectorC::Zero(components());
+        std::vector<int> counted(std::size_t(components()), 0);
+        for (int i = 0; i < a_c.nc; ++i) {
+            const int k = componentOf(i);
+            if (grounded(k)) continue;
+            root[k] += charged[i] - along[i];
+            ++counted[std::size_t(k)];
+        }
+        for (int k = 0; k < components(); ++k)
+            if (counted[std::size_t(k)] > 0) root[k] /= double(counted[std::size_t(k)]);
+        VectorC out = VectorC::Zero(drive.cols());
+        for (int r = 0; r < drive.cols(); ++r) {
+            VectorC shares = VectorC::Zero(components());
+            for (int i = 0; i < a_c.nc; ++i) {
+                if (drive(i, r) == Complex(0, 0)) continue;
+                out[r] += drive(i, r) * along[i];
+                shares[componentOf(i)] += drive(i, r);
+            }
+            for (int k = 0; k < components(); ++k) out[r] += shares[k] * root[k];
+        }
+        return out;
+    }
+
+private:
+    int nodeOf(int cell) const { return cell >= 0 ? cell : a_ground; }
+
+    /// Each node's sum of w along the tree from its root, a run counted as
+    /// it points away from the root.
+    VectorC along(const VectorC& w) const
+    {
+        VectorC phi = VectorC::Zero(a_ground + 1);
+        for (const int v : a_order) {
+            const int a = a_up[std::size_t(v)];
+            if (a < 0) continue;
+            const int u = a_parent[std::size_t(v)];
+            phi[v] = phi[u] + (nodeOf(a_c.tail.at(a)) == u ? w[a] : -w[a]);
+        }
+        return phi;
+    }
+
+    const Context& a_c;
+    int a_ground;                        ///< its node, after the cells
+    std::vector<char> a_tree;            ///< by run
+    std::vector<int> a_parent, a_up;     ///< by node: its parent, and the run to it
+    std::vector<int> a_component;        ///< by node
+    QList<int> a_order;                  ///< the nodes, each after its parent
+    QList<int> a_roots;                  ///< by component
+};
+
 AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, double augmentedFrom)
 {
     AtFrequency out;
@@ -2714,6 +2927,14 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, dou
         // the digits a centimetre loop lost at 1 kHz, some fifteen, some
         // eight.
         const int na = nr + nc;
+        // (M's rows of the tree runs kept, for the drops along them: each
+        //  port's voltage taken along the tree, LoopTree::voltages().)
+        const LoopTree loops(c);
+        std::vector<int> treeRuns;
+        for (int a = 0; a < nr; ++a)
+            if (loops.tree(a)) treeRuns.push_back(a);
+        MatrixC treeRows(Eigen::Index(treeRuns.size()), nr);
+        for (std::size_t t = 0; t < treeRuns.size(); ++t) treeRows.row(Eigen::Index(t)) = m.row(treeRuns[t]);
         MatrixC big = MatrixC::Zero(na, na);
         big.topLeftCorner(nr, nr) = m;
         m.resize(0, 0);
@@ -2741,7 +2962,18 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, dou
             out.problems << tr("The solve at %1 GHz came to nothing finite.").arg(f / 1e9, 0, 'g', 4);
             return out;
         }
-        out.z = c.drive.transpose() * (p * solved.bottomRows(nc)) + pathZ - extra.transpose() * out.current;
+        // Each port's voltage along the tree: of P Q's differences, at 10^11 V
+        // on an open line at 1 Hz, it was their rounding - the line's series
+        // inductance 22 % off at 1 kHz and 2.7e-3 at 10 kHz, where along the
+        // tree 1.5 % and 1.5e-4, Z's own rounding.
+        const MatrixC charged = p * solved.bottomRows(nc);
+        const MatrixC field = treeRows * out.current;
+        out.z = pathZ - extra.transpose() * out.current;
+        for (int q = 0; q < c.np; ++q) {
+            VectorC drop = VectorC::Zero(nr);
+            for (std::size_t t = 0; t < treeRuns.size(); ++t) drop[treeRuns[t]] = field(Eigen::Index(t), q) - extra(treeRuns[t], q);
+            out.z.col(q) += loops.voltages(c.drive, drop, charged.col(q));
+        }
         return out;
     }
     // (m factorized where it is: it is not needed past here.)
@@ -2998,172 +3230,6 @@ void cacheStatics(Context& c, const Compression& z, int threads, double most)
     keptRuns = qint64(c.runStatics.other.size());
     keptCells = qint64(c.cellStatics.other.size());
 }
-
-/*!
- * The runs split into loops and a tree (a compressed solve at a low
- * frequency): a spanning forest of the cells and the ground, the runs as
- * its edges - its tree runs one to each cell but its roots, the rest each
- * a loop, itself and the tree's path back between its ends. A loop leaves
- * no charge, so that the charges' term, A^T P Q, is nought around it; and
- * its rounding cancels there, each cell's potential taken once each way.
- * Along a tree run it does not: where the cells' potentials are 10^11 V and
- * the drops along the runs milliohms, as an open line's at 1 Hz, a run's
- * row held the potentials' rounding, some 10^-5 V, and in the runs' basis no
- * one scale for its rows weighed both that and the loops' drops. Split, the
- * loops' rows are weighed against their drops and the tree runs' against
- * the current the charge takes.
- *
- *     I = L i + T t          i each loop's current, t each tree run's own
- *
- * held in one vector by run - a loop's current at its own run, a tree run's
- * at its - and made, and its transpose taken, along the tree, the loops
- * never made: a sum over the subtree below each tree run, and a potential
- * from each root. A component with a via to the ground is rooted there.
- */
-class LoopTree
-{
-public:
-    explicit LoopTree(const Context& c) : a_c(c), a_ground(c.nc)
-    {
-        const int nodes = c.nc + 1;
-        QList<QList<int>> at(nodes);
-        for (int a = 0; a < c.nr; ++a) {
-            at[nodeOf(c.tail.at(a))] << a;
-            at[nodeOf(c.head.at(a))] << a;
-        }
-        a_tree.assign(std::size_t(c.nr), 0);
-        a_parent.assign(std::size_t(nodes), -1);
-        a_up.assign(std::size_t(nodes), -1);
-        a_component.assign(std::size_t(nodes), -1);
-        // (The ground first, so that every component that reaches it is
-        //  rooted on it, its potential nought.)
-        const auto grow = [&](int root) {
-            const int k = int(a_roots.size());
-            a_roots << root;
-            a_component[std::size_t(root)] = k;
-            a_order << root;
-            for (int n = int(a_order.size()) - 1; n < a_order.size(); ++n) {
-                const int u = a_order.at(n);
-                for (const int a : at.at(u)) {
-                    const int t = nodeOf(c.tail.at(a)), h = nodeOf(c.head.at(a));
-                    const int v = t == u ? h : t;
-                    if (a_component[std::size_t(v)] >= 0) continue;
-                    a_component[std::size_t(v)] = k;
-                    a_parent[std::size_t(v)] = u;
-                    a_up[std::size_t(v)] = a;
-                    a_tree[std::size_t(a)] = 1;
-                    a_order << v;
-                }
-            }
-        };
-        if (!at.at(a_ground).isEmpty()) grow(a_ground);
-        for (int i = 0; i < c.nc; ++i)
-            if (a_component[std::size_t(i)] < 0) grow(i);
-    }
-
-    bool tree(int run) const { return a_tree[std::size_t(run)] != 0; }
-    int components() const { return int(a_roots.size()); }
-    bool grounded(int component) const { return a_roots.at(component) == a_ground; }
-    int componentOf(int cell) const { return a_component[std::size_t(cell)]; }
-
-    /// I = L i + T t, of the loops' and the tree runs' currents by run.
-    VectorC currents(const VectorC& y) const
-    {
-        VectorC i = y;
-        VectorC in = VectorC::Zero(a_ground + 1);
-        for (int a = 0; a < a_c.nr; ++a) {
-            if (tree(a)) continue;
-            // (Its loop back along the tree, from its head to its tail.)
-            in[nodeOf(a_c.head.at(a))] += y[a];
-            in[nodeOf(a_c.tail.at(a))] -= y[a];
-        }
-        for (int n = int(a_order.size()) - 1; n >= 0; --n) {
-            const int v = a_order.at(n), a = a_up[std::size_t(v)];
-            if (a < 0) continue;
-            // (What comes up out of v's subtree, along its run's way.)
-            i[a] += nodeOf(a_c.tail.at(a)) == v ? in[v] : -in[v];
-            in[a_parent[std::size_t(v)]] += in[v];
-        }
-        return i;
-    }
-
-    /// [L T]^T w: each loop's sum of w around it, each tree run's own.
-    VectorC transposed(const VectorC& w) const
-    {
-        const VectorC phi = along(w);
-        VectorC out = w;
-        for (int a = 0; a < a_c.nr; ++a)
-            if (!tree(a)) out[a] = w[a] + phi[nodeOf(a_c.tail.at(a))] - phi[nodeOf(a_c.head.at(a))];
-        return out;
-    }
-
-    /// The currents' loops and tree runs, of the currents I: [L T]^-1 I.
-    VectorC ofCurrents(const VectorC& i) const
-    {
-        VectorC loops = i;
-        for (int a = 0; a < a_c.nr; ++a)
-            if (tree(a)) loops[a] = 0;
-        return i - (currents(loops) - loops);
-    }
-
-    /// w by run whose [L T]^T w is r: [L T]^-T r.
-    VectorC ofTransposed(const VectorC& r) const
-    {
-        VectorC w = r;
-        for (int a = 0; a < a_c.nr; ++a)
-            if (!tree(a)) w[a] = 0;
-        const VectorC phi = along(w);
-        for (int a = 0; a < a_c.nr; ++a)
-            if (!tree(a)) w[a] = r[a] - (phi[nodeOf(a_c.tail.at(a))] - phi[nodeOf(a_c.head.at(a))]);
-        return w;
-    }
-
-    /// The charge the tree runs' currents leave each cell, A T t: the
-    /// loops' none.
-    VectorC charges(const VectorC& y) const
-    {
-        VectorC q = VectorC::Zero(a_c.nc);
-        for (int a = 0; a < a_c.nr; ++a) {
-            if (!tree(a)) continue;
-            if (a_c.tail.at(a) >= 0) q[a_c.tail.at(a)] += y[a];
-            q[a_c.head.at(a)] -= y[a];
-        }
-        return q;
-    }
-
-    /// Each cell's potential from its component's root's, of the drops
-    /// along the tree runs, drop[a] its tail's less its head's.
-    VectorC potentials(const VectorC& drop) const
-    {
-        const VectorC phi = along(drop);
-        return -phi.head(a_c.nc);
-    }
-
-private:
-    int nodeOf(int cell) const { return cell >= 0 ? cell : a_ground; }
-
-    /// Each node's sum of w along the tree from its root, a run counted as
-    /// it points away from the root.
-    VectorC along(const VectorC& w) const
-    {
-        VectorC phi = VectorC::Zero(a_ground + 1);
-        for (const int v : a_order) {
-            const int a = a_up[std::size_t(v)];
-            if (a < 0) continue;
-            const int u = a_parent[std::size_t(v)];
-            phi[v] = phi[u] + (nodeOf(a_c.tail.at(a)) == u ? w[a] : -w[a]);
-        }
-        return phi;
-    }
-
-    const Context& a_c;
-    int a_ground;                        ///< its node, after the cells
-    std::vector<char> a_tree;            ///< by run
-    std::vector<int> a_parent, a_up;     ///< by node: its parent, and the run to it
-    std::vector<int> a_component;        ///< by node
-    QList<int> a_order;                  ///< the nodes, each after its parent
-    QList<int> a_roots;                  ///< by component
-};
 
 /// The system of a compressed solve, M = Zs l/w + jw L + A^T P A / jw and
 /// the vias' terms, multiplying a vector: what GMRES asks of it.
@@ -3561,8 +3627,9 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
     }
     // Short of its residual: where what it left is small - the ports' Z is
     // variational, its error the residual's square over how near singular
-    // the system is - the answer stands, said doubtful, and the sweep goes
-    // on; past kTrustedResidual, or not finite, it is no answer. A sweep
+    // the system is (the eliminated system's: with the charges as unknowns,
+    // short of kResidual it fell back above) - the answer stands, said
+    // doubtful, and the sweep goes on; past kTrustedResidual, or not finite, it is no answer. A sweep
     // stopped at the first frequency that fell short, with nothing of the
     // rest.
     if (out.residual > kTrustedResidual || !current.allFinite()) {
@@ -3608,49 +3675,16 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
     out.current = current;
     if (augmented) {
         // Each port's voltage J^T V + its path's - e^T I, as the dense
-        // augmented solve's; but V, the cells' potentials, from the drops
-        // along the tree, each tree run's M I less its e - the field along
-        // the metal, Zs J + jw A -, from its component's root: the ground's
-        // nought, or a floating one's mean of P Q less those drops. A port's
-        // voltage against another's on its metal is then the drops between
-        // them, to the currents' own digits; P's, a part in 10^5 compressed,
-        // only in the common potential of a floating metal - which a
-        // difference of P Q's took into the 0.1 ohm along a 2 mm line, 10^6
-        // ohm off at 1 Hz.
+        // augmented solve's, V taken along the tree (LoopTree::voltages()):
+        // of P Q's differences, P a part in 10^5 compressed, the 0.1 ohm
+        // along a 2 mm line was 10^6 ohm off at 1 Hz.
         out.z = pathZ;
         for (int q = 0; q < columns; ++q) {   // (the port driven)
             VectorC n;
             system(current.col(q), n);
-            VectorC drop = n - rhs.col(q);
-            for (int a = 0; a < nr; ++a)
-                if (!loops.tree(a)) drop[a] = 0;
-            const VectorC along = loops.potentials(drop);
-            const VectorC charged = pOf(both.col(q).tail(nc) / jw);
-            VectorC root = VectorC::Zero(loops.components());
-            std::vector<int> counted(std::size_t(loops.components()), 0);
-            for (int i = 0; i < nc; ++i) {
-                const int k = loops.componentOf(i);
-                if (loops.grounded(k)) continue;
-                root[k] += charged[i] - along[i];
-                ++counted[std::size_t(k)];
-            }
-            for (int k = 0; k < loops.components(); ++k)
-                if (counted[std::size_t(k)] > 0) root[k] /= double(counted[std::size_t(k)]);
-            for (int r = 0; r < columns; ++r) {   // (the port read)
-                // (Its drive's sum on each component apart, times that
-                //  component's root: the drops' digits not rounded into
-                //  a potential 10^14 times theirs.)
-                Complex sum(0, 0);
-                VectorC shares = VectorC::Zero(loops.components());
-                for (int i = 0; i < nc; ++i) {
-                    if (c.drive(i, r) == Complex(0, 0)) continue;
-                    sum += c.drive(i, r) * along[i];
-                    shares[loops.componentOf(i)] += c.drive(i, r);
-                }
-                for (int k = 0; k < loops.components(); ++k) sum += shares[k] * root[k];
-                out.z(r, q) += sum - (rhs.col(r).transpose() * current.col(q))(0, 0);
-            }
+            out.z.col(q) += loops.voltages(c.drive, n - rhs.col(q), pOf(both.col(q).tail(nc) / jw));
         }
+        out.z -= rhs.transpose() * current;
         out.augmented = true;
         out.loopTree = true;
         return out;
