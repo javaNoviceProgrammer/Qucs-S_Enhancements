@@ -1368,9 +1368,10 @@ private slots:
     // is not past its limit at 1 Hz: its loss there that at 10 Hz within a
     // part in a thousand, dense and compressed, the compressed solve's Z the
     // dense one's to a part in 10^4, and said solved so. Compressed, in the
-    // loop-tree basis, its ports' voltages along the tree: its series
-    // inductance at 10 kHz, Z11 - Z21 under Z's 1.6e7 ohm, that at 1 MHz
-    // within 1.5e-4 (dense, 2.7e-3 off). Its fallback where that
+    // loop-tree basis. Both ways its ports' voltages taken along the tree:
+    // its series inductance at 10 kHz, Z11 - Z21 under Z's 1.6e7 ohm, that
+    // at 1 MHz within 1.5e-4 - dense, of P Q's differences, it was 2.7e-3
+    // off. Its fallback where that
     // falls short - forced, its attempts cut to two iterations -: said, on
     // one frequency at a time the highest that tries it, and those below not
     // tried; solved with the charges eliminated, warned at 1 Hz as before.
@@ -1407,12 +1408,12 @@ private slots:
             ways << w;
         }
         QVERIFY2(apart(ways.at(1), ways.at(0)) < 1e-4, qPrintable(QString::number(apart(ways.at(1), ways.at(0)))));
-        {
-            const rf::FullWave& w = ways.at(1);
+        for (const rf::FullWave& w : ways) {
             const auto henries = [&w, &fs](int k) {
                 return (w.z.at(k).at(0).at(0) - w.z.at(k).at(1).at(0)).imag() / (2 * M_PI * fs.at(k));
             };
             QVERIFY2(std::abs(henries(3) / henries(4) - 1) < 5e-4, qPrintable(QStringLiteral("%1 H at 10 kHz, %2 at 1 MHz").arg(henries(3)).arg(henries(4))));
+            QVERIFY2(w.asymmetry < 1e-12, qPrintable(QString::number(w.asymmetry)));
         }
         rf::FullWaveControl forced;
         forced.matrix = rf::FullWaveControl::Matrix::Compressed;
