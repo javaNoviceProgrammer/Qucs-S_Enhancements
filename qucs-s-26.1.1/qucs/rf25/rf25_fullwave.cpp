@@ -95,6 +95,14 @@ constexpr double kNear = 1.5;
 constexpr double kResidual = 1e-10;
 constexpr int kRestart = 100;
 constexpr int kMostIterations = 3000;
+/// The charges' term over the currents' past which a dense solve keeps the
+/// charges as unknowns of their own (AtFrequency::augmented). Measured on a
+/// square copper loop solved both ways: the eliminated system some 5e-18
+/// of it off the other in L - 5e-8 at 3.6e9, 1.3e-6 at 2.3e11, 4e-5 at
+/// 7.4e12, 2.5 % at 2.4e15 -, so a decade inside where they part by a
+/// part in a million; below it the eliminated system's symmetric factors,
+/// the cheaper, are kept.
+constexpr double kAugmentedFrom = 1e10;
 /// An ended layer's correction to P (rf25_dielectric.h) held dense up to
 /// this many cells, as its factors past them.
 constexpr int kMostDenseCorrection = 5000;
@@ -1395,6 +1403,9 @@ struct AtFrequency {
     /// its rounding - the mixed potential's breakdown at a low frequency,
     /// an open where a coil is (N4 of the open items). Nought: not measured.
     double chargeOverSeries = 0;
+    /// Dense, at a low frequency: solved with the cells' charges as unknowns
+    /// of their own (kAugmentedFrom).
+    bool augmented = false;
     /// Dense: the seconds its fill took (the Green's functions, the system
     /// and P, up to its LU) and its LU (the factors, the solve, rcond: not
     /// its wait for OpenBLAS's thread), and whether Accelerate's LAPACK or
@@ -2582,7 +2593,7 @@ void makeStatics(Context& c, int threads)
     }, sharedStatics);
 }
 
-AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric)
+AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, double augmentedFrom)
 {
     AtFrequency out;
     QElapsedTimer clock;
@@ -2619,22 +2630,30 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric)
         const int b0 = (i < mBlocks ? i : i - mBlocks) * kMirrorBlock;
         mirrorColumns(x, b0, std::min(int(x.cols()), b0 + kMirrorBlock));
     });
-    sharedOut(nr, threads, [&c, &p, &m, jw](int b) { chargeColumn(c, p, jw, m, b); });
     ownImpedances(c, f, [&m](int a, int b, Complex v) { m(a, b) += v; });
     groundImpedances(c, f, [&m](int a, int b, Complex v) { m(a, b) += v; });
-    // The charges' term against the rest of each run's own (N4): the rest is
-    // what is left of the diagonal less it - nothing but its rounding where
-    // the currents are lost.
+    // The charges' term against the rest of each run's own (N4): the rest
+    // is the diagonal before the charges' term is added.
     {
         const auto pAt = [&p](int i, int j) { return i < 0 || j < 0 ? Complex(0, 0) : p(i, j); };
         for (int a = 0; a < nr; ++a) {
             const int t = c.tail.at(a), h = c.head.at(a);
             const Complex charge = overJw(pAt(t, t) - pAt(t, h) - pAt(h, t) + pAt(h, h), jw);
-            const double rest = std::abs(m(a, a) - charge);
+            const double rest = std::abs(m(a, a));
             const double ratio = std::abs(charge) / std::max(rest, 1e-300 * std::abs(charge) + 1e-300);
             out.chargeOverSeries = std::max(out.chargeOverSeries, ratio);
         }
     }
+    // At a low frequency the charges kept as unknowns of their own, not
+    // eliminated: the charges' term over the currents' some 1e10 times or
+    // more (kAugmentedFrom). Eliminated, a run's equation is its charges'
+    // A^T P A / jw beside its currents' Zs + jw L, and past some 1e15 of
+    // that the currents are lost in its rounding - a centimetre loop read
+    // 21.4 to 26.0 nH at 1 kHz from one mesh to the next, where 24.2 is
+    // right (the production-readiness review: P53's
+    // breakdown, of which only the hint had been mended).
+    const bool augmented = out.chargeOverSeries > (augmentedFrom > 0 ? augmentedFrom : kAugmentedFrom);
+    if (!augmented) sharedOut(nr, threads, [&c, &p, &m, jw](int b) { chargeColumn(c, p, jw, m, b); });
 
     // A port and a via: the via's potential at the port's cells, by their
     // shares. Along the runs a via's potential telescopes from the via to
@@ -2662,6 +2681,49 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric)
     addPortPaths(c, k, rhs, pathZ);
     addSourceFields(c, k, rhs, pathZ);
     out.fillSeconds = double(clock.nsecsElapsed()) * 1e-9;
+    if (augmented) {
+        // The runs and the cells' charges together:
+        //     (Zs l/w + jw L) I - A^T P Q = e      e: the rest of the drive
+        //     A I + jw Q = J
+        // e the right-hand side less its A^T P J / jw, which Q holds; and
+        // each port's voltage J^T P Q + its path's - e^T I, the charge's
+        // potential found, not a difference of two terms 1/jw each. Its
+        // condition goes as 1/w where the eliminated system's goes as 1/w^2:
+        // the digits a centimetre loop lost at 1 kHz, some fifteen, some
+        // eight.
+        const int na = nr + nc;
+        MatrixC big = MatrixC::Zero(na, na);
+        big.topLeftCorner(nr, nr) = m;
+        m.resize(0, 0);
+        for (int a = 0; a < nr; ++a) {
+            const int t = c.tail.at(a), h = c.head.at(a);
+            for (int j = 0; j < nc; ++j) big(a, nr + j) = -((t >= 0 ? p(t, j) : Complex(0, 0)) - (h >= 0 ? p(h, j) : Complex(0, 0)));
+            if (t >= 0) big(nr + t, a) += 1.0;
+            if (h >= 0) big(nr + h, a) -= 1.0;
+        }
+        for (int i = 0; i < nc; ++i) big(nr + i, nr + i) = jw;
+        MatrixC extra = rhs;
+        for (int a = 0; a < nr; ++a)
+            for (int q = 0; q < c.np; ++q) extra(a, q) -= (driveAt(c.tail.at(a), q) - driveAt(c.head.at(a), q)) / jw;
+        MatrixC both(na, c.np);
+        both.topRows(nr) = extra;
+        both.bottomRows(nc) = c.drive;
+        const DenseFactors<Complex> lu(std::move(big), threads, false);
+        const MatrixC solved = lu.solve(both);
+        out.current = solved.topRows(nr);
+        out.rcond = lu.rcond();
+        out.accelerated = lu.accelerated();
+        out.openBlas = lu.openBlas();
+        out.symmetric = false;
+        out.augmented = true;
+        out.luSeconds = double(clock.nsecsElapsed()) * 1e-9 - out.fillSeconds - lu.waited();
+        if (!solved.allFinite()) {
+            out.problems << tr("The solve at %1 GHz came to nothing finite.").arg(f / 1e9, 0, 'g', 4);
+            return out;
+        }
+        out.z = c.drive.transpose() * (p * solved.bottomRows(nc)) + pathZ - extra.transpose() * out.current;
+        return out;
+    }
     // (m factorized where it is: it is not needed past here.)
     // (On the frequency's share of the threads: rf25_dense.h.)
     // (Symmetric, as each column's part below the diagonal is the part
@@ -5105,7 +5167,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (failed || (stop != nullptr && stop->load())) return;
             if (!allowedOne(control)) return;
             solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, control)
-                                                : solveAt(c, frequencies.at(k), inner, symmetricLu);
+                                                : solveAt(c, frequencies.at(k), inner, symmetricLu, control != nullptr ? control->augmentedFrom : 0.0);
             if (!solved[std::size_t(k)].problems.isEmpty()) failed = true;
             if (control != nullptr && control->done != nullptr) ++*control->done;
         }
@@ -5378,13 +5440,26 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         // resistance outweighs its reactance, as it does there.
         const int mostIterations = control != nullptr && control->mostIterations > 0 ? control->mostIterations : kMostIterations;
         const bool struggled = compress && a.iterations >= kNearMiss * mostIterations;
-        if (const double limit = struggled ? 1e12 : 1e16; a.chargeOverSeries > limit)
+        // (Solved with the charges as unknowns its condition goes as the
+        //  ratio's root: its limit the square of the eliminated one's.)
+        if (const double limit = struggled ? 1e12 : a.augmented ? 1e32 : 1e16; a.chargeOverSeries > limit)
             out.warnings << tr("At %1 Hz the solve is past its low-frequency limit: its charges' term outweighs its currents' "
                                "%2 times, and the currents are lost in its rounding - a coil may read as an open. Solved "
                                "above some %3 Hz it is not.")
                                 .arg(frequencies.at(k), 0, 'g', 4)
                                 .arg(a.chargeOverSeries, 0, 'g', 2)
                                 .arg(frequencies.at(k) * a.chargeOverSeries / limit, 0, 'g', 2);
+        if (a.augmented)
+            out.lines << tr("At %1 Hz the charges' term outweighs the currents' %2 times: solved with the cells' charges as "
+                            "unknowns of their own, whose condition goes as the root of that.")
+                             .arg(frequencies.at(k), 0, 'g', 4)
+                             .arg(a.chargeOverSeries, 0, 'g', 2);
+        else if (!compress && a.chargeOverSeries > 1e6)
+            out.lines << tr("At %1 Hz the charges' term outweighs the currents' %2 times: solved with the charges eliminated, "
+                            "some %3 digits of it lost.")
+                             .arg(frequencies.at(k), 0, 'g', 4)
+                             .arg(a.chargeOverSeries, 0, 'g', 2)
+                             .arg(int(std::round(std::log10(a.chargeOverSeries))));
         if (a.rcond < 1e-14)
             out.lines << tr("At %1 GHz the system is nearly singular (a reciprocal condition of %2): the answer there may "
                             "be rounding.")
