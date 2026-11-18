@@ -1311,6 +1311,19 @@ private slots:
             QVERIFY2(f.notes.join(QLatin1Char(' ')).contains(QStringLiteral("merged via farm(s) written as their metal thinned in place")),
                      qPrintable(f.notes.join(QLatin1Char(' '))));
         }
+        // (Two pads' arrays and the row joining them, one footprint: kept one
+        //  piece above the vias' metal, and said - the review of 62c7f001.)
+        {
+            Conductor pads;
+            pads.layer = QStringLiteral("V0");
+            pads.outline = QPolygonF({QPointF(130, -10), QPointF(150, -10), QPointF(150, -1), QPointF(158, -1), QPointF(158, -10),
+                                      QPointF(178, -10), QPointF(178, 10), QPointF(158, 10), QPointF(158, 1), QPointF(150, 1),
+                                      QPointF(150, 10), QPointF(130, 10)});
+            pads.share = 0.25;
+            const HfssExport g = hfssExportOf(model, {shapes.at(0), shapes.at(1), shapes.at(2), pads});
+            QVERIFY2(g.ok(), qPrintable(g.problems.join(QLatin1Char(' '))));
+            QVERIFY2(g.notes.join(QLatin1Char(' ')).contains(QStringLiteral("1 of them kept whole")), qPrintable(g.notes.join(QLatin1Char(' '))));
+        }
         QTemporaryDir dir;
         const Ran ran = runScript(written(e, dir.path()), dir.path());
         if (!ran.ok && ran.calls.isEmpty() && ran.output.isEmpty()) QSKIP("no python3 here");

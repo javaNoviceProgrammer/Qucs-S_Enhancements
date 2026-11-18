@@ -445,6 +445,32 @@ private slots:
             QVERIFY2(ringBox.width() > 96 && ringBox.height() > 96, qPrintable(QStringLiteral("%1 by %2").arg(ringBox.width()).arg(ringBox.height())));
             QVERIFY2(rowBox.width() > 99, qPrintable(QString::number(rowBox.width())));
         }
+        // Two pads' arrays joined by a row along their trace, merged into one
+        // footprint - two 20 µm blocks and a neck 2 µm wide and 8 long, a
+        // quarter metal: thinned only as far as it stays one piece, both pads
+        // in it, its metal then above the vias' (the review of 62c7f001: the
+        // largest piece kept alone lost the row and a pad).
+        {
+            rf::Conductor pads;
+            pads.layer = QStringLiteral("V1");
+            pads.outline = QPolygonF({QPointF(0, 0), QPointF(20, 0), QPointF(20, 9), QPointF(28, 9), QPointF(28, 0), QPointF(48, 0),
+                                      QPointF(48, 20), QPointF(28, 20), QPointF(28, 11), QPointF(20, 11), QPointF(20, 20), QPointF(0, 20)});
+            pads.share = 0.25;
+            const QList<rf::Conductor> made = rf::asSolid({pads});
+            QCOMPARE(made.size(), 1);
+            const rf::Conductor& one = made.first();
+            const QList<QPolygonF> within = rf::offsetOf({pads.outline}, 1e-3);   // (a side's own points inside)
+            QCOMPARE(within.size(), 1);
+            for (const QPointF& p : one.outline)
+                QVERIFY2(within.first().containsPoint(p, Qt::OddEvenFill), qPrintable(QStringLiteral("%1, %2 outside").arg(p.x()).arg(p.y())));
+            QVERIFY2(one.outline.containsPoint(QPointF(10, 10), Qt::OddEvenFill) && one.outline.containsPoint(QPointF(38, 10), Qt::OddEvenFill)
+                         && one.outline.containsPoint(QPointF(24, 10), Qt::OddEvenFill),
+                     "a pad or the row left out");
+            // (Thinned as far as the neck lets it - less than the footprint,
+            //  more than the vias' metal.)
+            qInfo("two pads joined by a row: the footprint %.1f um2, the vias' %.1f, written %.1f", pads.area(), pads.area() * pads.share, one.area());
+            QVERIFY2(one.area() < 0.9 * pads.area() && one.area() >= 0.98 * pads.area() * pads.share, qPrintable(QString::number(one.area())));
+        }
 
         // Without that choice the union is solid metal - more than the vias
         // were, which is the honest alternative.
