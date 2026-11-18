@@ -45,6 +45,7 @@ struct MeshCell {
     QPointF centre;      ///< µm
     double area = 0;     ///< µm²
     bool onEdge = false; ///< it touches the conductor's boundary
+    double share = 1;    ///< how much of it is metal: its conductor's (Conductor::share)
     /// The rectangle its charge is spread over in the solvers' closed
     /// forms: its box where it is one; a cell clipped by a slanted side, a
     /// rectangle of its own area at its own centroid, as its box is in

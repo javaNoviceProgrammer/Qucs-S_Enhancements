@@ -923,7 +923,7 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
     };
     struct Group {
         int span = 0, tail = -1, head = -1;
-        double area = 0, sigma = 0, z0 = 0, z1 = 0;
+        double area = 0, metal = 0, sigma = 0, z0 = 0, z1 = 0;
         QPointF weighted;
         QRectF box;
         QList<int> cells;
@@ -959,6 +959,7 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
         g.tail = tail;
         g.head = head;
         g.area += cell.area;
+        g.metal += cell.area * cell.share;
         g.weighted += cell.centre * cell.area;
         g.box = g.box.isNull() ? cell.outline.boundingRect() : g.box.united(cell.outline.boundingRect());
         g.cells << index;
@@ -975,7 +976,10 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
         v.head = g.head;
         v.span = g.span;
         v.at = (g.tail < 0 ? mesh.cells.at(g.head).centre : g.weighted / g.area) * micrometre;
-        v.side = std::sqrt(g.area) * micrometre;
+        // (Its side the square of its metal: a merged farm's footprint
+        //  conducts as the vias in it do - Conductor::share. Its field, its
+        //  mean distance, the footprint's.)
+        v.side = std::sqrt(g.metal) * micrometre;
         // Rosa's mean distance of a rectangle with itself, 0.2235 (a + b):
         // a square's 0.447 a, a thin strip's e^-3/2 of its width.
         v.gmd = 0.2235 * (g.box.width() + g.box.height()) * micrometre;

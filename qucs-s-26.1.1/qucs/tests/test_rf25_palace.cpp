@@ -552,6 +552,21 @@ private slots:
                      qPrintable(QString::number(m.areaOf(m.tagOf(2, QStringLiteral("port P1"))))));
             QVERIFY2(e.portSaid.join(QLatin1Char(' ')).contains(QStringLiteral("down to M1")), qPrintable(e.portSaid.join(' ')));
         }
+        // A via farm merged into its footprint, 40 µm square, a quarter of it
+        // metal (Conductor::share - P44 of the open items of 8 November):
+        // written as its metal, the 20 µm square about its middle that the
+        // via above is, not as solid metal over the footprint.
+        Conductor farm = box(QStringLiteral("V1"), 30, 30, 70, 70);
+        farm.share = 0.25;
+        PalaceOptions options;
+        options.margin = 100e-6;
+        options.air = 200e-6;
+        const PalaceExport e = palaceExportOf(model, {shapes.at(0), shapes.at(1), farm}, options);
+        QVERIFY2(e.ok(), qPrintable(e.problems.join(QLatin1Char(' '))));
+        const Msh m = readMsh(e.mesh);
+        QVERIFY2(m.error.isEmpty(), qPrintable(m.error));
+        const double v1 = m.areaOf(m.tagOf(2, QStringLiteral("V1")));
+        QVERIFY2(std::abs(v1 - 4 * 20 * 10) < 1e-6, qPrintable(QString::number(v1)));
     }
 
     // An internal port whose To metal is under its From, the metals thick:

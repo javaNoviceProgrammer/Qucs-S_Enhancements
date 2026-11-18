@@ -1045,29 +1045,129 @@ private slots:
                  qPrintable(QStringLiteral("%1 %2").arg(skin.at(0)).arg(skin.at(1))));
     }
 
+    // One model for the loop inductance and the full wave (the production-
+    // readiness review): a loop's one port that returns
+    // through a terminal at its other end - as the full wave takes a loop -
+    // makes the loop's two ends, the port's and the terminal's, on the
+    // terminal's metal; where it named none, one port is no loop, as before.
+    void aPortReturningThroughATerminalMakesTheLoop()
+    {
+        rf::Model m = rf::Model::blank();
+        rf::Node* ports = nullptr;
+        for (rf::Node& n : m.root.children)
+            if (n.type == QStringLiteral("rf_ports")) ports = &n;
+        QVERIFY(ports != nullptr);
+        ports->children.clear();
+        rf::Node p1 = m.make(QStringLiteral("rf_edge_port"));
+        p1.label = QStringLiteral("P1");
+        p1.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+        p1.props.insert(QStringLiteral("x"), QStringLiteral("10[um]"));
+        p1.props.insert(QStringLiteral("return"), QStringLiteral("terminals"));
+        p1.props.insert(QStringLiteral("returns"), QStringLiteral("T1"));
+        rf::Node t1 = m.make(QStringLiteral("rf_terminal"));
+        t1.label = QStringLiteral("T1");
+        t1.props.insert(QStringLiteral("metal"), QStringLiteral("M1"));
+        t1.props.insert(QStringLiteral("x"), QStringLiteral("90[um]"));
+        t1.props.insert(QStringLiteral("y"), QStringLiteral("5[um]"));
+        ports->children.push_back(p1);
+        ports->children.push_back(t1);
+        rf::Processed processed;
+        processed.conductors << strip(0, 0, 100, 10);
+        rf::SolveRequest quasi;
+        quasi.solver = QStringLiteral("quasi_static");
+        rf::SolveJob job;
+        rf::setUpSolve(job, m, processed, rf::Mesh(), quasi, QString());
+        QVERIFY(job.loop);
+        QCOMPARE(job.in, QPointF(10, 0));
+        QCOMPARE(job.out, QPointF(90, 5));
+        QCOMPARE(job.outLayer, QStringLiteral("M1"));
+        QVERIFY2(job.portsSaid.contains(QStringLiteral("returning through T1")), qPrintable(job.portsSaid));
+        // (Its returns naming no terminal: no loop.)
+        ports->children.front().props.insert(QStringLiteral("returns"), QStringLiteral("T9"));
+        rf::SolveJob none;
+        rf::setUpSolve(none, m, processed, rf::Mesh(), quasi, QString());
+        QVERIFY(!none.loop);
+        QVERIFY2(none.portsSaid.contains(QStringLiteral("One port")), qPrintable(none.portsSaid));
+    }
+
+    // A via farm merged feeds its plate across its area in the full wave too
+    // (P44 of the open items of 8 November: a capacitor's plate fed by 544
+    // vias read 1.21 Ohm in series merged, 0.774 unmerged): the vias' runs
+    // conduct as their metal in the footprint (Conductor::share). Two plates
+    // 60 µm square of 0.2 µm metal on M1 and M2, fed by strips 40 µm long,
+    // 36 vias of 2 µm on a 10 µm pitch between them, 100 µm of vacuum over a
+    // ground; the series resistance, -1/Y12's, at 1 GHz: 0.5175, 0.5182 Ohm
+    // merged and 0.5590 merged as solid metal (asSolid(): the old shrunk block).
+    void aViaFarmMergedFeedsItsPlateAcrossItsAreaFullWave()
+    {
+        rf::Stack two = grounded(1, 100e-6, 0, 0.2e-6, 5.8e7);
+        rf::Layer ild;
+        ild.kind = rf::Layer::Dielectric;
+        ild.name = QStringLiteral("ILD");
+        ild.tag = QStringLiteral("ild");
+        ild.thickness = 1e-6;
+        ild.epsr = 1;
+        rf::Layer m2 = two.layers.last();
+        m2.name = QStringLiteral("M2");
+        m2.tag = QStringLiteral("m2");
+        two.layers << ild << m2;
+        two = withVia(two, QStringLiteral("V1"), QStringLiteral("M1"), QStringLiteral("M2"));
+        two.layers.last().sigma = 1e5;   // (resistive: the vias some 70 mOhm of it, so that their own conductance tells)
+        QMap<QString, QList<QPolygonF>> drawn;
+        drawn[QStringLiteral("M1")] = {QPolygonF(QRectF(0, 0, 60, 60)), QPolygonF(QRectF(-40, 20, 40, 20))};
+        drawn[QStringLiteral("M2")] = {QPolygonF(QRectF(0, 0, 60, 60)), QPolygonF(QRectF(60, 20, 40, 20))};
+        for (int i = 0; i < 6; ++i)
+            for (int j = 0; j < 6; ++j) drawn[QStringLiteral("V1")] << QPolygonF(QRectF(4 + 10 * i, 4 + 10 * j, 2, 2));
+        const auto series = [&](bool merge, bool solid) {
+            rf::Processing how;
+            how.dropSlivers = false;
+            how.mergeVias = merge;
+            how.viaDistance = 9e-6;
+            const rf::Processed done = rf::processShapes(drawn, {}, how, two);
+            const QList<rf::Conductor> cs = solid ? rf::asSolid(done.conductors) : done.conductors;
+            rf::MeshSettings mesh;
+            mesh.maximum = 4e-6;
+            const rf::FullWave w = rf::fullWaveOf(rf::meshOf(cs, mesh, two, 1e9), cs, two,
+                                                  {edgePort(QPointF(-40, 30), QStringLiteral("M1"), QPointF(-1, 0)),
+                                                   edgePort(QPointF(100, 30), QStringLiteral("M2"), QPointF(1, 0))},
+                                                  {1e9});
+            if (!w.ok()) return Complex(-1, 0);
+            const Matrix2 y = zOf(w, 0).inverse();
+            return -1.0 / y(0, 1);
+        };
+        const Complex apart = series(false, false), merged = series(true, false), shrunk = series(true, true);
+        qWarning("a plate fed by a via farm, full wave at 1 GHz: R %.4f Ohm unmerged, %.4f merged, %.4f merged as solid metal",
+                 apart.real(), merged.real(), shrunk.real());
+        QVERIFY2(apart.real() > 0 && merged.real() > 0 && shrunk.real() > 0, "a solve failed");
+        QVERIFY2(std::abs(merged.real() / apart.real() - 1) < 0.02, qPrintable(QStringLiteral("%1 against %2").arg(merged.real()).arg(apart.real())));
+        QVERIFY2(shrunk.real() / apart.real() - 1 > 0.05, qPrintable(QStringLiteral("%1 against %2").arg(shrunk.real()).arg(apart.real())));
+    }
+
     // A coplanar line in air is as fast as light, whatever its cross-section
     // and its cells (P1 of the open items of 8 November): the signal 50 µm,
     // its gaps 2 and 5 µm, its grounds 160, 2 µm of metal as its two faces,
-    // at 10 GHz from two lengths. Its cells beside the gaps, 0.31 µm wide and
-    // 143 µm long, beside shorter ones: each pair's potential at its cells'
-    // centres, made symmetric by the mean of the two ways, read eps_eff 1.367
-    // and Z0 41.25 Ohm at 2 µm (the review's 1.093 at twelve across). Now
-    // the longer's mean potential of the shorter's charge: 1.0014 and 48.02
-    // at 2 µm, 1.0018 and 67.05 at 5 (1.008 and 47.85, 1.004 and 66.88 at
-    // twelve across). Z0 against a 2D boundary-element solve of the
-    // cross-section in air, its metal solid (cpw2d.py beside
-    // an earlier note): 47.26 and
-    // 66.45 Ohm.
+    // at 30 GHz from lines 0.5 and 1.5 mm long. Its cells beside the gaps,
+    // fractions of a micrometre wide and tens long, beside shorter ones: each
+    // pair's potential at its cells' centres, made symmetric by the mean of
+    // the two ways, read eps_eff 1.459 and Z0 40.29 Ohm at 2 µm (the review's
+    // 1.093, of 1 and 3 mm at 10 GHz, twelve across). Now the longer's mean
+    // potential of the shorter's charge: 1.0050 and 47.92 at 2 µm, 1.0013 and
+    // 67.07 at 5. Z0 against a 2D boundary-element solve of the cross-section
+    // in air, its metal solid (cpw2d.py beside an earlier note
+    // rf25-production-readiness.md): 47.26 and 66.45 Ohm. (At 30 GHz, not
+    // the review's 10: a third of the cells, 1.9 s here where 10 GHz took
+    // 8.6, and past five minutes under the sanitizers.)
     void aCoplanarLineInAirIsAsFastAsLight()
     {
         rf::Stack st = grounded(1, 100e-6, 0, 2e-6, 1e10);
         st.layers[0].variant = QStringLiteral("open");
         st.layers[2].twoSheets = true;
         const QString m1 = QStringLiteral("M1");
-        const double f = 1e10, k0 = 2 * M_PI * f / kC0;
+        const double L1 = 500, L2 = 1500;
+        const double f = 3e10, k0 = 2 * M_PI * f / kC0;
         for (const auto& [g, z2d] : {std::pair(2.0, 47.264), std::pair(5.0, 66.455)}) {
             QList<Matrix2> chains;
-            for (const double l : {1000.0, 3000.0}) {
+            for (const double l : {L1, L2}) {
                 const QList<rf::Conductor> cpw = {on(m1, 0, -25, l, 50), on(m1, 0, 25 + g, l, 160), on(m1, 0, -185 - g, l, 160)};
                 rf::MeshSettings how;
                 how.cellsAcross = 4;
@@ -1080,7 +1180,7 @@ private slots:
                 QVERIFY2(w.asymmetry < 1e-6, qPrintable(QString::number(w.asymmetry)));
                 chains << chainOf(zOf(w, 0));
             }
-            const TwoLine wave = twoLine(chains.at(0), chains.at(1), 1000e-6, 3000e-6, k0);
+            const TwoLine wave = twoLine(chains.at(0), chains.at(1), L1 * 1e-6, L2 * 1e-6, k0);
             const double eps = std::pow(wave.gamma.imag() / k0, 2), z0 = wave.z0.real();
             qWarning("a coplanar line in air, its gaps %g um: eps_eff %.4f, Z0 %.3f Ohm against %.3f", g, eps, z0, z2d);
             QVERIFY2(std::abs(eps - 1) < 0.01, qPrintable(QStringLiteral("eps_eff %1 at %2 um").arg(eps).arg(g)));

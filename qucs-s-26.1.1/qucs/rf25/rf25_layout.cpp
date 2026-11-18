@@ -133,11 +133,39 @@ double breadthAcross(const QList<QPolygonF>& shapes, QPointF middle, QPointF acr
     int k = 0;
     while (k + 2 < at.size() && at.at(k + 1) < 0) ++k;
     const auto inside = [&](int i) { return at.at(i + 1) > at.at(i) && on(0.5 * (at.at(i) + at.at(i + 1))); };
-    if (!on(0) && !inside(k)) return 0;
+    // (The middle on a crossing itself: the stretch beside it that is on a
+    //  shape, not one off every shape that its own judging took in.)
+    if (!inside(k)) {
+        if (k + 2 < at.size() && at.at(k + 1) == 0 && inside(k + 1)) ++k;
+        else return 0;
+    }
     int lo = k, hi = k;
     while (lo > 0 && (at.at(lo) == at.at(lo - 1) || inside(lo - 1))) --lo;
     while (hi + 2 < at.size() && (at.at(hi + 2) == at.at(hi + 1) || inside(hi + 1))) ++hi;
     return at.at(hi + 1) - at.at(lo);
+}
+
+QList<Conductor> asSolid(const QList<Conductor>& conductors)
+{
+    QList<Conductor> out = conductors;
+    for (Conductor& c : out) {
+        if (!(c.share < 1) || !(c.share > 0)) continue;
+        // (Its centroid: the polygon's, by its signed triangles.)
+        double twice = 0, cx = 0, cy = 0;
+        for (int i = 0; i < c.outline.size(); ++i) {
+            const QPointF a = c.outline.at(i), b = c.outline.at((i + 1) % c.outline.size());
+            const double cross = a.x() * b.y() - b.x() * a.y();
+            twice += cross;
+            cx += (a.x() + b.x()) * cross;
+            cy += (a.y() + b.y()) * cross;
+        }
+        if (!(std::abs(twice) > 0)) continue;
+        const QPointF middle(cx / (3 * twice), cy / (3 * twice));
+        const double scale = std::sqrt(c.share);
+        for (QPointF& p : c.outline) p = middle + scale * (p - middle);
+        c.share = 1;
+    }
+    return out;
 }
 
 double conductorWidthOf(const QPolygonF& polygon)
@@ -1306,6 +1334,7 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
         // A via layer's own step first: the vias of a farm are joined by
         // how close they are, not by touching.
         const bool vias = of->kind == Layer::Via;
+        QList<QPolygonF> viasOf;   // (a farm's vias, where they were merged keeping their metal)
         if (vias && how.mergeVias && shapes.size() > 1 && viaDistance > 0) {
             out.report.viasFrom += int(shapes.size());
             double wanted = 0;
@@ -1320,27 +1349,20 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
             if (one.isEmpty()) one = shapes;
             double after = 0;
             for (const QPolygonF& s : std::as_const(one)) after += areaOf(s);
-            // Keep the metal's area: each step takes off (extra
-            // area)/(perimeter), which overshoots on a shape with corners,
-            // so it is repeated until it is within a per cent or it stops
-            // helping.
-            for (int step = 0; how.keepArea && step < 5 && after > wanted * 1.01 && !one.isEmpty(); ++step) {
-                double around = 0;
-                for (const QPolygonF& s : std::as_const(one)) around += perimeterOf(s);
-                if (around <= 0) break;
-                const QList<QPolygonF> smaller = offsetOf(one, -(after - wanted) / around);
-                double shrunk = 0;
-                for (const QPolygonF& s : std::as_const(smaller)) shrunk += areaOf(s);
-                if (smaller.isEmpty() || shrunk < wanted * 0.98 || shrunk >= after) break;
-                one = smaller;
-                after = shrunk;
-            }
+            // Keep the metal: the union is the farm's footprint, and each of
+            // its shapes conducts as the vias in it do - their area over its
+            // (Conductor::share, set as the conductors are made). It was
+            // shrunk to the vias' area instead, a block in the middle of the
+            // footprint: a farm under a plate then fed it there alone, and
+            // the plate's spreading added 0.44 Ohm where the vias feed it
+            // across its area (P44 of the open items of 8 November).
+            if (how.keepArea) viasOf = shapes;
             out.report.viasTo += int(one.size());
-            out.report.areaKept = wanted > 0 ? after / wanted : 1;
+            out.report.areaKept = after > 0 && how.keepArea ? wanted / after : 1;
             if (one.size() < shapes.size())
                 out.report.lines << tr("%1: merged %2 vias into %3 shape(s)%4.")
                                         .arg(layer).arg(shapes.size()).arg(one.size())
-                                        .arg(how.keepArea ? tr(", keeping %1% of their area")
+                                        .arg(how.keepArea ? tr(", each conducting as the vias in it - %1% of its area")
                                                                 .arg(std::round(out.report.areaKept * 1000) / 10)
                                                           : QString());
             shapes = one;
@@ -1453,6 +1475,17 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
             c.layer = layer;
             c.outline = shapes.at(i);
             c.fill = isFill;
+            // (A merged farm's shape: the vias' area in it over its own.)
+            if (!viasOf.isEmpty()) {
+                const double own = areaOf(c.outline);
+                double metal = 0;
+                const QRectF box = c.outline.boundingRect();
+                for (const QPolygonF& via : std::as_const(viasOf)) {
+                    const QPointF at = via.boundingRect().center();
+                    if (box.contains(at) && c.outline.containsPoint(at, Qt::OddEvenFill)) metal += areaOf(via);
+                }
+                if (own > 0 && metal > 0) c.share = std::min(1.0, metal / own);
+            }
             if (widths.at(i) > 0) {
                 c.spine = spines.at(i);
                 c.spineWidth = widths.at(i);

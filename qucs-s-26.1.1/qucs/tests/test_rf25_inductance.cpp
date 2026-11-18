@@ -14,6 +14,7 @@
 #include <array>
 
 #include "rf25/rf25_inductance.h"
+#include "rf25/rf25_layout.h"
 #include "multiphysics/fem_sparse.h"
 
 #include <cmath>
@@ -912,6 +913,71 @@ private slots:
     // L, L and R at direct current to a part in 1e6, each run's current to
     // 1e-4 of the largest. And the mesh this build used to refuse, past 3000 runs and
     // cells, is solved, its L within 2 % of a coarser dense mesh's, said.
+    // A via farm that feeds a plate across its area, merged (the
+    // processing's default), feeds it so still (P44 of the open items of 8
+    // November): the union its footprint, conducting as the vias in it do
+    // (Conductor::share), where it was shrunk to the vias' area - a block in
+    // the plate's middle, the plate's spreading added in series (0.44 Ohm on
+    // the review's capacitor). Two plates 60 µm square of 0.2 µm metal, one
+    // on M1 and one on M2, each fed by a strip 40 µm long, 36 vias of 2 µm on a 10 µm
+    // pitch between them; R at direct current end to end, unmerged, merged,
+    // and merged as solid metal (asSolid(): the old shrunk block) - 0.5158,
+    // 0.5169 and 0.5562 Ohm.
+    void aViaFarmMergedFeedsItsPlateAcrossItsArea()
+    {
+        rf::Stack two = grounded(1, 100e-6, 0.2e-6, 5.8e7);
+        rf::Layer ild;
+        ild.kind = rf::Layer::Dielectric;
+        ild.name = QStringLiteral("ILD");
+        ild.tag = QStringLiteral("ild");
+        ild.thickness = 1e-6;
+        ild.epsr = 4;
+        rf::Layer via;
+        via.kind = rf::Layer::Via;
+        via.name = QStringLiteral("V1");
+        via.tag = QStringLiteral("v1");
+        via.from = QStringLiteral("M1");
+        via.to = QStringLiteral("M2");
+        via.sigma = 1e5;   // (resistive: the vias some 70 mOhm of it, so that their own conductance tells)
+        rf::Layer m2 = two.layers.last();
+        m2.name = QStringLiteral("M2");
+        m2.tag = QStringLiteral("m2");
+        two.layers << ild << via << m2;
+        QMap<QString, QList<QPolygonF>> drawn;
+        drawn[QStringLiteral("M1")] = {QPolygonF(QRectF(0, 0, 60, 60)), QPolygonF(QRectF(-40, 20, 40, 20))};
+        drawn[QStringLiteral("M2")] = {QPolygonF(QRectF(0, 0, 60, 60)), QPolygonF(QRectF(60, 20, 40, 20))};
+        double wanted = 0;
+        for (int i = 0; i < 6; ++i)
+            for (int j = 0; j < 6; ++j) {
+                drawn[QStringLiteral("V1")] << QPolygonF(QRectF(4 + 10 * i, 4 + 10 * j, 2, 2));
+                wanted += 4;
+            }
+        const auto resistance = [&](bool merge, bool solid, QString* said) {
+            rf::Processing how;
+            how.dropSlivers = false;
+            how.mergeVias = merge;
+            how.viaDistance = 9e-6;
+            const rf::Processed done = rf::processShapes(drawn, {}, how, two);
+            const QList<rf::Conductor> cs = solid ? rf::asSolid(done.conductors) : done.conductors;
+            double metal = 0;
+            for (const rf::Conductor& c : cs)
+                if (c.layer == QLatin1String("V1")) metal += c.area() * c.share;
+            *said = QStringLiteral("%1 via shape(s), %2 um2 of metal").arg(done.byLayer().value(QStringLiteral("V1"))).arg(metal);
+            if (std::abs(metal / wanted - 1) > 0.02) return -1.0;
+            const rf::Inductance l = rf::inductanceOf(meshed(cs, 2), cs, two, QPointF(-40, 30), QPointF(100, 30), 1e-6, 0,
+                                                      nullptr, QStringLiteral("M1"), QStringLiteral("M2"));
+            if (!l.ok()) *said += l.problems.join(" | ");
+            return l.ok() ? l.rDc : -1.0;
+        };
+        QString a, b, c;
+        const double apart = resistance(false, false, &a), merged = resistance(true, false, &b), shrunk = resistance(true, true, &c);
+        qWarning("a plate fed by a via farm: R_dc %.4f Ohm unmerged (%s), %.4f merged (%s), %.4f merged as solid metal (%s)", apart,
+                 qPrintable(a), merged, qPrintable(b), shrunk, qPrintable(c));
+        QVERIFY2(apart > 0 && merged > 0 && shrunk > 0, qPrintable(a + " / " + b + " / " + c));
+        QVERIFY2(std::abs(merged / apart - 1) < 0.02, qPrintable(QStringLiteral("%1 against %2 Ohm").arg(merged).arg(apart)));
+        QVERIFY2(shrunk / apart - 1 > 0.05, qPrintable(QStringLiteral("%1 against %2 Ohm").arg(shrunk).arg(apart)));
+    }
+
     void aLoopPastTheDenseLimitIsSolvedCompressed()
     {
         const rf::Stack stack = grounded(9.8, 100e-6, 3e-6, 5.8e7);
