@@ -133,7 +133,12 @@ double breadthAcross(const QList<QPolygonF>& shapes, QPointF middle, QPointF acr
     int k = 0;
     while (k + 2 < at.size() && at.at(k + 1) < 0) ++k;
     const auto inside = [&](int i) { return at.at(i + 1) > at.at(i) && on(0.5 * (at.at(i) + at.at(i + 1))); };
-    if (!on(0) && !inside(k)) return 0;
+    // (The middle on a crossing itself: the stretch beside it that is on a
+    //  shape, not one off every shape that its own judging took in.)
+    if (!inside(k)) {
+        if (k + 2 < at.size() && at.at(k + 1) == 0 && inside(k + 1)) ++k;
+        else return 0;
+    }
     int lo = k, hi = k;
     while (lo > 0 && (at.at(lo) == at.at(lo - 1) || inside(lo - 1))) --lo;
     while (hi + 2 < at.size() && (at.at(hi + 2) == at.at(hi + 1) || inside(hi + 1))) ++hi;

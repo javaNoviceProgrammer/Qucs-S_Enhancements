@@ -260,6 +260,9 @@ private slots:
         //  nothing added, the stretch past it judged by its middle.)
         const QPolygonF grazed({QPointF(10, 1), QPointF(12, 3), QPointF(8, 3)});
         QCOMPARE(rf::breadthAcross({bar, grazed}, QPointF(5, 1), QPointF(1, 0), 100), 10.0);
+        // (The middle exactly on a side: the stretch beside it on the bar,
+        //  not the one off it.)
+        QCOMPARE(rf::breadthAcross({bar}, QPointF(0, 1), QPointF(1, 0), 100), 10.0);
         // (No further than the reach either way; nought off every shape.)
         QCOMPARE(rf::breadthAcross({bar}, QPointF(5, 1), QPointF(1, 0), 3), 6.0);
         QCOMPARE(rf::breadthAcross({bar}, QPointF(5, 9), QPointF(1, 0), 100), 0.0);
