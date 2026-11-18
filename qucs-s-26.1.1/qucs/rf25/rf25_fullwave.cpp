@@ -103,6 +103,14 @@ constexpr int kMostIterations = 3000;
 /// part in a million; below it the eliminated system's symmetric factors,
 /// the cheaper, are kept.
 constexpr double kAugmentedFrom = 1e10;
+/// The iterations a compressed solve tries the charges as unknowns of their
+/// own for, before it solves with them eliminated: a loop of current
+/// converges in some tens (a centimetre loop at 10 Hz, 20), but where the
+/// cells' potentials far outweigh the drops along the runs - an open line's,
+/// 10^11 V against milliohms at 1 Hz - the runs' rows ask a residual below
+/// their rounding, and it took all 3,000 at 100 kHz and did not converge
+/// below (step 5's follow-ups).
+constexpr int kAugmentedMost = 300;
 /// An ended layer's correction to P (rf25_dielectric.h) held dense up to
 /// this many cells, as its factors past them.
 constexpr int kMostDenseCorrection = 5000;
@@ -1403,9 +1411,13 @@ struct AtFrequency {
     /// its rounding - the mixed potential's breakdown at a low frequency,
     /// an open where a coil is (N4 of the open items). Nought: not measured.
     double chargeOverSeries = 0;
-    /// Dense, at a low frequency: solved with the cells' charges as unknowns
-    /// of their own (kAugmentedFrom).
+    /// At a low frequency: solved with the cells' charges as unknowns of
+    /// their own (kAugmentedFrom).
     bool augmented = false;
+    /// Compressed: so tried, short of its residual in kAugmentedMost
+    /// iterations, and solved with them eliminated instead - the iterations
+    /// it took.
+    int augmentedTried = 0;
     /// Dense: the seconds its fill took (the Green's functions, the system
     /// and P, up to its LU) and its LU (the factors, the solve, rcond: not
     /// its wait for OpenBLAS's thread), and whether Accelerate's LAPACK or
@@ -2672,9 +2684,13 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, dou
     // Each port driven by an ampere in turn: A^T P J / jw the drive.
     const MatrixC pDrive = p * c.drive;
     const auto driveAt = [&pDrive](int i, int q) { return i < 0 ? Complex(0, 0) : pDrive(i, q); };
-    MatrixC rhs(nr, c.np);
-    for (int a = 0; a < nr; ++a)
-        for (int q = 0; q < c.np; ++q) rhs(a, q) = (driveAt(c.tail.at(a), q) - driveAt(c.head.at(a), q)) / jw;
+    // (With the charges as unknowns, the rest of it alone, e: Q holds that
+    //  part. Taken from the whole, e was lost in its rounding - the part
+    //  1/jw outweighs it as the charges' term the currents'.)
+    MatrixC rhs = MatrixC::Zero(nr, c.np);
+    if (!augmented)
+        for (int a = 0; a < nr; ++a)
+            for (int q = 0; q < c.np; ++q) rhs(a, q) = (driveAt(c.tail.at(a), q) - driveAt(c.head.at(a), q)) / jw;
     for (int j = 0; j < nv; ++j)
         for (int q = 0; q < c.np; ++q) rhs(c.vias.at(j).run, q) -= portVia(q, j);
     MatrixC pathZ = MatrixC::Zero(c.np, c.np);
@@ -2685,7 +2701,7 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, dou
         // The runs and the cells' charges together:
         //     (Zs l/w + jw L) I - A^T P Q = e      e: the rest of the drive
         //     A I + jw Q = J
-        // e the right-hand side less its A^T P J / jw, which Q holds; and
+        // e the right-hand side without its A^T P J / jw, which Q holds; and
         // each port's voltage J^T P Q + its path's - e^T I, the charge's
         // potential found, not a difference of two terms 1/jw each. Its
         // condition goes as 1/w where the eliminated system's goes as 1/w^2:
@@ -2702,9 +2718,7 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, dou
             if (h >= 0) big(nr + h, a) -= 1.0;
         }
         for (int i = 0; i < nc; ++i) big(nr + i, nr + i) = jw;
-        MatrixC extra = rhs;
-        for (int a = 0; a < nr; ++a)
-            for (int q = 0; q < c.np; ++q) extra(a, q) -= (driveAt(c.tail.at(a), q) - driveAt(c.head.at(a), q)) / jw;
+        const MatrixC& extra = rhs;
         MatrixC both(na, c.np);
         both.topRows(nr) = extra;
         both.bottomRows(nc) = c.drive;
@@ -2991,6 +3005,9 @@ struct System {
     const HMatrix& g;
     const Eigen::SparseMatrix<Complex>& own;
     Complex jw;
+    /// A^T P A / jw with the rest; false where the charges are unknowns of
+    /// their own (kAugmentedFrom), the runs' part of that system alone.
+    bool charges = true;
     void operator()(const VectorC& x, VectorC& y) const;
 };
 
@@ -3009,16 +3026,18 @@ void System::operator()(const VectorC& x, VectorC& y) const
     }
     // A^T P A / jw: the charge each cell is left (a via to the ground
     // leaving its charge to the ground), its potentials, each run's drop.
-    VectorC q = VectorC::Zero(c.nc), v = VectorC::Zero(c.nc);
-    for (int a = 0; a < c.nr; ++a) {
-        if (c.tail.at(a) >= 0) q[c.tail.at(a)] += x[a];
-        q[c.head.at(a)] -= x[a];
+    if (charges) {
+        VectorC q = VectorC::Zero(c.nc), v = VectorC::Zero(c.nc);
+        for (int a = 0; a < c.nr; ++a) {
+            if (c.tail.at(a) >= 0) q[c.tail.at(a)] += x[a];
+            q[c.head.at(a)] -= x[a];
+        }
+        p.multiply(q, v);
+        addFactored(c, q, v);
+        // (Divided, not overJw(): one a run, against the dense system's one
+        //  a term, its cost is nothing.)
+        for (int a = 0; a < c.nr; ++a) y[a] += ((c.tail.at(a) >= 0 ? v[c.tail.at(a)] : Complex(0, 0)) - v[c.head.at(a)]) / jw;
     }
-    p.multiply(q, v);
-    addFactored(c, q, v);
-    // (Divided, not overJw(): one a run, against the dense system's one a
-    //  term, its cost is nothing.)
-    for (int a = 0; a < c.nr; ++a) y[a] += ((c.tail.at(a) >= 0 ? v[c.tail.at(a)] : Complex(0, 0)) - v[c.head.at(a)]) / jw;
     // The vias: W = -A^T Phi, Phi each via's potential at each cell, is a
     // run in the plane's coupling to a via both ways round, and half of it
     // each way round between two vias, beside their G_zz.
@@ -3053,7 +3072,7 @@ void System::operator()(const VectorC& x, VectorC& y) const
  * preconditioned with, by its LU.
  */
 Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, const Kernels& k,
-                                       const std::vector<Eigen::Triplet<Complex>>& own)
+                                       const std::vector<Eigen::Triplet<Complex>>& own, bool augmented = false)
 {
     const int nr = c.nr, nc = c.nc, nv = int(c.vias.size());
     const Complex jw = k.jw;
@@ -3082,8 +3101,6 @@ Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, c
     Eigen::SparseMatrix<Complex> incidence(nc, nr);
     incidence.setFromTriplets(terms.begin(), terms.end());
     const Eigen::SparseMatrix<Complex> transposed = incidence.transpose();
-    Eigen::SparseMatrix<Complex> charged = transposed * (pNear * incidence);
-    charged /= jw;
     if (nv > 0) {
         terms.clear();
         for (const QPair<int, int>& q : z.nearViaCells) terms.emplace_back(q.second, q.first, k.viaPotential(q.first, q.second));
@@ -3104,6 +3121,23 @@ Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, c
             if (ri != rj) near.emplace_back(rj, ri, v);
         }
     }
+    if (augmented) {
+        // The charges unknowns of their own, as the system has them:
+        //     [ near    -A^T P_near ]
+        //     [ A        jw         ]
+        const Eigen::SparseMatrix<Complex> drop = transposed * pNear;
+        for (int j = 0; j < drop.outerSize(); ++j)
+            for (Eigen::SparseMatrix<Complex>::InnerIterator it(drop, j); it; ++it) near.emplace_back(int(it.row()), nr + j, -it.value());
+        for (int j = 0; j < incidence.outerSize(); ++j)
+            for (Eigen::SparseMatrix<Complex>::InnerIterator it(incidence, j); it; ++it) near.emplace_back(nr + int(it.row()), j, it.value());
+        for (int i = 0; i < nc; ++i) near.emplace_back(nr + i, nr + i, jw);
+        Eigen::SparseMatrix<Complex> m(nr + nc, nr + nc);
+        m.setFromTriplets(near.begin(), near.end());
+        m.makeCompressed();
+        return m;
+    }
+    Eigen::SparseMatrix<Complex> charged = transposed * (pNear * incidence);
+    charged /= jw;
     Eigen::SparseMatrix<Complex> m(nr, nr);
     m.setFromTriplets(near.begin(), near.end());
     m += charged;
@@ -3177,60 +3211,10 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
     }
     Eigen::SparseMatrix<Complex> d(nr, nr);
     d.setFromTriplets(withGround.begin(), withGround.end());
-    const System system{c, z, kx, ky, p, phi, g, d, jw};
-    fem::SparseLu<Complex> lu;
-    lu.compute(nearField(c, z, k, own));
-    if (lu.info() != Eigen::Success) {
-        out.problems << tr("At %1 GHz the near field's LU, which the compressed solve is preconditioned with, failed: %2")
-                            .arg(f / 1e9, 0, 'g', 4)
-                            .arg(QString::fromStdString(lu.lastErrorMessage()));
-        return out;
-    }
-    const Operator precondition = [&lu](const VectorC& x, VectorC& y) { y = lu.solve(x); };
-
-    // The drive: each column's potentials P J, and the vias' potential at
-    // its cells.
-    MatrixC pd(nc, columns), ph = MatrixC::Zero(nv, columns), rhs(nr, columns);
-    for (int q = 0; q < columns; ++q) {
-        const VectorC dq = c.drive.col(q);
-        VectorC t = VectorC::Zero(nc);
-        p.multiply(dq, t);
-        addFactored(c, dq, t);
-        pd.col(q) = t;
-        if (nv == 0) continue;
-        VectorC u = VectorC::Zero(nv);
-        phi.multiplyTransposed(dq, u);
-        ph.col(q) = u;
-    }
-    for (int a = 0; a < nr; ++a)
-        for (int q = 0; q < columns; ++q)
-            rhs(a, q) = ((c.tail.at(a) >= 0 ? pd(c.tail.at(a), q) : Complex(0, 0)) - pd(c.head.at(a), q)) / jw;
-    for (int j = 0; j < nv; ++j)
-        for (int q = 0; q < columns; ++q) rhs(c.vias.at(j).run, q) -= ph(j, q);
-    MatrixC pathZ = MatrixC::Zero(columns, columns);
-    addPortPaths(c, k, rhs, pathZ);
-    addSourceFields(c, k, rhs, pathZ);
-    MatrixC current(nr, columns), applied(nr, columns);
-    for (int q = 0; q < columns; ++q) {
-        VectorC x = VectorC::Zero(nr), mx;
-        const Gmres solved = gmres(system, precondition, rhs.col(q), x, kResidual, kRestart, most, stop, progress);
-        if (solved.stopped) return AtFrequency();
-        out.iterations = std::max(out.iterations, solved.iterations);
-        out.residual = std::max(out.residual, solved.residual);
-        current.col(q) = x;
-        system(x, mx);
-        applied.col(q) = mx;
-    }
-    // Short of its residual: where what it left is small - the ports' Z is
-    // variational, its error the residual's square over how near singular
-    // the system is - the answer stands, said doubtful, and the sweep goes
-    // on; past kTrustedResidual, or not finite, it is no answer. A sweep
-    // stopped at the first frequency that fell short, with nothing of the
-    // rest.
     // The charges' term against the rest of a run's own (N4), estimated from
     // the kernels on runs spread over the layout - this solve holds no
     // diagonal to read it from: the rest a run's jw L and its sheet's
-    // resistance.
+    // resistance. Before the solve, which it chooses.
     {
         const int np0 = c.planar;
         const int step = std::max(1, np0 / 64);
@@ -3249,6 +3233,126 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
             if (rest > 0) out.chargeOverSeries = std::max(out.chargeOverSeries, std::abs(charge) / rest);
         }
     }
+    // At a low frequency the charges unknowns of their own, as the dense
+    // solve keeps them (kAugmentedFrom): eliminated, GMRES lost the currents
+    // in the charges' term as the dense LU did, and a loop at 1 kHz past the
+    // dense limit was said past its limit and pointed to the loop
+    // inductance (step 5's review).
+    bool augmented =
+        out.chargeOverSeries > (control != nullptr && control->augmentedFrom > 0 ? control->augmentedFrom : kAugmentedFrom);
+    System system{c, z, kx, ky, p, phi, g, d, jw, !augmented};
+    fem::SparseLu<Complex> lu;
+    // (Augmented, its rows unscaled: scaled by their near field's own
+    //  diagonal, a volt of each run against an ampere of each cell's charge,
+    //  a loop came to the same Z to every digit printed in 32 and 41
+    //  iterations against 20 and 27, and an open line converged no better.)
+    const Operator precondition = [&lu](const VectorC& x, VectorC& y) { y = lu.solve(x); };
+
+    // The drive: each column's potentials P J, and the vias' potential at
+    // its cells.
+    MatrixC pd(nc, columns), ph = MatrixC::Zero(nv, columns), rhs(nr, columns), pathZ;
+    for (int q = 0; q < columns; ++q) {
+        const VectorC dq = c.drive.col(q);
+        VectorC t = VectorC::Zero(nc);
+        p.multiply(dq, t);
+        addFactored(c, dq, t);
+        pd.col(q) = t;
+        if (nv == 0) continue;
+        VectorC u = VectorC::Zero(nv);
+        phi.multiplyTransposed(dq, u);
+        ph.col(q) = u;
+    }
+    MatrixC current(nr, columns), applied(nr, columns);
+    // The charges unknowns of their own: S [I; Q] = [e; J], its rows of the
+    // charges A I + jw Q = J,
+    //     S = [ M  -A^T P ]      M the runs' part, the vias' with it
+    //         [ A   jw    ]
+    const int na = nr + nc;
+    const auto pOf = [&p, &c, nc](const VectorC& q) {
+        VectorC v = VectorC::Zero(nc);
+        p.multiply(q, v);
+        addFactored(c, q, v);
+        return v;
+    };
+    const auto whole = [&](const VectorC& x, VectorC& y) {
+        const VectorC i = x.head(nr), q = x.tail(nc);
+        VectorC top;
+        system(i, top);
+        const VectorC v = pOf(q);
+        VectorC bottom = jw * q;
+        for (int a = 0; a < nr; ++a) {
+            const int t = c.tail.at(a), h = c.head.at(a);
+            top[a] -= (t >= 0 ? v[t] : Complex(0, 0)) - v[h];
+            if (t >= 0) bottom[t] += i[a];
+            bottom[h] -= i[a];
+        }
+        y.resize(na);
+        y.head(nr) = top;
+        y.tail(nc) = bottom;
+    };
+    const Operator augmentedSystem = whole;
+    MatrixC both;
+    // Augmented first where it is asked; short of its residual in
+    // kAugmentedMost iterations, eliminated, as before.
+    for (bool again = true; again;) {
+        again = false;
+        system.charges = !augmented;
+        lu.compute(nearField(c, z, k, own, augmented));
+        if (lu.info() != Eigen::Success) {
+            out.problems << tr("At %1 GHz the near field's LU, which the compressed solve is preconditioned with, failed: %2")
+                                .arg(f / 1e9, 0, 'g', 4)
+                                .arg(QString::fromStdString(lu.lastErrorMessage()));
+            return out;
+        }
+        // (With the charges as unknowns, the rest alone, e: Q holds
+        //  A^T P J / jw.)
+        rhs.setZero();
+        if (!augmented)
+            for (int a = 0; a < nr; ++a)
+                for (int q = 0; q < columns; ++q)
+                    rhs(a, q) = ((c.tail.at(a) >= 0 ? pd(c.tail.at(a), q) : Complex(0, 0)) - pd(c.head.at(a), q)) / jw;
+        for (int j = 0; j < nv; ++j)
+            for (int q = 0; q < columns; ++q) rhs(c.vias.at(j).run, q) -= ph(j, q);
+        pathZ = MatrixC::Zero(columns, columns);
+        addPortPaths(c, k, rhs, pathZ);
+        addSourceFields(c, k, rhs, pathZ);
+        if (augmented) {
+            both.resize(na, columns);
+            both.topRows(nr) = rhs;
+            both.bottomRows(nc) = c.drive;
+        }
+        out.iterations = 0;
+        out.residual = 0;
+        for (int q = 0; q < columns; ++q) {
+            VectorC x = VectorC::Zero(augmented ? na : nr), mx;
+            const Gmres solved = augmented ? gmres(augmentedSystem, precondition, both.col(q), x, kResidual, kRestart,
+                                                   std::min(most, kAugmentedMost), stop, progress)
+                                           : gmres(system, precondition, rhs.col(q), x, kResidual, kRestart, most, stop, progress);
+            if (solved.stopped) return AtFrequency();
+            out.iterations = std::max(out.iterations, solved.iterations);
+            out.residual = std::max(out.residual, solved.residual);
+            if (augmented) {
+                if (!solved.converged) {
+                    out.augmentedTried = out.iterations;
+                    augmented = false;
+                    again = true;
+                    break;
+                }
+                both.col(q) = x;   // (its drive read, and done with)
+                current.col(q) = x.head(nr);
+                continue;
+            }
+            current.col(q) = x;
+            system(x, mx);
+            applied.col(q) = mx;
+        }
+    }
+    // Short of its residual: where what it left is small - the ports' Z is
+    // variational, its error the residual's square over how near singular
+    // the system is - the answer stands, said doubtful, and the sweep goes
+    // on; past kTrustedResidual, or not finite, it is no answer. A sweep
+    // stopped at the first frequency that fell short, with nothing of the
+    // rest.
     if (out.residual > kTrustedResidual || !current.allFinite()) {
         // (What to do about it, as it can be done: dense only where the
         //  system is not past what a dense solve is set up for, and at a low
@@ -3290,6 +3394,28 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
                             .arg(out.iterations)
                             .arg(most);
     out.current = current;
+    if (augmented) {
+        // Variationally, as the eliminated system's: S made symmetric by its
+        // rows of the charges times -P,
+        //     [ M     -A^T P  ] [I]   [  e  ]
+        //     [ -P A  -jw P   ] [Q] = [ -P J ]
+        // so Z = Z_paths - (G^T X + X^T G - X^T S X), G the right side - at
+        // X its solution J^T P Q + the paths' - e^T I, the dense augmented
+        // solve's -, its error the square of X's.
+        const MatrixC& x = both;
+        MatrixC g(na, columns), sx(na, columns);
+        g.topRows(nr) = rhs;
+        g.bottomRows(nc) = -pd;
+        for (int q = 0; q < columns; ++q) {
+            VectorC y;
+            whole(x.col(q), y);
+            sx.col(q).head(nr) = y.head(nr);
+            sx.col(q).tail(nc) = -pOf(y.tail(nc));
+        }
+        out.augmented = true;
+        out.z = pathZ - (g.transpose() * x + x.transpose() * g - x.transpose() * sx);
+        return out;
+    }
     out.z = c.drive.transpose() * pd / jw + pathZ
             - (rhs.transpose() * current + current.transpose() * rhs - current.transpose() * applied);
     return out;
@@ -5442,7 +5568,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         const bool struggled = compress && a.iterations >= kNearMiss * mostIterations;
         // (Solved with the charges as unknowns its condition goes as the
         //  ratio's root: its limit the square of the eliminated one's.)
-        if (const double limit = struggled ? 1e12 : a.augmented ? 1e32 : 1e16; a.chargeOverSeries > limit)
+        if (const double limit = a.augmented ? (struggled ? 1e24 : 1e32) : struggled ? 1e12 : 1e16; a.chargeOverSeries > limit)
             out.warnings << tr("At %1 Hz the solve is past its low-frequency limit: its charges' term outweighs its currents' "
                                "%2 times, and the currents are lost in its rounding - a coil may read as an open. Solved "
                                "above some %3 Hz it is not.")
@@ -5454,6 +5580,13 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                             "unknowns of their own, whose condition goes as the root of that.")
                              .arg(frequencies.at(k), 0, 'g', 4)
                              .arg(a.chargeOverSeries, 0, 'g', 2);
+        else if (a.augmentedTried > 0)
+            out.lines << tr("At %1 Hz the charges' term outweighs the currents' %2 times: with the cells' charges as unknowns "
+                            "of their own GMRES fell short of its residual in %3 iterations - the cells' potentials far over "
+                            "the drops along the runs, as an open line's -, so solved with them eliminated.")
+                             .arg(frequencies.at(k), 0, 'g', 4)
+                             .arg(a.chargeOverSeries, 0, 'g', 2)
+                             .arg(a.augmentedTried);
         else if (!compress && a.chargeOverSeries > 1e6)
             out.lines << tr("At %1 Hz the charges' term outweighs the currents' %2 times: solved with the charges eliminated, "
                             "some %3 digits of it lost.")

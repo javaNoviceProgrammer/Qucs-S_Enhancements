@@ -1124,6 +1124,32 @@ private slots:
             }
             QVERIFY2(std::abs(z.at(0) - z.at(1)) < 1e-6 * std::abs(z.at(1)),
                      qPrintable(QStringLiteral("%1 %2 against %3 %4").arg(z.at(0).real()).arg(z.at(0).imag()).arg(z.at(1).real()).arg(z.at(1).imag())));
+            // (Compressed, at 1 kHz and at 10 Hz: the charges unknowns of
+            //  their own there too, the loop its own - where it was said
+            //  past its limit and pointed to the loop inductance; and both
+            //  ways at 10 MHz, as dense.)
+            rf::FullWaveControl squeezed;
+            squeezed.matrix = rf::FullWaveControl::Matrix::Compressed;
+            const rf::FullWave w = rf::fullWaveOf(mesh, {loop}, st, {p}, {10.0, 1e3}, 1e-6, &squeezed);
+            QVERIFY2(w.ok() && says(w.lines, "The system held compressed"), qPrintable(why(w) + w.lines.join(" | ")));
+            QVERIFY2(says(w.lines, "solved with the cells' charges as unknowns of their own"), qPrintable(w.lines.join(" | ")));
+            QVERIFY2(!says(w.warnings, "past its low-frequency limit") && !says(w.warnings, "GMRES"), qPrintable(w.warnings.join(" | ")));
+            for (int k = 0; k < 2; ++k) {
+                const double nh = w.z.at(k).at(0).at(0).imag() / (2 * M_PI * w.frequencies.at(k)) * 1e9;
+                QVERIFY2(w.z.at(k).at(0).at(0).real() > 0 && std::abs(nh / 22.802 - 1) < 0.002,
+                         qPrintable(QStringLiteral("compressed at %1 Hz: %2 nH, %3 ohm").arg(w.frequencies.at(k)).arg(nh).arg(w.z.at(k).at(0).at(0).real())));
+            }
+            qWarning().noquote() << w.lines.filter(QStringLiteral("GMRES")).join(' ');
+            z.clear();
+            for (const double from : {1e-300, 1e300}) {
+                rf::FullWaveControl control = squeezed;
+                control.augmentedFrom = from;
+                const rf::FullWave both = rf::fullWaveOf(mesh, {loop}, st, {p}, {1e7}, 1e-6, &control);
+                QVERIFY2(both.ok(), qPrintable(why(both)));
+                z << both.z.at(0).at(0).at(0);
+            }
+            QVERIFY2(std::abs(z.at(0) - z.at(1)) < 1e-6 * std::abs(z.at(1)),
+                     qPrintable(QStringLiteral("compressed %1 %2 against %3 %4").arg(z.at(0).real()).arg(z.at(0).imag()).arg(z.at(1).real()).arg(z.at(1).imag())));
         }
     }
 
@@ -1340,22 +1366,35 @@ private slots:
     // not. Dense, the charges kept as unknowns of their own past 1e10 of it
     // (the production-readiness review), it is not past its
     // limit at 1 Hz: its loss there that at 10 Hz within a part in a
-    // thousand, and said solved so.
+    // thousand, and said solved so. Compressed, tried so too (its
+    // follow-up): an open line's potentials, 1e11 V against its milliohms,
+    // ask its runs' rows a residual below their rounding, and GMRES falls
+    // short in its kAugmentedMost iterations - said, and solved with the
+    // charges eliminated, as before; its Z the dense one's to a part in
+    // 10^4 at every frequency.
     void aSolvePastItsLowFrequencyLimitSaysSo()
     {
         const rf::Stack st = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
         const QList<rf::Conductor> cs{strip(0, 0, 2000, 100)};
+        QList<rf::FullWave> ways;
         for (const bool squeezed : {false, true}) {
             rf::FullWaveControl control;
             control.matrix = squeezed ? rf::FullWaveControl::Matrix::Compressed : rf::FullWaveControl::Matrix::Dense;
             const rf::FullWave w = rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, st, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))},
                                                   {1, 10, 1e3, 1e6}, 1e-6, &control);
             QVERIFY2(w.ok(), qPrintable(why(w)));
+            QVERIFY2(says(w.lines, "The system held compressed") == squeezed, qPrintable(w.lines.join(" | ")));
             const QString said = w.warnings.join(QLatin1Char(' '));
             QVERIFY2(said.contains(QStringLiteral("At 1 Hz the solve is past its low-frequency limit")) == squeezed, qPrintable(said));
             for (const char* f : {"At 10 Hz the solve is past", "At 1000 Hz the solve is past", "At 1e+06 Hz the solve is past"})
                 QVERIFY2(!said.contains(QLatin1String(f)), qPrintable(said));
-            if (squeezed) continue;
+            ways << w;
+            if (squeezed) {
+                for (const char* f : {"At 1 Hz the charges' term", "At 10 Hz the charges' term", "At 1000 Hz the charges' term"})
+                    QVERIFY2(says(w.lines, f) && w.lines.filter(QLatin1String(f)).join(' ').contains(QStringLiteral("so solved with them eliminated")),
+                             qPrintable(w.lines.join(" | ")));
+                continue;
+            }
             QVERIFY2(says(w.lines, "At 1 Hz the charges' term outweighs the currents'") && says(w.lines, "unknowns of their own"),
                      qPrintable(w.lines.join(" | ")));
             const auto lost = [&w](int k) {
@@ -1364,6 +1403,15 @@ private slots:
             };
             QVERIFY2(std::abs(lost(0) / lost(1) - 1) < 1e-3, qPrintable(QStringLiteral("%1 at 1 Hz, %2 at 10").arg(lost(0)).arg(lost(1))));
         }
+        for (int k = 0; k < 4; ++k)
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) {
+                    const Complex dense = ways.at(0).z.at(k).at(i).at(j), compressed = ways.at(1).z.at(k).at(i).at(j);
+                    QVERIFY2(std::abs(compressed - dense) < 1e-4 * std::abs(dense),
+                             qPrintable(QStringLiteral("at %1 Hz Z%2%3: %4 %5 against %6 %7")
+                                            .arg(ways.at(0).frequencies.at(k)).arg(i + 1).arg(j + 1)
+                                            .arg(compressed.real()).arg(compressed.imag()).arg(dense.real()).arg(dense.imag())));
+                }
     }
 
     void aDielectricConductsAsTheSubstrateDoes()
@@ -1451,7 +1499,7 @@ private slots:
     // A dispersive substrate that ends at its shapes: the full wave's
     // correction for its shapes is made once, of statics, so inside them it
     // is its permittivity as given at every frequency - and the answer says
-    // so (the review of 357538a7: nothing said it).
+    // so (the review of 3789cfcb: nothing said it).
     void aDispersiveLayerThatEndsSaysHowItIsTaken()
     {
         rf::Stack stack = grounded(9.8, 100e-6, 0.01, 1e-6, 5.8e7);
@@ -1475,7 +1523,7 @@ private slots:
         const rf::FullWave u = rf::fullWaveOf(mesh, conductors, uniaxial, {edgePort(QPointF(0, 50)), edgePort(QPointF(600, 50))}, {5e9}, 1e-6, &control);
         QVERIFY2(!u.ok() && u.problems.join(' ').contains(QStringLiteral("SUB is uniaxial and ends at its shapes")), qPrintable(why(u)));
         // Nor a magnetic one, which would be magnetic across the whole plane
-        // (the review of 975d4569) - a magnetic loss alone the same.
+        // (the review of fa249cbd) - a magnetic loss alone the same.
         for (const auto& [mur, mtand] : {std::pair{3.0, 0.0}, std::pair{1.0, 0.05}}) {
             rf::Stack magnetic = grounded(9.4, 100e-6, 0, 1e-6, 5.8e7);
             for (rf::Layer& l : magnetic.layers)
@@ -2512,7 +2560,7 @@ private slots:
         line(grounded(4, 100e-6), 1000, 100, 4, 100e-6, 4, {fl}, &plain);
         QVERIFY(lp.epsilonEff > 1.5 * rf::lineParameters(plain, 0, 1000e-6, fl).epsilonEff);
         // A magnetic loss alone, mu_r 1: the quasi-static solve says it
-        // leaves it out (the review of 975d4569).
+        // leaves it out (the review of fa249cbd).
         rf::Stack lossy = grounded(4, 100e-6);
         for (rf::Layer& layer : lossy.layers)
             if (layer.kind == rf::Layer::Substrate) layer.mtand = 0.05;
@@ -2895,7 +2943,7 @@ private slots:
             rf::portsOf(m, &problem);
             QVERIFY2(problem.contains(QStringLiteral("nought or above")), qPrintable(problem));
             ports->children.back().props.insert(QStringLiteral("r"), QStringLiteral("47"));
-            // An element is no port elsewhere either (the review of 705280f8):
+            // An element is no port elsewhere either (the review of 8abc6cbb):
             // the quasi-static loop's two ends are the model's two measuring
             // ports, the element listed before them; and a TRL calibration of
             // the two-port it is is not refused as a three-port.
