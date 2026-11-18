@@ -1045,6 +1045,49 @@ private slots:
                  qPrintable(QStringLiteral("%1 %2").arg(skin.at(0)).arg(skin.at(1))));
     }
 
+    // A coplanar line in air is as fast as light, whatever its cross-section
+    // and its cells (P1 of the open items of 8 November): the signal 50 µm,
+    // its gaps 2 and 5 µm, its grounds 160, 2 µm of metal as its two faces,
+    // at 10 GHz from two lengths. Its cells beside the gaps, 0.31 µm wide and
+    // 143 µm long, beside shorter ones: each pair's potential at its cells'
+    // centres, made symmetric by the mean of the two ways, read eps_eff 1.367
+    // and Z0 41.25 Ohm at 2 µm (the review's 1.093 at twelve across). Now
+    // the longer's mean potential of the shorter's charge: 1.0014 and 48.02
+    // at 2 µm, 1.0018 and 67.05 at 5 (1.008 and 47.85, 1.004 and 66.88 at
+    // twelve across). Z0 against a 2D boundary-element solve of the
+    // cross-section in air, its metal solid (cpw2d.py beside
+    // an earlier note): 47.26 and
+    // 66.45 Ohm.
+    void aCoplanarLineInAirIsAsFastAsLight()
+    {
+        rf::Stack st = grounded(1, 100e-6, 0, 2e-6, 1e10);
+        st.layers[0].variant = QStringLiteral("open");
+        st.layers[2].twoSheets = true;
+        const QString m1 = QStringLiteral("M1");
+        const double f = 1e10, k0 = 2 * M_PI * f / kC0;
+        for (const auto& [g, z2d] : {std::pair(2.0, 47.264), std::pair(5.0, 66.455)}) {
+            QList<Matrix2> chains;
+            for (const double l : {1000.0, 3000.0}) {
+                const QList<rf::Conductor> cpw = {on(m1, 0, -25, l, 50), on(m1, 0, 25 + g, l, 160), on(m1, 0, -185 - g, l, 160)};
+                rf::MeshSettings how;
+                how.cellsAcross = 4;
+                how.gaps = true;
+                const rf::Mesh mesh = rf::meshOf(cpw, how, st, f);
+                QList<rf::FullWavePort> ports = {edgePort(QPointF(0, 0), m1, QPointF(-1, 0)), edgePort(QPointF(l, 0), m1, QPointF(1, 0))};
+                for (rf::FullWavePort& p : ports) p.coplanar = true;
+                const rf::FullWave w = rf::fullWaveOf(mesh, cpw, st, ports, {f});
+                QVERIFY2(w.ok(), qPrintable(why(w)));
+                QVERIFY2(w.asymmetry < 1e-6, qPrintable(QString::number(w.asymmetry)));
+                chains << chainOf(zOf(w, 0));
+            }
+            const TwoLine wave = twoLine(chains.at(0), chains.at(1), 1000e-6, 3000e-6, k0);
+            const double eps = std::pow(wave.gamma.imag() / k0, 2), z0 = wave.z0.real();
+            qWarning("a coplanar line in air, its gaps %g um: eps_eff %.4f, Z0 %.3f Ohm against %.3f", g, eps, z0, z2d);
+            QVERIFY2(std::abs(eps - 1) < 0.01, qPrintable(QStringLiteral("eps_eff %1 at %2 um").arg(eps).arg(g)));
+            QVERIFY2(std::abs(z0 / z2d - 1) < 0.02, qPrintable(QStringLiteral("Z0 %1 Ohm at %2 um, against %3").arg(z0).arg(g).arg(z2d)));
+        }
+    }
+
     // A layer that ends, its correction held as its factors - as past 5000
     // cells, a calibration's long strips over a mesa - is the correction held
     // whole: compressed and dense alike, the same S. Held as its factors, its
@@ -1213,7 +1256,7 @@ private slots:
     // A dispersive substrate that ends at its shapes: the full wave's
     // correction for its shapes is made once, of statics, so inside them it
     // is its permittivity as given at every frequency - and the answer says
-    // so (the review of 357538a7: nothing said it).
+    // so (the review of 3789cfcb: nothing said it).
     void aDispersiveLayerThatEndsSaysHowItIsTaken()
     {
         rf::Stack stack = grounded(9.8, 100e-6, 0.01, 1e-6, 5.8e7);
@@ -1237,7 +1280,7 @@ private slots:
         const rf::FullWave u = rf::fullWaveOf(mesh, conductors, uniaxial, {edgePort(QPointF(0, 50)), edgePort(QPointF(600, 50))}, {5e9}, 1e-6, &control);
         QVERIFY2(!u.ok() && u.problems.join(' ').contains(QStringLiteral("SUB is uniaxial and ends at its shapes")), qPrintable(why(u)));
         // Nor a magnetic one, which would be magnetic across the whole plane
-        // (the review of 975d4569) - a magnetic loss alone the same.
+        // (the review of fa249cbd) - a magnetic loss alone the same.
         for (const auto& [mur, mtand] : {std::pair{3.0, 0.0}, std::pair{1.0, 0.05}}) {
             rf::Stack magnetic = grounded(9.4, 100e-6, 0, 1e-6, 5.8e7);
             for (rf::Layer& l : magnetic.layers)
@@ -2274,7 +2317,7 @@ private slots:
         line(grounded(4, 100e-6), 1000, 100, 4, 100e-6, 4, {fl}, &plain);
         QVERIFY(lp.epsilonEff > 1.5 * rf::lineParameters(plain, 0, 1000e-6, fl).epsilonEff);
         // A magnetic loss alone, mu_r 1: the quasi-static solve says it
-        // leaves it out (the review of 975d4569).
+        // leaves it out (the review of fa249cbd).
         rf::Stack lossy = grounded(4, 100e-6);
         for (rf::Layer& layer : lossy.layers)
             if (layer.kind == rf::Layer::Substrate) layer.mtand = 0.05;
@@ -2657,7 +2700,7 @@ private slots:
             rf::portsOf(m, &problem);
             QVERIFY2(problem.contains(QStringLiteral("nought or above")), qPrintable(problem));
             ports->children.back().props.insert(QStringLiteral("r"), QStringLiteral("47"));
-            // An element is no port elsewhere either (the review of 705280f8):
+            // An element is no port elsewhere either (the review of 8abc6cbb):
             // the quasi-static loop's two ends are the model's two measuring
             // ports, the element listed before them; and a TRL calibration of
             // the two-port it is is not refused as a three-port.

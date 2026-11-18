@@ -2375,12 +2375,20 @@ bool dearPotential(const Context& c, int i, int j)
     return !(apart > 4 * side * (1 + 1e-6));
 }
 
-double staticPotentialOf(const Context& c, int i, int j)
+/// Cell \a i's potential of a unit charge spread over cell \a j, at i's
+/// centre - or \a shift (m) from it along i's longest side, in i's own
+/// frame, its parts moved with it.
+double staticPotentialAt(const Context& c, int i, int j, double shift)
 {
     const bool partsI = i < c.charges.size() && !c.charges.at(i).isEmpty();
     const bool partsJ = j < c.charges.size() && !c.charges.at(j).isEmpty();
+    const bool alongX = c.rect.at(i).width() >= c.rect.at(i).height();
+    const double turn = i < c.angle.size() ? c.angle.at(i) : 0.0;
+    const QPointF own = alongX ? QPointF(shift, 0) : QPointF(0, shift);
+    const QPointF moved = turn == 0 ? own : QPointF(own.x() * std::cos(turn) - own.y() * std::sin(turn),
+                                                   own.x() * std::sin(turn) + own.y() * std::cos(turn));
     // (Seen from j: a strip's cell's rect is of its own frame - Context::angle.)
-    const QPointF seen = c.seenFrom(j, c.centre.at(i));
+    const QPointF seen = c.seenFrom(j, c.centre.at(i) + moved);
     if (!partsI && !partsJ) return rectanglePotential(c.rect.at(j), seen, std::abs(c.cellZ.at(i) - c.cellZ.at(j)));
     // (A charge spread only by its edge's profile, far away, is the cell's:
     //  its parts within four of the longest side of either, as the
@@ -2406,11 +2414,51 @@ double staticPotentialOf(const Context& c, int i, int j)
         if (apart > 4 * side * (1 + 1e-6)) return rectanglePotential(c.rect.at(j), seen, std::abs(c.cellZ.at(i) - c.cellZ.at(j)));
     }
     // (A strip's cell's parts are of its own frame: i's seen from j's.)
-    const QList<ChargePart> at = partsI ? c.charges.at(i) : QList<ChargePart>{wholeCell(c.rect.at(i), c.cellZ.at(i))};
+    QList<ChargePart> at = partsI ? c.charges.at(i) : QList<ChargePart>{wholeCell(c.rect.at(i), c.cellZ.at(i))};
+    if (shift != 0) at = movedBy(at, own.x(), own.y());
     const double parts = partsPotential(c.partsSeenFrom(j, i, at),
                                         partsJ ? c.charges.at(j) : QList<ChargePart>{wholeCell(c.rect.at(j), c.cellZ.at(j))});
     if (c.profileScale.isEmpty()) return parts;
     return scaledParts(rectanglePotential(c.rect.at(j), seen, std::abs(c.cellZ.at(i) - c.cellZ.at(j))), parts);
+}
+
+double staticPotentialOf(const Context& c, int i, int j)
+{
+    // A near pair of cells of unlike lengths - a long cell beside a gap and
+    // the shorter ones beside it -: the larger's mean potential of the
+    // smaller's charge, along its length by the midpoint rule, the same
+    // both ways round. Its potential at its centre alone does not stand for
+    // a long cell, and the solve's mean of the two ways, made symmetric, took
+    // it for one: a coplanar line's gap cells 0.31 µm wide and 143 µm long
+    // read eps_eff 1.12 in air as a sheet, and 1.37 as its two faces, where
+    // it is 1 (P1 of the open items of 8 November). This is Galerkin's
+    // entry, nearly - symmetric and positive, as P must be for a passive
+    // solve -, where the centre taken of the shorter cell alone left
+    // solves that gave power.
+    // (Weighed in from twice the length to two and a half times, and the
+    //  midpoints' count blended between whole numbers, so that it moves
+    //  with the cells smoothly: a shape drawn whole and as pieces, its
+    //  outline a nanometre apart, read Z 2e-6 apart at a sharp cut, where
+    //  it is the same to 1e-7.)
+    const double here = staticPotentialAt(c, i, j, 0);
+    if (i == j) return here;
+    const double si = std::max(c.rect.at(i).width(), c.rect.at(i).height());
+    const double sj = std::max(c.rect.at(j).width(), c.rect.at(j).height());
+    const double shorter = std::min(si, sj), length = std::max(si, sj);
+    const double apart = std::hypot(c.centre.at(i).x() - c.centre.at(j).x(), c.centre.at(i).y() - c.centre.at(j).y());
+    const double weight = shorter > 0 ? std::clamp((length / shorter - 2) / 0.5, 0.0, 1.0) : 0.0;
+    if (!(weight > 0) || apart > 4 * length * (1 + 1e-6)) return here;
+    const int big = si > sj ? i : j, small = big == i ? j : i;
+    const auto midpoints = [&](int n) {
+        double sum = 0;
+        for (int k = 0; k < n; ++k) sum += staticPotentialAt(c, big, small, (-0.5 + (k + 0.5) / n) * length);
+        return sum / n;
+    };
+    const double count = std::clamp(2 * length / shorter, 2.0, 32.0);
+    const int n = int(std::floor(count));
+    const double part = count - n;
+    const double mean = part > 0 && n < 32 ? (1 - part) * midpoints(n) + part * midpoints(n + 1) : midpoints(n);
+    return (1 - weight) * here + weight * mean;
 }
 
 double staticPotential(const Context& c, int i, int j)
