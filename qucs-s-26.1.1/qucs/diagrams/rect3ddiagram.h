@@ -29,6 +29,7 @@ struct tPoint3D {
 struct tPointZ {
   float z;
   int   No, NoCross;
+  int   dx, dy;   // its graph's points a row and rows a plane (each cell walked with its own graph's)
 };
 
 struct tBound {
@@ -51,7 +52,7 @@ public:
 
   void createAxisLabels();
   bool insideDiagram(float, float) const;
-  /// (No plot area and no grid: a box in space.)
+  /// (No plot area: a box in space, its grid on its back walls.)
   QList<Part> themeParts() const override;
 
   tPoint3D *Mem;   // memory for all points during hidden line algorithm
@@ -71,18 +72,21 @@ private:
   double calcY_2D(double, double, double) const;
   double calcZ_2D(double, double, double) const;
 
-  static int comparePoint3D(const void*, const void*);
   static int comparePointZ(const void*, const void*);
   bool isHidden(int, int, tBound*, char*);
   void enlargeMemoryBlock(tPoint3D* &);
   void calcLine(tPoint3D* &, tPoint3D* &, tBound*, char*);
   void calcCoordinate3D(double, double, double, double, tPoint3D*, tPointZ*);
   void removeHiddenLines(char*, tBound*);
-  void removeHiddenCross(int, int, int, int, char*, tBound*, Part);
+  void removeHiddenCross(int, int, int, int, char*, tBound*, Part, const QPen&, QList<qucs::Line*>&);
+  void createGrid(int corner, char* zBuffer, tBound* Bounds);
 
   float  xorig, yorig; // where is the 3D origin with respect to cx/cy
   double cxx, cxy, cxz, cyx, cyy, cyz, czx, czy, czz; // coefficients 3D -> 2D
   double scaleX, scaleY;
+  /// Where each axis's numbers are (x, y, z), from 0 to 1 along it, as the
+  /// points are (calcAxis()): the grid's lines go there.
+  QVector<double> ticks[3];
 };
 
 #endif

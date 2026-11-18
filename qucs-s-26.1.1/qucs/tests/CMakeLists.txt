@@ -386,6 +386,7 @@ target_compile_definitions(test_multiphysics_doc PRIVATE QUCS_TEST_DATA="${CMAKE
 qucs_add_test(test_keyboard_move)
 qucs_add_test(test_diagram_legend)
 qucs_add_test(test_diagram_theme)
+qucs_add_test(test_rect3d_diagram)
 qucs_add_test(test_view_all)
 qucs_add_test(test_simulation_console)
 qucs_add_test(test_process_console)

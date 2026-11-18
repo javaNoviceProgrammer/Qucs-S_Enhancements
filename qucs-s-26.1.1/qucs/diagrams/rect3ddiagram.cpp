@@ -26,6 +26,7 @@
 # include <config.h>
 #endif
 #include <stdlib.h>
+#include <algorithm>
 #include <cmath>
 #include <float.h>
 #include <limits.h>
@@ -376,11 +377,7 @@ void Rect3DDiagram::calcLine(tPoint3D* &p, tPoint3D* &MemEnd,
 }
 
 // --------------------------------------------------------------
-// Compare functions for GNU qsort routine.
-int Rect3DDiagram::comparePoint3D(const void *Point1, const void *Point2)
-{
-  return ((tPoint3D*)Point1)->No - ((tPoint3D*)Point2)->No;
-}
+// Compare function for GNU qsort routine.
 int Rect3DDiagram::comparePointZ(const void *Point1, const void *Point2)
 {
   if((((tPointZ*)Point2)->z - ((tPointZ*)Point1)->z) < 0.0f)
@@ -448,6 +445,12 @@ void Rect3DDiagram::removeHiddenLines(char *zBuffer, tBound *Bounds)
         py = g->axis(1)->Points;
     }
     (pMem-1)->done |= 512;  // mark as "last point before grid"
+    // Qucs-S: each cell walked with its own graph's sizes, once the cells of
+    // all are sorted together (below).
+    for(tPointZ *c = zp_tmp; c < zp; c++) {
+      c->dx = dx;
+      c->dy = dy > 0 ? dy : 1;
+    }
 
     // ..........................................
     // copy points for cross lines ("dx", "dy" still unchanged ! )
@@ -540,15 +543,28 @@ void Rect3DDiagram::removeHiddenLines(char *zBuffer, tBound *Bounds)
   // malloc_8xsize added (see comment before malloc_8xsize declaration)
   tPoint3D *MemEnd = Mem + malloc_8xsize*2*Size - 5;   // limit of buffer
 
-  zp = zMem;
+  // Qucs-S: the cells of all graphs, nearest first, each walked with its
+  // own graph's sizes. They were taken in turn with the sizes of the graph
+  // being counted through, so that a cell of another of other sizes - a
+  // coarse reference surface's beside a fine one's - was walked along the
+  // wrong rows: lines hidden where nothing is in front of them, and areas
+  // marked as covered that are not.
+  int cells = 0;
   for (Graph *g : Graphs) {
     if(!g->cPointsY) continue;
+    if(g->numAxes() < 1) continue;
     dx = g->axis(0)->count;
     if(g->countY > 1)  dy = g->axis(1)->count;
     else  dy = 1;
+    cells += g->countY/dy * (dx-1)*(dy-1);
+  }
 
+  zp = zMem;
+  {
     // look for hidden lines ...
-    for(int No = g->countY/dy * (dx-1)*(dy-1); No>0; No--) {
+    for(int No = cells; No>0; No--) {
+      dx = zp->dx;
+      dy = zp->dy;
 
       // reset the polygon bounding buffer
       for(i=x2; i>=0; i--) {
@@ -580,7 +596,7 @@ void Rect3DDiagram::removeHiddenLines(char *zBuffer, tBound *Bounds)
       zp++;   // next polygon
     }
 
-  }  // of "for(Graphs)"
+  }
 
 #if 0
   qDebug("--------------------------- hidden lines %d", pMem-Mem);
@@ -591,7 +607,11 @@ void Rect3DDiagram::removeHiddenLines(char *zBuffer, tBound *Bounds)
   free(zMem);
 
   // sort "No" (least one first)
-  qsort(Mem, pMem - Mem, sizeof(tPoint3D), comparePoint3D);
+  // Qucs-S: stably - the points a line is cut at (where it goes behind
+  // another and comes out) have its start's number, and follow it in the
+  // order they were found along it; qsort() left them in any order, the
+  // line's pieces drawn between the wrong ones.
+  std::stable_sort(Mem, pMem, [](const tPoint3D &a, const tPoint3D &b) { return a.No < b.No; });
 
 #if 0
   qDebug("--------------------------- last sorting %d", pMem-Mem);
@@ -604,7 +624,8 @@ void Rect3DDiagram::removeHiddenLines(char *zBuffer, tBound *Bounds)
 // --------------------------------------------------------------
 // Removes the invisible parts of the coordinate cross.
 void Rect3DDiagram::removeHiddenCross(int x1_, int y1_, int x2_, int y2_,
-                                      char *zBuffer, tBound *Bounds, Part axis)
+                                      char *zBuffer, tBound *Bounds, Part axis,
+                                      const QPen &pen, QList<qucs::Line*> &into)
 {
   pMem = Mem;
 
@@ -627,9 +648,50 @@ void Rect3DDiagram::removeHiddenCross(int x1_, int y1_, int x2_, int y2_,
   p = Mem+2;
   do {
     if(((p-1)->done & 4) == 0)
-      Lines.append(as(axis, new qucs::Line((p-1)->x, (p-1)->y, p->x, p->y, QPen(Qt::black,0))));
+      into.append(as(axis, new qucs::Line((p-1)->x, (p-1)->y, p->x, p->y, pen)));
     p++;
   } while(p <= pMem);
+}
+
+// --------------------------------------------------------------
+// Qucs-S: its grid, when it is on - on the box's three back walls (those
+// of the corner farthest from the viewer, \a corner), a line across each
+// of the two walls along an axis at each of its numbers (ticks), the
+// walls' edges left to the frame and axes. Behind the frame (first in
+// Lines), in the grid's pen; hidden behind the graphs as the axes are
+// (\a zBuffer, when hidden lines are), the walls being behind all.
+// Rect3D drew none, its dialog offering none, though its files kept the
+// grid's bit and the tools set it.
+void Rect3DDiagram::createGrid(int corner, char *zBuffer, tBound *Bounds)
+{
+  if(!xAxis.GridOn)  return;
+  const double o[3] = {double(corner & 1), double((corner >> 1) & 1), double((corner >> 2) & 1)};
+  const auto at = [this](const double v[3], int &x, int &y) {
+    x = int(calcX_2D(v[0], v[1], v[2]) + 0.5 + xorig);
+    y = int(calcY_2D(v[0], v[1], v[2]) + 0.5 + yorig);
+  };
+  QList<qucs::Line*> grid;
+  for(int a = 0; a < 3; a++)
+    for(double t : std::as_const(ticks[a])) {
+      if(!(t > 1e-6 && t < 1.0 - 1e-6))  continue;   // (on an edge, or off the box)
+      for(int across = 1; across <= 2; across++) {
+        const int b = (a + across) % 3;      // along it, 0 to 1
+        const int c = (a + 3 - across) % 3;  // where its wall is
+        double from[3], to[3];
+        from[a] = to[a] = t;
+        from[c] = to[c] = o[c];
+        from[b] = 0.0;
+        to[b] = 1.0;
+        int x1_, y1_, x2_, y2_;
+        at(from, x1_, y1_);
+        at(to, x2_, y2_);
+        if(zBuffer)
+          removeHiddenCross(x1_, y1_, x2_, y2_, zBuffer, Bounds, Part::Grid, GridPen, grid);
+        else
+          grid.append(as(Part::Grid, new qucs::Line(x1_, y1_, x2_, y2_, GridPen)));
+      }
+    }
+  Lines = grid + Lines;
 }
 
 // --------------------------------------------------------------
@@ -683,6 +745,23 @@ int Rect3DDiagram::calcAxis(Axis *Axis, int x, int y,
   int maxWidth = 0;
   int count, gx, gy, w;
 
+  // Where its numbers are, 0 to 1 along it (the grid's lines go there).
+  QVector<double> &at = ticks[Axis == &xAxis ? 0 : Axis == &yAxis ? 1 : 2];
+  at.clear();
+  const double length = xD;
+  // A number on top of one already there - where two axes meet at a
+  // corner of the box - is left out, its tick kept (the z axis's lowest over the x axis's last).
+  const QFontMetricsF placed(QucsSettings.font);
+  auto number = [&](Text *t) {
+    const QRectF r = textRect(*t, placed).adjusted(1, 1, -1, -1);
+    for (const Text *other : std::as_const(Texts))
+      if (textRect(*other, placed).adjusted(1, 1, -1, -1).intersects(r)) {
+        delete t;
+        return;
+      }
+    Texts.append(as(partOf(Axis), t));
+  };
+
   if(phi > 0.0)  Expo = phi - pi/2.0;
   else  Expo = phi + pi/2.0;
   gx = int(5.4 * cos(Expo) + 0.5);  // short grid marker lines
@@ -718,8 +797,10 @@ int Rect3DDiagram::calcAxis(Axis *Axis, int x, int y,
       
       xLen = int(ystepD * cos(phi) + 0.5) + x;
       yLen = int(ystepD * sin(phi) + 0.5) + y;
+      // (As calcCoordinate3D() puts a value: log10(v/low) / log10(up/low).)
+      at.append(std::log10(yD / std::fabs(Axis->low)) / std::log10(std::fabs(Axis->up) / std::fabs(Axis->low)));
 //      if(Qt::DockRight)
-	Texts.append(as(partOf(Axis), new Text(xLen+3+gx, yLen-6+gy, tmp)));
+	number(new Text(xLen+3+gx, yLen-6+gy, tmp));
 //      else
 //	Texts.append(new Text(xLen-w-2-gx, yLen-6-gy, tmp));
       
@@ -739,6 +820,9 @@ int Rect3DDiagram::calcAxis(Axis *Axis, int x, int y,
     
     xstepD = stepD * cos(phi);
     ystepD = stepD * sin(phi);
+    // (Its first number yD along it, then one every stepD.)
+    if (length > 0.0)
+      for (int k = 0; k < count; ++k)  at.append((yD + k * stepD) / length);
     xD = yD * cos(phi) + 0.5 + double(x);
     yD = yD * sin(phi) + 0.5 + double(y);
     
@@ -754,7 +838,7 @@ int Rect3DDiagram::calcAxis(Axis *Axis, int x, int y,
       w = metrics.boundingRect(tmp).width();  // width of text
       if(maxWidth < w) maxWidth = w;
 //      if(Qt::DockRight)
-	Texts.append(as(partOf(Axis), new Text(x+3+gx, y-6+gy, tmp))); // place text right
+	number(new Text(x+3+gx, y-6+gy, tmp)); // place text right
 //      else
 //	Texts.append(new Text(x-w-2-gx, y-6-gy, tmp)); // place left
       GridNum += GridStep;
@@ -962,9 +1046,11 @@ int Rect3DDiagram::calcDiagram()
     tPoint3D *MemTmp = Mem;
     Mem = (tPoint3D*)malloc( 10*sizeof(tPoint3D) );
     
-    removeHiddenCross(X[o^1], Y[o^1], X[o], Y[o], zBuffer, Bounds, Part::XAxis); // x axis
-    removeHiddenCross(X[o^2], Y[o^2], X[o], Y[o], zBuffer, Bounds, Part::YAxis); // y axis
-    removeHiddenCross(X[o^4], Y[o^4], X[o], Y[o], zBuffer, Bounds, Part::RightAxis); // z axis
+    const QPen black(Qt::black, 0);
+    removeHiddenCross(X[o^1], Y[o^1], X[o], Y[o], zBuffer, Bounds, Part::XAxis, black, Lines); // x axis
+    removeHiddenCross(X[o^2], Y[o^2], X[o], Y[o], zBuffer, Bounds, Part::YAxis, black, Lines); // y axis
+    removeHiddenCross(X[o^4], Y[o^4], X[o], Y[o], zBuffer, Bounds, Part::RightAxis, black, Lines); // z axis
+    createGrid(o, zBuffer, Bounds);
   
     free(Mem);
     Mem = MemTmp;  // write back values
@@ -976,6 +1062,7 @@ int Rect3DDiagram::calcDiagram()
     Lines.append(as(Part::XAxis, new qucs::Line(X[o], Y[o], X[o^1], Y[o^1], QPen(Qt::black,0))));
     Lines.append(as(Part::YAxis, new qucs::Line(X[o], Y[o], X[o^2], Y[o^2], QPen(Qt::black,0))));
     Lines.append(as(Part::RightAxis, new qucs::Line(X[o], Y[o], X[o^4], Y[o^4], QPen(Qt::black,0))));
+    createGrid(o, nullptr, nullptr);
   }
 
   pMem = Mem;
@@ -1086,7 +1173,6 @@ QList<Diagram::Part> Rect3DDiagram::themeParts() const
 {
   QList<Part> parts = Diagram::themeParts();
   parts.removeAll(Part::PlotArea);
-  parts.removeAll(Part::Grid);
   return parts;
 }
 
