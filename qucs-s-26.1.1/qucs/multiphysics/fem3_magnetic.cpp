@@ -120,9 +120,7 @@ private:
         std::vector<double> fixedA;    // by edge dof: its held value (a potential's)
         int nA = 0, nP = 0;
     };
-    /// \a heldNodes (by node dof, or null): the gauge's multiplier nought
-    /// there too (a conductor's terminal's nodes, in the frequency domain).
-    bool buildEquations(Equations& q, QString* error, const std::vector<char>* heldNodes = nullptr);
+    bool buildEquations(Equations& q, QString* error);
     /// The frequency domain's conductors: the electric potential V on the
     /// nodes of the elements that conduct, its equations after A's and the
     /// gauge's - each single conductor's terminal's nodes one equation, its
@@ -135,6 +133,7 @@ private:
         std::vector<int> eqV;           // by node dof: its equation (offset by nA + nP), -1 none, -3 held
         std::vector<cd> heldPsi;        // by node dof: its held ψ
         std::vector<char> electrode;    // by node dof: a terminal's or a ground's
+        std::vector<char> electrodeFaces;   // by mesh face: a terminal's or a ground's
         std::vector<int> terminalOf;    // by node dof: the coil whose terminal it is on, -1
         std::vector<int> eqU;           // by coil: its potential's equation (a current held), -1 none (turns, or its voltage held)
         int nV = 0;
@@ -555,8 +554,8 @@ bool MagneticProblem3::buildSources(QString* error)
                 through = t.charge;
                 break;
             }
-        if ((!ec.solved && std::isnan(through)) || (a_omega > 0 && c.single)) {
-            c.scale = c.perAmp = 0;   // (not yet solved: a coupled round's first; a conductor's, found)
+        if (!ec.solved && std::isnan(through)) {
+            c.scale = c.perAmp = 0;   // (not yet solved: a coupled round's first)
             continue;
         }
         if (!std::isfinite(through) || through == 0) {
@@ -576,7 +575,7 @@ bool MagneticProblem3::buildSources(QString* error)
 
 // ------------------------------------------------------------- Equations
 
-bool MagneticProblem3::buildEquations(Equations& q, QString* error, const std::vector<char>* heldNodes)
+bool MagneticProblem3::buildEquations(Equations& q, QString* error)
 {
     const Field3& f = a_s.fields()[std::size_t(a_fi)];
     const EdgeSpace3& es = *f.edges;
@@ -620,19 +619,19 @@ bool MagneticProblem3::buildEquations(Equations& q, QString* error, const std::v
     std::vector<int> potentialFaces;
     for (const auto& [ord, fi] : held) {
         (void)ord;
-        const FaceCondition& c = a_faces[std::size_t(mesh.faces[std::size_t(fi)].face)];
+        const bool held0 = a_faces[std::size_t(mesh.faces[std::size_t(fi)].face)].kind != FaceCondition::Potential;
         bool on = true;
         for (int dof : ns.faceDofs(fi)) on = on && dof >= 0 && q.eqP[std::size_t(dof)] != -1;
         if (!on) continue;
         for (int dof : edgeDofs(fi)) {
             if (dof < 0 || q.eqA[std::size_t(dof)] == -1) continue;
             q.eqA[std::size_t(dof)] = -3;
-            if (c.kind == FaceCondition::Potential) potential.insert(dof);
+            if (!held0) potential.insert(dof);
             else potential.erase(dof);
         }
         for (int dof : ns.faceDofs(fi))
             if (dof >= 0) q.eqP[std::size_t(dof)] = -3;
-        if (c.kind == FaceCondition::Potential) potentialFaces.push_back(fi);
+        if (!held0) potentialFaces.push_back(fi);
     }
     // A potential's edge dofs: the projection of n × A0 on the faces' edge
     // functions' tangential traces, ∫ (n × Wi)·(n × Wj) x = ∫ (n × Wi)·(n ×
@@ -698,9 +697,6 @@ bool MagneticProblem3::buildEquations(Equations& q, QString* error, const std::v
     }
     for (std::size_t k = 0; k < q.eqA.size(); ++k)
         if (q.eqA[k] == -2) q.eqA[k] = q.nA++;
-    if (heldNodes)
-        for (std::size_t k = 0; k < q.eqP.size() && k < heldNodes->size(); ++k)
-            if ((*heldNodes)[k] && q.eqP[k] == -2) q.eqP[k] = -3;
     // (No face holds the multiplier: one node's held, its constant.)
     bool anyHeld = false;
     for (int v : q.eqP) anyHeld = anyHeld || v == -3;
@@ -1170,9 +1166,11 @@ bool MagneticProblem3::buildConductors(Conductors& h, double omega, QString* err
         for (int k = 0; k < ns.perElement(); ++k) h.eqV[std::size_t(nd[k])] = -2;
     }
     std::vector<char> ground(N, 0);
+    h.electrodeFaces.assign(mesh.faces.size(), 0);
     for (int fi = 0; fi < int(mesh.faces.size()); ++fi) {
         const int role = faceRole[std::size_t(mesh.faces[std::size_t(fi)].face)];
         if (role == -1) continue;
+        h.electrodeFaces[std::size_t(fi)] = 1;
         for (int dof : ns.faceDofs(fi)) {
             if (dof < 0 || h.eqV[std::size_t(dof)] == -1) continue;
             h.electrode[std::size_t(dof)] = 1;
@@ -1568,7 +1566,24 @@ bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
     Conductors h;
     if (!buildConductors(h, omega, error)) return false;
     Equations q;
-    if (!buildEquations(q, error, &h.electrode)) return false;
+    if (!buildEquations(q, error)) return false;
+    // A coil's terminal and ground on faces whose tangential A is held
+    // (Magnetic Insulation, a Magnetic Potential): n × E = 0 on them, the
+    // voltage between them the field's integral through that perfect
+    // conductor. Elsewhere it is not one value - A + ∇h, U - 1 the same
+    // field: the system singular.
+    for (int fi = 0; fi < int(mesh.faces.size()); ++fi) {
+        if (!h.electrodeFaces[std::size_t(fi)]) continue;
+        bool held = true;
+        for (int dof : ns.faceDofs(fi)) held = held && (dof < 0 || q.eqP[std::size_t(dof)] == -3);
+        if (held) continue;
+        const int face = mesh.faces[std::size_t(fi)].face;
+        *error = tr("%1: face %2 is a coil's terminal or ground (its currents physics holds it) where A is free - in the frequency domain a "
+                    "conductor is fed on faces Magnetic Insulation holds, the model's outer faces (a perfect conductor closing its circuit)")
+                     .arg(name)
+                     .arg(face + 1);
+        return false;
+    }
     const double gaugeScale = gaugeScaleOf();
     skinDepthCheck(h, omega);
     const std::size_t nE = std::size_t(es.size()), nN = std::size_t(ns.size());
@@ -2054,6 +2069,10 @@ bool magneticStateAt(PointEvaluator3& ev, int f, MagneticState& out, bool curren
                     gr[m] += g[k][m] * vr;
                     gi[m] += g[k][m] * vi;
                 }
+            }
+            for (int k = 0; k < sh.count; ++k) {
+                out.V += sh.n[k] * field.values[2 * nE + nN + std::size_t(nd[k])];
+                out.Vi += sh.n[k] * field.values[2 * nE + 2 * nN + std::size_t(nd[k])];
             }
             for (int k = 0; k < 3; ++k) {
                 out.E[k] = omega * out.Ai[k] - gr[k];
