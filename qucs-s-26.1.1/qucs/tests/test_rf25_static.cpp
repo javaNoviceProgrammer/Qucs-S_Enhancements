@@ -15,6 +15,7 @@
 
 #include "rf25/rf25_dense.h"
 #include "rf25/rf25_sparams.h"
+#include "rf25/rf25_solve.h"
 #include "rf25/rf25_static.h"
 
 #include <Eigen/Dense>
@@ -428,6 +429,92 @@ private slots:
         qWarning("the charge's crowding as its faces %.4f of the sheet's, of the whole %.4f", crowd, whole);
         QVERIFY2(crowd > 0.9 && crowd < 1.15 && whole > 0.9 && whole < 1.15,
                  qPrintable(QStringLiteral("%1 and %2 of the sheet's").arg(crowd).arg(whole)));
+    }
+
+    // The charge past the dense limit, solved compressed (the production-
+    // readiness review: past 8,000 cells the charge solve was
+    // refused). On one mesh, a coplanar line's, held compressed - its dense
+    // limit set to 200 cells - it is the dense solve's to 1e-4; past the
+    // build's own 8,000, a coplanar sheet in air is its conformal map's
+    // within 0.5 %; and a layer that ends, whose correction is between every
+    // two cells, is refused compressed, by name.
+    void theChargePastTheDenseLimitIsSolvedCompressed()
+    {
+        const rf::Stack stack = grounded(4, 100e-6);
+        const QList<rf::Conductor> line{strip(0, -25, 600, 50), strip(0, 35, 600, 100), strip(0, -135, 600, 100)};
+        const rf::Mesh mesh = meshed(line, 10);
+        QVERIFY2(mesh.ok() && mesh.cells.size() > 400, qPrintable(QString::number(mesh.cells.size())));
+        const rf::Extraction dense = rf::extract(mesh, line, stack);
+        rf::ExtractControl held;
+        held.mostDense = 200;
+        const rf::Extraction compressed = rf::extract(mesh, line, stack, 1e-6, {}, &held);
+        QVERIFY2(dense.ok() && compressed.ok(), qPrintable((dense.problems + compressed.problems).join(" | ")));
+        QVERIFY2(says(compressed.lines, "solved compressed") && !says(dense.lines, "solved compressed"), qPrintable(compressed.lines.join(" | ")));
+        double apart = 0, largest = 0;
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) {
+                apart = std::max(apart, std::abs(compressed.c.at(i).at(j) - dense.c.at(i).at(j)));
+                largest = std::max(largest, std::abs(dense.c.at(i).at(j)));
+            }
+        QVERIFY2(apart < 1e-4 * largest, qPrintable(QStringLiteral("%1 apart, of %2").arg(apart).arg(largest)));
+        // (Its near field's LU the preconditioner: 14 iterations on this
+        //  mesh of 1,922 cells, where its diagonal alone took 32.)
+        {
+            const QRegularExpressionMatch at = QRegularExpression(QStringLiteral("GMRES at most (\\d+) iteration")).match(compressed.lines.join(' '));
+            QVERIFY2(at.hasMatch() && at.captured(1).toInt() <= 20, qPrintable(compressed.lines.join(" | ")));
+        }
+        // (A quasi-static study's mesh is held compressed, so the tab's mesh
+        //  is not refused past the dense limit either.)
+        {
+            rf::Model model = rf::Model::blank();
+            rf::Node* study = model.root.child(QStringLiteral("rf_study"));
+            QVERIFY(study != nullptr);
+            study->props.insert(QStringLiteral("kind"), QStringLiteral("quasi_static"));
+            const rf::MeshSettings tab = rf::tabMeshSettings(model, nullptr);
+            QVERIFY(tab.chargeCompressed && !tab.compressed);
+            // (Its mesh past the dense limit not refused, and said held
+            //  compressed: a 300 µm plate in 2.5 µm cells, 14,400 of them.)
+            rf::MeshSettings plate = tab;
+            plate.maximum = 2.5e-6;
+            plate.cellsAcross = 0;
+            plate.edges = false;
+            const rf::Mesh past = rf::meshOf({strip(0, 0, 300, 300)}, plate, stack, 0);
+            QVERIFY2(past.ok() && past.cells.size() > 8000, qPrintable(QStringLiteral("%1: %2").arg(past.cells.size()).arg(past.problems.join(" | "))));
+            QVERIFY2(says(past.lines, "past the dense limit (8000): held compressed"), qPrintable(past.lines.join(" | ")));
+        }
+        // (Past the build's own limit: the sheet in air, 2 µm gaps, its
+        //  grounds 160 µm, against 4 eps0 K(k)/K(k') with its grounds finite -
+        //  52.1345 pF/m.)
+        if (slowBuild()) return;
+        rf::Stack air = grounded(1, 100e-6);
+        air.layers[0].variant = QStringLiteral("open");
+        const QList<rf::Conductor> sheet{strip(0, -25, 1000, 50), strip(0, 27, 1000, 160), strip(0, -187, 1000, 160)};
+        rf::MeshSettings how;
+        how.cellsAcross = 16;
+        how.maximum = 7e-6;
+        how.gaps = true;
+        how.compressed = true;
+        const rf::Mesh fine = rf::meshOf(sheet, how, air, 0);
+        QVERIFY2(fine.ok() && fine.cells.size() > 8000, qPrintable(QStringLiteral("%1 cells: %2").arg(fine.cells.size()).arg(fine.problems.join(" | "))));
+        const rf::Extraction past = rf::extract(fine, sheet, air);
+        QVERIFY2(past.ok() && says(past.lines, "solved compressed"), qPrintable((past.problems + past.lines).join(" | ")));
+        int s = 0;
+        for (int i = 1; i < 3; ++i)
+            if (past.c.at(i).at(i) < past.c.at(s).at(s)) s = i;
+        const double c = past.perMetre.maxwell.at(s).at(s);
+        qWarning().noquote() << QStringLiteral("%1 cells: C %2 pF/m against the conformal map's 52.1345").arg(fine.cells.size()).arg(c * 1e12)
+                             << past.lines.filter(QStringLiteral("compressed")).join(' ');
+        QVERIFY2(std::abs(c / 52.1345e-12 - 1) < 0.005, qPrintable(QString::number(c * 1e12)));
+        // (A layer that ends: refused compressed, by name.)
+        rf::ExtractControl ends;
+        ends.mostDense = 200;
+        rf::Extent e;
+        e.layer = QStringLiteral("SUB");
+        e.shapes = {QPolygonF(QRectF(-100, -300, 800, 600))};
+        e.beyond = 1;
+        ends.extents << e;
+        const rf::Extraction ended = rf::extract(mesh, line, stack, 1e-6, {}, &ends);
+        QVERIFY2(!ended.ok() && says(ended.problems, "SUB ends") && says(ended.problems, "fewer cells across"), qPrintable(ended.problems.join(" | ")));
     }
 
     void aPlateOverAGroundPlaneIsItsParallelPlateValuePlusFringing()
@@ -2415,13 +2502,15 @@ private slots:
         // before the stack's Green's functions are built for them, which
         // took an octagonal spiral of 88,000 cells five minutes before it
         // was refused.
-        const QList<rf::Conductor> big{strip(0, 0, 400, 400)};
+        // (Past the compressed solve's own bound since the charge is held
+        //  compressed past the dense one: a plate of some 50,000 cells.)
+        const QList<rf::Conductor> big{strip(0, 0, 900, 900)};
         std::atomic_int step{-1};
         rf::ExtractControl watched;
         watched.step = &step;
         const rf::Extraction huge = rf::extract(meshed(big, 4, false), big, grounded(4.1, 10e-6), 1e-6, {}, &watched);
         QVERIFY(!huge.ok());
-        QVERIFY2(huge.problems.first().contains(QStringLiteral("dense matrix")), qPrintable(huge.problems.join(" | ")));
+        QVERIFY2(huge.problems.first().contains(QStringLiteral("will solve the charge on, compressed")), qPrintable(huge.problems.join(" | ")));
         QCOMPARE(step.load(), int(rf::ExtractControl::Starting));
         // And the loop's inductance, after it, is said as itself, not as
         // "starting".

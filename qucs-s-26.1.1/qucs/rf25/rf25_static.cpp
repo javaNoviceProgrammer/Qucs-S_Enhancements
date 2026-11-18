@@ -13,14 +13,19 @@
 
 #include "rf25_dense.h"
 #include "rf25_edge.h"
+#include "rf25_fast.h"
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QThread>
 #include <QHash>
 #include <QSet>
 
 #include <functional>
 
 #include <Eigen/Dense>
+#include <Eigen/SparseCore>
+#include <Eigen/SparseLU>
 
 #include <algorithm>
 #include <cmath>
@@ -439,6 +444,63 @@ QRectF scaled(const QRectF& box, double unit)
     return QRectF(box.left() * unit, box.top() * unit, box.width() * unit, box.height() * unit);
 }
 
+/// Unknown \a i's potential of a unit charge over unknown \a j: what the
+/// dense matrix of coefficients() holds at (i, j), and what a compressed
+/// solve asks of its blocks one entry at a time.
+struct CoefficientOf {
+    const QList<MeshCell>& cells;
+    const QList<int>& which;
+    std::function<const Green&(const QString&, const QString&)> greenOf;
+    double unit = 1;
+    const QHash<int, QList<ChargePart>>& charges;
+    std::function<double(int)> zOf;
+    std::function<double(const Green&, int, int, const std::function<double(const Green&)>&)> local;
+    QRectF box;
+    double boxReach = 0;
+
+    double operator()(int i, int j) const
+    {
+        const MeshCell& ci = cells.at(which.at(i));
+        const QPointF at = ci.centre * unit;
+        const MeshCell& cj = cells.at(which.at(j));
+        const double side = longestSide(ci, cj) * unit;
+        const QRectF rect = scaled(cj.charged(), unit);
+        const Green& g = greenOf(ci.layer, cj.layer);
+        // (A strip's cell's rect is of its own frame: the point turned
+        //  into it - MeshCell::angle.)
+        const QPointF seen = cj.turned() ? MeshCell::turnedAbout(at, rect.center(), -cj.angle) : at;
+        double p = cellPotential(seen, rect, g, side, i == j);
+        const auto ki = charges.constFind(which.at(i)), kj = charges.constFind(which.at(j));
+        if ((ki != charges.constEnd() || kj != charges.constEnd())
+            && std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y()) < kNearWidths * side * (1 + 1e-6)) {   // (a margin, as the full wave's)
+            const double zi = zOf(which.at(i)), zj = zOf(which.at(j));
+            QList<ChargePart> pi = ki != charges.constEnd() ? ki.value() : QList<ChargePart>{wholeCell(scaled(ci.charged(), unit), zi)};
+            // (A strip's cell's parts are of its own frame: i's out of
+            //  its, into j's where j is one, as the point is.)
+            if (ci.turned() || cj.turned())
+                for (ChargePart& part : pi) {
+                    if (part.plane != 0) continue;
+                    QPointF to(part.x, part.y);
+                    if (ci.turned()) to = MeshCell::turnedAbout(to, at, ci.angle);
+                    if (cj.turned()) to = MeshCell::turnedAbout(to, rect.center(), -cj.angle);
+                    part.rect.translate(to.x() - part.x, to.y() - part.y);
+                    part.x = to.x();
+                    part.y = to.y();
+                }
+            const QList<ChargePart> pj = kj != charges.constEnd() ? kj.value() : QList<ChargePart>{wholeCell(rect, zj)};
+            const auto correction = [&](const Green& h) { return partsCorrection(h, pi, pj, rect, seen, std::abs(zi - zj)); };
+            p += local ? local(g, which.at(i), which.at(j), correction) : correction(g);
+        }
+        // In a box, the charge's images in its walls, each of the sign
+        // its mirrors give (boxImagesOf()) - a near one over its cell as
+        // a near cell is.
+        if (boxReach > 0)
+            for (const BoxImage& im : boxImagesOf(box, rect, at, boxReach))
+                p += im.sign * cellPotential(at, im.rect, g, side, false);
+        return p;
+    }
+};
+
 Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& which,
                              const std::function<const Green&(const QString&, const QString&)>& greenOf, double unit,
                              const ExtractControl* control, const QHash<int, QList<ChargePart>>& charges = {},
@@ -446,6 +508,7 @@ Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& whi
                              const std::function<double(const Green&, int, int, const std::function<double(const Green&)>&)>& local = {},
                              const QRectF& box = {}, double boxReach = 0)
 {
+    const CoefficientOf entry{cells, which, greenOf, unit, charges, zOf, local, box, boxReach};
     const int n = int(which.size());
     Eigen::MatrixXd p(n, n);
     for (int i = 0; i < n; ++i) {
@@ -455,45 +518,7 @@ Eigen::MatrixXd coefficients(const QList<MeshCell>& cells, const QList<int>& whi
             p.bottomRows(n - i).setZero();
             break;
         }
-        const MeshCell& ci = cells.at(which.at(i));
-        const QPointF at = ci.centre * unit;
-        for (int j = 0; j < n; ++j) {
-            const MeshCell& cj = cells.at(which.at(j));
-            const double side = longestSide(ci, cj) * unit;
-            const QRectF rect = scaled(cj.charged(), unit);
-            const Green& g = greenOf(ci.layer, cj.layer);
-            // (A strip's cell's rect is of its own frame: the point turned
-            //  into it - MeshCell::angle.)
-            const QPointF seen = cj.turned() ? MeshCell::turnedAbout(at, rect.center(), -cj.angle) : at;
-            p(i, j) = cellPotential(seen, rect, g, side, i == j);
-            const auto ki = charges.constFind(which.at(i)), kj = charges.constFind(which.at(j));
-            if ((ki != charges.constEnd() || kj != charges.constEnd())
-                && std::hypot(at.x() - rect.center().x(), at.y() - rect.center().y()) < kNearWidths * side * (1 + 1e-6)) {   // (a margin, as the full wave's)
-                const double zi = zOf(which.at(i)), zj = zOf(which.at(j));
-                QList<ChargePart> pi = ki != charges.constEnd() ? ki.value() : QList<ChargePart>{wholeCell(scaled(ci.charged(), unit), zi)};
-                // (A strip's cell's parts are of its own frame: i's out of
-                //  its, into j's where j is one, as the point is.)
-                if (ci.turned() || cj.turned())
-                    for (ChargePart& part : pi) {
-                        if (part.plane != 0) continue;
-                        QPointF to(part.x, part.y);
-                        if (ci.turned()) to = MeshCell::turnedAbout(to, at, ci.angle);
-                        if (cj.turned()) to = MeshCell::turnedAbout(to, rect.center(), -cj.angle);
-                        part.rect.translate(to.x() - part.x, to.y() - part.y);
-                        part.x = to.x();
-                        part.y = to.y();
-                    }
-                const QList<ChargePart> pj = kj != charges.constEnd() ? kj.value() : QList<ChargePart>{wholeCell(rect, zj)};
-                const auto correction = [&](const Green& h) { return partsCorrection(h, pi, pj, rect, seen, std::abs(zi - zj)); };
-                p(i, j) += local ? local(g, which.at(i), which.at(j), correction) : correction(g);
-            }
-            // In a box, the charge's images in its walls, each of the sign
-            // its mirrors give (boxImagesOf()) - a near one over its cell as
-            // a near cell is.
-            if (boxReach > 0)
-                for (const BoxImage& im : boxImagesOf(box, rect, at, boxReach))
-                    p(i, j) += im.sign * cellPotential(at, im.rect, g, side, false);
-        }
+        for (int j = 0; j < n; ++j) p(i, j) = entry(i, j);
     }
     return p;
 }
@@ -720,11 +745,15 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     {
         qsizetype charges = 0;
         for (const Net& n : nets) charges += n.cells.size();
-        if (charges > kMostCharges) {
+        // (Past the dense limit the charge is solved compressed - its far
+        //  blocks of low rank, by iteration -, to the compressed mesh's own
+        //  bound: the production-readiness review, where
+        //  past 8,000 cells it was refused.)
+        if (charges > kMostCompressedCells) {
             out.unknowns = int(charges);
-            out.problems << tr("%1 cells is more than this build will solve a dense matrix for (%2 at most): ask for fewer "
-                               "cells across a conductor, or a larger largest cell.")
-                                .arg(charges).arg(kMostCharges);
+            out.problems << tr("%1 cells is more than this build will solve the charge on, compressed (%2 at most): ask for "
+                               "fewer cells across a conductor, or a larger largest cell.")
+                                .arg(charges).arg(kMostCompressedCells);
             return out;
         }
     }
@@ -901,10 +930,26 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     for (const Net& n : nets) which += n.cells;
     const int n = int(which.size());
     out.unknowns = n;
-    if (n > kMostCharges) {
-        out.problems << tr("%1 cells is more than this build will solve a dense matrix for (%2 at most): ask for fewer cells "
-                           "across a conductor, or a larger largest cell.")
-                            .arg(n).arg(kMostCharges);
+    if (n > kMostCompressedCells) {
+        out.problems << tr("%1 cells is more than this build will solve the charge on, compressed (%2 at most): ask for fewer "
+                           "cells across a conductor, or a larger largest cell.")
+                            .arg(n).arg(kMostCompressedCells);
+        return out;
+    }
+    // Past the dense limit: held compressed, solved by iteration. A layer
+    // that ends adds a correction between every two cells, dense, which it
+    // cannot hold.
+    const int denseMost = control != nullptr && control->mostDense > 0 ? control->mostDense : kMostCharges;
+    const bool compressedSolve = n > denseMost;
+    if (compressedSolve && !plan.isEmpty()) {
+        QStringList ended;
+        if (control != nullptr)
+            for (const Extent& e : control->extents)
+                if (!ended.contains(e.layer)) ended << e.layer;
+        out.problems << tr("%1 cells is past the dense limit (%2), and %3 ends: the correction of a layer that ends is between "
+                           "every two cells, which a compressed solve does not hold yet. Ask for fewer cells across a "
+                           "conductor, or a larger largest cell, to come under the dense limit.")
+                            .arg(n).arg(denseMost).arg(ended.isEmpty() ? tr("a layer of the stack") : ended.join(QStringLiteral(", ")));
         return out;
     }
 
@@ -1278,23 +1323,127 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     };
 
     QList<double> crowding;
+    const QHash<int, QList<ChargePart>>& charges_ = charges;   // (the cells' parts: the solve's own "charges" are its answer)
+    // Past the dense limit: P held compressed - its far blocks of low rank by
+    // adaptive cross approximation (rf25_fast.h), its near ones dense -, and
+    // each net's charge found by GMRES, preconditioned by the near field's
+    // sparse LU. False where stopped or where it did not converge, said.
+    const auto compressedCharges = [&](const CoefficientOf& entry, const Eigen::MatrixXd& heldAt, Eigen::MatrixXd* q, double* hint) {
+        QElapsedTimer clock;
+        clock.start();
+        QList<Box> boxes;
+        for (const int k : std::as_const(which)) {
+            const QRectF r = scaled(mesh.cells.at(k).outline.boundingRect(), micrometre);
+            const double z = height.value(mesh.cells.at(k).layer);
+            boxes << Box::of(r.left(), r.top(), z, r.right(), r.bottom(), z);
+        }
+        const ClusterTree tree(boxes, 32);
+        HMatrix h(&tree, &tree, false, 1.0);
+        const int threads = std::max(1, QThread::idealThreadCount());
+        const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
+        if (!h.fill([&entry](int r, int c) { return Complex(entry(r, c), 0.0); }, 1e-6, threads, stop)) {
+            out.problems << tr("Stopped.");
+            return false;
+        }
+        // The near field: each pair whose cells are within two of their
+        // longer side, and each cell with itself, as the dense matrix has
+        // them.
+        bool over = false;
+        const QList<QPair<int, int>> pairs = nearPairs(boxes, nullptr, 2.0, 20000000, &over);
+        std::vector<Eigen::Triplet<double>> near;
+        near.reserve(std::size_t(2 * pairs.size() + n));
+        QSet<qint64> seen;
+        for (const auto& [a, b] : pairs) {
+            near.emplace_back(a, b, entry(a, b));
+            if (a != b) near.emplace_back(b, a, entry(b, a));
+            if (a == b) seen.insert(a);
+        }
+        for (int i = 0; i < n; ++i)
+            if (!seen.contains(i)) near.emplace_back(i, i, entry(i, i));
+        Eigen::SparseMatrix<double> m(n, n);
+        m.setFromTriplets(near.begin(), near.end());
+        Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
+        lu.compute(m);
+        const bool factored = lu.info() == Eigen::Success;
+        const Eigen::VectorXd diagonal = m.diagonal();
+        *hint = diagonal.maxCoeff() / std::max(1e-300, diagonal.minCoeff());
+        const Operator apply = [&h](const VectorC& x, VectorC& y) {
+            y = VectorC::Zero(x.size());
+            h.multiply(x, y);
+        };
+        const Operator precondition = [&](const VectorC& x, VectorC& y) {
+            if (factored) {
+                const Eigen::VectorXd re = lu.solve(x.real().eval()), im = lu.solve(x.imag().eval());
+                y = re.cast<Complex>() + Complex(0, 1) * im.cast<Complex>();
+            } else {
+                y = x.cwiseQuotient(diagonal.cast<Complex>());
+            }
+        };
+        q->resize(n, heldAt.cols());
+        int most = 0;
+        double worst = 0;
+        for (int c = 0; c < heldAt.cols(); ++c) {
+            const VectorC b = heldAt.col(c).cast<Complex>();
+            VectorC x = VectorC::Zero(n);
+            const Gmres g = gmres(apply, precondition, b, x, 1e-8, 80, 3000, stop);
+            if (g.stopped) {
+                out.problems << tr("Stopped.");
+                return false;
+            }
+            if (!g.converged) {
+                out.problems << tr("The charge on %1 cells, solved compressed, did not converge: GMRES left a residual of %2 "
+                                   "after %3 iterations. Ask for fewer cells across a conductor, or a larger largest cell.")
+                                    .arg(n).arg(g.residual, 0, 'g', 2).arg(g.iterations);
+                return false;
+            }
+            most = std::max(most, g.iterations);
+            worst = std::max(worst, g.residual);
+            q->col(c) = x.real();
+        }
+        out.lines << tr("Past the dense limit (%1 cells): %2 cells solved compressed, P held in %3 MB where dense it would take "
+                        "%4 MB, the near field's LU of %5 pairs%6; GMRES at most %7 iteration(s) to a residual of %8, for each of "
+                        "%9 net(s), in %10 s.")
+                         .arg(denseMost)
+                         .arg(n)
+                         .arg(h.bytes() / (1024 * 1024), 0, 'f', 1)
+                         .arg(h.denseBytes() / 2 / (1024 * 1024), 0, 'f', 1)
+                         .arg(pairs.size())
+                         .arg(factored ? QString() : tr(" (not factored: its diagonal instead)"))
+                         .arg(most)
+                         .arg(worst, 0, 'g', 2)
+                         .arg(heldAt.cols())
+                         .arg(clock.elapsed() / 1000.0, 0, 'f', 1);
+        return true;
+    };
     const auto solve = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
                            QList<QList<double>>* matrix, QList<double>* crowd = nullptr, bool withDielectric = false) {
         // (The stack's own, with its layers that end: their local images.)
-        Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre, control, charges, zOf,
-                                         withDielectric && !insideOf.isEmpty() ? localCorrection
-                                                                                : std::function<double(const Green&, int, int, const std::function<double(const Green&)>&)>{},
-                                         stackLayers.walls ? stackLayers.box : QRectF(), boxReach);
-        if (control != nullptr && control->stopped()) return 1.0;
-        if (withDielectric && corrected) p += dielectric.delta;
-        ++out.solves;
-        const double hint = p.diagonal().maxCoeff() / std::max(1e-300, p.diagonal().minCoeff());
+        const auto local = withDielectric && !insideOf.isEmpty()
+                               ? localCorrection
+                               : std::function<double(const Green&, int, int, const std::function<double(const Green&)>&)>{};
         // Each net held at a volt and the others at nought, every net at
-        // once; p factorized where it is.
+        // once.
         Eigen::MatrixXd held = Eigen::MatrixXd::Zero(n, nets.size());
         for (int i = 0; i < n; ++i) held(i, netOf.at(i)) = 1.0;
-        const DenseFactors<double> lu(std::move(p));
-        const Eigen::MatrixXd charges = lu.solve(held);
+        Eigen::MatrixXd charges;
+        double hint = 1;
+        if (compressedSolve) {
+            if (!compressedCharges(CoefficientOf{mesh.cells, which, greenOf, micrometre, charges_, zOf, local,
+                                                 stackLayers.walls ? stackLayers.box : QRectF(), boxReach},
+                                   held, &charges, &hint))
+                return 1.0;
+            ++out.solves;
+        } else {
+            Eigen::MatrixXd p = coefficients(mesh.cells, which, greenOf, micrometre, control, charges_, zOf, local,
+                                             stackLayers.walls ? stackLayers.box : QRectF(), boxReach);
+            if (control != nullptr && control->stopped()) return 1.0;
+            if (withDielectric && corrected) p += dielectric.delta;
+            ++out.solves;
+            hint = p.diagonal().maxCoeff() / std::max(1e-300, p.diagonal().minCoeff());
+            // p factorized where it is.
+            const DenseFactors<double> lu(std::move(p));
+            charges = lu.solve(held);
+        }
         matrix->clear();
         if (crowd != nullptr) crowd->clear();
         for (int net = 0; net < nets.size(); ++net) {

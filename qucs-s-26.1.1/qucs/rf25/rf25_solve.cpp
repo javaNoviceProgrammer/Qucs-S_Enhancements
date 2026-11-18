@@ -73,6 +73,11 @@ MeshSettings tabMeshSettings(const Model& model, QStringList* said)
 {
     MeshSettings how = meshSettingsOf(model.mesh(), model.parameters(), said);
     how.compressed = meshedCompressed(model);
+    // (A quasi-static study's charge is solved compressed past the dense
+    //  limit - the production-readiness review -, so its mesh
+    //  is not refused there.)
+    if (const Node* study = model.root.child(QStringLiteral("rf_study")))
+        how.chargeCompressed = textOf(*study, QStringLiteral("kind")) != QLatin1String("full_wave");
     how.gaps = true;
     // (The plane of symmetry the Processing cuts the layout at: its half's
     //  cut is no edge, and its width the whole's - rf25_mesh.h.)

@@ -112,6 +112,11 @@ struct MeshSettings {
     /// Solver and Matrix): its cost said so, and its cells not held to the
     /// charge solve's bound. Not read from the node: the tab sets it.
     bool compressed = false;
+    /// Whether it is for a quasi-static solve, whose charge is held
+    /// compressed past the dense limit (kMostCharges) to kMostCompressedCells:
+    /// its cells not refused at the dense limit, and said so. Not read from
+    /// the node: the tab sets it.
+    bool chargeCompressed = false;
     /// Whether a side that faces another conductor across a gap narrower
     /// than its outermost cells has them halved until they are no wider
     /// than a quarter of the gap, where the charge and the current crowd on
@@ -225,7 +230,7 @@ MeshCost costOf(int unknowns, bool compressed = false);
 /// build solves (kMostCharges). The mesh has two counts - its cells, the
 /// charge solve's, and the edges between them, a full-wave solve's - and
 /// they were said side by side with the second's matrix.
-QString chargeCostOf(int cells);
+QString chargeCostOf(int cells, bool compressedPast = false);
 
 /// The highest frequency of the model's study, Hz; 0 when it says none.
 double topFrequency(const Model& model);

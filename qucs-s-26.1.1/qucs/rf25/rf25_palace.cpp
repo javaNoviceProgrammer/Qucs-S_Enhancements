@@ -188,30 +188,7 @@ PalaceExport palaceExportOf(const Model& model, const QList<Conductor>& given, c
     // (A merged via farm: written as its metal thinned in place, which a
     //  solver of solid shapes takes as a block - its resistance, not the
     //  vias' spread over their footprint as RF 2.5D solves them. Said.)
-    int farms = 0, whole = 0;
-    double most = 1;
-    for (int k = 0; k < given.size(); ++k) {
-        const Conductor& c = given.at(k);
-        if (!(c.share < 1)) continue;
-        ++farms;
-        // (Kept whole above the vias' area, where thinning further would
-        //  part it: how much more metal it is.)
-        const double over = areaOf(conductors.at(k).outline) / (areaOf(c.outline) * c.share);
-        if (over > 1.02) {
-            ++whole;
-            most = std::max(most, over);
-        }
-    }
-    if (farms > 0)
-        out.notes << tr("%1 merged via farm(s) written as their metal thinned in place within their footprint: this solver "
-                        "reads that block's resistance, where RF 2.5D takes the vias' spread over the footprint. For a "
-                        "like comparison, export with the vias unmerged (Processing: Merge nearby vias off).%2")
-                         .arg(farms)
-                         .arg(whole > 0 ? tr(" %1 of them kept whole, up to %2 times the vias' metal, where thinning further "
-                                             "would part them.")
-                                              .arg(whole)
-                                              .arg(most, 0, 'g', 3)
-                                        : QString());
+    if (const QString said = mergedFarmsSaid(given, conductors); !said.isEmpty()) out.notes << said;
     out.name = name.trimmed().isEmpty() ? QStringLiteral("rf25") : name.trimmed();
     const Stack stack = model.stack();
     if (!stack.ok()) out.problems << tr("The stack cannot be written as it stands: %1").arg(stack.problems.join(QLatin1Char(' ')));

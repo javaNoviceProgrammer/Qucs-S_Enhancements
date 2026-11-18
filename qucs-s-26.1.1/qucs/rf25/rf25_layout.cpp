@@ -188,6 +188,33 @@ QList<Conductor> asSolid(const QList<Conductor>& conductors)
     return out;
 }
 
+QString mergedFarmsSaid(const QList<Conductor>& given, const QList<Conductor>& solid)
+{
+    int farms = 0, whole = 0;
+    double most = 1;
+    for (int k = 0; k < given.size() && k < solid.size(); ++k) {
+        const Conductor& c = given.at(k);
+        if (!(c.share < 1)) continue;
+        ++farms;
+        // (Kept whole above the vias' area, where thinning further would
+        //  part it: how much more metal it is.)
+        const double over = areaOf(solid.at(k).outline) / (areaOf(c.outline) * c.share);
+        if (over > 1.02) {
+            ++whole;
+            most = std::max(most, over);
+        }
+    }
+    if (farms == 0) return QString();
+    return tr("%1 merged via farm(s) written as their metal thinned in place within their footprint: this solver reads that "
+              "block's resistance, where RF 2.5D takes the vias' spread over the footprint. For a like comparison, export with "
+              "the vias unmerged (Processing: Merge nearby vias off).%2")
+        .arg(farms)
+        .arg(whole > 0 ? tr(" %1 of them kept whole, up to %2 times the vias' metal, where thinning further would part them.")
+                             .arg(whole)
+                             .arg(most, 0, 'g', 3)
+                       : QString());
+}
+
 double conductorWidthOf(const QPolygonF& polygon)
 {
     const double area = areaOf(polygon), half = perimeterOf(polygon) / 4, d = half * half - area;
