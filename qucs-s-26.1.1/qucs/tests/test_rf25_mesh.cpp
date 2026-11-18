@@ -302,9 +302,12 @@ private slots:
                  qPrintable(sheet.warnings.join(" | ")));
         for (rf::Layer& l : stack.layers)
             if (l.name == QLatin1String("M1")) l.twoSheets = true;
+        // (As its two faces it holds its section's own inside - P52 -: said
+        //  only of a conductor more than about twice as tall as it is wide.)
         const rf::Mesh faces = rf::meshOf(wire, how, stack, 1e9);
-        QVERIFY2(says(faces.warnings, "solved as its two faces, their surface impedance holds the inside of a wide slab"),
-                 qPrintable(faces.warnings.join(" | ")));
+        QVERIFY2(!says(faces.warnings, "inductance at a low frequency reads high"), qPrintable(faces.warnings.join(" | ")));
+        const rf::Mesh tall = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 500, 2)}, how, stack, 1e9);
+        QVERIFY2(says(tall.warnings, "more than about twice as tall as it is wide"), qPrintable(tall.warnings.join(" | ")));
         // (Thin against its width: nothing said.)
         const rf::Mesh wide = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 500, 100)}, how, m.stack(), 1e9);
         QVERIFY2(!says(wide.warnings, "inductance at a low frequency reads high"), qPrintable(wide.warnings.join(" | ")));

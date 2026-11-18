@@ -140,6 +140,17 @@ struct Filament {
  */
 double selfDistance(double width, double thickness = 0);
 
+/// How much of a wide slab's inside a conductor \a width by \a thickness
+/// solved as its two faces holds (any unit, the same for both): the inside
+/// its section's current has beyond the two faces' field - (mu0/2pi)
+/// (ln g_faces - ln g_section) a metre, g the geometric mean distances of
+/// the two faces' even current and of the solid section's - over the slab's
+/// mu0 t/12w. One on a wide conductor, 0.17 on one as thick as it is wide;
+/// nought where the two faces' field alone holds more than the section's
+/// (one less than about twice as thick as it is wide). The faces' surface
+/// impedance holds the slab's whole at a low frequency.
+double facesInside(double width, double thickness);
+
 /*!
  * The partial inductance between runs \a a and \a b, H.
  *

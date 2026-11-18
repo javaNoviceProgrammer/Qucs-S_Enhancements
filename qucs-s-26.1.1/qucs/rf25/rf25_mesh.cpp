@@ -10,6 +10,7 @@
  */
 
 #include "rf25_mesh.h"
+#include "rf25_inductance.h"
 
 #include "multiphysics/fem_expr.h"
 
@@ -39,7 +40,7 @@ constexpr int kMostUnknowns = 60000;
 /// And held compressed: the full-wave solve's own bound.
 constexpr int kMostCompressedUnknowns = 2000000;
 
-constexpr double kLightSpeed = 299792458.0;
+// (The speed of light rf25_green.h's kLightSpeed.)
 
 QJsonValue propertyOf(const Node& node, const QString& key)
 {
@@ -1853,13 +1854,13 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         }
     }
     // A metal thick against its own width: the full wave's inductance at a
-    // low frequency reads high, and the more the thicker (P51: a square loop of wire 0.5 by 0.5 mm, 24.2 nH,
-    // read 33.4 as a sheet and 24.5 to 26.7 as its two faces, the more the
-    // finer its cells across). A sheet's field is of no thickness, and its
-    // surface impedance adds the inside of a slab on top; two faces' surface
-    // impedance holds the inside of a wide slab, twice what a wire this
-    // narrow holds. The loop inductance (rf25_inductance) takes each run as
-    // the bar it is.
+    // low frequency reads high, and the more the thicker (a square loop of wire 0.5 by 0.5 mm, 24.2 nH, read 33.4
+    // as a sheet). A sheet's field is of no thickness, and its surface
+    // impedance adds the inside of a slab on top. As its two faces it holds
+    // its section's own inside (facesInside(), P52), except a conductor more
+    // than about twice as tall as it is wide, whose faces' field alone holds
+    // more than its section's. The loop inductance (rf25_inductance) takes
+    // each run as the bar it is.
     {
         // (Each conductor's width conductorWidthOf()'s: a square pad's its
         //  side, where twice its area over its perimeter, half that, warned
@@ -1875,12 +1876,13 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             if (metal == nullptr || metal->kind != Layer::Metal || !(metal->thickness > 0)) continue;
             const double t = metal->thickness / perUnit, w = it.value();
             if (t < kThickForInductance * w) continue;
-            const QString said = metal->twoSheets || metal->automatic
-                                     ? tr("%1 is %2 µm thick on conductors as narrow as %3 µm: solved as its two faces, their "
-                                          "surface impedance holds the inside of a wide slab, more than a conductor this narrow "
-                                          "does, so the full wave's inductance at a low frequency reads high - some 5 to 10 % on "
-                                          "a wire as thick as it is wide, the more the finer its cells across. rf25_inductance "
-                                          "takes it as the bar it is.")
+            const bool faces = metal->twoSheets || metal->automatic;
+            if (faces && facesInside(w, t) > 0) continue;
+            const QString said = faces
+                                     ? tr("%1 is %2 µm thick on conductors as narrow as %3 µm: solved as its two faces, a "
+                                          "conductor more than about twice as tall as it is wide holds less inside than its two "
+                                          "faces' field alone, so the full wave's inductance at a low frequency reads high. "
+                                          "rf25_inductance takes it as the bar it is.")
                                            .arg(it.key()).arg(t, 0, 'g', 3).arg(w, 0, 'g', 3)
                                      : tr("%1 is %2 µm thick on conductors as narrow as %3 µm: as a sheet its field is of no "
                                           "thickness, and its surface impedance adds the inside of a slab on top, so the full "
