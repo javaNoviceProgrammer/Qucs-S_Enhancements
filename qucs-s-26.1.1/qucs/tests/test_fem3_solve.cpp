@@ -564,6 +564,8 @@ private slots:
             return out.join(QLatin1Char(' '));
         };
         QCOMPARE(order({0, 1, 2}, {}), QStringLiteral("0 1 2"));
+        // (0 waits for 2; 1, free, keeps its place before them.)
+        QCOMPARE(order({0, 1, 2}, {{0, 2}}), QStringLiteral("1 2 0"));
         // (A coil's field, 0, reads the currents, 1: the currents first.)
         QCOMPARE(order({0, 1}, {{0, 1}}), QStringLiteral("1 0"));
         // (Heat, 2, reads the currents, 1, whose conductivity reads heat: a

@@ -113,6 +113,11 @@ public:
     virtual bool solve(const Options3& options, QString* error) = 0;
     /// Its globals from the field as solved.
     virtual void setGlobals() = 0;
+    /// Lets go of what it keeps between solves for a matrix unchanged (a
+    /// magnetic field's factors): at a step's end, and after an
+    /// Eigenfrequency step's solve at rest - two large factorizations not
+    /// held at once.
+    virtual void releaseFactors() {}
     /// Whether its field changes in time (heat: ρ Cp ∂T/∂t), or is at rest
     /// at each step (electrostatics, currents).
     virtual bool hasMass() const { return false; }

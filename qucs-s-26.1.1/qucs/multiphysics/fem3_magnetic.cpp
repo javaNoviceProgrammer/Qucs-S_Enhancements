@@ -94,6 +94,11 @@ public:
     bool setup(QString* error) override;
     bool solve(const Options3& o, QString* error) override;
     void setGlobals() override;
+    void releaseFactors() override
+    {
+        a_lu.reset();
+        a_factored = Eigen::SparseMatrix<double>();
+    }
 
 private:
     struct Equations {
@@ -823,17 +828,23 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
             o.tell(tr("%1: factorizing, %2 unknowns%3").arg(name).arg(M.rows()).arg(step));
             lu->compute(M);
             // (Its analysis - the ordering, kept from a pattern factorized
-            // before or made - and its numeric factorization each said.)
-            a_s.log << tr("%1: assembled in %2 s, %3 nonzeros; factorized in %4 s (its analysis %5 s%6, its numeric factorization %7 s; "
-                          "its factors %8 GB)")
-                           .arg(name)
-                           .arg(assembled / 1000.0, 0, 'f', 2)
-                           .arg(M.nonZeros())
-                           .arg((clock.elapsed() - assembled) / 1000.0, 0, 'f', 2)
-                           .arg(lu->analysisSeconds(), 0, 'f', 2)
-                           .arg(lu->reusedAnalysis() ? tr(", kept from before") : QString())
-                           .arg(lu->factorSeconds(), 0, 'f', 2)
-                           .arg(lu->factorBytes() / 1073741824.0, 0, 'f', 2);
+            // before or made - and its numeric factorization each said, and
+            // its factors' size, where the backend says them: Accelerate's
+            // and MUMPS's, not an LU's.)
+            const QString factorized = tr("%1: assembled in %2 s, %3 nonzeros; factorized in %4 s")
+                                           .arg(name)
+                                           .arg(assembled / 1000.0, 0, 'f', 2)
+                                           .arg(M.nonZeros())
+                                           .arg((clock.elapsed() - assembled) / 1000.0, 0, 'f', 2);
+            if (lu->factorBytes() > 0)
+                a_s.log << factorized
+                               + tr(" (its analysis %1 s%2, its numeric factorization %3 s; its factors %4 MB)")
+                                     .arg(lu->analysisSeconds(), 0, 'f', 2)
+                                     .arg(lu->reusedAnalysis() ? tr(", kept from before") : QString())
+                                     .arg(lu->factorSeconds(), 0, 'f', 2)
+                                     .arg(lu->factorBytes() / 1048576.0, 0, 'f', 1);
+            else
+                a_s.log << factorized + tr(" (%1)").arg(lu->name());
             if (lu->info() != Eigen::Success) {
                 *error = tr("%1: its system could not be factorized (%2) - is A held somewhere (Magnetic Insulation, a Magnetic Potential)?")
                              .arg(name, QString::fromStdString(lu->lastErrorMessage()));
