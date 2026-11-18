@@ -1371,7 +1371,10 @@ private slots:
     // ask its runs' rows a residual below their rounding, and GMRES falls
     // short in its kAugmentedMost iterations - said, and solved with the
     // charges eliminated, as before; its Z the dense one's to a part in
-    // 10^4 at every frequency.
+    // 10^4 at every frequency. Short at one frequency, the lower ones of the
+    // sweep not tried so (the sweep solved highest first): a frequency at a
+    // time, one says it fell short, and the frequencies below it that it
+    // was short at a higher one.
     void aSolvePastItsLowFrequencyLimitSaysSo()
     {
         const rf::Stack st = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
@@ -1380,6 +1383,7 @@ private slots:
         for (const bool squeezed : {false, true}) {
             rf::FullWaveControl control;
             control.matrix = squeezed ? rf::FullWaveControl::Matrix::Compressed : rf::FullWaveControl::Matrix::Dense;
+            if (squeezed) control.threads = 1;
             const rf::FullWave w = rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, st, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))},
                                                   {1, 10, 1e3, 1e6}, 1e-6, &control);
             QVERIFY2(w.ok(), qPrintable(why(w)));
@@ -1390,9 +1394,13 @@ private slots:
                 QVERIFY2(!said.contains(QLatin1String(f)), qPrintable(said));
             ways << w;
             if (squeezed) {
-                for (const char* f : {"At 1 Hz the charges' term", "At 10 Hz the charges' term", "At 1000 Hz the charges' term"})
-                    QVERIFY2(says(w.lines, f) && w.lines.filter(QLatin1String(f)).join(' ').contains(QStringLiteral("so solved with them eliminated")),
+                // (One fell short - the highest it tried, 1 MHz or 1 kHz -,
+                //  and those below it not tried.)
+                QCOMPARE(w.lines.filter(QStringLiteral("so solved with them eliminated")).size(), 1);
+                for (const char* f : {"At 1 Hz the charges' term", "At 10 Hz the charges' term"})
+                    QVERIFY2(w.lines.filter(QLatin1String(f)).join(' ').contains(QStringLiteral("fell short at a higher frequency of this sweep")),
                              qPrintable(w.lines.join(" | ")));
+                QVERIFY2(says(w.lines, "At 1000 Hz the charges' term"), qPrintable(w.lines.join(" | ")));
                 continue;
             }
             QVERIFY2(says(w.lines, "At 1 Hz the charges' term outweighs the currents'") && says(w.lines, "unknowns of their own"),

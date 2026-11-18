@@ -1418,6 +1418,10 @@ struct AtFrequency {
     /// iterations, and solved with them eliminated instead - the iterations
     /// it took.
     int augmentedTried = 0;
+    /// Compressed: not tried so, as it fell short at a higher frequency of
+    /// the sweep - the ratio it fell short at, there (nought: tried, or not
+    /// asked).
+    double augmentedShortAt = 0;
     /// Dense: the seconds its fill took (the Green's functions, the system
     /// and P, up to its LU) and its LU (the factors, the solve, rcond: not
     /// its wait for OpenBLAS's thread), and whether Accelerate's LAPACK or
@@ -3159,7 +3163,8 @@ Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, c
  * dense solve's C - G^T M^-1 G where I is M^-1 G, and its error the
  * square of I's - symmetric, where M is.
  */
-AtFrequency solveCompressed(const Context& c, const Compression& z, double f, int threads, const FullWaveControl* control)
+AtFrequency solveCompressed(const Context& c, const Compression& z, double f, int threads, const FullWaveControl* control,
+                            std::atomic<double>* shortAt = nullptr)
 {
     const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
     const int most = control != nullptr && control->mostIterations > 0 ? control->mostIterations : kMostIterations;
@@ -3240,6 +3245,15 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
     // inductance (step 5's review).
     bool augmented =
         out.chargeOverSeries > (control != nullptr && control->augmentedFrom > 0 ? control->augmentedFrom : kAugmentedFrom);
+    // (Not tried where it fell short at a smaller ratio of the charges'
+    //  term in this sweep, a higher frequency: the ratio only grows as the
+    //  frequency falls, and an open line's sweep spent kAugmentedMost
+    //  iterations a frequency on it - the review of
+    //  0a6ae44e.)
+    if (augmented && shortAt != nullptr && out.chargeOverSeries >= shortAt->load()) {
+        augmented = false;
+        out.augmentedShortAt = shortAt->load();
+    }
     System system{c, z, kx, ky, p, phi, g, d, jw, !augmented};
     fem::SparseLu<Complex> lu;
     // (Augmented, its rows unscaled: scaled by their near field's own
@@ -3334,6 +3348,11 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
             if (augmented) {
                 if (!solved.converged) {
                     out.augmentedTried = out.iterations;
+                    if (shortAt != nullptr) {
+                        double was = shortAt->load();
+                        while (out.chargeOverSeries < was && !shortAt->compare_exchange_weak(was, out.chargeOverSeries)) {
+                        }
+                    }
                     augmented = false;
                     again = true;
                     break;
@@ -5287,12 +5306,21 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     std::vector<AtFrequency> solved(static_cast<std::size_t>(nf));
     std::atomic_int next{0};
     std::atomic_bool failed{false};
-    const auto work = [&c, &z, &frequencies, &solved, &next, &failed, control, nf, compress, inner, symmetricLu] {
+    // (Compressed, the highest frequency first: where the charges as
+    //  unknowns of their own fall short, the lower ones are not tried so -
+    //  the smallest ratio of the charges' term it fell short at.)
+    std::vector<int> order(static_cast<std::size_t>(nf));
+    std::iota(order.begin(), order.end(), 0);
+    if (compress)
+        std::stable_sort(order.begin(), order.end(), [&frequencies](int a, int b) { return frequencies.at(a) > frequencies.at(b); });
+    std::atomic<double> shortAt{std::numeric_limits<double>::infinity()};
+    const auto work = [&c, &z, &frequencies, &solved, &next, &failed, &order, &shortAt, control, nf, compress, inner, symmetricLu] {
         const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
-        for (int k = next++; k < nf; k = next++) {
+        for (int n = next++; n < nf; n = next++) {
+            const int k = order[std::size_t(n)];
             if (failed || (stop != nullptr && stop->load())) return;
             if (!allowedOne(control)) return;
-            solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, control)
+            solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, control, &shortAt)
                                                 : solveAt(c, frequencies.at(k), inner, symmetricLu, control != nullptr ? control->augmentedFrom : 0.0);
             if (!solved[std::size_t(k)].problems.isEmpty()) failed = true;
             if (control != nullptr && control->done != nullptr) ++*control->done;
@@ -5587,6 +5615,13 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                              .arg(frequencies.at(k), 0, 'g', 4)
                              .arg(a.chargeOverSeries, 0, 'g', 2)
                              .arg(a.augmentedTried);
+        else if (a.augmentedShortAt > 0)
+            out.lines << tr("At %1 Hz the charges' term outweighs the currents' %2 times: solved with the cells' charges "
+                            "eliminated, as with them unknowns of their own GMRES fell short at a higher frequency of this "
+                            "sweep, at %3 times.")
+                             .arg(frequencies.at(k), 0, 'g', 4)
+                             .arg(a.chargeOverSeries, 0, 'g', 2)
+                             .arg(a.augmentedShortAt, 0, 'g', 2);
         else if (!compress && a.chargeOverSeries > 1e6)
             out.lines << tr("At %1 Hz the charges' term outweighs the currents' %2 times: solved with the charges eliminated, "
                             "some %3 digits of it lost.")
