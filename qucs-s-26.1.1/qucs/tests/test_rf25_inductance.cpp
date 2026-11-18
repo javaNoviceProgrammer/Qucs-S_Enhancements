@@ -294,6 +294,27 @@ private slots:
         QVERIFY(std::abs(rf::selfDistance(1, 1e-6) - std::exp(-1.5)) < 1e-5);
         QCOMPARE(rf::selfDistance(1, 0), std::exp(-1.5));
         QVERIFY(std::abs(rf::selfDistance(1, 3) - rf::selfDistance(3, 1)) < 1e-12);
+        // (Two bars near each other, thin against the distance between
+        //  them - 1 by 0.4 um, 2 um apart -: through their thicknesses at
+        //  one point, their heights' spread added in quadrature, within 3e-4
+        //  of the mean over both cross-sections - the review of 54357932.)
+        {
+            const double l = 1e-3, w = 1e-6, t = 0.4e-6, apart = 2e-6;
+            rf::Filament a = alongX(0, l, 0, w, t), b = alongX(0, l, apart, w, t);
+            a.bar = b.bar = t;
+            const int n = 12;
+            double mean = 0;
+            for (int i = 0; i < n; ++i)
+                for (int j = 0; j < n; ++j)
+                    for (int k = 0; k < n; ++k)
+                        for (int m = 0; m < n; ++m) {
+                            const double dy = apart + ((j + 0.5) / n - (i + 0.5) / n) * w, dz = ((m + 0.5) / n - (k + 0.5) / n) * t;
+                            mean += exactPair(l, std::hypot(dy, dz));
+                        }
+            mean /= double(n) * n * n * n;
+            const double got = rf::partialInductance(a, b);
+            QVERIFY2(std::abs(got / mean - 1) < 3e-4, qPrintable(QStringLiteral("%1 against %2").arg(got).arg(mean)));
+        }
 
         rf::Stack stack = grounded(1, 5e-3, 0.5e-3, 6e7);
         stack.layers[0].variant = QStringLiteral("open");
@@ -313,6 +334,25 @@ private slots:
                  l.rDc * 1e3);
         QVERIFY2(std::abs(l.lDc / 24.17e-9 - 1) < 0.01, qPrintable(QStringLiteral("%1 nH").arg(l.lDc * 1e9)));
         QVERIFY2(std::abs(l.rDc / 2.594e-3 - 1) < 0.01, qPrintable(QStringLiteral("%1 mOhm").arg(l.rDc * 1e3)));
+        // (Its runs bars; the same loop's of a metal a tenth as thick as it
+        //  is wide strips, as before - within a per cent or so of bars, and
+        //  a spiral's finest cells, a tenth of its thickness wide, bars
+        //  beside bars that GMRES took 2,000 iterations over where it had
+        //  taken 22 - the review of 54357932.)
+        const auto bars = [](const rf::Inductance& of) {
+            int n = 0;
+            for (const rf::Filament& f : of.runs) n += f.bar > 0 ? 1 : 0;
+            return n;
+        };
+        QVERIFY2(bars(l) > 0, "the thick loop's runs are not bars");
+        for (rf::Layer& layer : stack.layers)
+            if (layer.kind == rf::Layer::Metal) layer.thickness = 0.05e-3;
+        rf::MeshSettings coarse;
+        coarse.cellsAcross = 2;
+        const rf::Mesh thinMesh = rf::meshOf({loop}, coarse, stack, 1e8);
+        const rf::Inductance thin = rf::inductanceOf(thinMesh, {loop}, stack, QPointF(-5000, -100), QPointF(-5000, 100), 1e-6, 1e4);
+        QVERIFY2(thin.ok(), qPrintable(thin.problems.join(" | ")));
+        QVERIFY2(!thin.runs.isEmpty() && bars(thin) == 0, qPrintable(QStringLiteral("%1 of %2 runs bars").arg(bars(thin)).arg(thin.runs.size())));
     }
 
     void twoFilamentsMutualIsTheirDoubleIntegral()

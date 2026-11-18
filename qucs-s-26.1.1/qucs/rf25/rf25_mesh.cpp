@@ -107,10 +107,6 @@ constexpr double kPlateGap = 0.1;
 /// on one cut (piecesOf()): no part is thinner than that.
 constexpr double kCornersMerged = 0.05;
 
-/// How thick against its narrowest conductor a metal is before the full
-/// wave's inductance is said to read high at a low frequency.
-constexpr double kThickForInductance = 0.2;
-
 /// Lines of two pieces that meet nearer than this share of the finest space
 /// of any piece's own grid are one line (shareLines(), meshOf()).
 constexpr double kMergeShare = 0.25;
@@ -1865,20 +1861,13 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // narrow holds. The loop inductance (rf25_inductance) takes each run as
     // the bar it is.
     {
-        // (Each conductor's width the short side of the rectangle of its
-        //  area and its perimeter - a strip's or a wire's own width, a
-        //  square pad's side, where twice the area over the perimeter is
-        //  half a pad's side: a 100 µm pad of 10 µm metal warned as a
-        //  50 µm wire, the review of 54357932 - no wider than its bounding
-        //  box; a shape rounder than any rectangle a quarter of its
-        //  perimeter.)
+        // (Each conductor's width conductorWidthOf()'s: a square pad's its
+        //  side, where twice its area over its perimeter, half that, warned
+        //  of a 100 µm pad of 10 µm metal as of a 50 µm wire - the review of
+        //  54357932.)
         QMap<QString, double> narrowest;
         for (const Conductor& c : conductors) {
-            const double area = std::abs(areaOf(c.outline)), around = perimeterOf(c.outline);
-            const double half = around / 4, d = half * half - area;
-            double width = d > 0 ? half - std::sqrt(d) : half;
-            const QRectF box = c.outline.boundingRect();
-            width = std::min(width, std::min(box.width(), box.height()));
+            const double width = conductorWidthOf(c.outline);
             if (width > 0 && (!narrowest.contains(c.layer) || width < narrowest.value(c.layer))) narrowest.insert(c.layer, width);
         }
         for (auto it = narrowest.constBegin(); it != narrowest.constEnd(); ++it) {

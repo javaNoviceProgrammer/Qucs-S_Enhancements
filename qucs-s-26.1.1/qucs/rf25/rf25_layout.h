@@ -41,6 +41,18 @@ namespace qucs_s::rf25 {
 double areaOf(const QPolygonF& polygon);
 /// The length of \a polygon's boundary.
 double perimeterOf(const QPolygonF& polygon);
+/// How wide a conductor drawn as \a polygon is: the short side of the
+/// rectangle of its area and its perimeter, no wider than its bounding box -
+/// a strip's or a wire's own width, a square pad's side; a shape rounder
+/// than any rectangle a quarter of its perimeter. (Twice the area over the
+/// perimeter is half a square pad's side.)
+double conductorWidthOf(const QPolygonF& polygon);
+/// How thick against its narrowest conductor (conductorWidthOf()) a metal is
+/// before its thickness is the inductance's: the full wave's said to read
+/// high at a low frequency, and the loop inductance's runs taken as bars
+/// Thinner, a strip's is within a
+/// per cent or so of a bar's.
+constexpr double kThickForInductance = 0.2;
 /// \a shapes joined where they touch or overlap - along part of an edge too,
 /// which gdstk's union alone does not always join. \a joined, given, counts
 /// the pieces it had to join after that union.
