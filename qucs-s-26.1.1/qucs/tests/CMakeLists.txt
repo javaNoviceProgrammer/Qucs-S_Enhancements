@@ -359,6 +359,11 @@ qucs_add_test(test_rf25_accuracy)
 # lines' strips full wave, each millimetres long, and a quasi-static line at
 # three meshes. Skipped under the sanitizers, as the measured line is.)
 set_tests_properties(test_rf25_accuracy PROPERTIES TIMEOUT 2400)
+qucs_add_test(test_rf25_benchmarks)
+# (RF 2.5D against published measurements, closed forms and filament sums,
+# gathered where a build runs them all - the production-readiness review. Its spirals' and thick loop's loops skipped under the
+# sanitizers, its quasi-static lines and plates run there.)
+set_tests_properties(test_rf25_benchmarks PROPERTIES TIMEOUT 900)
 qucs_add_test(test_long_lines)
 qucs_add_test(test_multiphysics_doc)
 qucs_add_test(test_multiphysics_optimize)
