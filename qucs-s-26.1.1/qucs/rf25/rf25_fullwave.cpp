@@ -3089,28 +3089,6 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
     // on; past kTrustedResidual, or not finite, it is no answer. A sweep
     // stopped at the first frequency that fell short, with nothing of the
     // rest.
-    if (out.residual > kTrustedResidual || !current.allFinite()) {
-        out.problems << tr("At %1 GHz the compressed solve did not converge: GMRES left a residual of %2 after %3 "
-                           "iterations. Solve it dense (the study's Matrix), or mesh it differently.")
-                            .arg(f / 1e9, 0, 'g', 4)
-                            .arg(out.residual, 0, 'g', 2)
-                            .arg(out.iterations);
-        return out;
-    }
-    if (out.residual > 1e3 * kResidual)
-        out.warnings << tr("At %1 GHz GMRES stopped short of its residual: %2 after %3 iterations, where %4 is asked. S "
-                           "there is near, not to the last digits - more so at low frequencies; a coarser mesh, or the "
-                           "matrix dense, solves it whole.")
-                            .arg(f / 1e9, 0, 'g', 4)
-                            .arg(out.residual, 0, 'g', 2)
-                            .arg(out.iterations)
-                            .arg(kResidual, 0, 'g', 2);
-    else if (out.iterations >= kNearMiss * most)
-        out.warnings << tr("At %1 GHz GMRES took %2 of its %3 iterations: near its limit, where a finer mesh or a higher "
-                           "frequency may not converge.")
-                            .arg(f / 1e9, 0, 'g', 4)
-                            .arg(out.iterations)
-                            .arg(most);
     // The charges' term against the rest of a run's own (N4), estimated from
     // the kernels on runs spread over the layout - this solve holds no
     // diagonal to read it from: the rest a run's jw L and its sheet's
@@ -3133,6 +3111,46 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
             if (rest > 0) out.chargeOverSeries = std::max(out.chargeOverSeries, std::abs(charge) / rest);
         }
     }
+    if (out.residual > kTrustedResidual || !current.allFinite()) {
+        // (What to do about it, as it can be done: dense only where the
+        //  system is not past what a dense solve is set up for, and at a low
+        //  frequency - the charges' term far over the currents' - the loop
+        //  inductance, which solves the currents alone at direct current:
+        //  "solve it dense" was said of 11,800 runs that dense refused, a loop
+        //  at 1 kHz.)
+        QStringList ways;
+        if (out.chargeOverSeries > 1e6)
+            ways << tr("at a frequency this low its charges' term outweighs its currents' %1 times, which the iteration loses "
+                       "them in - rf25_inductance gives L and R at direct current, of the currents alone, or start the "
+                       "sweep higher")
+                        .arg(out.chargeOverSeries, 0, 'g', 2);
+        const int denseMost = control != nullptr && control->mostUnknowns > 0 ? control->mostUnknowns : denseLimit();
+        if (c.nr + c.nc <= denseMost) ways << tr("solve it dense (the study's Matrix)");
+        ways << tr("mesh it differently");
+        QString what = ways.join(QStringLiteral("; "));
+        what[0] = what.at(0).toUpper();
+        out.problems << tr("At %1 GHz the compressed solve did not converge: GMRES left a residual of %2 after %3 iterations. "
+                           "%4.")
+                            .arg(f / 1e9, 0, 'g', 4)
+                            .arg(out.residual, 0, 'g', 2)
+                            .arg(out.iterations)
+                            .arg(what);
+        return out;
+    }
+    if (out.residual > 1e3 * kResidual)
+        out.warnings << tr("At %1 GHz GMRES stopped short of its residual: %2 after %3 iterations, where %4 is asked. S "
+                           "there is near, not to the last digits - more so at low frequencies; a coarser mesh, or the "
+                           "matrix dense, solves it whole.")
+                            .arg(f / 1e9, 0, 'g', 4)
+                            .arg(out.residual, 0, 'g', 2)
+                            .arg(out.iterations)
+                            .arg(kResidual, 0, 'g', 2);
+    else if (out.iterations >= kNearMiss * most)
+        out.warnings << tr("At %1 GHz GMRES took %2 of its %3 iterations: near its limit, where a finer mesh or a higher "
+                           "frequency may not converge.")
+                            .arg(f / 1e9, 0, 'g', 4)
+                            .arg(out.iterations)
+                            .arg(most);
     out.current = current;
     out.z = c.drive.transpose() * pd / jw + pathZ
             - (rhs.transpose() * current + current.transpose() * rhs - current.transpose() * applied);

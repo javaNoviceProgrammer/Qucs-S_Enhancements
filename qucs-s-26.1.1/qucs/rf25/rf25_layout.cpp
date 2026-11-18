@@ -1111,10 +1111,10 @@ LayerMap layerMapOf(const Model& model)
     const Stack stack = model.stack();
     for (const QJsonValue& row : node->props.value(QLatin1String("rows")).toArray()) {
         const QJsonArray cells = row.toArray();
-        const QString layer = cells.size() > 0 ? cells.at(0).toString().trimmed() : QString();
-        const QString datatype = cells.size() > 1 ? cells.at(1).toString().trimmed() : QString();
-        const QString to = cells.size() > 2 ? cells.at(2).toString().trimmed() : QString();
-        const QString note = cells.size() > 3 ? cells.at(3).toString().trimmed() : QString();
+        const QString layer = cells.size() > 0 ? tableCell(cells.at(0)).trimmed() : QString();
+        const QString datatype = cells.size() > 1 ? tableCell(cells.at(1)).trimmed() : QString();
+        const QString to = cells.size() > 2 ? tableCell(cells.at(2)).trimmed() : QString();
+        const QString note = cells.size() > 3 ? tableCell(cells.at(3)).trimmed() : QString();
         if (layer.isEmpty() || to.isEmpty()) continue;
         const QString key = QStringLiteral("%1/%2").arg(layer, datatype.isEmpty() ? QStringLiteral("0") : datatype);
         // (Two rows of one layer: the later takes its shapes, and the solve

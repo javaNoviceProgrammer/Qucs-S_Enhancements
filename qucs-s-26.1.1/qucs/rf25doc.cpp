@@ -1321,9 +1321,9 @@ QVector<LayerStyle> RF25Doc::stylesFor(const Layout& layout) const
         for (const QJsonValue& row : map->props.value(QLatin1String("rows")).toArray()) {
             const QJsonArray cells = row.toArray();
             if (cells.size() < 3) continue;
-            const QString to = cells.at(2).toString().trimmed();
+            const QString to = tableCell(cells.at(2)).trimmed();
             if (to.isEmpty()) continue;
-            const QString key = QStringLiteral("%1/%2").arg(cells.at(0).toString().trimmed(), cells.at(1).toString().trimmed());
+            const QString key = QStringLiteral("%1/%2").arg(tableCell(cells.at(0)).trimmed(), tableCell(cells.at(1)).trimmed());
             mapped.insert(key, to);
         }
     const Stack stack = a_model.stack();

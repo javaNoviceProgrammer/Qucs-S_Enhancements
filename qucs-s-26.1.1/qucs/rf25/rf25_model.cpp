@@ -1317,8 +1317,8 @@ QList<fem::Model::Parameter> Model::parameters() const
         const QJsonArray cells = row.toArray();
         if (cells.isEmpty()) continue;
         fem::Model::Parameter p;
-        p.name = cells.at(0).toString().trimmed();
-        p.expression = cells.size() > 1 ? cells.at(1).toString().trimmed() : QString();
+        p.name = tableCell(cells.at(0)).trimmed();
+        p.expression = cells.size() > 1 ? tableCell(cells.at(1)).trimmed() : QString();
         p.description = cells.size() > 2 ? cells.at(2).toString() : QString();
         if (!p.name.isEmpty()) list << p;
     }
@@ -1740,8 +1740,40 @@ QStringList Model::problems() const
 
 // ------------------------------------------------------------------ The tree
 
+QString tableCell(const QJsonValue& cell)
+{
+    if (cell.isDouble()) {
+        const double v = cell.toDouble();
+        return v == std::floor(v) && std::abs(v) < 1e15 ? QString::number(qint64(v)) : QString::number(v, 'g', 15);
+    }
+    return cell.toString();
+}
+
 void Model::normalise()
 {
+    // (A table's cells as text: a layer map written with numbers - [[1, 0,
+    //  "M1"]] - read as no row at all, its shapes nowhere, and a shape drawn
+    //  into it went to layer "/".)
+    std::function<void(Node&)> cells = [&](Node& n) {
+        for (auto it = n.props.begin(); it != n.props.end(); ++it) {
+            if (!it.value().isArray() || it.key() != QLatin1String("rows")) continue;
+            QJsonArray rows = it.value().toArray();
+            bool changed = false;
+            for (qsizetype r = 0; r < rows.size(); ++r) {
+                if (!rows.at(r).isArray()) continue;
+                QJsonArray row = rows.at(r).toArray();
+                for (qsizetype c = 0; c < row.size(); ++c)
+                    if (row.at(c).isDouble()) {
+                        row.replace(c, tableCell(row.at(c)));
+                        changed = true;
+                    }
+                rows.replace(r, row);
+            }
+            if (changed) it.value() = rows;
+        }
+        for (Node& child : n.children) cells(child);
+    };
+    cells(root);
     QSet<QString> tags;
     collectTags(root, tags);
     // A part of the tree itself is named by its kind ("rf_stack" is

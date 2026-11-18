@@ -130,6 +130,21 @@ private slots:
                  qPrintable(again.notes.join(" | ")));
         QCOMPARE(again.toLayer.value(QStringLiteral("31/0")), QStringLiteral("M2"));
         QVERIFY2(says(again.problems, "no layer of the stack"), qPrintable(again.problems.join(" | ")));
+
+        // Its layer and datatype written as numbers - [[1, 0, "M1"]], as a
+        // file written by hand or a tool may have them - are their text: read
+        // as nothing, the row was lost, its shapes nowhere. Read again from a file, the model's rows are text.
+        QJsonArray numbers;
+        numbers.append(QJsonArray{1, 0, QStringLiteral("M1")});
+        set(*m.layout().child(QStringLiteral("rf_layer_map")), "rows", numbers);
+        QCOMPARE(rf::layerMapOf(m).toLayer.value(QStringLiteral("1/0")), QStringLiteral("M1"));
+        QString why;
+        const std::optional<rf::Model> read = rf::Model::fromJson(m.toJson(), &why);
+        QVERIFY2(read.has_value(), qPrintable(why));
+        const QJsonArray row = read->layout().child(QStringLiteral("rf_layer_map"))->props.value(QLatin1String("rows")).toArray().at(0).toArray();
+        QCOMPARE(row.at(0).toString(), QStringLiteral("1"));
+        QCOMPARE(row.at(1).toString(), QStringLiteral("0"));
+        QCOMPARE(rf::tableCell(QJsonValue(2.5)), QStringLiteral("2.5"));
     }
 
     // The processing node read: its flags, its lengths in metres through

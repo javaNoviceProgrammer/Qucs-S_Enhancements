@@ -279,6 +279,42 @@ private slots:
     // Two filaments side by side: their mutual is the same double
     // integral with their distance in it, and it is exact where they are
     // far enough apart for their widths not to matter.
+    // A wire as thick as it is wide is a bar: its runs' geometric mean distance a rectangle's, w by t -
+    // 0.2235 (w + t) at any aspect, the strip's w e^-3/2 as t goes to nought
+    // -, and near ones over both cross-sections. A square loop of copper 0.5
+    // by 0.5 mm, 10 mm along its middle with a 0.2 mm gap, in free space, is
+    // 24.17 nH by a Neumann sum over 12 by 12 filaments of each side (24.18 at
+    // 4 by 4); taken as a strip of no thickness, the loop read 29.4, 22 %
+    // high. Its resistance at direct current is the 3D magnetostatic solve's
+    // 2.594 mOhm.
+    void aWireAsThickAsItIsWideIsABar()
+    {
+        QVERIFY(std::abs(rf::selfDistance(1, 1) / (0.2235 * 2) - 1) < 5e-3);
+        QVERIFY(std::abs(rf::selfDistance(1, 0.1) / (0.2235 * 1.1) - 1) < 5e-3);
+        QVERIFY(std::abs(rf::selfDistance(1, 1e-6) - std::exp(-1.5)) < 1e-5);
+        QCOMPARE(rf::selfDistance(1, 0), std::exp(-1.5));
+        QVERIFY(std::abs(rf::selfDistance(1, 3) - rf::selfDistance(3, 1)) < 1e-12);
+
+        rf::Stack stack = grounded(1, 5e-3, 0.5e-3, 6e7);
+        stack.layers[0].variant = QStringLiteral("open");
+        rf::Conductor loop;
+        loop.layer = QStringLiteral("M1");
+        loop.outline = QPolygonF(QList<QPointF>{{-5250, -100}, {-5250, -5250}, {5250, -5250}, {5250, 5250}, {-5250, 5250}, {-5250, 100},
+                                                {-4750, 100}, {-4750, 4750}, {4750, 4750}, {4750, -4750}, {-4750, -4750}, {-4750, -100}});
+        rf::MeshSettings how;
+        // (Ten across, the review's mesh, 2,928 cells: past the dense limit,
+        //  solved compressed, 9 s here; a slow build four, solved dense - 24.13.)
+        how.cellsAcross = slowBuild() ? 4 : 10;
+        const rf::Mesh mesh = rf::meshOf({loop}, how, stack, 1e8);
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        const rf::Inductance l = rf::inductanceOf(mesh, {loop}, stack, QPointF(-5000, -100), QPointF(-5000, 100), 1e-6, 1e4);
+        QVERIFY2(l.ok(), qPrintable(l.problems.join(" | ")));
+        qWarning("a square loop of 0.5 by 0.5 mm: %d cells, L_dc %.3f nH (24.17), R_dc %.4f mOhm (2.594)", int(mesh.cells.size()), l.lDc * 1e9,
+                 l.rDc * 1e3);
+        QVERIFY2(std::abs(l.lDc / 24.17e-9 - 1) < 0.01, qPrintable(QStringLiteral("%1 nH").arg(l.lDc * 1e9)));
+        QVERIFY2(std::abs(l.rDc / 2.594e-3 - 1) < 0.01, qPrintable(QStringLiteral("%1 mOhm").arg(l.rDc * 1e3)));
+    }
+
     void twoFilamentsMutualIsTheirDoubleIntegral()
     {
         const double l = 1e-3, w = 1e-6;
@@ -1140,8 +1176,12 @@ private slots:
         QVERIFY2(loop.ok() && !loop.compressed, qPrintable(loop.problems.join(" | ")));
         const double along = 10.0 / 1 / (5.8e7 * 1e-6);
         QVERIFY2(std::abs(loop.rDc / along - 1) < 0.01, qPrintable(QStringLiteral("%1 Ohm against %2").arg(loop.rDc).arg(along)));
-        QVERIFY2(std::abs(loop.lDc / textbookStrip(10e-6, 1e-6) - 1) < 0.05,
-                 qPrintable(QStringLiteral("%1 pH against %2").arg(loop.lDc * 1e12).arg(textbookStrip(10e-6, 1e-6) * 1e12)));
+        // (1 µm wide and 1 µm thick: a bar, its own partial inductance of
+        //  its square's geometric mean distance - 5.69 pH, where a strip of no
+        //  thickness, the textbook's, is 6.99.)
+        const double g = rf::selfDistance(1e-6, 1e-6), l = 10e-6;
+        const double bar = kMu0 * l / (2 * M_PI) * (std::asinh(l / g) - std::sqrt(1 + g * g / (l * l)) + g / l);
+        QVERIFY2(std::abs(loop.lDc / bar - 1) < 0.05, qPrintable(QStringLiteral("%1 pH against %2").arg(loop.lDc * 1e12).arg(bar * 1e12)));
     }
 
     // Polygon spirals of Mohan's Table IV, drawn as his Fig. 1 draws them:

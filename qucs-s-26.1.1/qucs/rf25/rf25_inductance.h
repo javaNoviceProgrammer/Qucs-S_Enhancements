@@ -105,6 +105,11 @@ struct Filament {
     /// current along its edge -: its breadth in z, m, its centre at z0, and
     /// its width in the plane nought. Nought: a run lying in the plane.
     double rise = 0;
+    /// Its cross-section as a bar, m: its current even through a rectangle
+    /// \a width by this - the loop inductance's runs, their metal's
+    /// thickness. Nought: a sheet, as the full wave's runs are, the field of
+    /// a metal's thickness there its surface impedance's and its faces'.
+    double bar = 0;
 
     /// Its length, m.
     double length() const;
@@ -126,8 +131,14 @@ struct Filament {
  * (mu0 l/2pi)(ln(2l/w) + 1/2). Zero width gives nothing, which would be
  * an infinite inductance, so it is refused by the caller rather than
  * answered.
+ *
+ * With \a thickness, of a rectangle \a width by it - its current even
+ * through it, a bar's -: Grover's exact form, 0.2235 (w + t) within half
+ * a per cent at any aspect, and the strip's w e^-3/2 as the thickness goes
+ * to nought. Taken as a strip, a wire as thick as it is wide read its loop
+ * 22 % high.
  */
-double selfDistance(double width);
+double selfDistance(double width, double thickness = 0);
 
 /*!
  * The partial inductance between runs \a a and \a b, H.

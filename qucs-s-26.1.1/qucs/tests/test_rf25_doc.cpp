@@ -4408,6 +4408,59 @@ private slots:
         QCOMPARE(doc->placing(), RF25Doc::Placing::None);
     }
 
+    // Drawn into a model whose layout names a file not yet there, its layer
+    // map written with numbers - [[1, 0, "M1"]], as a tool may write it -:
+    // the file is begun, the shape on the map's layer 1/0, by the stack's
+    // layer and by the file's layer/datatype alike ("a 'layer' is layer/datatype", and "1/0 is no layer of the
+    // stack", nothing drawn).
+    void aShapeIsDrawnWhereTheMapsNumbersSay()
+    {
+        const QString model = fullWaveLine(QStringLiteral("numbers.qrf25"));
+        QVERIFY(!model.isEmpty());
+        {
+            QFile f(model);
+            QVERIFY(f.open(QIODevice::ReadOnly));
+            QString why;
+            std::optional<rf::Model> read = rf::Model::fromJson(f.readAll(), &why);
+            QVERIFY2(read.has_value(), qPrintable(why));
+            rf::Model m = *read;
+            f.close();
+            m.layout().props.insert(QStringLiteral("file"), QStringLiteral("numbers.gds"));
+            QJsonArray rows;
+            rows.append(QJsonArray{1, 0, QStringLiteral("M1")});
+            m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+            QVERIFY(f.open(QIODevice::WriteOnly));
+            f.write(m.toJson());
+        }
+        QFile::remove(path(QStringLiteral("numbers.gds")));
+        RF25Doc* doc = open(model);
+        QVERIFY(doc != nullptr && doc->waitForLayout(60000));
+        // (Read from its file the map's numbers are its text already
+        //  - Model::normalise() -; set again by an edit, as a tool's would,
+        //  they reach the draw as numbers.)
+        {
+            rf::Model edited = doc->model();
+            QJsonArray rows;
+            rows.append(QJsonArray{1, 0, QStringLiteral("M1")});
+            edited.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+            QVERIFY(doc->setModel(edited, QStringLiteral("a map of numbers")));
+            QVERIFY(doc->model().layout().child(QStringLiteral("rf_layer_map"))->props.value(QLatin1String("rows")).toArray().at(0).toArray().at(0).isDouble());
+            QVERIFY(doc->waitForLayout(60000));
+        }
+        QStringList done;
+        QString why;
+        QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "M1"}, {"box", QJsonArray{0, 0, 500, 50}}}}, &done, &why),
+                 qPrintable(why));
+        QVERIFY(doc->waitForLayout(60000));
+        QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"add", "rectangle"}, {"layer", "1/0"}, {"box", QJsonArray{0, 100, 500, 150}}}}, &done, &why),
+                 qPrintable(why));
+        QVERIFY(doc->waitForLayout(60000) && doc->waitForPrepared(60000));
+        QVERIFY(QFileInfo::exists(path(QStringLiteral("numbers.gds"))));
+        QVERIFY(doc->processed() != nullptr);
+        QCOMPARE(int(doc->processed()->conductors.size()), 2);
+        for (const rf::Conductor& c : doc->processed()->conductors) QCOMPARE(c.layer, QStringLiteral("M1"));
+    }
+
     // A port's feed on a layer that ends is calibrated on it: the strips
     // stand on the substrate as the feed does - a band from 30 µm out from
     // one edge of the strip to 50 µm out from the other, air beyond - and so read

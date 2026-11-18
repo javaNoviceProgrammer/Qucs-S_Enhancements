@@ -55,6 +55,10 @@ const NodeKind* kindOf(const Node& node);
 /// properties: these are what reads an RF 2.5D node.
 QJsonValue valueOf(const Node& node, const QString& key);
 QString textOf(const Node& node, const QString& key);
+/// A table cell's text - a layer map's "31", "0", "M1" -: a number, as a
+/// file written by hand or a tool may give one, as its text ("31"), where
+/// QJsonValue::toString() gave nothing and the row was lost.
+QString tableCell(const QJsonValue& cell);
 bool flagOf(const Node& node, const QString& key);
 int integerOf(const Node& node, const QString& key);
 /// The label a node is known by, else its kind's title ("Metal") - as
