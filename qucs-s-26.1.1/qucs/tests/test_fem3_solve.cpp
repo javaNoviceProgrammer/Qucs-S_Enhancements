@@ -1072,6 +1072,15 @@ private slots:
         run = runStudy3(m, evaluateParameters(m), nullptr, nullptr);
         QVERIFY2(run.ok() && run.solutions.size() == 1, qPrintable(run.error));
         QVERIFY2(run.stopped.contains(QStringLiteral("point 2 of 2")) && run.stopped.contains(QStringLiteral("its point before kept")), qPrintable(run.stopped));
+        // A row whose values have no unit, its parameter a length: said as
+        // the sweep is written (sweepProblems, which fem_model and fem_edit
+        // report), not first when it is solved - a review's "len is in m".
+        QVERIFY(sweepProblems(bar(QStringLiteral("L"), QStringLiteral("2, 4"), QStringLiteral("mm"))).isEmpty());
+        QVERIFY(sweepProblems(bar(QStringLiteral("L"), QStringLiteral("2[mm], 4[mm]"), QString())).isEmpty());
+        const QStringList bare = sweepProblems(bar(QStringLiteral("L"), QStringLiteral("2, 4"), QString()));
+        QVERIFY2(bare.size() == 1 && bare.front().contains(QStringLiteral("give its values a unit")), qPrintable(bare.join(QLatin1Char('\n'))));
+        QVERIFY2(sweepProblems(bar(QStringLiteral("Lx"), QStringLiteral("2"), QStringLiteral("mm"))).join(QString()).contains(QStringLiteral("no parameter Lx")),
+                 "a parameter not there");
     }
 
     // Derived values of a 3D solution, on a linear temperature held on two

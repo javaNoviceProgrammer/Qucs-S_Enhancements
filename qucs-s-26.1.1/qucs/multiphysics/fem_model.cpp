@@ -1380,7 +1380,9 @@ QList<NodeKind> makeKinds()
          tr("A conductor fed a current (or held at a voltage, floating, grounded), the rest found: mf.I_<name>, "
             "mf.V_<name>, mf.R_<name>, mf.L_<name>; with coils swept, the inductance (impedance) matrix of those fed a "
             "current, mf.L_<i>_<j>, mf.R_<i>_<j> (the others as their roles hold them, a voltage at none) - against the "
-            "physics' reference coil mf.Lr_<i>_<j>, mf.Rr_<i>_<j>.")});
+            "physics' reference coil mf.Lr_<i>_<j>, mf.Rr_<i>_<j>. A half model whose symmetry plane (a Perfect Magnetic "
+            "Conductor) cuts the coil along its current: the half carries I0, the whole twice it, so mf.L_<name> is twice the "
+            "whole's L - the whole's is mf.L_<name>/2, not 2 mf.L_<name>.")});
     add({QStringLiteral("magnetic/magnet"), tr("Magnetization"), QStringLiteral("mf"), QStringLiteral("magnet"), Level::Domain,
          {selectionProp(none), source,
           shownIf(expr(QStringLiteral("Br"), tr("Remanent flux density Br"), QStringLiteral("T"), QStringLiteral("1[T]")),

@@ -1422,7 +1422,20 @@ private slots:
         QJsonArray rows;
         rows.append(QJsonArray{QStringLiteral("q"), QStringLiteral("1e4, 2e4"), QStringLiteral("W/m^2")});
         r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "add"}, {"parent", study}, {"type", "sweep"}, {"props", QJsonObject{{"parameters", rows}}}});
-        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(!failed(r) && !json(r).contains(QStringLiteral("check")), qPrintable(text(r)));
+        // Its row without q's unit: said as it is written, not first at the
+        // solve; put back.
+        QString sweep;
+        for (const FNode& c : doc->model().root.children)
+            if (c.type == QLatin1String("study"))
+                for (const FNode& st : c.children)
+                    if (st.type == QLatin1String("sweep")) sweep = st.tag;
+        QJsonArray bare;
+        bare.append(QJsonArray{QStringLiteral("q"), QStringLiteral("1e4, 2e4"), QString()});
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "set"}, {"tag", sweep}, {"props", QJsonObject{{"parameters", bare}}}});
+        QVERIFY2(!failed(r) && QJsonDocument(json(r).value(QStringLiteral("check")).toArray()).toJson().contains("give its values a unit"), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_edit"), {{"path", file}, {"action", "set"}, {"tag", sweep}, {"props", QJsonObject{{"parameters", rows}}}});
+        QVERIFY2(!failed(r) && !json(r).contains(QStringLiteral("check")), qPrintable(text(r)));
         r = call(QStringLiteral("fem_solve"), {{"path", file}});
         QVERIFY2(!failed(r) && json(r).value(QStringLiteral("sweep")).toArray().size() == 2, qPrintable(text(r)));
         r = call(QStringLiteral("fem_evaluate"), {{"path", file}, {"expression", "ht.Tmax"}, {"all", true}});
