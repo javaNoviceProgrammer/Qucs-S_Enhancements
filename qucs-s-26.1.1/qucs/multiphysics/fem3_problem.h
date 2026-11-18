@@ -35,6 +35,9 @@ struct Options3 {
     double tolerance = 1e-6;                   ///< its nonlinear iterations', and (to 1e-9 at most) the iterative solve's
     int maxIterations = 50;                    ///< its nonlinear iterations
     bool sweep = true;                         ///< the terminals' matrix
+    /// A Frequency Domain step's frequency (Hz): a magnetic field solved
+    /// harmonically, its eddy currents jωσA in its conductors - 0 at rest.
+    double frequency = 0;
     /// A step in time's: what multiplies the capacity's ∂u/∂t of u (1/h,
     /// BDF2's (1 + 2ω)/((1 + ω)h)), and the history it is taken from by dof
     /// - C (mass u - history) + K u = F. 0: at rest.
@@ -183,14 +186,30 @@ std::unique_ptr<Problem3> makeMagneticProblem3(Solution3& solution, int field);
 /// A magnetic field at a point: A (Wb/m), B = ∇ × A (T), H (A/m), its
 /// energy density (J/m³: ½ H·(B - Br), or ∫ H dB on a B-H curve) and its
 /// relative permeability (a tensor's diagonal's mean; a curve's B/(µ0 H)).
+/// Solved in the frequency domain (\a harmonic): A, B and H their real parts
+/// and \a Ai, \a Bi, \a Hi their imaginary ones; the energy its time
+/// average, ¼ Re(B·H*). J the current density - its sources' (a coil's of
+/// turns, an External Current Density) and, in the frequency domain, what is
+/// conducted, σ E with E = -jωA - ∇V in a conductor (\a E, \a Ei; nought
+/// elsewhere); \a q the resistive losses' density, ½ Re(E*·σE), and \a qm
+/// the magnetic ones', ½ ω µ0 µr'' |H|² (½ Re(jω B·H*)), each a time
+/// average.
 struct MagneticState {
     double A[3] = {0, 0, 0}, B[3] = {0, 0, 0}, H[3] = {0, 0, 0};
     double energy = 0;
     double mur = 1;
+    bool harmonic = false;
+    double Ai[3] = {0, 0, 0}, Bi[3] = {0, 0, 0}, Hi[3] = {0, 0, 0};
+    double J[3] = {0, 0, 0}, Ji[3] = {0, 0, 0};
+    double E[3] = {0, 0, 0}, Ei[3] = {0, 0, 0};
+    double q = 0, qm = 0;
+    double sigma = 0;   ///< the conductivity (a tensor's diagonal's mean)
 };
 /// Field \a f's (a magnetic field's) at \a ev's point; false where it is
-/// not solved.
-bool magneticStateAt(PointEvaluator3& ev, int f, MagneticState& out);
+/// not solved. J, E and the resistive losses only where \a currents (the
+/// sources' J reads what they read: a currents physics', whose σ may read
+/// this field's B).
+bool magneticStateAt(PointEvaluator3& ev, int f, MagneticState& out, bool currents = false);
 
 /// The outward normal of mesh face \a face at its point \a fp, from the
 /// prism beside it: a floor's ±z, a wall's from its triangle's edge (exact

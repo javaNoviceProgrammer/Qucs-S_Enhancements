@@ -323,49 +323,76 @@ void Solution3::defineMagnetic(int f)
         const char* name;
         Dim dim;
         const char* what;
-        int which;   // 0 A, 1 B, 2 H
+        int which;   // 0 A, 1 B, 2 H, 3 J, 4 E
     };
-    const Vec vecs[] = {{"A", aDim, "magnetic vector potential", 0}, {"B", bDim, "magnetic flux density", 1}, {"H", hDim, "magnetic field", 2}};
+    const Vec vecs[] = {{"A", aDim, "magnetic vector potential", 0},
+                        {"B", bDim, "magnetic flux density", 1},
+                        {"H", hDim, "magnetic field", 2},
+                        {"J", Dim::current() / Dim::area(), "current density (its sources'; in the frequency domain what is conducted too, σE)", 3},
+                        {"E", Dim::voltage() / Dim::length(), "electric field in a conductor (the frequency domain's: -jωA - ∇V)", 4}};
+    // (In the frequency domain each its real part; _im its imaginary, the
+    // norm its amplitude.)
     for (const Vec& v : vecs) {
         const int which = v.which;
-        const auto get = [which](const S& st, int k) { return which == 0 ? st.A[k] : which == 1 ? st.B[k] : st.H[k]; };
-        for (int k = 0; k < 3; ++k)
+        const bool currents = which >= 3;
+        const auto get = [which](const S& st, int k, bool im) {
+            switch (which) {
+            case 0: return im ? st.Ai[k] : st.A[k];
+            case 1: return im ? st.Bi[k] : st.B[k];
+            case 2: return im ? st.Hi[k] : st.H[k];
+            case 3: return im ? st.Ji[k] : st.J[k];
+            default: return im ? st.Ei[k] : st.E[k];
+            }
+        };
+        for (int k = 0; k < 3; ++k) {
             define(p + QString::fromLatin1(v.name) + QString::fromLatin1(axis[k]), v.dim,
-                   tr("%1, %2 component").arg(tr(v.what), QString::fromLatin1(axis[k])), K::Derived, f, 0, 1, [f, get, k](PointEvaluator3& e) {
+                   tr("%1, %2 component").arg(tr(v.what), QString::fromLatin1(axis[k])), K::Derived, f, 0, 1, [f, get, k, currents](PointEvaluator3& e) {
                        S st;
-                       return detail3::magneticStateAt(e, f, st) ? get(st, k) : NaN;
+                       return detail3::magneticStateAt(e, f, st, currents) ? get(st, k, false) : NaN;
                    });
-        if (which > 0)
-            define(p + QStringLiteral("norm") + QString::fromLatin1(v.name), v.dim, tr("%1, norm").arg(tr(v.what)), K::Derived, f, 0, 1,
-                   [f, get](PointEvaluator3& e) {
+            define(p + QString::fromLatin1(v.name) + QString::fromLatin1(axis[k]) + QStringLiteral("_im"), v.dim,
+                   tr("%1, %2 component, its imaginary part (the frequency domain's)").arg(tr(v.what), QString::fromLatin1(axis[k])), K::Derived, f, 0,
+                   1, [f, get, k, currents](PointEvaluator3& e) {
                        S st;
-                       if (!detail3::magneticStateAt(e, f, st)) return NaN;
-                       return std::sqrt(get(st, 0) * get(st, 0) + get(st, 1) * get(st, 1) + get(st, 2) * get(st, 2));
+                       return detail3::magneticStateAt(e, f, st, currents) ? get(st, k, true) : NaN;
+                   });
+        }
+        if (which > 0)
+            define(p + QStringLiteral("norm") + QString::fromLatin1(v.name), v.dim, tr("%1, norm (its amplitude in the frequency domain)").arg(tr(v.what)),
+                   K::Derived, f, 0, 1, [f, get, currents](PointEvaluator3& e) {
+                       S st;
+                       if (!detail3::magneticStateAt(e, f, st, currents)) return NaN;
+                       double sum = 0;
+                       for (int k = 0; k < 3; ++k) sum += get(st, k, false) * get(st, k, false) + get(st, k, true) * get(st, k, true);
+                       return std::sqrt(sum);
                    });
     }
-    define(p + QStringLiteral("Wm"), Dim::of(-1, 1, -2), tr("magnetic energy density"), K::Derived, f, 0, 1, [f](PointEvaluator3& e) {
-        S st;
-        return detail3::magneticStateAt(e, f, st) ? st.energy : NaN;
-    });
+    define(p + QStringLiteral("Wm"), Dim::of(-1, 1, -2), tr("magnetic energy density (a time average in the frequency domain)"), K::Derived, f, 0, 1,
+           [f](PointEvaluator3& e) {
+               S st;
+               return detail3::magneticStateAt(e, f, st) ? st.energy : NaN;
+           });
     define(p + QStringLiteral("mur"), Dim(), tr("relative permeability (a tensor's diagonal's mean; a B-H curve's B/(µ0 H) here)"), K::Derived, f, 0,
            1, [f](PointEvaluator3& e) {
                S st;
                return detail3::magneticStateAt(e, f, st) ? st.mur : NaN;
            });
-    // The current density its sources give (the External Current Densities'
-    // and the coils').
-    for (int k = 0; k < 3; ++k) {
-        const QString key = QStringLiteral("J") + QString::fromLatin1(axis[k]);
-        define(p + key, Dim::current() / Dim::area(), tr("current density, %1 component (its sources')").arg(QString::fromLatin1(axis[k])), K::Derived, f, 0, 1,
-               [f, key](PointEvaluator3& e) {
-                   const auto& named = e.solution().coefficients()[std::size_t(f)].named;
-                   const auto it = named.find(key);
-                   const int d = e.domain();
-                   if (it == named.end() || d < 0 || d >= int(it->second.size())) return NaN;
-                   if (!it->second[std::size_t(d)].isValid()) return 0.0;
-                   return e.eval(it->second[std::size_t(d)]);
-               });
-    }
+    const Dim density = Dim::power() / Dim::of(3);
+    define(p + QStringLiteral("Qrh"), density, tr("resistive losses, their time average (the frequency domain's eddy currents': a heat physics' source)"),
+           K::Derived, f, 0, 1, [f](PointEvaluator3& e) {
+               S st;
+               return detail3::magneticStateAt(e, f, st, true) ? st.q : NaN;
+           });
+    define(p + QStringLiteral("Qm"), density, tr("magnetic losses, their time average (a core's, of its µr'': a heat physics' source)"), K::Derived, f, 0,
+           1, [f](PointEvaluator3& e) {
+               S st;
+               return detail3::magneticStateAt(e, f, st) ? st.qm : NaN;
+           });
+    define(p + QStringLiteral("sigma"), Dim::of(-3, -1, 3, 2), tr("electrical conductivity (a tensor's diagonal's mean; 0 in a coil of turns)"),
+           K::Derived, f, 0, 1, [f](PointEvaluator3& e) {
+               S st;
+               return detail3::magneticStateAt(e, f, st) ? st.sigma : NaN;
+           });
 }
 
 void Solution3::defineSemiconductor(int f)
@@ -1062,7 +1089,7 @@ detail3::Options3 stepOptions(const Node& step, const Scope& scope)
     if (const QString n = step.text(QStringLiteral("nonlinear")); !n.isEmpty()) o.nonlinear = n;
     if (const std::optional<double> t = evaluateConstant(step.text(QStringLiteral("tolerance")), scope, Dim()); t && *t > 0) o.tolerance = *t;
     o.maxIterations = std::clamp(step.integer(QStringLiteral("maxiter")), 1, 1000);
-    o.sweep = step.type == QLatin1String("stationary") && step.flag(QStringLiteral("sweep"));
+    o.sweep = (step.type == QLatin1String("stationary") || step.type == QLatin1String("frequency")) && step.flag(QStringLiteral("sweep"));
     return o;
 }
 
@@ -1494,18 +1521,30 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
  * output time, its first included. \a tell is told how far (0 to 1) and
  * cancels with false.
  */
-/// A Frequency Domain step: each semiconductor's small signal about its
-/// solution at rest, at each frequency a snapshot of its contacts'
-/// admittance - <tag>.G_<k>_<l> and <tag>.C_<k>_<l> (its real part, and its
-/// imaginary over ω), <tag>.Cqs... where both contacts' names are one letter
-/// as Gkl, Ckl.
-bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const std::vector<int>& subset, QString* error)
+/// A Frequency Domain step: at each frequency, a snapshot of its magnetic
+/// fields solved harmonically - their eddy currents, their coils' impedance
+/// (Options3::frequency) - with what reads them solved after, the rest of its
+/// physics solved at the first frequency alone (what does not change with
+/// it: a coil's currents physics); and of each semiconductor's small signal
+/// about its solution at rest - its contacts' admittance, <tag>.G_<k>_<l>
+/// and <tag>.C_<k>_<l> (its real part, and its imaginary over ω), <tag>.Gkl,
+/// <tag>.Ckl where both contacts' names are one letter.
+bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const detail3::Options3& o, const std::vector<int>& subset, QString* error)
 {
-    std::vector<int> semis;
-    for (int i : subset)
-        if (s.fields()[std::size_t(i)].type == QLatin1String("semiconductor")) semis.push_back(i);
-    if (semis.empty()) {
-        *error = tr("%1: a Frequency Domain step in 3D is a semiconductor's small signal - its physics have none").arg(node.name());
+    std::vector<int> semis, rest;
+    bool magnetic = false;
+    for (int i : subset) {
+        const QString& type = s.fields()[std::size_t(i)].type;
+        if (type == QLatin1String("semiconductor")) semis.push_back(i);
+        else {
+            rest.push_back(i);
+            magnetic = magnetic || type == QLatin1String("magnetic");
+        }
+    }
+    if (semis.empty() && !magnetic) {
+        *error = tr("%1: a Frequency Domain step in 3D solves magnetic fields' eddy currents or a semiconductor's small signal - its physics have "
+                    "neither")
+                     .arg(node.name());
         return false;
     }
     Dim dim;
@@ -1515,9 +1554,55 @@ bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const s
         *error = tr("%1: its frequencies: %2").arg(node.name(), why.isEmpty() ? tr("none") : why);
         return false;
     }
+    if (!dim.isNone() && !(dim == Dim::of(0, 0, -1))) {
+        *error = tr("%1: the frequencies are in %2, not in Hz").arg(node.name(), dimName(dim));
+        return false;
+    }
+    for (double f : *listed)
+        if (!(f >= 0) || !std::isfinite(f)) {
+            *error = tr("%1: a frequency of %2: they must be 0 or more").arg(node.name(), formatNumber(f));
+            return false;
+        }
+    // What changes with the frequency: the magnetic fields, and what reads
+    // them (a heat physics of their losses).
+    std::vector<int> varying;
+    if (magnetic) {
+        std::vector<char> v(problems.size(), 0);
+        for (int i : rest) v[std::size_t(i)] = s.fields()[std::size_t(i)].type == QLatin1String("magnetic");
+        for (bool grew = true; grew;) {
+            grew = false;
+            for (int i : rest)
+                if (!v[std::size_t(i)])
+                    for (int j : rest)
+                        if (v[std::size_t(j)] && problems[std::size_t(i)]->reads(j)) {
+                            v[std::size_t(i)] = grew = true;
+                            break;
+                        }
+        }
+        for (int i : rest)
+            if (v[std::size_t(i)]) varying.push_back(i);
+    }
     s.smallSignal = true;
-    for (double f : *listed) {
+    const Dim hertz = Dim::of(0, 0, -1);
+    for (std::size_t n = 0; n < listed->size(); ++n) {
+        const double f = (*listed)[n];
         s.setFrequency(f);
+        if (magnetic) {
+            if (o.cancelled && o.cancelled()) {
+                *error = tr("cancelled");
+                return false;
+            }
+            detail3::Options3 of = o;
+            of.frequency = f;
+            const QString at = tr("f = %1 (%2 of %3)").arg(formatQuantity(f, hertz)).arg(n + 1).arg(listed->size());
+            if (o.status) {
+                of.status = [status = o.status, at](const QString& what) { status(at + QStringLiteral(": ") + what); };
+                of.status(tr("solving"));
+            }
+            if (!solveTogether(problems, n == 0 ? rest : varying, [&of](int) { return of; }, s, node.name(), error)) return false;
+            for (int i : rest) s.fields()[std::size_t(i)].solved = true;
+            setSolvedGlobals(problems, rest);
+        }
         for (int i : semis) {
             std::vector<std::vector<std::complex<double>>> Y;
             QStringList names;
@@ -1538,10 +1623,15 @@ bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const s
                     }
                 }
         }
-        s.setGlobal(QStringLiteral("freq"), f, Dim::of(0, 0, -1), tr("frequency"));
+        s.setGlobal(QStringLiteral("freq"), f, hertz, tr("frequency"));
         s.addSnapshot();
     }
-    s.log << tr("%1: the contacts' admittance at %2 frequencies").arg(node.name()).arg(listed->size());
+    if (!semis.empty()) s.log << tr("%1: the contacts' admittance at %2 frequencies").arg(node.name()).arg(listed->size());
+    if (magnetic)
+        s.log << tr("%1: the magnetic fields at %2 frequencies, from %3 to %4")
+                     .arg(node.name())
+                     .arg(listed->size())
+                     .arg(formatQuantity(listed->front(), hertz), formatQuantity(listed->back(), hertz));
     return true;
 }
 
@@ -1930,7 +2020,7 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         for (const Field3& f : s->fields()) {
             const int order = f.space->order();
             if (f.edges) {
-                Estimate3 e = estimateMagnetic3(mesh, order);
+                Estimate3 e = estimateMagnetic3(mesh, order, harmonicFrequencies(*study, s->parameters().scope));
                 e.physics = f.tag;
                 if (const Node* p = s->model().find(f.tag)) e.name = p->name();
                 s->log << tr("Estimated: %1").arg(estimateText(e));
@@ -2051,7 +2141,7 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         }
         QString why;
         if (small) {
-            if (!frequencyStep3(problems, *s, step, subset, &why)) {
+            if (!frequencyStep3(problems, *s, step, o, subset, &why)) {
                 out.error = why;
                 out.log = s->log;
                 return out;

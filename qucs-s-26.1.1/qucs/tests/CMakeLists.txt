@@ -109,6 +109,7 @@ qucs_add_fem_test(test_fem3_fe)
 qucs_add_fem_test(test_fem3_solve)
 qucs_add_fem_test(test_fem3_solid)
 qucs_add_fem_test(test_fem3_magnetic)
+qucs_add_fem_test(test_fem3_eddy)
 qucs_add_fem_test(test_fem3_semiconductor)
 # (177 s alone on an M2 Ultra on 11 November, where the 2D suite takes 81 s
 # alone and 462 s on CI's macOS runner: some 1010 s there by that rate, past
