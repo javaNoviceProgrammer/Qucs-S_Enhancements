@@ -371,7 +371,9 @@ private slots:
     }
 
     // A via farm: the shapes are joined by how close they are, and the
-    // metal's area is kept, which is the approximation the proposal names.
+    // metal is kept - the union its footprint, conducting as the vias in it
+    // do (Conductor::share), where it was shrunk to their area, a block in
+    // the footprint's middle (P44 of the open items of 8 November).
     void aViaFarmIsMergedAndItsAreaKept()
     {
         const rf::Stack stack = stacked().stack();
@@ -391,19 +393,38 @@ private slots:
         QCOMPARE(done.report.viasFrom, 9);
         QVERIFY2(done.report.viasTo < 9 && done.report.viasTo >= 1, qPrintable(QString::number(done.report.viasTo)));
         QVERIFY2(says(done.report.lines, "merged 9 vias into"), qPrintable(done.report.summary()));
-        QVERIFY2(says(done.report.lines, "of their area"), qPrintable(done.report.summary()));
-        // The area it kept is the vias' own, within a few per cent.
-        double got = 0;
-        for (const rf::Conductor& c : done.conductors) got += c.area();
-        QVERIFY2(std::abs(got - wanted) / wanted < 0.1,
+        QVERIFY2(says(done.report.lines, "each conducting as the vias in it"), qPrintable(done.report.summary()));
+        // The metal it kept is the vias' own, to a part in a million: the
+        // footprint's area times its share. The footprint the closing's,
+        // about the farm's 1 µm square.
+        double got = 0, footprint = 0;
+        for (const rf::Conductor& c : done.conductors) {
+            got += c.area() * c.share;
+            footprint += c.area();
+        }
+        QVERIFY2(std::abs(got - wanted) / wanted < 1e-6,
                  qPrintable(QStringLiteral("%1 µm² of %2").arg(got).arg(wanted)));
-        QVERIFY2(std::abs(done.report.areaKept - 1) < 0.1, qPrintable(QString::number(done.report.areaKept)));
+        QVERIFY2(footprint > 2 * wanted && footprint < 1.1, qPrintable(QStringLiteral("%1 µm²").arg(footprint)));
+        QVERIFY2(std::abs(done.report.areaKept - wanted / footprint) < 1e-6, qPrintable(QString::number(done.report.areaKept)));
+        // As solid metal, for an export (asSolid()): the footprint scaled
+        // about its middle to the vias' area, one shape for one.
+        const QList<rf::Conductor> solid = rf::asSolid(done.conductors);
+        QCOMPARE(solid.size(), done.conductors.size());
+        double solidArea = 0;
+        for (const rf::Conductor& c : solid) {
+            QCOMPARE(c.share, 1.0);
+            solidArea += c.area();
+        }
+        QVERIFY2(std::abs(solidArea - wanted) / wanted < 1e-6, qPrintable(QStringLiteral("%1 µm² of %2").arg(solidArea).arg(wanted)));
 
-        // Without that choice the union is left as it is - larger than the
-        // vias were, which is the honest alternative.
+        // Without that choice the union is solid metal - more than the vias
+        // were, which is the honest alternative.
         how.keepArea = false;
         double loose = 0;
-        for (const rf::Conductor& c : rf::processShapes(shapes, {}, how, stack).conductors) loose += c.area();
+        for (const rf::Conductor& c : rf::processShapes(shapes, {}, how, stack).conductors) {
+            QCOMPARE(c.share, 1.0);
+            loose += c.area();
+        }
         // Larger than the vias were - and no larger than the closing makes
         // it: the farm spans 1 µm each way, so the shape it leaves is
         // about 1 µm², not the 4 µm² of a growth that is never undone.

@@ -177,9 +177,12 @@ void append(std::string& out, long long v)
 
 } // namespace
 
-PalaceExport palaceExportOf(const Model& model, const QList<Conductor>& conductors, const PalaceOptions& options, const QString& name,
+PalaceExport palaceExportOf(const Model& model, const QList<Conductor>& given, const PalaceOptions& options, const QString& name,
                             const QString& madeBy)
 {
+    // (A merged via farm's footprint as its metal: this solver takes a shape
+    //  as solid - asSolid().)
+    const QList<Conductor> conductors = asSolid(given);
     PalaceExport out;
     out.name = name.trimmed().isEmpty() ? QStringLiteral("rf25") : name.trimmed();
     const Stack stack = model.stack();

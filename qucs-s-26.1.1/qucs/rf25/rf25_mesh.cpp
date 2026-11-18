@@ -602,6 +602,7 @@ QList<MeshCell> stripCells(const Conductor& conductor, const StripQuads& quads, 
             outline << point(s0, v1);
             MeshCell cell;
             cell.layer = conductor.layer;
+            cell.share = conductor.share;
             cell.outline = outline;
             cell.area = areaOf(outline);
             if (!(cell.area > 0)) continue;
@@ -1590,6 +1591,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                         if (a <= 0) continue;
                         MeshCell cell;
                         cell.layer = conductor.layer;
+                        cell.share = conductor.share;
                         cell.outline = part;
                         // (A cell cut by a slanted side is held at its
                         //  centroid: its box's middle may be on its edge - a

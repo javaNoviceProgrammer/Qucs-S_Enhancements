@@ -606,9 +606,10 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
         f.from = f.to = cell.centre * micrometre;
         f.z0 = std::min(za, zb);
         f.z1 = std::max(za, zb);
-        // A via's cross-section is what it covers; one side of it stands
-        // for its breadth.
-        f.width = std::sqrt(std::max(0.0, cell.area)) * micrometre;
+        // A via's cross-section is what it covers - a merged farm's metal,
+        // its share of its footprint (Conductor::share); one side of it
+        // stands for its breadth.
+        f.width = std::sqrt(std::max(0.0, cell.area * cell.share)) * micrometre;
         f.thickness = f.width;
         f.sigma = via->sigma;
         if (!(f.length() > 0) || !(f.width > 0)) continue;

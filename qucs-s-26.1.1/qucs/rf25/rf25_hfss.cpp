@@ -696,9 +696,12 @@ with open(os.path.join(HERE, NAME + "_aedt_report.txt"), "w") as report:
 
 } // namespace
 
-HfssExport hfssExportOf(const Model& model, const QList<Conductor>& conductors, const HfssOptions& options, const QString& name,
+HfssExport hfssExportOf(const Model& model, const QList<Conductor>& given, const HfssOptions& options, const QString& name,
                         const QString& madeBy, const QList<bool>& returns)
 {
+    // (A merged via farm's footprint as its metal: this solver takes a shape
+    //  as solid - asSolid().)
+    const QList<Conductor> conductors = asSolid(given);
     HfssExport out;
     out.name = name.isEmpty() ? QStringLiteral("RF25") : name;
     {

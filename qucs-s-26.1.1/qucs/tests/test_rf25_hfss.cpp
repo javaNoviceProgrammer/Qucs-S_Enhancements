@@ -1291,6 +1291,23 @@ private slots:
         QVERIFY(!metalLayers.intersects(octagonLayers));
         QVERIFY(!metalLayers.intersects(boxLayers));
         QVERIFY(e.notes.join(QLatin1Char('\n')).contains(QLatin1String("1 via shape(s) that are no rectangles")));
+        // A via farm merged into its footprint, 8 µm square, a quarter of it
+        // metal (Conductor::share - P44 of the open items of 8 November):
+        // written as its metal, 4 µm square about its middle, not as solid
+        // metal over the footprint.
+        {
+            Conductor farm = box(QStringLiteral("V0"), 141, -4, 149, 4);
+            farm.share = 0.25;
+            const HfssExport f = hfssExportOf(model, {shapes.at(0), shapes.at(1), shapes.at(2), farm});
+            QVERIFY2(f.ok(), qPrintable(f.problems.join(QLatin1Char(' '))));
+            int metal = 0, footprint = 0;
+            for (const auto& [number, polygon] : f.gdsShapes) {
+                const QRectF bound = polygon.boundingRect();
+                if (std::abs(bound.width() - 4) < 1e-9 && std::abs(bound.height() - 4) < 1e-9 && std::abs(bound.center().x() - 145) < 1e-9) ++metal;
+                if (std::abs(bound.width() - 8) < 1e-9 && std::abs(bound.height() - 8) < 1e-9) ++footprint;
+            }
+            QVERIFY2(metal == 1 && footprint == 0, qPrintable(QStringLiteral("%1 %2").arg(metal).arg(footprint)));
+        }
         QTemporaryDir dir;
         const Ran ran = runScript(written(e, dir.path()), dir.path());
         if (!ran.ok && ran.calls.isEmpty() && ran.output.isEmpty()) QSKIP("no python3 here");

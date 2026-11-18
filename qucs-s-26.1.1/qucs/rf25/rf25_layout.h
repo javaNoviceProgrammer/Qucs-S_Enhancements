@@ -129,9 +129,19 @@ struct Conductor {
     /// frame. Empty, and nought, for any other shape.
     QPolygonF spine;
     double spineWidth = 0;
+    /// How much of its area is metal (0 to 1): a via farm merged into its
+    /// footprint (Processing::keepArea) conducts as the vias' own area does,
+    /// its current spread over the footprint as theirs is. One: all of it.
+    double share = 1;
     bool isStrip() const { return spine.size() >= 2 && spineWidth > 0; }
     double area() const;    ///< µm², positive whichever way it is wound
 };
+
+/// \a conductors with each merged via farm's footprint (Conductor::share
+/// below one) its metal: the outline scaled about its centroid to the vias'
+/// own area, one conductor for one, the share one - for an export to a solver
+/// that takes a shape as solid metal (Palace, HFSS).
+QList<Conductor> asSolid(const QList<Conductor>& conductors);
 
 /// What the processing did, in the order it did it.
 struct LayoutReport {

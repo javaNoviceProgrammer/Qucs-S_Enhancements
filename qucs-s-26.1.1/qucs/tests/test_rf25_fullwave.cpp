@@ -1045,6 +1045,59 @@ private slots:
                  qPrintable(QStringLiteral("%1 %2").arg(skin.at(0)).arg(skin.at(1))));
     }
 
+    // A via farm merged feeds its plate across its area in the full wave too
+    // (P44 of the open items of 8 November: a capacitor's plate fed by 544
+    // vias read 1.21 Ohm in series merged, 0.774 unmerged): the vias' runs
+    // conduct as their metal in the footprint (Conductor::share). Two plates
+    // 60 µm square of 0.2 µm metal on M1 and M2, fed by strips 40 µm long,
+    // 36 vias of 2 µm on a 10 µm pitch between them, 100 µm of vacuum over a
+    // ground; the series resistance, -1/Y12's, at 1 GHz: 0.5175, 0.5182 Ohm
+    // merged and 0.5590 merged as solid metal (asSolid(): the old shrunk block).
+    void aViaFarmMergedFeedsItsPlateAcrossItsAreaFullWave()
+    {
+        rf::Stack two = grounded(1, 100e-6, 0, 0.2e-6, 5.8e7);
+        rf::Layer ild;
+        ild.kind = rf::Layer::Dielectric;
+        ild.name = QStringLiteral("ILD");
+        ild.tag = QStringLiteral("ild");
+        ild.thickness = 1e-6;
+        ild.epsr = 1;
+        rf::Layer m2 = two.layers.last();
+        m2.name = QStringLiteral("M2");
+        m2.tag = QStringLiteral("m2");
+        two.layers << ild << m2;
+        two = withVia(two, QStringLiteral("V1"), QStringLiteral("M1"), QStringLiteral("M2"));
+        two.layers.last().sigma = 1e5;   // (resistive: the vias some 70 mOhm of it, so that their own conductance tells)
+        QMap<QString, QList<QPolygonF>> drawn;
+        drawn[QStringLiteral("M1")] = {QPolygonF(QRectF(0, 0, 60, 60)), QPolygonF(QRectF(-40, 20, 40, 20))};
+        drawn[QStringLiteral("M2")] = {QPolygonF(QRectF(0, 0, 60, 60)), QPolygonF(QRectF(60, 20, 40, 20))};
+        for (int i = 0; i < 6; ++i)
+            for (int j = 0; j < 6; ++j) drawn[QStringLiteral("V1")] << QPolygonF(QRectF(4 + 10 * i, 4 + 10 * j, 2, 2));
+        const auto series = [&](bool merge, bool solid) {
+            rf::Processing how;
+            how.dropSlivers = false;
+            how.mergeVias = merge;
+            how.viaDistance = 9e-6;
+            const rf::Processed done = rf::processShapes(drawn, {}, how, two);
+            const QList<rf::Conductor> cs = solid ? rf::asSolid(done.conductors) : done.conductors;
+            rf::MeshSettings mesh;
+            mesh.maximum = 4e-6;
+            const rf::FullWave w = rf::fullWaveOf(rf::meshOf(cs, mesh, two, 1e9), cs, two,
+                                                  {edgePort(QPointF(-40, 30), QStringLiteral("M1"), QPointF(-1, 0)),
+                                                   edgePort(QPointF(100, 30), QStringLiteral("M2"), QPointF(1, 0))},
+                                                  {1e9});
+            if (!w.ok()) return Complex(-1, 0);
+            const Matrix2 y = zOf(w, 0).inverse();
+            return -1.0 / y(0, 1);
+        };
+        const Complex apart = series(false, false), merged = series(true, false), shrunk = series(true, true);
+        qWarning("a plate fed by a via farm, full wave at 1 GHz: R %.4f Ohm unmerged, %.4f merged, %.4f merged as solid metal",
+                 apart.real(), merged.real(), shrunk.real());
+        QVERIFY2(apart.real() > 0 && merged.real() > 0 && shrunk.real() > 0, "a solve failed");
+        QVERIFY2(std::abs(merged.real() / apart.real() - 1) < 0.02, qPrintable(QStringLiteral("%1 against %2").arg(merged.real()).arg(apart.real())));
+        QVERIFY2(shrunk.real() / apart.real() - 1 > 0.05, qPrintable(QStringLiteral("%1 against %2").arg(shrunk.real()).arg(apart.real())));
+    }
+
     // A coplanar line in air is as fast as light, whatever its cross-section
     // and its cells (P1 of the open items of 8 November): the signal 50 µm,
     // its gaps 2 and 5 µm, its grounds 160, 2 µm of metal as its two faces,

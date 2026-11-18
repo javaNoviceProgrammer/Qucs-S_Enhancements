@@ -349,8 +349,9 @@ QList<NodeKind> makeKinds()
           boolean(QStringLiteral("merge_vias"), tr("Merge nearby vias"), true),
           shownIf(expr(QStringLiteral("via_distance"), tr("Vias closer than"), QStringLiteral("m"), QStringLiteral("1[um]")),
                   "merge_vias=true"),
-          shownIf(boolean(QStringLiteral("keep_area"), tr("Keep the merged area"), true,
-                          tr("Shrinks the union so that the metal it stands for has the area the vias had")),
+          shownIf(boolean(QStringLiteral("keep_area"), tr("Keep the vias' metal"), true,
+                          tr("The union conducts as the vias in it do, their area over its own, its current spread "
+                             "over the whole of it as theirs is; off, it conducts as solid metal")),
                   "merge_vias=true"),
           boolean(QStringLiteral("drop_slivers"), tr("Drop slivers"), true),
           shownIf(expr(QStringLiteral("sliver_width"), tr("Thinner than"), QStringLiteral("m"), QStringLiteral("0.1[um]")),
