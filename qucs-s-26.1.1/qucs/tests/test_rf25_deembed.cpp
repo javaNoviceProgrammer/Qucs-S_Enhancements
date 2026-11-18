@@ -618,6 +618,112 @@ private slots:
         QVERIFY2(thru.gain < 1e-9 && thru.asymmetry < 1e-9, qPrintable(QStringLiteral("%1, %2").arg(thru.gain).arg(thru.asymmetry)));
     }
 
+    // An edge port that returns through a face at its own port wall - a
+    // lower metal's return under its line, as a probe's tip lands - is
+    // calibrated, its strips having that return along them and the same face
+    // terminal at both ends (P45 of the open items of 8 November, where the
+    // double delay was done by hand). A 10 µm line on M2 2 µm over a 50 µm
+    // return on M1, in air with no plane under the stack: the thru, its
+    // planes moved to its middle, a thru.
+    void aPortReturningThroughAFaceAtItsWallIsCalibrated()
+    {
+        rf::Stack stack;
+        rf::Layer ground;
+        ground.kind = rf::Layer::Ground;
+        ground.name = QStringLiteral("GND");
+        ground.tag = QStringLiteral("gnd");
+        ground.variant = QStringLiteral("open");
+        rf::Layer sub;
+        sub.kind = rf::Layer::Substrate;
+        sub.name = QStringLiteral("SUB");
+        sub.tag = QStringLiteral("sub");
+        sub.thickness = 100e-6;
+        sub.epsr = 1;
+        rf::Layer m1;
+        m1.kind = rf::Layer::Metal;
+        m1.name = QStringLiteral("M1");
+        m1.tag = QStringLiteral("m1");
+        rf::Layer ild;
+        ild.kind = rf::Layer::Dielectric;
+        ild.name = QStringLiteral("ILD");
+        ild.tag = QStringLiteral("ild");
+        ild.thickness = 2e-6;
+        ild.epsr = 4;
+        rf::Layer m2 = m1;
+        m2.name = QStringLiteral("M2");
+        m2.tag = QStringLiteral("m2");
+        stack.layers << ground << sub << m1 << ild << m2;
+        const rf::MeshSettings how = meshing(2, 100);
+        const QList<double> fs = {20e9};
+        const auto port = [](const QString& name, double x, QPointF facing) {
+            rf::FullWavePort p;
+            p.name = name;
+            p.at = QPointF(x, 5);
+            p.metal = QStringLiteral("M2");
+            p.facing = facing;
+            p.calibrate = true;
+            p.terminals = true;
+            rf::PortTerminal t;
+            t.name = QStringLiteral("T") + name;
+            t.metal = QStringLiteral("M1");
+            t.at = QPointF(x, 5);
+            t.face = true;
+            t.facing = facing;
+            p.returns = {t};
+            return p;
+        };
+        const auto line = [](double l) {
+            rf::Conductor signal = strip(0, 0, l, 10), back = strip(0, -20, l, 50);
+            signal.layer = QStringLiteral("M2");
+            back.layer = QStringLiteral("M1");
+            return QList<rf::Conductor>{signal, back};
+        };
+        // The feed found: its return M1 from 20 µm below the face to 30 above.
+        const double first = 1000;
+        const rf::FullWave probe = rf::fullWaveOf(rf::meshOf(line(first), how, stack, 0), line(first), stack,
+                                                  {port(QStringLiteral("P1"), 0, QPointF(-1, 0)), port(QStringLiteral("P2"), first, QPointF(1, 0))}, fs);
+        QVERIFY2(probe.ok(), qPrintable(why(probe)));
+        const rf::Feed& feed = probe.feeds.at(0);
+        QVERIFY2(feed.unlike.isEmpty() && feed.returns.size() == 1 && feed.returns.first().metal == QLatin1String("M1"),
+                 qPrintable(feed.unlike + QStringLiteral(" %1").arg(feed.returns.size())));
+        // (Its return from 20 µm past the face's one end to 30 past the other's
+        //  start - the same whichever end the face is read from.)
+        const double a0 = feed.returns.first().across0, a1 = feed.returns.first().across1;
+        QVERIFY2(std::abs(a0 + 20) < 1e-6 && std::abs(a1 - 30) < 1e-6, qPrintable(QStringLiteral("%1 to %2").arg(a0).arg(a1)));
+        const rf::Calibration cal = rf::calibrate(stack, how, 0, feed, fs);
+        QVERIFY2(cal.ok(), qPrintable(cal.problems.join(" | ")));
+        QVERIFY2(cal.lines.join(' ').contains(QStringLiteral("return through faces at both ends")), qPrintable(cal.lines.join(" | ")));
+        // (With no plane, its strips as long as eight of its span to the
+        //  return and twice its width, as a coplanar feed's are of its gaps.)
+        QVERIFY2(std::abs(cal.strip - 420) < 1e-6, qPrintable(QString::number(cal.strip)));
+        const double l = cal.strip + cal.length;
+        const rf::FullWave raw = rf::fullWaveOf(rf::meshOf(line(l), how, stack, 0), line(l), stack,
+                                                {port(QStringLiteral("P1"), 0, QPointF(-1, 0)), port(QStringLiteral("P2"), l, QPointF(1, 0))}, fs);
+        QVERIFY2(raw.ok(), qPrintable(why(raw)));
+        const rf::FullWave thru = rf::deembedded(raw, {{&cal, l / 2 * 1e-6}, {&cal, l / 2 * 1e-6}});
+        QVERIFY2(thru.ok(), qPrintable(why(thru)));
+        // (A return whose face is not on the port's own face's line - its
+        //  metal reaching 5 µm past the port's face -: no strip has it so,
+        //  and the feed says why.)
+        {
+            QList<rf::Conductor> past = line(first);
+            past[1] = strip(-5, -20, first + 5, 50);
+            past[1].layer = QStringLiteral("M1");
+            rf::FullWavePort p1 = port(QStringLiteral("P1"), 0, QPointF(-1, 0));
+            p1.returns.first().at = QPointF(-5, 5);
+            const rf::FullWave w = rf::fullWaveOf(rf::meshOf(past, how, stack, 0), past, stack, {p1, port(QStringLiteral("P2"), first, QPointF(1, 0))}, fs);
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            QVERIFY2(w.feeds.at(0).unlike.contains(QStringLiteral("is no face on its own face's line")), qPrintable(w.feeds.at(0).unlike));
+        }
+        for (int k = 0; k < fs.size(); ++k) {
+            const Complex s21 = thru.s.at(k).at(1).at(0), s11 = thru.s.at(k).at(0).at(0);
+            qWarning("a port returning through a face at its wall, its thru de-embedded at %g GHz: |S11| %.2e, S21 %.6f %+.6f",
+                     fs.at(k) / 1e9, std::abs(s11), s21.real(), s21.imag());
+            QVERIFY2(std::abs(s11) < 1e-3 && std::abs(s21 - 1.0) < 1e-3,
+                     qPrintable(QStringLiteral("%1 GHz: |S11| %2, S21 %3 %4").arg(fs.at(k) / 1e9).arg(std::abs(s11)).arg(s21.real()).arg(s21.imag())));
+        }
+    }
+
     // A perfect metal's coplanar line
     // read -2 to -6 dB/m at 50-60 GHz from two lines 0.9 mm apart - their
     // ends coupling past the line - and strips 1.8 mm apart still read -1.6.

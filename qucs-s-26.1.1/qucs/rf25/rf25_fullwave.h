@@ -313,6 +313,20 @@ struct Feed {
     };
     QList<Via> vias;
     double pitch = 0;                  ///< the rows' period along the feed; nought: walls, or none
+    /// An edge port that names its returns, each a face on its own face's
+    /// line (a probe's tips at a port wall): each return's metal and its
+    /// stretch across, as \a Via's are - strips of the feed have them along
+    /// their whole length, and the same terminals at both ends (P45 of the
+    /// open items of 8 November).
+    struct Return {
+        QString metal;
+        double across0 = 0, across1 = 0;
+    };
+    QList<Return> returns;
+    /// The port's frame, the layout's units: its face from \a frameLo along
+    /// \a frameUnit from \a frameOn, the feed in along \a frameInward.
+    QPointF frameOn, frameUnit, frameInward;
+    double frameLo = 0;
     /// How far it runs straight in from the face, as wide as the face and
     /// nothing over or under it, the layout's units - at most as far as was
     /// looked; below nought: not looked at.

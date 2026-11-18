@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <numeric>
 #include <thread>
 #include <tuple>
@@ -3359,6 +3360,14 @@ QString Feed::key() const
             each.sort();
             parts += each;
         }
+        // (Its returns, where it names them: their metals and stretches.)
+        if (!returns.isEmpty()) {
+            QStringList each;
+            for (const Return& r : returns)
+                each << QStringList{r.metal, n(mirror ? width - r.across1 : r.across0), n(mirror ? width - r.across0 : r.across1)}.join(QLatin1Char(','));
+            each.sort();
+            parts << QStringLiteral("returns") << each << unlike;
+        }
         // (The dielectric it stands on, where a layer ends: the same feed on
         //  another mesa is another line.)
         QStringList under;
@@ -3848,12 +3857,20 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 return out;
             }
         }
-        if (port.wantsStrips()) {
+        // (Its discontinuity taken out by strips of its feed: where each
+        //  return is a face, the strips have it along them and at both ends,
+        //  as gds2palace's port walls do - P45 of the open items of 8
+        //  November, where the double delay was done by hand. Another
+        //  port, or the cells under a rectangle, a strip cannot have.)
+        bool faces = !port.internal;
+        for (const PortTerminal& t : port.returns) faces = faces && !t.port && t.face;
+        if (port.wantsStrips() && !faces) {
             out.problems << tr("%1 returns through the terminals it names (%2), and its own discontinuity cannot be taken "
-                               "out by strips of a feed: they are a line between two edge ports, and it is a source "
-                               "between its own cells and its returns'. Take 'calibrate' off - its reference plane is then "
-                               "at those cells - and de-embed after the solve (L-2L, TRL or open-short), or move its plane "
-                               "along a given line ('along' line).")
+                               "out by strips of a feed: they are a line between two edge ports, each returning through "
+                               "faces at its own, and %1 is not that. Return it through faces on its own face's line (each "
+                               "terminal Of a face), or take 'calibrate' off - its reference plane is then at its cells - "
+                               "and de-embed after the solve (L-2L, TRL or open-short), or move its plane along a given "
+                               "line ('along' line).")
                                 .arg(name, named.join(QStringLiteral(", ")));
             return out;
         }
@@ -4297,6 +4314,10 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             const double height = std::max(0.0, metalHeight(givenStack, out.faceMetals.at(p))) / micrometre;
             out.feeds[p].length = feedLength(givenConductors, out.faceMetals.at(p), on, unit, span.inside < 0 ? -normal : normal,
                                              span.lo, faceWidth, 2 * (8 * height + 2 * faceWidth), beyond);
+            out.feeds[p].frameOn = on;
+            out.feeds[p].frameUnit = unit;
+            out.feeds[p].frameInward = span.inside < 0 ? -normal : normal;
+            out.feeds[p].frameLo = span.lo;
             // The layers that end, as the feed stands on them: its strips
             // laid on the same (they were laid on each such layer as it is
             // inside its shapes, everywhere - a GSG line on a mesa calibrated
@@ -4508,6 +4529,31 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 const QList<double> shares = sharesOf(mesh, face, on, along);
                 for (int k = 0; k < face.size(); ++k) put(back, face.at(k), shares.at(k));
                 cells = int(face.size());
+                // Its place in the port's frame, for strips of its feed: its
+                // stretch across, where it is on the port's own face's line
+                // and faces its way.
+                Feed& feed = out.feeds[p];
+                if (port.wantsStrips() && feed.frameUnit != QPointF(0, 0)) {
+                    const QPointF u = feed.frameUnit, n = feed.frameInward;
+                    const double off = (on.x() - feed.frameOn.x()) * n.x() + (on.y() - feed.frameOn.y()) * n.y();
+                    const double turn = std::abs(u.x() * along.y() - u.y() * along.x()) / std::max(1e-30, std::hypot(along.x(), along.y()));
+                    const bool facesOut = t.facing == QPointF(0, 0) || port.facing == QPointF(0, 0)
+                                          || t.facing.x() * port.facing.x() + t.facing.y() * port.facing.y() > 0.99;
+                    if (std::abs(off) > 1e-3 * std::max(1.0, feed.width) || turn > 1e-6 || !facesOut) {
+                        feed.unlike = tr("its return %1 is no face on its own face's line, facing its way, which strips of "
+                                         "it could have at both their ends")
+                                          .arg(t.name);
+                    } else {
+                        double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+                        for (const int cell : face)
+                            for (const QPointF& corner : mesh.cells.at(cell).outline) {
+                                const double s = (corner.x() - feed.frameOn.x()) * u.x() + (corner.y() - feed.frameOn.y()) * u.y() - feed.frameLo;
+                                lo = std::min(lo, s);
+                                hi = std::max(hi, s);
+                            }
+                        feed.returns << Feed::Return{mesh.cells.at(face.first()).layer, lo, hi};
+                    }
+                }
             } else {
                 const bool over = t.size.width() > 0 && t.size.height() > 0;
                 const QList<int>& among = t.metal.isEmpty() ? bottoms : cellOf;
