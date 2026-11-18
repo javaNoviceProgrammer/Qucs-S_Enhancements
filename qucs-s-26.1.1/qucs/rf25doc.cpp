@@ -1109,7 +1109,8 @@ void RF25Doc::showProblems()
         tail += tr("; %1 cell(s), %2")
                     .arg(a_mesh->charges > 0 ? a_mesh->charges : int(a_mesh->cells.size()))
                     .arg(meshedCompressed(a_model) ? a_mesh->cost.said
-                                                   : chargeCostOf(a_mesh->charges > 0 ? a_mesh->charges : int(a_mesh->cells.size())));
+                                                   : chargeCostOf(a_mesh->charges > 0 ? a_mesh->charges : int(a_mesh->cells.size()),
+                                                                  !studyIsFullWave()));
     if (a_solveJob && a_solveJob->fullWave && a_solveJob->calibrating)
         tail += tr("; calibrating the ports") + (left.isEmpty() ? QString() : tr(", %1 for this feed").arg(left));
     else if (a_solveJob && a_solveJob->fullWave)

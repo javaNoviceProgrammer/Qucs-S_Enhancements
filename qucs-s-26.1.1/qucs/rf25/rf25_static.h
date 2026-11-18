@@ -277,6 +277,10 @@ struct ExtractControl {
         Ended
     };
     const std::atomic_bool* stop = nullptr;
+    /// Past this many cells the charge is solved compressed (nought: the
+    /// build's, kMostCharges) - tests set it lower, to hold a compressed
+    /// solve to the dense one on one mesh.
+    int mostDense = 0;
     std::atomic_int* step = nullptr;   ///< a Step
     std::atomic_int* done = nullptr;
     std::atomic_int* all = nullptr;

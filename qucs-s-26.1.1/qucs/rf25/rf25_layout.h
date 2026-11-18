@@ -145,6 +145,11 @@ struct Conductor {
 /// reads the thinned block's resistance, not the vias' spread over the
 /// footprint: unmerged vias are its like.
 QList<Conductor> asSolid(const QList<Conductor>& conductors);
+/// What an export says of \a given's merged via farms written as \a solid
+/// (asSolid()'s, one for one): how many, that a solver of solid shapes reads
+/// them as blocks, and those kept whole above their vias' metal. Empty where
+/// there are none.
+QString mergedFarmsSaid(const QList<Conductor>& given, const QList<Conductor>& solid);
 
 /// What the processing did, in the order it did it.
 struct LayoutReport {
