@@ -169,10 +169,30 @@ jobs:
       # each linking its own copy, with this build's debug info, came to
       # 89 GB, more than the runner's free disk ("No space left on device"
       # at link, October 2026); shared, the build is 7.4 GB.
+      #
+      # The build within the runner's memory: it lost its runner in seven of
+      # the eleven runs to 18 November that ended ("The hosted runner lost
+      # communication with the server"), six of those jobs ending some 70
+      # minutes into the build, each log cut where its first 2 MB had been
+      # uploaded. Ninja ran six jobs on the four processors, and under GCC's
+      # ASan and UBSan at -O0 the multiphysics engine's units, RF 2.5D's, the
+      # control's and the tests of these take 1.3 to 4.8 GB each
+      # (fem_quantum.cpp the 4.8), side by side in the build's order - 33 of
+      # RF 2.5D's in a row -, and the program and the tests' core each link
+      # some 5 GB of objects, at the same time; the runs that built pushed
+      # 200 to 250 MB into the swap as well. So: as many jobs as processors; two of those heavy
+      # units at a time, by scripts/ci/heavy-compiles.sh, the others as they
+      # come; two links at a time. The build's memory is watched
+      # (scripts/ci/memory-watch.sh): each new high-water mark said as it
+      # comes, with the biggest processes then, and at the end each one's
+      # peak.
       - name: Configure (Debug, ASan + UBSan)
         run: |
           cmake -S "$SRC_DIR" -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER_LAUNCHER="$GITHUB_WORKSPACE/scripts/ci/heavy-compiles.sh" \
+            -DCMAKE_JOB_POOLS="link=2" \
+            -DCMAKE_JOB_POOL_LINK=link \
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined" \
@@ -187,7 +207,10 @@ jobs:
         # qucsdefs.h; LeakSanitizer (on by default on Linux) would fail it.
         env:
           ASAN_OPTIONS: detect_leaks=0
-        run: cmake --build build --parallel
+        run: |
+          bash scripts/ci/memory-watch.sh start "$RUNNER_TEMP/memory"
+          trap 'bash scripts/ci/memory-watch.sh stop "$RUNNER_TEMP/memory"' EXIT
+          cmake --build build --parallel "$(nproc)"
 
       # How much room the build left, and what takes it: the next growth
       # shows here first.
