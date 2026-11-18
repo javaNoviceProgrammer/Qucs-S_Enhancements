@@ -281,6 +281,9 @@ struct ExtractControl {
     /// build's, kMostCharges) - tests set it lower, to hold a compressed
     /// solve to the dense one on one mesh.
     int mostDense = 0;
+    /// The most pairs the compressed solve's near field may hold (nought:
+    /// the build's, 20,000,000) - tests set it lower, to reach the cap.
+    qint64 mostNearPairs = 0;
     std::atomic_int* step = nullptr;   ///< a Step
     std::atomic_int* done = nullptr;
     std::atomic_int* all = nullptr;

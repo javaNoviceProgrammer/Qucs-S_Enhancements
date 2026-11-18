@@ -1347,9 +1347,21 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         }
         // The near field: each pair whose cells are within two of their
         // longer side, and each cell with itself, as the dense matrix has
-        // them.
+        // them. Past its cap of pairs (nearPairs() then gives none) the
+        // reach halved, to half a side, and past that the diagonal alone - a
+        // weaker preconditioner, the operator whole either way, said.
+        const qint64 mostPairs = control != nullptr && control->mostNearPairs > 0 ? control->mostNearPairs : 20000000;
+        double reach = 2.0;
         bool over = false;
-        const QList<QPair<int, int>> pairs = nearPairs(boxes, nullptr, 2.0, 20000000, &over);
+        QList<QPair<int, int>> pairs = nearPairs(boxes, nullptr, reach, mostPairs, &over);
+        while (over && reach > 0.5) {
+            reach /= 2;
+            pairs = nearPairs(boxes, nullptr, reach, mostPairs, &over);
+        }
+        if (over) {
+            reach = 0;
+            pairs.clear();
+        }
         std::vector<Eigen::Triplet<double>> near;
         near.reserve(std::size_t(2 * pairs.size() + n));
         QSet<qint64> seen;
@@ -1413,6 +1425,14 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                          .arg(worst, 0, 'g', 2)
                          .arg(heldAt.cols())
                          .arg(clock.elapsed() / 1000.0, 0, 'f', 1);
+        if (reach < 2.0)
+            out.lines << (reach > 0 ? tr("The near field past its cap of %1 pairs within two sides of each cell: held within %2 of "
+                                         "a side instead, a weaker preconditioner (the solve itself whole).")
+                                          .arg(mostPairs)
+                                          .arg(reach)
+                                    : tr("The near field past its cap of %1 pairs even within half a side of each cell: P's "
+                                         "diagonal alone the preconditioner, GMRES slower (the solve itself whole).")
+                                          .arg(mostPairs));
         return true;
     };
     const auto solve = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,

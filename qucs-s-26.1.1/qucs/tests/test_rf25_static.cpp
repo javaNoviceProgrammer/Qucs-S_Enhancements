@@ -463,6 +463,27 @@ private slots:
             const QRegularExpressionMatch at = QRegularExpression(QStringLiteral("GMRES at most (\\d+) iteration")).match(compressed.lines.join(' '));
             QVERIFY2(at.hasMatch() && at.captured(1).toInt() <= 20, qPrintable(compressed.lines.join(" | ")));
         }
+        // (Its near field past a cap of pairs: held within a side - 18,810
+        //  pairs of the 34,203, GMRES 17 iterations -, and past even half a
+        //  side the diagonal alone - 32 -, said, and the answer the same.)
+        {
+            const QRegularExpressionMatch at = QRegularExpression(QStringLiteral("LU of (\\d+) pairs")).match(compressed.lines.join(' '));
+            QVERIFY2(at.hasMatch(), qPrintable(compressed.lines.join(" | ")));
+            const qint64 all = at.captured(1).toLongLong();
+            QVERIFY2(!says(compressed.lines, "past its cap"), qPrintable(compressed.lines.join(" | ")));
+            for (const qint64 cap : {all - 1, qint64(mesh.cells.size() / 2)}) {
+                rf::ExtractControl capped = held;
+                capped.mostNearPairs = cap;
+                const rf::Extraction e = rf::extract(mesh, line, stack, 1e-6, {}, &capped);
+                QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+                const bool diagonal = cap < mesh.cells.size();
+                QVERIFY2(says(e.lines, diagonal ? "diagonal alone the preconditioner" : "held within 1 of a side"), qPrintable(e.lines.join(" | ")));
+                double off = 0;
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j) off = std::max(off, std::abs(e.c.at(i).at(j) - dense.c.at(i).at(j)));
+                QVERIFY2(off < 1e-4 * largest, qPrintable(QStringLiteral("cap %1: %2 apart, of %3").arg(cap).arg(off).arg(largest)));
+            }
+        }
         // (A quasi-static study's mesh is held compressed, so the tab's mesh
         //  is not refused past the dense limit either.)
         {
