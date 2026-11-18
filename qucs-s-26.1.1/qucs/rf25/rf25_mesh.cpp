@@ -1865,9 +1865,20 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // narrow holds. The loop inductance (rf25_inductance) takes each run as
     // the bar it is.
     {
+        // (Each conductor's width the short side of the rectangle of its
+        //  area and its perimeter - a strip's or a wire's own width, a
+        //  square pad's side, where twice the area over the perimeter is
+        //  half a pad's side: a 100 µm pad of 10 µm metal warned as a
+        //  50 µm wire, the review of 54357932 - no wider than its bounding
+        //  box; a shape rounder than any rectangle a quarter of its
+        //  perimeter.)
         QMap<QString, double> narrowest;
         for (const Conductor& c : conductors) {
-            const double around = perimeterOf(c.outline), width = around > 0 ? 2 * areaOf(c.outline) / around : 0;
+            const double area = std::abs(areaOf(c.outline)), around = perimeterOf(c.outline);
+            const double half = around / 4, d = half * half - area;
+            double width = d > 0 ? half - std::sqrt(d) : half;
+            const QRectF box = c.outline.boundingRect();
+            width = std::min(width, std::min(box.width(), box.height()));
             if (width > 0 && (!narrowest.contains(c.layer) || width < narrowest.value(c.layer))) narrowest.insert(c.layer, width);
         }
         for (auto it = narrowest.constBegin(); it != narrowest.constEnd(); ++it) {
