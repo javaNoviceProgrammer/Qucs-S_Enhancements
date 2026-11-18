@@ -113,6 +113,15 @@ double assemblySeconds(double entries);
 /// million; each within 3 %).
 double magneticFactorSeconds(double unknowns, double perRow, double layers);
 double magneticFactorBytes(double unknowns, double perRow, double layers);
+/// The frequency domain's: its complex symmetric LDLT's numeric
+/// factorization over the real one's (\a seconds), and its factors' bytes
+/// over the real one's, of the same mesh - its conductors' potential's
+/// unknowns in it (Accelerate's, measured on 18 November on a coax of
+/// 300,000 and 670,000 unknowns at rest).
+void magneticComplexFactor(double* seconds, double* bytes);
+/// The frequencies above 0 of a study's enabled Frequency Domain steps
+/// (their magnetic fields solved harmonically at each), in \a scope.
+int harmonicFrequencies(const Node& study, const Scope& scope);
 
 /// This machine's memory (bytes; 0 not known).
 double physicalMemory();

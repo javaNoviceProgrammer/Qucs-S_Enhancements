@@ -1296,7 +1296,8 @@ QList<NodeKind> makeKinds()
          {QStringLiteral("magnetic/ampere"), QStringLiteral("magnetic/insulation")}, false, false, QStringLiteral("mf"),
          tr("The magnetic vector potential A out of the plane (round the axis): ∇×(µ⁻¹ ∇×A) = J, with B-H curves at rest "
             "and eddy currents (jωσA) in the frequency domain. Coils give an inductance or impedance matrix. In 3D, A on edge "
-            "elements at rest, ∇·A = 0 held by a nodal multiplier; its coils' currents a currents physics'.")});
+            "elements, ∇·A = 0 held by a nodal multiplier; its coils' currents a currents physics'; in the frequency domain "
+            "eddy currents too, an electric potential V on its conductors' nodes, its coils' impedance matrix.")});
     add({QStringLiteral("magnetic/ampere"), tr("Ampère's Law"), QStringLiteral("mf"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(),
           choice(QStringLiteral("constitutive"), tr("Magnetization model"), {QStringLiteral("mur"), QStringLiteral("bh")},
@@ -1323,6 +1324,10 @@ QList<NodeKind> makeKinds()
                    Spaces::ThreeD),
           inSpaces(shownIf(spatial(QStringLiteral("muryz"), tr("µr, yz"), QString(), QStringLiteral("0")),
                            QStringLiteral("source=user&constitutive=mur&anisotropy=symmetric")),
+                   Spaces::ThreeD),
+          inSpaces(shownIf(spatial(QStringLiteral("murIm"), tr("µr'' (losses)"), QString(), QStringLiteral("0"),
+                                   tr("µr = µr' - j µr'' in the frequency domain: a core's losses, mf.Qm and mf.Pm (on the diagonal)")),
+                           QStringLiteral("source=user&constitutive=mur")),
                    Spaces::ThreeD),
           shownIf(bhRows(), QStringLiteral("source=user&constitutive=bh")),
           shownIf(spatial(QStringLiteral("sigma"), tr("Electrical conductivity σ"), QStringLiteral("S/m"), QStringLiteral("0[S/m]")),
@@ -1358,23 +1363,23 @@ QList<NodeKind> makeKinds()
                  {tr("Single conductor"), tr("Homogenized multi-turn")}, QStringLiteral("single"),
                  tr("A single conductor: its current spread as its voltage drives it (the skin effect in the frequency domain); "
                     "turns of thin wire: evenly, no eddy currents")),
-          inSpaces(shownIf(choice(QStringLiteral("role"), tr("Role"),
+          shownIf(choice(QStringLiteral("role"), tr("Role"),
                          {QStringLiteral("current"), QStringLiteral("voltage"), QStringLiteral("floating"), QStringLiteral("grounded")},
                          {tr("Fixed current"), tr("Fixed voltage"), tr("Floating (no net current)"), tr("Grounded (no voltage)")},
                          QStringLiteral("current"),
                          tr("What holds it: its current (a port of the coils' matrix), its voltage, no net current, or none "
                             "between its ends - a ground whose current the fields set (an odd mode's half-model: its "
-                            "return partly in the mirror signal, not a fixed -1 A). A conductor with no coil is grounded.")),
+                            "return partly in the mirror signal, not a fixed -1 A). A conductor with no coil is grounded. In "
+                            "3D, in the frequency domain: its ends its currents physics' terminal and ground; at rest it carries "
+                            "I0 as that physics' J")),
                   QStringLiteral("conductor=single")),
-                   Spaces::TwoD),
           shownIf(expr(QStringLiteral("I0"), tr("Coil current"), QStringLiteral("A"), QStringLiteral("1[A]"),
                        tr("Its amplitude in the frequency domain; out of the plane (round the axis)")),
                   QStringLiteral("conductor=multi|role=current")),
-          inSpaces(shownIf(expr(QStringLiteral("V0"), tr("Coil voltage"), QStringLiteral("V"), QStringLiteral("1[V]"),
-                                tr("Between its ends, over the model's thickness (round the axis: one turn); its amplitude in the "
-                                   "frequency domain")),
-                           QStringLiteral("conductor=single&role=voltage")),
-                   Spaces::TwoD),
+          shownIf(expr(QStringLiteral("V0"), tr("Coil voltage"), QStringLiteral("V"), QStringLiteral("1[V]"),
+                       tr("Between its ends, over the model's thickness (round the axis: one turn; in 3D its terminal's potential "
+                          "over its ground's); its amplitude in the frequency domain")),
+                  QStringLiteral("conductor=single&role=voltage")),
           shownIf(expr(QStringLiteral("N"), tr("Number of turns"), QString(), QStringLiteral("10")), QStringLiteral("conductor=multi"))},
          {}, {}, false, false, QStringLiteral("coil"),
          tr("A conductor fed a current (or held at a voltage, floating, grounded), the rest found: mf.I_<name>, "
@@ -4230,11 +4235,13 @@ QList<NodeKind> makeKinds()
                   // (A 3D model's: an eigenmode expansion's S-matrix.)
                   P optics;
                   optics.key = QStringLiteral("optics");
-                  optics.label = tr("Eigenmode expansion or full-wave solve");
+                  optics.label = tr("Eigenmode expansion, full-wave solve or magnetic fields");
                   optics.kind = P::Physics;
                   optics.defaultValue = QJsonArray();
                   optics.tooltip = tr("Its S-matrix between its Optical Ports' modes at each wavelength (none chosen: the first) - an "
-                                      "Electromagnetic Waves, Eigenmode Expansion's or Frequency Domain's");
+                                      "Electromagnetic Waves, Eigenmode Expansion's or Frequency Domain's; or a Magnetic Fields' coils' "
+                                      "impedance matrix at each frequency of a Frequency Domain step (Z in ohms, # Hz Z RI R 1; none "
+                                      "chosen and no light solved: the first)");
                   optics.spaces = Spaces::ThreeD;
                   return optics;
               }(),

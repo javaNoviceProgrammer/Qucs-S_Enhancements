@@ -12,6 +12,7 @@
 #include "fem3_estimate.h"
 #include "fem3_mesh.h"
 #include "fem3_wave.h"
+#include "fem_solver.h"
 #include "fem_sparse.h"
 
 #include <QCoreApplication>
@@ -101,7 +102,29 @@ double magneticFactorBytes(double unknowns, double perRow, double layers)
     return 55.4 * std::pow(unknowns, 1.172) * std::pow(std::max(perRow, 1.0), 0.570) * std::pow(std::max(layers, 1.0) / 10, 0.714);
 }
 
-Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order)
+void magneticComplexFactor(double* seconds, double* bytes)
+{
+    // (A coax shorted by an end cap, 6 mm long, at 0.12 and 0.08 mm: 294,242
+    // and 667,239 unknowns at rest; in the frequency domain 13 % more, its
+    // conductors' potential - 19.7 s against 9.6 and 57.8 against 26.3, its
+    // factors 4.8 GB against 1.9 and 12.1 against 4.6.)
+    *seconds = 2.2;
+    *bytes = 2.6;
+}
+
+int harmonicFrequencies(const Node& study, const Scope& scope)
+{
+    int n = 0;
+    for (const Node& step : study.children) {
+        if (!step.enabled || step.type != QLatin1String("frequency")) continue;
+        const std::optional<std::vector<double>> listed = valueList(step.text(QStringLiteral("frequencies")), scope);
+        if (listed)
+            for (double f : *listed) n += f > 0 ? 1 : 0;
+    }
+    return n;
+}
+
+Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order, int frequencies)
 {
     Estimate3 e;
     e.order = order;
@@ -129,6 +152,15 @@ Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order)
     const double factor = magneticFactorSeconds(n, perRow, layers);
     e.directSeconds = 1.1 * factor + 2 * assemblySeconds(entries);
     e.directBytes = 2 * magneticFactorBytes(n, perRow, layers);
+    // In the frequency domain: a complex factorization at each frequency
+    // (its analysis kept from the first), its factors twice the bytes; its
+    // assembly complex, and the coils' right-hand sides.
+    if (frequencies > 0) {
+        double time = 1, bytes = 1;
+        magneticComplexFactor(&time, &bytes);
+        e.directSeconds = frequencies * (1.1 * time * factor + 3 * assemblySeconds(entries));
+        e.directBytes = 2 * bytes * magneticFactorBytes(n, perRow, layers);
+    }
     // (No iterative solve of it: the same.)
     e.iterativeBytes = e.directBytes;
     e.iterativeSeconds = e.directSeconds;
@@ -235,6 +267,16 @@ std::vector<Estimate3> estimate3(const Model& model, std::shared_ptr<const Mesh3
 {
     std::vector<Estimate3> out;
     if (!mesh || mesh->prisms.empty()) return out;
+    // (The most frequencies a study solves its magnetic fields at.)
+    int frequencies = 0;
+    {
+        std::shared_ptr<ParameterScope> ps;
+        for (const Node& c : model.root.children)
+            if (c.type == QLatin1String("study")) {
+                if (!ps) ps = evaluateParameters(model);
+                if (ps) frequencies = std::max(frequencies, harmonicFrequencies(c, ps->scope));
+            }
+    }
     std::shared_ptr<const Space3> spaces[3];
     qint64 nonzeros[3] = {0, 0, 0};
     for (const Node* p : model.physics()) {
@@ -244,7 +286,7 @@ std::vector<Estimate3> estimate3(const Model& model, std::shared_ptr<const Mesh3
             spaces[order] = std::make_shared<Space3>(mesh, order);
             nonzeros[order] = patternNonzeros(*spaces[order]);
         }
-        Estimate3 e = p->type == QLatin1String("magnetic") ? estimateMagnetic3(mesh, order)
+        Estimate3 e = p->type == QLatin1String("magnetic") ? estimateMagnetic3(mesh, order, frequencies)
                                                            : estimateOn(*spaces[order], nonzeros[order], solver, componentsOf(p->type));
         e.physics = p->tag;
         e.name = p->name();

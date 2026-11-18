@@ -420,8 +420,70 @@ Export3 fieldExport3(const Solutions3& set, const Node& node)
 
 } // namespace
 
+/// A magnetic field's coils' impedance matrix at each frequency of a
+/// Frequency Domain step (its coil sweep's: mf.R_<i>_<j> + jω mf.L_<i>_<j>),
+/// its ports the coils fed a current, a Touchstone 1.1 file in ohms as they
+/// are (# Hz Z RI R 1); empty, and why.
+QString coilTouchstone(const Solution3& s, const Field3& f, const QStringList& comments, int* ports, QString* error)
+{
+    QStringList names;
+    for (const Field3::Terminal& t : f.terminals)
+        if (t.floating) names << t.name;
+    if (!s.smallSignal || s.snapshotCount() == 0 || names.isEmpty()) {
+        *error = tr("%1: its Touchstone file is its coils' impedance matrix at each frequency of a Frequency Domain step - its coils fed a "
+                    "current, a single conductor's or turns'")
+                     .arg(f.tag);
+        return {};
+    }
+    const int n = int(names.size()), K = s.snapshotCount();
+    const QString p = f.tag + QLatin1Char('.');
+    std::vector<std::vector<double>> R(std::size_t(n * n)), L(std::size_t(n * n));
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) {
+            const QString ij = names[i] + QLatin1Char('_') + names[j];
+            R[std::size_t(i * n + j)] = s.globalSeries(p + QStringLiteral("R_") + ij, nullptr, nullptr);
+            L[std::size_t(i * n + j)] = s.globalSeries(p + QStringLiteral("L_") + ij, nullptr, nullptr);
+            if (int(R[std::size_t(i * n + j)].size()) != K || int(L[std::size_t(i * n + j)].size()) != K) {
+                *error = tr("%1: its impedance matrix was not swept at each frequency (the step's Coil sweep)").arg(f.tag);
+                return {};
+            }
+        }
+    const auto number = [](double v) { return QString::number(v, 'e', 9); };
+    QString text;
+    for (const QString& c : comments) text += QStringLiteral("! ") + c + QLatin1Char('\n');
+    text += QStringLiteral("! ports: %1\n").arg(names.join(QLatin1String(", ")));
+    text += QStringLiteral("# Hz Z RI R 1\n");
+    for (int k = 0; k < K; ++k) {
+        const double fr = s.snapshotFrequency(k), w = 2 * M_PI * fr;
+        const auto entry = [&](int i, int j) {
+            const std::size_t at = std::size_t(i * n + j);
+            return number(R[at][std::size_t(k)]) + QLatin1Char(' ') + number(w * L[at][std::size_t(k)]);
+        };
+        text += number(fr);
+        if (n <= 2) {
+            // (A two-port's column by column: Z11 Z21 Z12 Z22.)
+            for (int j = 0; j < n; ++j)
+                for (int i = 0; i < n; ++i) text += QLatin1Char(' ') + entry(i, j);
+            text += QLatin1Char('\n');
+        } else {
+            // (Row by row, four entries a line at most.)
+            for (int i = 0; i < n; ++i) {
+                for (int j = 0; j < n; ++j) {
+                    if (j > 0 && j % 4 == 0) text += QStringLiteral("\n ");
+                    text += QLatin1Char(' ') + entry(i, j);
+                }
+                text += QLatin1Char('\n');
+            }
+        }
+    }
+    *ports = n;
+    return text;
+}
+
 /// An eigenmode expansion's S-matrix at each wavelength of a point of the
-/// sweep (its "point", from 1; 0 the last), a Touchstone file.
+/// sweep (its "point", from 1; 0 the last), a Touchstone file - or a
+/// magnetic field's coils' impedance matrix at each frequency
+/// (coilTouchstone()).
 Export3 touchstone3(const Solutions3& set, const Node& node)
 {
     Export3 out;
@@ -438,6 +500,28 @@ Export3 touchstone3(const Solutions3& set, const Node& node)
             o = &c;
             break;
         }
+    // (A magnetic field chosen, or none chosen and no light solved: its
+    // coils' impedance matrix.)
+    if (!o)
+        for (const Field3& f : s.fields())
+            if (f.type == QLatin1String("magnetic") && (chosen.contains(f.tag) || (chosen.isEmpty() && s.smallSignal))) {
+                QStringList comments{tr("%1, %2 of %3").arg(f.tag, s.studyTag, s.model().fileName.isEmpty() ? tr("a model") : s.model().fileName)};
+                if (!s.label.isEmpty()) comments << s.label;
+                int ports = 0;
+                QString why;
+                out.main.text = coilTouchstone(s, f, comments, &ports, &why);
+                if (out.main.text.isEmpty()) {
+                    out.main.error = why;
+                    return out;
+                }
+                out.main.suffix = QStringLiteral("s%1p").arg(ports);
+                out.main.summary = tr("%1 coils' impedance matrix at %2 frequencies (%3 to %4), Touchstone 1.1 (Z, ohms)")
+                                       .arg(ports)
+                                       .arg(s.snapshotCount())
+                                       .arg(formatQuantity(s.snapshotFrequency(0), Dim::of(0, 0, -1)),
+                                            formatQuantity(s.snapshotFrequency(s.snapshotCount() - 1), Dim::of(0, 0, -1)));
+                return out;
+            }
     if (!o) {
         out.main.error = chosen.isEmpty() ? tr("no light is solved: its Touchstone file is of an Electromagnetic Waves, Eigenmode Expansion's, "
                                                "Frequency Domain's or Time Domain's S-matrix, solved by a Wavelength Domain step")
