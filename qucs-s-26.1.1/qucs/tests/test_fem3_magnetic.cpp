@@ -25,8 +25,10 @@
 #include "fem_sparse.h"
 
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QtTest>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace qucs_s::fem;
@@ -676,6 +678,29 @@ private slots:
             const int currents = at(ecName + QStringLiteral(": solving")), factorizing = at(mfName + QStringLiteral(": factorizing, "));
             QVERIFY2(currents >= 0 && factorizing > currents && at(QStringLiteral("(pass")) < 0, qPrintable(told.join(QLatin1Char('\n'))));
             QVERIFY2(told[factorizing].contains(QStringLiteral(" unknowns")), qPrintable(told[factorizing]));
+            // Its estimate (the review's finding 5: fitted to a real
+            // Cholesky, 7 to 36 times low): its unknowns every edge's and
+            // node's, the solve's fewer (those held on the insulated faces:
+            // a third here, a tenth at a million); its factors those
+            // Accelerate's analysis says, within a factor of two (the fit's
+            // solves were larger, within 3 %).
+            const Estimate3* est = nullptr;
+            for (const Estimate3& e : sv.r.estimates)
+                if (e.physics == mf) est = &e;
+            QVERIFY(est);
+            QRegularExpressionMatch unknowns, factors;
+            for (const QString& line : log) {
+                if (!unknowns.hasMatch()) unknowns = QRegularExpression(QStringLiteral("^%1: (\\d+) unknowns").arg(mfName)).match(line);
+                if (!factors.hasMatch()) factors = QRegularExpression(QStringLiteral("its factors ([0-9.]+) GB")).match(line);
+            }
+            QVERIFY2(unknowns.hasMatch(), qPrintable(log.join(QLatin1Char('\n'))));
+            const double solved = unknowns.captured(1).toDouble();
+            QVERIFY2(est->unknowns >= solved && est->unknowns < 1.5 * solved, qPrintable(QStringLiteral("%1 estimated, %2 solved").arg(est->unknowns).arg(solved)));
+            if (choleskyBackend() == Backend::Accelerate && factors.hasMatch() && !coarse()) {
+                const double measured = factors.captured(1).toDouble() * 1073741824.0, estimated = est->directBytes / 2;
+                info(QStringLiteral("magnetic factors: %1 MB estimated, %2 MB by Accelerate's analysis").arg(estimated / 1048576.0).arg(measured / 1048576.0));
+                QVERIFY2(estimated > 0.5 * measured && estimated < 2 * measured, qPrintable(QStringLiteral("%1 against %2 bytes").arg(estimated).arg(measured)));
+            }
         }
         const double perLength = (L[1] - L[0]) / 2e-3;
         info(QStringLiteral("coax from currents: L %1, %2 H; dL/dlen %3 H/m, exact %4 H/m").arg(L[0]).arg(L[1]).arg(perLength).arg(Lp));
@@ -787,6 +812,14 @@ private slots:
         const Solved sv = solve(m);
         QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
         QVERIFY2(sv.s().log.join(QLatin1Char('\n')).contains(QStringLiteral("Newton's step 2")), qPrintable(sv.s().log.join(QLatin1Char('\n'))));
+        // (Each Newton's step's tangent another matrix: each factorized, none
+        // solved with the factors kept from the step before.)
+        const QString mfName = m.find(mf)->name();
+        const int steps = int(std::count_if(sv.s().log.begin(), sv.s().log.end(),
+                                            [&mfName](const QString& l) { return l.startsWith(mfName + QStringLiteral(", Newton's step")); }));
+        QVERIFY2(steps >= 2 && linesOf(sv.s().log, mfName, QStringLiteral("factorized in")) == steps
+                     && linesOf(sv.s().log, mfName, QStringLiteral("factors kept")) == 0,
+                 qPrintable(sv.s().log.join(QLatin1Char('\n'))));
         const double current = integral(sv.s(), QStringLiteral("mf.Jz")) / 0.3e-3;
         QString err;
         const std::shared_ptr<const BHCurve> curve =

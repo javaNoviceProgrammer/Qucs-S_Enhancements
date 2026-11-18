@@ -103,6 +103,16 @@ double directSolverSeconds(double unknowns, double nonzeros);
 /// The assembly's seconds: \a entries element-matrix entries (elements x
 /// per element²).
 double assemblySeconds(double entries);
+/// The 3D magnetostatics' saddle point's real LDLT (Accelerate's, METIS's
+/// ordering, threshold pivoting): its analysis and numeric factorization
+/// (seconds) and its factors and workspace (bytes), of \a unknowns, \a
+/// perRow nonzeros a row of the whole matrix and a mesh of \a layers - a
+/// swept mesh's fill grows with its layers, the plan's triangles repeated in
+/// each (fitted on 18 November to six solves: a coax of 10 layers at orders
+/// 1 and 2, 0.2 to 1.4 million unknowns, and a loop in air of 17 layers, 1.7
+/// million; each within 3 %).
+double magneticFactorSeconds(double unknowns, double perRow, double layers);
+double magneticFactorBytes(double unknowns, double perRow, double layers);
 
 /// This machine's memory (bytes; 0 not known).
 double physicalMemory();
