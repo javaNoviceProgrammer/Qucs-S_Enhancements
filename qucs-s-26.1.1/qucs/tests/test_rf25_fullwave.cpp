@@ -1050,6 +1050,83 @@ private slots:
                  qPrintable(QStringLiteral("%1 %2").arg(skin.at(0)).arg(skin.at(1))));
     }
 
+    // At a low frequency the dense solve keeps the cells' charges as unknowns
+    // of their own (the production-readiness review:
+    // P53's breakdown, of which only the hint had been mended). The square
+    // copper loop as its two faces at 1 kHz is the 6e5 S/m one's at 100 kHz -
+    // the same thickness against the skin, the field quasi-static at both -:
+    // it read 25.95 and 21.40 nH at 2 and 4 across, the currents lost in the
+    // charges' rounding, where 22.80 and 23.43 are its own.
+    void aLoopAtAKilohertzIsTheLoopAtAHundred()
+    {
+        // (Its loops' dense solves, the loop inductance's and the switch's:
+        //  the suite near its limit under the sanitizers; CI's macOS job runs
+        //  it in Release, 0.9 s.)
+        if (slowBuild()) QSKIP("its dense solves, augmented and both ways: the suite near its time limit under the sanitizers");
+        rf::Stack st = grounded(1, 5e-3, 0, 0.5e-3, 6e7);
+        st.layers[0].variant = QStringLiteral("open");
+        st.layers[2].twoSheets = true;
+        rf::Conductor loop;
+        loop.layer = QStringLiteral("M1");
+        loop.outline = QPolygonF(QList<QPointF>{{-5250, -100}, {-5250, -5250}, {5250, -5250}, {5250, 5250}, {-5250, 5250}, {-5250, 100},
+                                                {-4750, 100}, {-4750, 4750}, {4750, 4750}, {4750, -4750}, {-4750, -4750}, {-4750, -100}});
+        rf::FullWavePort p = edgePort(QPointF(-5000, -100), QString(), QPointF(0, 1));
+        p.terminals = true;
+        rf::PortTerminal t;
+        t.name = QStringLiteral("T1");
+        t.at = QPointF(-5000, 100);
+        t.face = true;
+        t.facing = QPointF(0, -1);
+        p.returns = {t};
+        // (At 1 kHz 22.805 and 23.443 nH, at 10 Hz 22.804 and 23.442: the
+        //  100 kHz values' own within 0.05 %, down to where the eliminated
+        //  system had nothing left - 23.37 and 22.71 at 1 and 10 kHz on 2
+        //  across. Passive and reciprocal there.)
+        for (const auto& [across, own] : {std::pair(2, 22.802), std::pair(4, 23.431)}) {
+            rf::MeshSettings how;
+            how.cellsAcross = across;
+            const rf::Mesh mesh = rf::meshOf({loop}, how, st, 1e8);
+            const rf::FullWave w = rf::fullWaveOf(mesh, {loop}, st, {p}, {10.0, 1e3});
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            QVERIFY2(says(w.lines, "solved with the cells' charges as unknowns of their own"), qPrintable(w.lines.join(" | ")));
+            QVERIFY2(!says(w.warnings, "past its low-frequency limit"), qPrintable(w.warnings.join(" | ")));
+            QVERIFY2(w.gain <= 1e-9 && w.asymmetry < 1e-9, qPrintable(QStringLiteral("%1 %2").arg(w.gain).arg(w.asymmetry)));
+            for (int k = 0; k < 2; ++k) {
+                const double nh = w.z.at(k).at(0).at(0).imag() / (2 * M_PI * w.frequencies.at(k)) * 1e9;
+                QVERIFY2(w.z.at(k).at(0).at(0).real() > 0, "a resistance below nought");
+                QVERIFY2(std::abs(nh / own - 1) < 0.002,
+                         qPrintable(QStringLiteral("%1 across at %2 Hz: %3 nH against %4").arg(across).arg(w.frequencies.at(k)).arg(nh).arg(own)));
+            }
+            // (The loop inductance's L at direct current, its runs bars - 24.13
+            //  nH, the filament sum's 24.17 within 0.2 % -: the faces' coming in
+            //  from below as the cells get finer, 5.5 and 2.9 % under it.)
+            if (across == 4) {
+                const rf::Inductance dc = rf::inductanceOf(mesh, {loop}, st, QPointF(-5000, -100), QPointF(-5000, 100), 1e-6, 1e4);
+                QVERIFY2(dc.ok(), qPrintable(dc.problems.join(" | ")));
+                const double nh = w.z.at(0).at(0).at(0).imag() / (2 * M_PI * 10.0) * 1e9;
+                QVERIFY2(nh < dc.lDc * 1e9 && nh > 0.96 * dc.lDc * 1e9, qPrintable(QStringLiteral("%1 nH against %2 at DC").arg(nh).arg(dc.lDc * 1e9)));
+            }
+        }
+        // (Both ways where the charges' term is 3.6e9 times the currents',
+        //  inside the switch, at 10 MHz: the same to a part in a million, so a
+        //  sweep that crosses it does not jump.)
+        {
+            rf::MeshSettings how;
+            how.cellsAcross = 2;
+            const rf::Mesh mesh = rf::meshOf({loop}, how, st, 1e8);
+            QList<Complex> z;
+            for (const double from : {1e-300, 1e300}) {
+                rf::FullWaveControl control;
+                control.augmentedFrom = from;
+                const rf::FullWave w = rf::fullWaveOf(mesh, {loop}, st, {p}, {1e7}, 1e-6, &control);
+                QVERIFY2(w.ok(), qPrintable(why(w)));
+                z << w.z.at(0).at(0).at(0);
+            }
+            QVERIFY2(std::abs(z.at(0) - z.at(1)) < 1e-6 * std::abs(z.at(1)),
+                     qPrintable(QStringLiteral("%1 %2 against %3 %4").arg(z.at(0).real()).arg(z.at(0).imag()).arg(z.at(1).real()).arg(z.at(1).imag())));
+        }
+    }
+
     // One model for the loop inductance and the full wave (the production-
     // readiness review): a loop's one port that returns
     // through a terminal at its other end - as the full wave takes a loop -
@@ -1258,8 +1335,12 @@ private slots:
     // Past its low-frequency limit a solve says so (N4 of the open items: a
     // spiral at 10 Hz read S21 -118 dB, an open, with nothing but GMRES's
     // iterations said): a copper line's charges' term outweighs its
-    // currents' some 2.6e16 times at 1 Hz, its loss 2 % off (dense) - warned,
-    // dense and compressed; from 10 Hz up, within a part in a thousand, not.
+    // currents' some 2.6e16 times at 1 Hz, its loss 2 % off when it was
+    // solved with the charges eliminated - warned, compressed; from 10 Hz up
+    // not. Dense, the charges kept as unknowns of their own past 1e10 of it
+    // (the production-readiness review), it is not past its
+    // limit at 1 Hz: its loss there that at 10 Hz within a part in a
+    // thousand, and said solved so.
     void aSolvePastItsLowFrequencyLimitSaysSo()
     {
         const rf::Stack st = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
@@ -1271,9 +1352,17 @@ private slots:
                                                   {1, 10, 1e3, 1e6}, 1e-6, &control);
             QVERIFY2(w.ok(), qPrintable(why(w)));
             const QString said = w.warnings.join(QLatin1Char(' '));
-            QVERIFY2(said.contains(QStringLiteral("At 1 Hz the solve is past its low-frequency limit")), qPrintable(said));
+            QVERIFY2(said.contains(QStringLiteral("At 1 Hz the solve is past its low-frequency limit")) == squeezed, qPrintable(said));
             for (const char* f : {"At 10 Hz the solve is past", "At 1000 Hz the solve is past", "At 1e+06 Hz the solve is past"})
                 QVERIFY2(!said.contains(QLatin1String(f)), qPrintable(said));
+            if (squeezed) continue;
+            QVERIFY2(says(w.lines, "At 1 Hz the charges' term outweighs the currents'") && says(w.lines, "unknowns of their own"),
+                     qPrintable(w.lines.join(" | ")));
+            const auto lost = [&w](int k) {
+                const Complex s11 = w.s.at(k).at(0).at(0), s21 = w.s.at(k).at(1).at(0);
+                return 1 - std::norm(s11) - std::norm(s21);
+            };
+            QVERIFY2(std::abs(lost(0) / lost(1) - 1) < 1e-3, qPrintable(QStringLiteral("%1 at 1 Hz, %2 at 10").arg(lost(0)).arg(lost(1))));
         }
     }
 
@@ -1362,7 +1451,7 @@ private slots:
     // A dispersive substrate that ends at its shapes: the full wave's
     // correction for its shapes is made once, of statics, so inside them it
     // is its permittivity as given at every frequency - and the answer says
-    // so (the review of 3789cfcb: nothing said it).
+    // so (the review of 357538a7: nothing said it).
     void aDispersiveLayerThatEndsSaysHowItIsTaken()
     {
         rf::Stack stack = grounded(9.8, 100e-6, 0.01, 1e-6, 5.8e7);
@@ -1386,7 +1475,7 @@ private slots:
         const rf::FullWave u = rf::fullWaveOf(mesh, conductors, uniaxial, {edgePort(QPointF(0, 50)), edgePort(QPointF(600, 50))}, {5e9}, 1e-6, &control);
         QVERIFY2(!u.ok() && u.problems.join(' ').contains(QStringLiteral("SUB is uniaxial and ends at its shapes")), qPrintable(why(u)));
         // Nor a magnetic one, which would be magnetic across the whole plane
-        // (the review of fa249cbd) - a magnetic loss alone the same.
+        // (the review of 975d4569) - a magnetic loss alone the same.
         for (const auto& [mur, mtand] : {std::pair{3.0, 0.0}, std::pair{1.0, 0.05}}) {
             rf::Stack magnetic = grounded(9.4, 100e-6, 0, 1e-6, 5.8e7);
             for (rf::Layer& l : magnetic.layers)
@@ -2423,7 +2512,7 @@ private slots:
         line(grounded(4, 100e-6), 1000, 100, 4, 100e-6, 4, {fl}, &plain);
         QVERIFY(lp.epsilonEff > 1.5 * rf::lineParameters(plain, 0, 1000e-6, fl).epsilonEff);
         // A magnetic loss alone, mu_r 1: the quasi-static solve says it
-        // leaves it out (the review of fa249cbd).
+        // leaves it out (the review of 975d4569).
         rf::Stack lossy = grounded(4, 100e-6);
         for (rf::Layer& layer : lossy.layers)
             if (layer.kind == rf::Layer::Substrate) layer.mtand = 0.05;
@@ -2806,7 +2895,7 @@ private slots:
             rf::portsOf(m, &problem);
             QVERIFY2(problem.contains(QStringLiteral("nought or above")), qPrintable(problem));
             ports->children.back().props.insert(QStringLiteral("r"), QStringLiteral("47"));
-            // An element is no port elsewhere either (the review of 8abc6cbb):
+            // An element is no port elsewhere either (the review of 705280f8):
             // the quasi-static loop's two ends are the model's two measuring
             // ports, the element listed before them; and a TRL calibration of
             // the two-port it is is not refused as a three-port.
