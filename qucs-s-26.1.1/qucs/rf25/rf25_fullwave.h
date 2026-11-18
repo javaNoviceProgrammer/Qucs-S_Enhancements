@@ -372,10 +372,14 @@ struct FullWaveControl {
     /// The most runs and cells it sets up a dense solve for; 0: the build's
     /// own. (Lower, a test meets the limit without a solve of thousands.)
     int mostUnknowns = 0;
-    /// The charges' term over the currents' past which a dense solve keeps
-    /// the cells' charges as unknowns of their own (nought: the build's) -
-    /// tests set it to force one formulation or the other.
+    /// The charges' term over the currents' past which a solve keeps the
+    /// cells' charges as unknowns of their own (nought: the build's) - tests
+    /// set it to force one formulation or the other.
     double augmentedFrom = 0;
+    /// The iterations a compressed solve gives the charges as unknowns of
+    /// their own before it solves with them eliminated (nought: the
+    /// build's) - tests set it low, to reach that.
+    int augmentedMost = 0;
     /// How the system is held: dense up to mostUnknowns and compressed past
     /// it (Automatic), or always the one asked - a dense solve past the
     /// limit refused, as it was before there was a compressed one.

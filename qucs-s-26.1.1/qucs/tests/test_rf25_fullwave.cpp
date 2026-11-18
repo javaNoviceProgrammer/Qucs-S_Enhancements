@@ -1362,64 +1362,72 @@ private slots:
     // spiral at 10 Hz read S21 -118 dB, an open, with nothing but GMRES's
     // iterations said): a copper line's charges' term outweighs its
     // currents' some 2.6e16 times at 1 Hz, its loss 2 % off when it was
-    // solved with the charges eliminated - warned, compressed; from 10 Hz up
-    // not. Dense, the charges kept as unknowns of their own past 1e10 of it
-    // (the production-readiness review), it is not past its
-    // limit at 1 Hz: its loss there that at 10 Hz within a part in a
-    // thousand, and said solved so. Compressed, tried so too (its
-    // follow-up): an open line's potentials, 1e11 V against its milliohms,
-    // ask its runs' rows a residual below their rounding, and GMRES falls
-    // short in its kAugmentedMost iterations - said, and solved with the
-    // charges eliminated, as before; its Z the dense one's to a part in
-    // 10^4 at every frequency. Short at one frequency, the lower ones of the
-    // sweep not tried so (the sweep solved highest first): a frequency at a
-    // time, one says it fell short, and the frequencies below it that it
-    // was short at a higher one.
+    // solved with the charges eliminated - warned; from 10 Hz up not. With
+    // the charges kept as unknowns of their own past 1e10 of it (the
+    // production-readiness review, and its follow-ups), it
+    // is not past its limit at 1 Hz: its loss there that at 10 Hz within a
+    // part in a thousand, dense and compressed, the compressed solve's Z the
+    // dense one's to a part in 10^4, and said solved so. Compressed, in the
+    // loop-tree basis, its ports' voltages along the tree: its series
+    // inductance at 10 kHz, Z11 - Z21 under Z's 1.6e7 ohm, that at 1 MHz
+    // within 1.5e-4 (dense, 2.7e-3 off). Its fallback where that
+    // falls short - forced, its attempts cut to two iterations -: said, on
+    // one frequency at a time the highest that tries it, and those below not
+    // tried; solved with the charges eliminated, warned at 1 Hz as before.
     void aSolvePastItsLowFrequencyLimitSaysSo()
     {
         const rf::Stack st = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
         const QList<rf::Conductor> cs{strip(0, 0, 2000, 100)};
+        const QList<double> fs{1, 10, 1e3, 1e4, 1e6};
+        const auto lost = [](const rf::FullWave& w, int k) {
+            const Complex s11 = w.s.at(k).at(0).at(0), s21 = w.s.at(k).at(1).at(0);
+            return 1 - std::norm(s11) - std::norm(s21);
+        };
+        const auto apart = [&fs](const rf::FullWave& a, const rf::FullWave& b) {
+            double most = 0;
+            for (int k = 0; k < fs.size(); ++k)
+                for (int i = 0; i < 2; ++i)
+                    for (int j = 0; j < 2; ++j)
+                        most = std::max(most, std::abs(a.z.at(k).at(i).at(j) - b.z.at(k).at(i).at(j)) / std::abs(b.z.at(k).at(i).at(j)));
+            return most;
+        };
         QList<rf::FullWave> ways;
         for (const bool squeezed : {false, true}) {
             rf::FullWaveControl control;
             control.matrix = squeezed ? rf::FullWaveControl::Matrix::Compressed : rf::FullWaveControl::Matrix::Dense;
-            if (squeezed) control.threads = 1;
             const rf::FullWave w = rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, st, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))},
-                                                  {1, 10, 1e3, 1e6}, 1e-6, &control);
+                                                  fs, 1e-6, &control);
             QVERIFY2(w.ok(), qPrintable(why(w)));
             QVERIFY2(says(w.lines, "The system held compressed") == squeezed, qPrintable(w.lines.join(" | ")));
-            const QString said = w.warnings.join(QLatin1Char(' '));
-            QVERIFY2(said.contains(QStringLiteral("At 1 Hz the solve is past its low-frequency limit")) == squeezed, qPrintable(said));
-            for (const char* f : {"At 10 Hz the solve is past", "At 1000 Hz the solve is past", "At 1e+06 Hz the solve is past"})
-                QVERIFY2(!said.contains(QLatin1String(f)), qPrintable(said));
-            ways << w;
-            if (squeezed) {
-                // (One fell short - the highest it tried, 1 MHz or 1 kHz -,
-                //  and those below it not tried.)
-                QCOMPARE(w.lines.filter(QStringLiteral("so solved with them eliminated")).size(), 1);
-                for (const char* f : {"At 1 Hz the charges' term", "At 10 Hz the charges' term"})
-                    QVERIFY2(w.lines.filter(QLatin1String(f)).join(' ').contains(QStringLiteral("fell short at a higher frequency of this sweep")),
-                             qPrintable(w.lines.join(" | ")));
-                QVERIFY2(says(w.lines, "At 1000 Hz the charges' term"), qPrintable(w.lines.join(" | ")));
-                continue;
-            }
+            QVERIFY2(!says(w.warnings, "past its low-frequency limit") && !says(w.warnings, "GMRES"), qPrintable(w.warnings.join(" | ")));
             QVERIFY2(says(w.lines, "At 1 Hz the charges' term outweighs the currents'") && says(w.lines, "unknowns of their own"),
                      qPrintable(w.lines.join(" | ")));
-            const auto lost = [&w](int k) {
-                const Complex s11 = w.s.at(k).at(0).at(0), s21 = w.s.at(k).at(1).at(0);
-                return 1 - std::norm(s11) - std::norm(s21);
-            };
-            QVERIFY2(std::abs(lost(0) / lost(1) - 1) < 1e-3, qPrintable(QStringLiteral("%1 at 1 Hz, %2 at 10").arg(lost(0)).arg(lost(1))));
+            QVERIFY2(says(w.lines, "loops and a tree") == squeezed && !says(w.lines, "fell short"), qPrintable(w.lines.join(" | ")));
+            QVERIFY2(std::abs(lost(w, 0) / lost(w, 1) - 1) < 1e-3, qPrintable(QStringLiteral("%1 at 1 Hz, %2 at 10").arg(lost(w, 0)).arg(lost(w, 1))));
+            ways << w;
         }
-        for (int k = 0; k < 4; ++k)
-            for (int i = 0; i < 2; ++i)
-                for (int j = 0; j < 2; ++j) {
-                    const Complex dense = ways.at(0).z.at(k).at(i).at(j), compressed = ways.at(1).z.at(k).at(i).at(j);
-                    QVERIFY2(std::abs(compressed - dense) < 1e-4 * std::abs(dense),
-                             qPrintable(QStringLiteral("at %1 Hz Z%2%3: %4 %5 against %6 %7")
-                                            .arg(ways.at(0).frequencies.at(k)).arg(i + 1).arg(j + 1)
-                                            .arg(compressed.real()).arg(compressed.imag()).arg(dense.real()).arg(dense.imag())));
-                }
+        QVERIFY2(apart(ways.at(1), ways.at(0)) < 1e-4, qPrintable(QString::number(apart(ways.at(1), ways.at(0)))));
+        {
+            const rf::FullWave& w = ways.at(1);
+            const auto henries = [&w, &fs](int k) {
+                return (w.z.at(k).at(0).at(0) - w.z.at(k).at(1).at(0)).imag() / (2 * M_PI * fs.at(k));
+            };
+            QVERIFY2(std::abs(henries(3) / henries(4) - 1) < 5e-4, qPrintable(QStringLiteral("%1 H at 10 kHz, %2 at 1 MHz").arg(henries(3)).arg(henries(4))));
+        }
+        rf::FullWaveControl forced;
+        forced.matrix = rf::FullWaveControl::Matrix::Compressed;
+        forced.threads = 1;
+        forced.augmentedMost = 2;
+        const rf::FullWave w = rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, st, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))},
+                                              fs, 1e-6, &forced);
+        QVERIFY2(w.ok(), qPrintable(why(w)));
+        const QStringList shortAt = w.lines.filter(QStringLiteral("so solved with them eliminated"));
+        QVERIFY2(shortAt.size() == 1 && shortAt.first().startsWith(QStringLiteral("At 1e+06 Hz")), qPrintable(w.lines.join(" | ")));
+        for (const char* f : {"At 1 Hz the charges' term", "At 10 Hz the charges' term", "At 1000 Hz the charges' term", "At 1e+04 Hz the charges' term"})
+            QVERIFY2(w.lines.filter(QLatin1String(f)).join(' ').contains(QStringLiteral("fell short at a higher frequency of this sweep")),
+                     qPrintable(w.lines.join(" | ")));
+        QVERIFY2(says(w.warnings, "At 1 Hz the solve is past its low-frequency limit"), qPrintable(w.warnings.join(" | ")));
+        QVERIFY2(apart(w, ways.at(0)) < 1e-4, qPrintable(QString::number(apart(w, ways.at(0)))));
     }
 
     void aDielectricConductsAsTheSubstrateDoes()
