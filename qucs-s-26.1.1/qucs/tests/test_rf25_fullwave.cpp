@@ -1213,7 +1213,7 @@ private slots:
     // A dispersive substrate that ends at its shapes: the full wave's
     // correction for its shapes is made once, of statics, so inside them it
     // is its permittivity as given at every frequency - and the answer says
-    // so (the review of 3789cfcb: nothing said it).
+    // so (the review of 357538a7: nothing said it).
     void aDispersiveLayerThatEndsSaysHowItIsTaken()
     {
         rf::Stack stack = grounded(9.8, 100e-6, 0.01, 1e-6, 5.8e7);
@@ -1237,7 +1237,7 @@ private slots:
         const rf::FullWave u = rf::fullWaveOf(mesh, conductors, uniaxial, {edgePort(QPointF(0, 50)), edgePort(QPointF(600, 50))}, {5e9}, 1e-6, &control);
         QVERIFY2(!u.ok() && u.problems.join(' ').contains(QStringLiteral("SUB is uniaxial and ends at its shapes")), qPrintable(why(u)));
         // Nor a magnetic one, which would be magnetic across the whole plane
-        // (the review of fa249cbd) - a magnetic loss alone the same.
+        // (the review of 975d4569) - a magnetic loss alone the same.
         for (const auto& [mur, mtand] : {std::pair{3.0, 0.0}, std::pair{1.0, 0.05}}) {
             rf::Stack magnetic = grounded(9.4, 100e-6, 0, 1e-6, 5.8e7);
             for (rf::Layer& l : magnetic.layers)
@@ -1971,7 +1971,12 @@ private slots:
         const QList<rf::Conductor> climbing = {strip(0, 0, 1000, w), on(m2, 1000 - w, 0, 1000, w), on(QStringLiteral("V1"), 1000 - w, 0, w, w)};
         cases << Case{"via", climbing, evenly(climbing, 2, 100e-6, 2), lossyGround(withVia(twoMetals(), QStringLiteral("V1"), m1, m2)),
                       {edgePort(QPointF(0, w / 2), m1), edgePort(QPointF(2000 - w, w / 2), m2)}};
-        const QList<double> fs = {1e8, 1e9, 5e9, 10e9, 15e9, 20e9, 25e9, 30e9, 35e9, 40e9, 45e9, 50e9};
+        // (Three frequencies under the sanitizers, from the lowest to the
+        // highest: the three cases' twelve each, three times over, went past
+        // QtTest's 900 s on CI's sanitized Linux job, where L D L^T is not
+        // Accelerate's and every solve is the LU.)
+        const QList<double> fs = slowBuild() ? QList<double>{1e8, 25e9, 50e9}
+                                             : QList<double>{1e8, 1e9, 5e9, 10e9, 15e9, 20e9, 25e9, 30e9, 35e9, 40e9, 45e9, 50e9};
         for (const Case& c : cases) {
             const auto solve = [&c, &fs](int symmetric) {
                 rf::FullWaveControl control;
@@ -1984,7 +1989,9 @@ private slots:
             QVERIFY(!lu.symmetricLu);
             QCOMPARE(ldl.symmetricLu, rf::luOnAccelerate());
             QCOMPARE(says(ldl.lines, "L D L^T"), ldl.symmetricLu);
-            QCOMPARE(automatic.symmetricLu, rf::luOnAccelerate() && std::thread::hardware_concurrency() >= 12);
+            // (Where it would solve twelve frequencies or more at once: the
+            // machine's threads and the sweep's frequencies both.)
+            QCOMPARE(automatic.symmetricLu, rf::luOnAccelerate() && std::thread::hardware_concurrency() >= 12 && fs.size() >= 12);
             double most = 0;
             for (int k = 0; k < fs.size(); ++k)
                 for (int i = 0; i < 2; ++i)
@@ -2267,7 +2274,7 @@ private slots:
         line(grounded(4, 100e-6), 1000, 100, 4, 100e-6, 4, {fl}, &plain);
         QVERIFY(lp.epsilonEff > 1.5 * rf::lineParameters(plain, 0, 1000e-6, fl).epsilonEff);
         // A magnetic loss alone, mu_r 1: the quasi-static solve says it
-        // leaves it out (the review of fa249cbd).
+        // leaves it out (the review of 975d4569).
         rf::Stack lossy = grounded(4, 100e-6);
         for (rf::Layer& layer : lossy.layers)
             if (layer.kind == rf::Layer::Substrate) layer.mtand = 0.05;
@@ -2650,7 +2657,7 @@ private slots:
             rf::portsOf(m, &problem);
             QVERIFY2(problem.contains(QStringLiteral("nought or above")), qPrintable(problem));
             ports->children.back().props.insert(QStringLiteral("r"), QStringLiteral("47"));
-            // An element is no port elsewhere either (the review of 8abc6cbb):
+            // An element is no port elsewhere either (the review of 705280f8):
             // the quasi-static loop's two ends are the model's two measuring
             // ports, the element listed before them; and a TRL calibration of
             // the two-port it is is not refused as a three-port.

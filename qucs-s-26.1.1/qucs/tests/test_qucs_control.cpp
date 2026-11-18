@@ -194,6 +194,20 @@ bool writeBoxes(const QString& path, const QList<QRectF>& boxes)
     return ok;
 }
 
+/// Whether this build is a sanitized one (QUCS_TEST_SLOW: its path in any).
+bool sanitizedBuild()
+{
+    if (qEnvironmentVariableIsSet("QUCS_TEST_SLOW")) return true;
+#if defined(__SANITIZE_ADDRESS__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    return true;
+#endif
+#endif
+    return false;
+}
+
 } // namespace
 
 class TestQucsControl : public QObject
@@ -2864,7 +2878,13 @@ private slots:
         // And the loop alone: no charge solve before it (the review's L02,
         // L05 and L16, 4 to 11 s in the tab, where the loop was 1 to 3) -
         // well under the whole quasi-static solve's time, which it was more
-        // than.
+        // than. (Not under the sanitizers: the forty films' whole solve was
+        // still building its Green's functions after 300 s on CI's sanitized
+        // Linux job; the loop opened again is solved there all the same.)
+        if (sanitizedBuild()) {
+            closeUnder(ws + "/rfreopen");
+            return;
+        }
         const QJsonObject whole = call("rf25_solve", {{"path", file}, {"solver", "quasi_static"}, {"brief", true}}, 600000);
         const qint64 wholeMs = clock.elapsed();
         QVERIFY2(!failed(whole), qPrintable(text(whole)));
@@ -3931,18 +3951,16 @@ private slots:
                                                                                                         {"box", QJsonArray{-500, -500, 1500, 100}}}}}}, 120000);
         QVERIFY2(!failed(extent), qPrintable(text(extent)));
         QVERIFY2(!json(extent).toObject().value("processed shapes by layer").toObject().contains("Substrate"), qPrintable(text(extent)));
-        // (Waited for 600 s under the sanitizers, not the tool's 300: the
-        // whole function 188 s sanitized here, CI's Linux runner two or
-        // three times as long.)
-        bool sanitized = qEnvironmentVariableIsSet("QUCS_TEST_SLOW");
-#if defined(__SANITIZE_ADDRESS__)
-        sanitized = true;
-#elif defined(__has_feature)
-#if __has_feature(address_sanitizer)
-        sanitized = true;
-#endif
-#endif
-        const QJsonObject solved = call("rf25_solve", {{"path", model}, {"solver", "quasi_static"}, {"timeout", sanitized ? 600 : 300}}, 700000);
+        // (Not solved under the sanitizers: the ended substrate's correction
+        // was still solving after 600 s on CI's sanitized Linux job, where
+        // the whole function took 188 s sanitized on an M2 Ultra - Linux has
+        // no Accelerate. The drawing and its refusals above are checked
+        // there; the solve's saying so, in Release.)
+        if (sanitizedBuild()) {
+            QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}})));
+            return;
+        }
+        const QJsonObject solved = call("rf25_solve", {{"path", model}, {"solver", "quasi_static"}}, 600000);
         const bool ends = !failed(solved) && text(solved).contains(QStringLiteral("Substrate ends: eps_r"));
         // (Not solved in its time, it is stopped and closed before the check
         // fails: left solving, the tests after it that touch no RF 2.5D model

@@ -151,7 +151,11 @@ private slots:
                 rf::processShapes({{QStringLiteral("M1"), {spiralOutline(n, 100, 12, turns)}}}, {}, rf::Processing(), stack);
             QVERIFY2(processed.ok() && processed.conductors.size() == 1, qPrintable(processed.problems.join(" | ")));
             rf::MeshSettings how;
-            how.cellsAcross = 4;
+            // (Two cells across under the sanitizers: at four, the two loops'
+            // dense solves were 451 s sanitized on an M2 Ultra, 3.7 s in
+            // Release - past ctest's 900 s for the suite on CI's Linux job.
+            // The loops are compared on one meshing either way.)
+            how.cellsAcross = slow ? 2 : 4;
             const rf::Mesh mesh = rf::meshOf(processed.conductors, how, stack, 14e9);
             const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, in, out, 1e-6, 2e9);
             QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
@@ -230,7 +234,7 @@ private slots:
         // width - 5 µm, 19 - the corners near a cap, where neither side
         // reaches the level, dropped straight across by up to that and
         // flattened it, 4.9 and 15 µm off the drawn outline (the review of
-        // 2c232022). Across by the curves' tolerance at most, and slid along
+        // 69534653). Across by the curves' tolerance at most, and slid along
         // their own sides else, each outline stays within it of itself, the
         // mesh says so, and its area within a part in a thousand (the disc
     // -0.027 %, where it was -0.33 %).
@@ -239,7 +243,7 @@ private slots:
             // (Through Processing as the tab runs it - its curves simplified
             //  first, to longer sides - and then meshed: meshed as drawn, the
             //  test passed where the app's outlines went 0.24 and 0.27 µm off,
-            //  the review of 10b60005.)
+            //  the review of 05304ec3.)
             const rf::Processed processed = rf::processShapes({{QStringLiteral("M1"), {outline}}}, {}, rf::Processing(), stack);
             if (processed.conductors.size() != 1) return -1;
             rf::MeshSettings how;
@@ -315,7 +319,7 @@ private slots:
         //  perimeter is 9.8 - and a square pad's its side: a pad 40 µm
         //  across of this 5 µm metal, which twice its area over its
         //  perimeter took for 20 µm wide, is thin against it - the review
-        //  of 54357932.)
+        //  of b1b442fb.)
         QVERIFY2(says(sheet.warnings, "as narrow as 10 "), qPrintable(sheet.warnings.join(" | ")));
         const rf::Mesh pad = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 40, 40)}, how, m.stack(), 1e9);
         QVERIFY2(!says(pad.warnings, "inductance at a low frequency reads high"), qPrintable(pad.warnings.join(" | ")));

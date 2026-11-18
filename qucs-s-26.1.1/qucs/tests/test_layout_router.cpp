@@ -737,7 +737,21 @@ private slots:
             last = std::min(batches, range.at(1).toInt());
             step = 1;
         }
-        for (int stopAt = first; stopAt <= last; stopAt += step) {
+        QList<int> stops;
+        for (int stopAt = first; stopAt <= last; stopAt += step) stops << stopAt;
+        // (Under the sanitizers the first batch and the two that found the
+        // faults, 25 and 40: the sixteen runs, each to its batch, went past
+        // QtTest's 900 s on CI's sanitized Linux job.)
+        bool sanitized = qEnvironmentVariableIsSet("QUCS_TEST_SLOW");
+#if defined(__SANITIZE_ADDRESS__)
+        sanitized = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+        sanitized = true;
+#endif
+#endif
+        if (sanitized && range.size() != 2) stops = {1, 25, 40};
+        for (const int stopAt : std::as_const(stops)) {
             Router router(p);
             QVERIFY(router.prepare());
             std::atomic_bool cancel{false};

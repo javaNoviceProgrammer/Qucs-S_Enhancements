@@ -588,6 +588,8 @@ if(NOT QUCS_TEST_TIMEOUT_SCALE EQUAL 1)
       set_tests_properties(${_qucs_test} PROPERTIES TIMEOUT ${_qucs_timeout})
     endif()
     set_property(TEST ${_qucs_test} APPEND PROPERTY ENVIRONMENT "QTEST_FUNCTION_TIMEOUT=${_qucs_function_ms}")
+    # (And the scale itself, for the waits a test sets: test_scale.h.)
+    set_property(TEST ${_qucs_test} APPEND PROPERTY ENVIRONMENT "QUCS_TEST_SCALE=${QUCS_TEST_TIMEOUT_SCALE}")
   endforeach()
 endif()
 # (On macOS the memory-heavy tests above run one at a time, but beside the
