@@ -211,6 +211,9 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
                     rect(v.layer, c - half, v.across0, c + half, v.across1);
             }
         }
+        // A feed returning through faces on its own face's line: its returns
+        // along the strip, each a face terminal at both its ends (P45).
+        for (const Feed::Return& r : feed.returns) rect(r.metal, 0, r.across0, l, r.across1);
         const Mesh mesh = meshOf(parts, how, stack, top, micrometre);
         out.facing = std::max(out.facing, mesh.facing);
         if (!mesh.problems.isEmpty() || mesh.cells.isEmpty()) {
@@ -231,6 +234,19 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
         far.metal = metal;
         far.facing = QPointF(1, 0);
         far.coplanar = feed.coplanar;
+        for (int k = 0; k < feed.returns.size(); ++k) {
+            const Feed::Return& r = feed.returns.at(k);
+            for (FullWavePort* end : {&near, &far}) {
+                PortTerminal t;
+                t.name = QStringLiteral("%1%2").arg(end == &near ? QStringLiteral("RA") : QStringLiteral("RB")).arg(k + 1);
+                t.metal = r.metal;
+                t.at = QPointF(end == &near ? 0.0 : l, 0.5 * (r.across0 + r.across1));
+                t.face = true;
+                t.facing = end->facing;
+                end->terminals = true;
+                end->returns << t;
+            }
+        }
         const FullWave fw = fullWaveOf(mesh, parts, stack, {near, far}, out.at, micrometre, control);
         if (fw.tooLarge && cut) {
             out.tooLarge = true;
@@ -405,9 +421,16 @@ static Calibration calibrateOnce(const Stack& stack, const MeshSettings& how, do
     // substrate's height a bound on them: with no plane, it bounds nothing.)
     bool plane = false;
     for (const Layer& l : stack.layers) plane = plane || (l.kind == Layer::Ground && l.variant != QLatin1String("open"));
-    const double span = width + feed.gap[0] + feed.gap[1];
+    // (A feed returning through faces beside it - P45 -: its span to them,
+    //  as a coplanar feed's to its grounds.)
+    double low = 0, high = width;
+    for (const Feed::Return& r : feed.returns) {
+        low = std::min(low, r.across0);
+        high = std::max(high, r.across1);
+    }
+    const double span = feed.coplanar ? width + feed.gap[0] + feed.gap[1] : high - low;
     const double byHeight = 8 * h / micrometre + 2 * width;
-    const bool byGaps = feed.coplanar && !plane && span > width;
+    const bool byGaps = (feed.coplanar || !feed.returns.isEmpty()) && !plane && span > width;
     const double first = chosen > 0 ? chosen : byGaps ? 8 * span + 2 * width : byHeight;   // the layout's units
     if (!feed.coplanar) out.reach = 4 * h / micrometre + width;
     const double offset = feed.offset();
@@ -579,8 +602,11 @@ static Calibration calibrateOnce(const Stack& stack, const MeshSettings& how, do
                                             : QString();
     const double thirdStrip = 2 * offset + base.third;
     if (!feed.coplanar) {
+        QStringList through;
+        for (const Feed::Return& r : feed.returns)
+            through << tr("%1 from %2 to %3 µm across").arg(r.metal).arg(r.across0, 0, 'g', 4).arg(r.across1, 0, 'g', 4);
         out.lines << tr("Three strips of the feed, %1 µm wide on %2, %3, %4 and %5 µm long - the third's line %6 times the "
-                        "shorter's, to check the other two by - solved at the %7 frequency(ies)%8.")
+                        "shorter's, to check the other two by - solved at the %7 frequency(ies)%8.%9")
                          .arg(width, 0, 'g', 4)
                          .arg(metal)
                          .arg(base.strip, 0, 'g', 4)
@@ -588,7 +614,10 @@ static Calibration calibrateOnce(const Stack& stack, const MeshSettings& how, do
                          .arg(thirdStrip, 0, 'g', 4)
                          .arg(base.third / base.between, 0, 'g', 4)
                          .arg(frequencies.size())
-                         .arg(following);
+                         .arg(following)
+                         .arg(through.isEmpty() ? QString()
+                                                : tr(" Their ports return through faces at both ends, as the feed's does: %1.")
+                                                      .arg(through.join(QStringLiteral("; "))));
     } else {
         QStringList beside;
         for (int k = 0; k < 2; ++k)
