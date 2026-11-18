@@ -95,7 +95,10 @@ stop)
             echo "Biggest then: $biggest"
         fi
         echo "Each process's peak:"
-        sort -t$'\t' -k1,1nr "$dir/peaks.txt" | head -20 | awk -F'\t' '{printf "  %6.2f GiB  %s\n", $1 / 1048576, $2}'
+        # (awk takes the first 20 and reads the rest: a head that stopped
+        # reading would leave sort to die of SIGPIPE once its output passed
+        # the pipe's 64 KB, and with pipefail end this report.)
+        sort -t$'\t' -k1,1nr "$dir/peaks.txt" | awk -F'\t' 'NR <= 20 {printf "  %6.2f GiB  %s\n", $1 / 1048576, $2}'
     } > "$dir/report.txt"
     cat "$dir/report.txt"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
