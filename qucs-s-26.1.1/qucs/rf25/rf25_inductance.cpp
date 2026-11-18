@@ -83,6 +83,10 @@ std::atomic<double> loopMemorySet{0};
 /// transverse distance taken between their middles; nearer than it, it is
 /// averaged across both widths.
 constexpr double kNearWidths = 6.0;
+/// Bars at most this thick against the distance between two points across
+/// their widths are averaged through their thicknesses at one point, their
+/// heights' spread added in quadrature (partialInductance()).
+constexpr double kThinBars = 0.5;
 
 /// Four-point Gauss-Legendre on [-1/2, 1/2]: the nodes and the weights,
 /// which sum to one.
@@ -359,23 +363,41 @@ double partialInductance(const Filament& a, const Filament& b)
     }
 
     // Near, and bars: over both cross-sections, their widths and their
-    // thicknesses - each bar up from its run's height -, four points each
-    // way. Across the widths alone, a wire cut into cells taller than they
-    // are wide had each cell's neighbours as strips side by side, a tenth of
-    // their height apart.
+    // thicknesses - each bar up from its run's height. Across the widths
+    // alone, a wire cut into cells taller than they are wide had each cell's
+    // neighbours as strips side by side, a tenth of their height apart.
+    //
+    // Through the thicknesses, at each pair of points across the widths:
+    // where the bars are thin against the distance between those points,
+    // the one height apart of their middles with the spread of their
+    // heights' difference added in quadrature (its variance, (ta^2 +
+    // tb^2)/12) - the mean of ln rho to second order, within 5e-4 of it
+    // where the thicknesses are half the distance; four points each way
+    // only where they are not. Four each way everywhere was 256 kernels a
+    // near pair where strips take 16, and test_rf25_inductance's spirals,
+    // their metal thin against their width, eight times as slow (the review
+    // of 54357932).
     if (tallest > 0) {
         const Vector wa = widthOf(a), wb = widthOf(b);
+        const double middle = 0.5 * (b.bar - a.bar), spread = (a.bar * a.bar + b.bar * b.bar) / 12;
+        const double least = 1e-12 * std::max(widest, tallest);
         double sum = 0;
         for (int i = 0; i < 4; ++i)
             for (int j = 0; j < 4; ++j) {
                 const Vector across = offset + wa * (kGaussAt[i] * a.width) - wb * (kGaussAt[j] * b.width);
-                const double inPlane = std::hypot(across.x, across.y);
-                for (int k = 0; k < 4; ++k)
-                    for (int m = 0; m < 4; ++m) {
-                        const double dz = across.z + (kGaussAt[m] + 0.5) * b.bar - (kGaussAt[k] + 0.5) * a.bar;
-                        const double rho = std::max(std::hypot(inPlane, dz), 1e-12 * std::max(widest, tallest));
-                        sum += kGaussWeight[i] * kGaussWeight[j] * kGaussWeight[k] * kGaussWeight[m] * parallelPair(la, lb, d, rho);
-                    }
+                const double inPlane = std::hypot(across.x, across.y), between = std::hypot(inPlane, across.z + middle);
+                double here = 0;
+                if (tallest <= kThinBars * between) {
+                    here = parallelPair(la, lb, d, std::max(std::sqrt(between * between + spread), least));
+                } else {
+                    for (int k = 0; k < 4; ++k)
+                        for (int m = 0; m < 4; ++m) {
+                            const double dz = across.z + (kGaussAt[m] + 0.5) * b.bar - (kGaussAt[k] + 0.5) * a.bar;
+                            const double rho = std::max(std::hypot(inPlane, dz), least);
+                            here += kGaussWeight[k] * kGaussWeight[m] * parallelPair(la, lb, d, rho);
+                        }
+                }
+                sum += kGaussWeight[i] * kGaussWeight[j] * here;
             }
         return sign * kMu0 / (4 * M_PI) * sum;
     }
@@ -884,10 +906,15 @@ bool compressedL(LoopL& l, const QList<Filament>& runs, int threads, const std::
     //  by their widths, a wire's cells taller than they are wide - their own
     //  geometric mean distance nearly their neighbours' - left the near
     //  field's LU too little of L to precondition with, and GMRES stood at a
-    //  residual of 0.8.)
+    //  residual of 0.8. Grown by its thickness, not half of it: a narrow
+    //  spiral's, 3.2 µm traces of 0.9 µm metal, whose gaps' cells are a
+    //  fifteenth to a quarter of that wide, took GMRES 1,898 iterations and
+    //  44 s at half, 290 and 12 s at the whole, 128 and 10 s at twice - and
+    //  twice cost the square loop 10 s more of its near field's LU; the
+    //  review of 54357932.)
     QList<Box> reach = boxes;
     for (int a = 0; a < runs.size(); ++a) {
-        const double grow = runs.at(a).bar / 2;
+        const double grow = runs.at(a).bar;
         if (!(grow > 0)) continue;
         for (int k = 0; k < 2; ++k) {
             reach[a].lo[k] -= grow;
@@ -962,13 +989,31 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     QList<QPair<int, int>> ends;
     int clashes = 0;
     out.runs = runsOf(mesh, conductors, stack, micrometre, &ends, true, &clashes);
-    // (Each run in the plane a bar, its metal's thickness through: its
-    // current even across its cross-section, as at the low frequency this is
-    // solved for - Filament::bar. Its metal "Solved as" its two faces or a
-    // sheet is the full wave's, whose field of the thickness its faces and
-    // surface impedance hold.)
+    // (Each run in the plane of a metal thick against its narrowest conductor
+    // a bar, its metal's thickness through: its current even across its
+    // cross-section, as at the low frequency this is solved for -
+    // Filament::bar. Its metal "Solved as" its two faces or a sheet is the
+    // full wave's, whose field of the thickness its faces and surface
+    // impedance hold.
+    //
+    // A metal thinner than that, a strip, as before: within a per cent or so
+    // of the bar on its own conductors, and its finest cells - a spiral's
+    // are a tenth of its thickness wide at its corners - made bars beside
+    // bars so alike that the near field's LU no longer preconditioned, and
+    // GMRES took 2,034 iterations where it had taken 22: test_rf25_inductance
+    // eight times as slow, its spirals' metal 0.9 µm on traces 10 and 15 µm
+    // wide - the review of 54357932.)
+    QHash<QString, double> narrowest;
+    for (const Conductor& c : conductors) {
+        const double width = conductorWidthOf(c.outline) * micrometre;
+        if (width > 0 && (!narrowest.contains(c.layer) || width < narrowest.value(c.layer))) narrowest.insert(c.layer, width);
+    }
+    QSet<double> thick;
+    for (auto it = narrowest.constBegin(); it != narrowest.constEnd(); ++it)
+        if (const Layer* metal = stack.named(it.key()); metal != nullptr && metal->thickness >= kThickForInductance * it.value())
+            thick.insert(heightOf(stack, it.key()));
     for (Filament& f : out.runs)
-        if (f.z0 == f.z1 && !(f.rise > 0) && f.thickness > 0) f.bar = f.thickness;
+        if (f.z0 == f.z1 && !(f.rise > 0) && f.thickness > 0 && thick.contains(f.z0)) f.bar = f.thickness;
     // (Cells too thin to tell their edges apart: a run lost at each, and the
     //  path broken where a column of them crossed it - A review, a spiral's loop "solved" at 0.015 Ohm of its 8.7.)
     const QString clashSaid = clashes > 0 ? tr(" %1 edge(s) between cells under a nanometre across could not be told "

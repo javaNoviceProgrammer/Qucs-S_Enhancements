@@ -104,6 +104,14 @@ double perimeterOf(const QPolygonF& polygon)
     return length;
 }
 
+double conductorWidthOf(const QPolygonF& polygon)
+{
+    const double area = areaOf(polygon), half = perimeterOf(polygon) / 4, d = half * half - area;
+    const double width = d > 0 ? half - std::sqrt(d) : half;
+    const QRectF box = polygon.boundingRect();
+    return std::min(width, std::min(box.width(), box.height()));
+}
+
 /// A polygon gdstk can work on. Its points are copied; free() releases them.
 gdstk::Polygon gdstkOf(const QPolygonF& polygon)
 {
