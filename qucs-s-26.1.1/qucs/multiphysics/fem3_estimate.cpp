@@ -89,6 +89,52 @@ double assemblySeconds(double entries)
     return 0.05 + 2.5e-8 * entries;
 }
 
+double magneticFactorSeconds(double unknowns, double perRow, double layers)
+{
+    if (!(unknowns > 0)) return 0;
+    return 2.032e-8 * std::pow(unknowns, 1.351) * std::pow(std::max(perRow, 1.0), 0.655) * std::pow(std::max(layers, 1.0) / 10, 1.815);
+}
+
+double magneticFactorBytes(double unknowns, double perRow, double layers)
+{
+    if (!(unknowns > 0)) return 0;
+    return 55.4 * std::pow(unknowns, 1.172) * std::pow(std::max(perRow, 1.0), 0.570) * std::pow(std::max(layers, 1.0) / 10, 0.714);
+}
+
+Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order)
+{
+    Estimate3 e;
+    e.order = order;
+    e.method = QStringLiteral("direct");
+    if (!mesh || mesh->prisms.empty()) return e;
+    const EdgeSpace3 space(mesh, order);
+    const Space3 nodes(mesh, order);
+    // (Every edge and node: those held - on insulated faces - are not
+    // unknowns, some 10 % fewer in the solves measured.)
+    e.unknowns = qint64(space.size()) + nodes.size();
+    e.elements = space.elements();
+    e.perElement = space.perElement() + nodes.perElement();
+    // (The whole matrix's nonzeros a row, both triangles: 99 to 104 of order
+    // 2, 37 of order 1, in the solves measured.)
+    const double perRow = order == 2 ? 100 : 37;
+    e.nonzeros = qint64(double(e.unknowns) * perRow);
+    const double n = double(e.unknowns), layers = double(std::max<std::size_t>(1, mesh->heights.size() - 1));
+    // One factorization - fem3_solver solves a coil's field once after the
+    // currents it reads, and keeps the factors for a matrix unchanged -,
+    // two assemblies (the field's, and the coils' swept right-hand sides),
+    // the solves and their refinement. Its peak the factors twice over: the
+    // matrix and its copies, the assembly's triplets (1.65 to 2.25 times the
+    // factors in the solves measured).
+    const double entries = double(e.elements) * e.perElement * e.perElement;
+    const double factor = magneticFactorSeconds(n, perRow, layers);
+    e.directSeconds = 1.1 * factor + 2 * assemblySeconds(entries);
+    e.directBytes = 2 * magneticFactorBytes(n, perRow, layers);
+    // (No iterative solve of it: the same.)
+    e.iterativeBytes = e.directBytes;
+    e.iterativeSeconds = e.directSeconds;
+    return e;
+}
+
 double Estimate3::bytes() const
 {
     if (method == QLatin1String("direct")) return directBytes;

@@ -15,6 +15,7 @@
 #include "fem_materials.h"
 #include "gpurendering.h"
 #include "layout.h"
+#include "layoutnet.h"
 #include "markup.h"
 #include "qucsdoc.h"
 
@@ -269,6 +270,26 @@ public:
     int overlayShapesLeftOut() const { return a_overlayLeftOut; }
     static constexpr int MostOverlayShapes = 40000;
 
+    /*!
+     * Nets lit over the layout (Highlight Net): each net's shapes in a
+     * colour of its own, the rest of the layout dimmed under them, in the
+     * µm of the cell shown. Taken away with the cell shown changed, the
+     * layout read again, or Escape (after the selection).
+     */
+    struct NetHighlight {
+        QString name;
+        QColor color;
+        QList<QPolygonF> shapes;
+        QRectF bounds;
+    };
+    void setHighlights(const QList<NetHighlight>& nets);
+    /// A net being traced (its tab's): Escape is then stopRequested(), before
+    /// the selection's.
+    void setTracing(bool tracing) { a_tracingNet = tracing; }
+    const QList<NetHighlight>& highlights() const { return a_highlights; }
+    /// The colour of the \a n th net lit, by its place among them.
+    static QColor highlightColor(int n);
+
     /// The shape or text selected, in the coordinates of the cell shown.
     const std::optional<Found>& selection() const { return a_selection; }
     void select(const std::optional<Found>& found);
@@ -347,6 +368,10 @@ signals:
     void drawingKept();
     /// Claude's sketch was drawn or taken away.
     void sketchChanged();
+    /// The nets lit changed (Escape, the cell or the layout changed, set).
+    void highlightsChanged();
+    /// Escape while a net is traced: stop it.
+    void stopRequested();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -408,6 +433,8 @@ private:
     RenderOptions renderOptions() const;
 
     QList<Overlay> a_overlays;
+    QList<NetHighlight> a_highlights;
+    bool a_tracingNet = false;
     QHash<QString, QList<Sketch>> a_sketch;   // Claude's, by cell
     Legend a_legend;
     int a_overlayDrawn = 0;
@@ -563,6 +590,33 @@ public:
     /// across it, the shape there selected.
     void probe(QPointF point, const QLineF& cut);
 
+    /// How the tab traces a net: the router's technology beside the layout
+    /// (layoutnet.h's connectivityBeside()), else nothing (a net followed
+    /// on its own layer), with why in \a why.
+    qucs_s::layout::NetConnectivity netConnectivity(QString* why = nullptr) const;
+    /// The net \a seeds are on (in the cell shown's coordinates) traced in
+    /// a thread of its own - the window is not held, the info line says it
+    /// goes, Escape stops it - and then lit over the layout, beside the
+    /// others lit, and listed in the side's Nets; \a connectivity when
+    /// given, else netConnectivity(). \a then, when it ends, with the net
+    /// and its place among the nets lit: -1 when none is lit - no shapes,
+    /// or stopped (Escape, another cell shown, the file read again; the
+    /// net then says cancelled).
+    void highlightNetLater(const QVector<qucs_s::layout::Found>& seeds, const qucs_s::layout::NetConnectivity* connectivity = nullptr,
+                           const QVector<bool>& stopAt = {}, int maxShapes = 20000,
+                           std::function<void(const qucs_s::layout::TracedNet&, int)> then = {});
+    /// The net of the shape selected traced and lit (highlightNetLater());
+    /// false when no shape is selected.
+    bool highlightSelectedNet();
+    /// Whether a net is being traced, and its tracing stopped.
+    bool isTracingNet() const { return !a_tracing.isEmpty(); }
+    void stopTracingNets();
+    /// The nets lit, in the order lit.
+    const QList<qucs_s::layout::TracedNet>& highlightedNets() const { return a_lit; }
+    /// A net lit's name: its first text, else "net n".
+    QString highlightedNetName(int index) const;
+    void clearHighlightedNets();
+
     /// A layer's swatch as the layer list shows it, \a ratio device pixels
     /// a pixel: 16 by 12, its frame the outermost pixel all round in \a
     /// style's frame colour, inside it \a background and the style's fill.
@@ -571,6 +625,8 @@ public:
     // For the tests.
     QTreeWidget* cellTree() const { return a_cells; }
     QTreeWidget* layerList() const { return a_layers; }
+    /// The nets lit (Highlight Net), hidden while none is.
+    QTreeWidget* netList() const { return a_nets; }
     QLineEdit* findField() const { return a_findField; }
     QLabel* infoLabel() const { return a_info; }
     QLabel* positionLabel() const { return a_position; }
@@ -692,6 +748,10 @@ private:
     QSplitter* a_side = nullptr;
     QTreeWidget* a_cells = nullptr;
     QTreeWidget* a_layers = nullptr;
+    QTreeWidget* a_nets = nullptr;
+    QList<qucs_s::layout::TracedNet> a_lit;
+    QList<qucs_s::layout::NetTracing> a_tracing;
+    void fillNetList();
     qucs_s::layout::LayoutView* a_view = nullptr;
     QLabel* a_position = nullptr;
     QLabel* a_info = nullptr;

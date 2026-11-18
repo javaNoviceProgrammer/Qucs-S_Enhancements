@@ -928,42 +928,102 @@ namespace {
 
 using Problems3 = std::vector<std::unique_ptr<detail3::Problem3>>;
 
-/// The physics \a subset of the problems solved in turn till they agree
-/// (the relative change of every field under the tolerance): once, where
-/// none reads another's field. Each solved with its options (\a optionsOf).
+} // namespace
+
+std::vector<std::vector<int>> solveOrder3(const std::vector<int>& subset, const std::function<bool(int, int)>& reads)
+{
+    // Tarjan's strongly connected components of "i reads j" (j before i):
+    // each component found after every one it reads, so in the order they
+    // are found.
+    const int n = int(subset.size());
+    std::vector<int> index(std::size_t(n), -1), low(std::size_t(n), 0), stack;
+    std::vector<char> onStack(std::size_t(n), 0);
+    std::vector<std::vector<int>> out;
+    int next = 0;
+    std::function<void(int)> visit = [&](int v) {
+        index[std::size_t(v)] = low[std::size_t(v)] = next++;
+        stack.push_back(v);
+        onStack[std::size_t(v)] = 1;
+        for (int w = 0; w < n; ++w) {
+            if (w == v || !reads(subset[std::size_t(v)], subset[std::size_t(w)])) continue;
+            if (index[std::size_t(w)] < 0) {
+                visit(w);
+                low[std::size_t(v)] = std::min(low[std::size_t(v)], low[std::size_t(w)]);
+            } else if (onStack[std::size_t(w)]) {
+                low[std::size_t(v)] = std::min(low[std::size_t(v)], index[std::size_t(w)]);
+            }
+        }
+        if (low[std::size_t(v)] != index[std::size_t(v)]) return;
+        std::vector<int> component;
+        int w = -1;
+        do {
+            w = stack.back();
+            stack.pop_back();
+            onStack[std::size_t(w)] = 0;
+            component.push_back(w);
+        } while (w != v);
+        // (Within a cycle: the subset's own order.)
+        std::sort(component.begin(), component.end());
+        for (int& k : component) k = subset[std::size_t(k)];
+        out.push_back(std::move(component));
+    };
+    for (int v = 0; v < n; ++v)
+        if (index[std::size_t(v)] < 0) visit(v);
+    return out;
+}
+
+namespace {
+
+/// The physics \a subset of the problems solved in the order of what they
+/// read - each once after the fields it reads, where no cycle runs through
+/// it (a coil's magnetic field after the currents it reads) -, the physics
+/// of a cycle (Joule heat whose conductivity reads the temperature) in turn
+/// till they agree (the relative change of every field under the
+/// tolerance). Each solved with its options (\a optionsOf).
 bool solveTogether(Problems3& problems, const std::vector<int>& subset, const std::function<detail3::Options3(int)>& optionsOf,
                    Solution3& s, const QString& stepName, QString* error)
 {
-    bool coupled = false;
-    for (int i : subset)
-        for (int j : subset)
-            if (i != j && problems[std::size_t(i)]->reads(j)) coupled = true;
+    const std::vector<std::vector<int>> order =
+        solveOrder3(subset, [&problems](int i, int j) { return problems[std::size_t(i)]->reads(j); });
     const detail3::Options3 o = optionsOf(subset.front());
-    const int rounds = coupled ? o.maxIterations : 1;
-    for (int it = 0; it < rounds; ++it) {
-        double change = 0;
-        for (int i : subset) {
-            if (o.cancelled && o.cancelled()) {
-                *error = tr("cancelled");
-                return false;
+    for (const std::vector<int>& group : order) {
+        const bool coupled = group.size() > 1;
+        const int rounds = coupled ? o.maxIterations : 1;
+        bool agreed = false;
+        for (int it = 0; it < rounds && !agreed; ++it) {
+            double change = 0;
+            for (int i : group) {
+                if (o.cancelled && o.cancelled()) {
+                    *error = tr("cancelled");
+                    return false;
+                }
+                Field3& f = s.fields()[std::size_t(i)];
+                const std::vector<double> before = f.values;
+                detail3::Options3 oi = optionsOf(i);
+                if (coupled) oi.pass = it + 1;
+                if (const Node* n = problems[std::size_t(i)]->node()) oi.tell(tr("%1: solving").arg(n->name()));
+                if (!problems[std::size_t(i)]->solve(oi, error)) return false;
+                double num = 0, den = 0;
+                for (std::size_t k = 0; k < f.values.size() && k < before.size(); ++k) {
+                    const double d = f.values[k] - before[k];
+                    num += d * d;
+                    den += f.values[k] * f.values[k];
+                }
+                change = std::max(change, den > 0 ? std::sqrt(num / den) : std::sqrt(num));
             }
-            Field3& f = s.fields()[std::size_t(i)];
-            const std::vector<double> before = f.values;
-            if (!problems[std::size_t(i)]->solve(optionsOf(i), error)) return false;
-            double num = 0, den = 0;
-            for (std::size_t k = 0; k < f.values.size() && k < before.size(); ++k) {
-                const double d = f.values[k] - before[k];
-                num += d * d;
-                den += f.values[k] * f.values[k];
+            if (!coupled) {
+                agreed = true;
+                break;
             }
-            change = std::max(change, den > 0 ? std::sqrt(num / den) : std::sqrt(num));
+            s.log << tr("%1, iteration %2: relative change %3").arg(stepName).arg(it + 1).arg(change, 0, 'g', 3);
+            agreed = change < o.tolerance && it > 0;
         }
-        if (!coupled) return true;
-        s.log << tr("%1, iteration %2: relative change %3").arg(stepName).arg(it + 1).arg(change, 0, 'g', 3);
-        if (change < o.tolerance && it > 0) return true;
+        if (!agreed) {
+            *error = tr("%1: the coupled physics did not converge in %2 iterations").arg(stepName).arg(o.maxIterations);
+            return false;
+        }
     }
-    *error = tr("%1: the coupled physics did not converge in %2 iterations").arg(stepName).arg(o.maxIterations);
-    return false;
+    return true;
 }
 
 /// A step's options from its node: its linear solver, its nonlinear
@@ -1941,6 +2001,11 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         // (How far it is, as last told: what a solve's check of Cancel says.)
         auto at = std::make_shared<std::pair<double, QString>>(from + 0.5 * span, step.name());
         o.cancelled = [progress, at] { return progress && !progress(at->first, at->second); };
+        // (Each physics and its phase told: the step's name, then what.)
+        o.status = [progress, at, stepName = step.name()](const QString& what) {
+            at->second = stepName + QStringLiteral(": ") + what;
+            if (progress) (void)progress(at->first, at->second);
+        };
         if (progress && !progress(from, step.name())) {
             out.error = tr("cancelled");
             return out;

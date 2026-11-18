@@ -204,9 +204,14 @@ QString ruleOf(const Technology& t, const QString& type, const QStringList& laye
     return {};
 }
 
-QStringList namesOf(const Via& v)
+// What a rule may call a via: its cut layer, as "3/0" or by the name of any
+// via on it.
+QStringList namesOf(const Technology& t, const Via& v)
 {
-    return {v.name, v.layer.text()};
+    QStringList out{v.layer.text()};
+    for (const Via& o : t.vias)
+        if (o.layer == v.layer) out << o.name;
+    return out;
 }
 
 // A metal's spacing to other metal there: the rule's, else the technology's \a base.
@@ -437,16 +442,30 @@ std::vector<Poly> outsideOf(const Box& area, const std::vector<Poly>& in, Coord 
 
 QVector<QVector<Poly>> newMetal(const Problem& problem, const NetResult& route, int net)
 {
+    if (!problem.oriented()) {
+        Problem turned = problem;
+        turned.orient();
+        return newMetal(turned, route, net);
+    }
     const MetalMap m = readMetal(problem);
     std::vector<std::vector<Box>> byPlane;
     drawn(problem, route, net, &byPlane, nullptr, nullptr);
     return newMetalWith(problem, m, route, net, byPlane);
 }
 
-Verification verify(const Problem& p, const Result& result)
+Verification verify(const Problem& problem, const Result& result)
 {
     QElapsedTimer timer;
     timer.start();
+    // (shapes clockwise turned: Clipper's nonzero unions would cancel them
+    // against the counterclockwise boxes drawn over them)
+    Problem turned;
+    const bool asIs = problem.oriented();
+    if (!asIs) {
+        turned = problem;
+        turned.orient();
+    }
+    const Problem& p = asIs ? problem : turned;
     Verification v;
     const MetalMap m = readMetal(p);
     const int planes = int(p.tech.metals.size());
@@ -655,6 +674,7 @@ Verification verify(const Problem& p, const Result& result)
                 f.measured = um(double(std::min(b.width(), b.height())));
                 f.required = p.tech.notchOn(l);
                 f.rule = ruleOf(p.tech, QStringLiteral("notch"), {metalName(l)}, f.required);
+                if (f.rule.isEmpty()) f.rule = ruleOf(p.tech, QStringLiteral("spacing"), {metalName(l)}, f.required);
                 f.text = QStringLiteral("%1 on %2 leaves a slot %3 µm wide against its own metal at %4 (the notch rule%5 %6 µm), and no fill fits there")
                              .arg(net.name, metalName(l), micro(f.measured), at(f.at), f.rule.isEmpty() ? QString() : QLatin1Char(' ') + f.rule,
                                   micro(f.required));
@@ -813,7 +833,7 @@ Verification verify(const Problem& p, const Result& result)
             if (l < 0) continue;
             for (int ci = 0; ci < int(netCuts.size()); ++ci) {
                 const Via& via = p.tech.vias.at(netCuts[std::size_t(ci)].first);
-                if (!namesOf(via).contains(rule.layer, Qt::CaseInsensitive)) continue;
+                if (!namesOf(p.tech, via).contains(rule.layer, Qt::CaseInsensitive)) continue;
                 const Box need = netCuts[std::size_t(ci)].second.grown(p.units(rule.min));
                 std::vector<Box> around;
                 for (const Box& b : byPlane[std::size_t(l)])
@@ -1024,7 +1044,7 @@ Verification verify(const Problem& p, const Result& result)
                 f.box = all[a].united(all[std::size_t(b)]).grown(need);
                 f.measured = um(d);
                 f.required = std::max(via.spacing, theirs.spacing);
-                f.rule = ruleOf(p.tech, QStringLiteral("spacing"), namesOf(via.spacing >= theirs.spacing ? via : theirs), f.required);
+                f.rule = ruleOf(p.tech, QStringLiteral("spacing"), namesOf(p.tech, via.spacing >= theirs.spacing ? via : theirs), f.required);
                 f.text = QStringLiteral("%1's %2 at %3 is %4 µm from %5's (%6 µm needed%7)")
                              .arg(f.net, via.name, at(f.at), micro(f.measured), f.other, micro(f.required),
                                   f.rule.isEmpty() ? QString() : QStringLiteral(", the rule ") + f.rule);

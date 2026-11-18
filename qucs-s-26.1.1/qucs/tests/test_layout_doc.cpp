@@ -194,6 +194,90 @@ void writeSample(const QString& path, bool oasis, int deflate = 6, bool extra = 
     lib.free_all();
 }
 
+/*
+ * Nets, in µm: on M1 (1/0) a line A (0, 0)-(100, 4) with the text IN at
+ * (2, 2); on M2 (2/0) a line (96, -2)-(102, 60) with OUT at (99, 58);
+ * between them two cuts on V1 (3/0), (97, 0.5)-(98, 1.5) and (99, 0.5)-
+ * (100, 1.5) - one via. PAD, a square (0, 0)-(10, 10) on M1, placed at
+ * (-8, -4), where it overlaps A, and at (500, 0), where it touches
+ * nothing. Beside A, 6 µm off, another line B (0, 10)-(100, 14) with
+ * OTHER at (2, 12), and a PAD at each of its ends, at (-10, 8) and
+ * (100, 8) - two placements of one cell on one net. An L on M1, its arms
+ * (300, 20)-(340, 24) and (300, 20)-(304, 60), the text L at (302, 22),
+ * round a square (320, 40)-(330, 50) in its box that it does not touch.
+ * ROUTE, placed at (200, 0), holds a line (0, 0)-(50, 4)
+ * on M1 and the text R at (1, 2): a net wholly in a placed cell, beside
+ * TOP's own line (260, 0)-(300, 4) 10 µm on. With \a job, a router job
+ * beside it whose technology joins M1 and M2 through V1.
+ */
+void writeNets(const QString& path, bool job)
+{
+    gdstk::Library lib = {};
+    lib.init("NETS", 1e-6, 1e-9);
+    gdstk::Cell* pad = newCell(lib, "PAD");
+    addRectangle(pad, {0, 0}, {10, 10}, 1);
+    gdstk::Cell* route = newCell(lib, "ROUTE");
+    addRectangle(route, {0, 0}, {50, 4}, 1);
+    gdstk::Cell* top = newCell(lib, "TOP");
+    addRectangle(top, {0, 0}, {100, 4}, 1);
+    addRectangle(top, {96, -2}, {102, 60}, 2);
+    addRectangle(top, {97, 0.5}, {98, 1.5}, 3);
+    addRectangle(top, {99, 0.5}, {100, 1.5}, 3);
+    addRectangle(top, {0, 10}, {100, 14}, 1);
+    addRectangle(top, {260, 0}, {300, 4}, 1);
+    place(top, pad, {-8, -4});
+    place(top, pad, {500, 0});
+    place(top, pad, {-10, 8});
+    place(top, pad, {100, 8});
+    auto* l = static_cast<gdstk::Polygon*>(gdstk::allocate_clear(sizeof(gdstk::Polygon)));
+    l->tag = gdstk::make_tag(1, 0);
+    for (const gdstk::Vec2 v : {gdstk::Vec2{300, 20}, gdstk::Vec2{340, 20}, gdstk::Vec2{340, 24}, gdstk::Vec2{304, 24}, gdstk::Vec2{304, 60}, gdstk::Vec2{300, 60}})
+        l->point_array.append(v);
+    top->polygon_array.append(l);
+    addRectangle(top, {320, 40}, {330, 50}, 1);
+    place(top, route, {200, 0});
+    const auto label = [](gdstk::Cell* c, const char* t, gdstk::Vec2 at, uint32_t layer) {
+        auto* text = static_cast<gdstk::Label*>(gdstk::allocate_clear(sizeof(gdstk::Label)));
+        text->init(t);
+        text->origin = at;
+        text->tag = gdstk::make_tag(layer, 0);
+        c->label_array.append(text);
+    };
+    label(top, "IN", {2, 2}, 1);
+    label(top, "OUT", {99, 58}, 2);
+    label(top, "OTHER", {2, 12}, 1);
+    label(top, "L", {302, 22}, 1);
+    label(route, "R", {1, 2}, 1);
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QCOMPARE(lib.write_gds(QFile::encodeName(path).constData(), 0, nullptr), gdstk::ErrorCode::NoError);
+    lib.free_all();
+    QFile::remove(path + ".route.json");
+    if (!job) return;
+    const QJsonObject technology{
+        {"name", "nets"},
+        {"grid", 1},
+        {"metals", QJsonArray{QJsonObject{{"name", "M1"}, {"layer", "1/0"}}, QJsonObject{{"name", "M2"}, {"layer", "2/0"}}}},
+        {"vias", QJsonArray{QJsonObject{{"name", "V1"}, {"layer", "3/0"}, {"between", QJsonArray{"M1", "M2"}}, {"size", 1}, {"enclosure", 1}}}},
+        {"classes", QJsonArray{QJsonObject{{"name", "signal"}, {"width", 2}}}},
+        {"spacing", QJsonObject{{"same_layer", 2}, {"to_metal", 2}, {"to_terminal", 2}}}};
+    QFile f(path + ".route.json");
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write(QJsonDocument(QJsonObject{{"layout", QFileInfo(path).fileName()}, {"technology", technology}}).toJson());
+}
+
+/// A net of \a links rectangles on 1/0, each overlapping the next: (2i, 0)-
+/// (2i + 3, 1) - long enough to trace that a stop lands while it goes.
+void writeChain(const QString& path, int links)
+{
+    gdstk::Library lib = {};
+    lib.init("CHAIN", 1e-6, 1e-9);
+    gdstk::Cell* top = newCell(lib, "TOP");
+    for (int i = 0; i < links; ++i) addRectangle(top, {2.0 * i, 0}, {2.0 * i + 3, 1}, 1);
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QCOMPARE(lib.write_gds(QFile::encodeName(path).constData(), 0, nullptr), gdstk::ErrorCode::NoError);
+    lib.free_all();
+}
+
 /// A hostile hierarchy: a chain of \a depth cells, each placing the next
 /// (the last a rectangle on 1/0); \a cycle a pair placing each other and
 /// one placing itself; \a array a reference repeated 65535 by 65535.
@@ -3837,6 +3921,236 @@ private slots:
         const QJsonObject wrongCell = call("get_layout", {{"path", "sample.oas"}, {"cell", "NOPE"}});
         QVERIFY(failed(wrongCell));
         QVERIFY2(text(wrongCell).contains("top cells: TOP"), qPrintable(text(wrongCell)));
+    }
+
+    // find_shapes' connected: the net a shape is on, through its via.
+    void aNetIsTracedThroughItsViasAndPlacements()
+    {
+        writeNets(path("nets.gds"), true);
+        QJsonObject j = json(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"at", QJsonArray{50, 2}}, {"layer", "1/0"}}));
+        QVERIFY2(j.value("shape count").toInt() == 5, qPrintable(QJsonDocument(j).toJson()));   // A, the first PAD, the two cuts, M2
+        QVERIFY(j.value("connectivity").toString().contains("1/0 - 3/0 - 2/0"));
+        QVERIFY(j.value("connectivity").toString().contains("router"));
+        QCOMPARE(j.value("via count").toInt(), 1);   // two cuts joining the same two shapes: one via
+        QCOMPARE(j.value("cut count").toInt(), 2);
+        QCOMPARE(j.value("vias").toArray().at(0).toObject().value("cuts").toInt(), 2);
+        QStringList texts;
+        for (const QJsonValue& t : j.value("texts").toArray()) texts << t.toObject().value("text").toString();
+        texts.sort();
+        QCOMPARE(texts, QStringList({"IN", "OUT"}));
+        QCOMPARE(j.value("cells").toArray().size(), 2);   // TOP and PAD
+        QJsonObject byLayer;
+        for (const QJsonValue& l : j.value("layers").toArray()) byLayer.insert(l.toObject().value("layer").toString(), l.toObject());
+        QCOMPARE(byLayer.value("1/0").toObject().value("shapes").toInt(), 2);
+        QCOMPARE(byLayer.value("1/0").toObject().value("pieces").toInt(), 1);   // A and the PAD it overlaps: one piece
+        QCOMPARE(byLayer.value("3/0").toObject().value("pieces").toInt(), 2);
+        QCOMPARE(j.value("length µm").toDouble(), 96.0 + 56.0);   // A's 100 less 4, M2's 62 less 6; the PAD square none
+        QCOMPARE(j.value("bounds").toArray(), QJsonArray({-8, -4, 102, 60}));
+        QVERIFY(j.value("notes").toArray().first().toString().contains("2 texts on one net"));
+        // From its other end, under a text on M2: the same net.
+        j = json(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"text", "OUT"}}));
+        QCOMPARE(j.value("shape count").toInt(), 5);
+        QVERIFY(j.value("from").toString().contains("OUT"));
+        // The second PAD, placed where it touches nothing, is a net of its own.
+        j = json(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"at", QJsonArray{505, 5}}, {"layer", "1/0"}}));
+        QCOMPARE(j.value("shape count").toInt(), 1);
+        QVERIFY(j.value("notes").toArray().first().toString().contains("no text"));
+        // B, 6 µm beside A, with a PAD at each end - one cell placed twice
+        // on one net, each placement a shape: its one text noted.
+        j = json(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"text", "OTHER"}}));
+        QCOMPARE(j.value("shape count").toInt(), 3);
+        QCOMPARE(j.value("bounds").toArray(), QJsonArray({-10, 8, 110, 18}));
+        QVERIFY(j.value("notes").toArray().first().toString().contains("reaches no other text"));
+        // The L: not the square in its box, which it does not touch.
+        j = json(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"text", "L"}}));
+        QCOMPARE(j.value("shape count").toInt(), 1);
+        QCOMPARE(j.value("length µm").toDouble(), 0.0);   // (not a rectangle: no length said)
+        // A net wholly in a placed cell: its own line, not TOP's beside it.
+        j = json(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"text", "R"}}));
+        QCOMPARE(j.value("shape count").toInt(), 1);
+        QCOMPARE(j.value("cells").toArray(), QJsonArray({"ROUTE"}));
+        QCOMPARE(j.value("bounds").toArray(), QJsonArray({200, 0, 250, 4}));
+        // 'stop_at' a layer: not followed into; 'max_shapes': followed so far.
+        j = json(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"at", QJsonArray{50, 2}}, {"layer", "1/0"}, {"stop_at", "3/0"}}));
+        QCOMPARE(j.value("shape count").toInt(), 2);
+        j = json(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"at", QJsonArray{50, 2}}, {"layer", "1/0"}, {"max_shapes", 3}}));
+        QCOMPARE(j.value("shape count").toInt(), 3);
+        bool noted = false;
+        for (const QJsonValue& n : j.value("notes").toArray()) noted = noted || n.toString().contains("max_shapes");
+        QVERIFY(noted);
+        // With no job beside it: each shape's own layer, unless 'connectivity' says.
+        writeNets(path("nets.gds"), false);
+        j = json(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"at", QJsonArray{50, 2}}, {"layer", "1/0"}}));
+        QCOMPARE(j.value("shape count").toInt(), 2);
+        QVERIFY(j.value("connectivity").toString().startsWith("none"));
+        // (a list of one list built, not braced: a braced one is a copy on some compilers)
+        QJsonArray steps, wrongSteps;
+        steps.append(QJsonArray{"1/0", "3/0", "2/0"});
+        wrongSteps.append(QJsonArray{"1/0", "9/9", "2/0"});
+        j = json(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"at", QJsonArray{50, 2}}, {"layer", "1/0"},
+                                      {"connectivity", steps}}));
+        QCOMPARE(j.value("shape count").toInt(), 5);
+        QCOMPARE(j.value("connectivity").toString(), QString("as given: 1/0 - 3/0 - 2/0"));
+        // What is wrong is said.
+        QVERIFY(failed(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"at", QJsonArray{50, 2}}})));   // no layer, no connectivity
+        QVERIFY(text(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"at", QJsonArray{50, 50}}, {"layer", "1/0"}})).contains("No shape"));
+        QVERIFY(text(call("find_shapes", {{"path", "nets.gds"}, {"stop_at", "3/0"}, {"at", QJsonArray{50, 2}}})).contains("connected"));
+        QVERIFY(text(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"region", QJsonArray{0, 0, 1, 1}}, {"at", QJsonArray{50, 2}}}))
+                    .contains("'region'"));
+        QVERIFY(text(call("find_shapes", {{"path", "nets.gds"}, {"connected", true}, {"at", QJsonArray{50, 2}}, {"layer", "1/0"},
+                                          {"connectivity", wrongSteps}})).contains("connectivity"));
+    }
+
+    // The tab's Highlight Net, by the user and by show_layout.
+    void aNetIsLitInTheTab()
+    {
+        writeNets(path("nets.gds"), true);
+        LayoutDoc* doc = open(path("nets.gds"));
+        QVERIFY(doc != nullptr);
+        LayoutView* view = doc->view();
+        view->showRegion(QRectF(-20, -20, 140, 100));
+        QVERIFY(!doc->netList()->isVisible());
+        // A shape selected, its net traced in a thread of its own - said in
+        // the info line while it goes - and lit: the net in the side's list.
+        QVERIFY(view->selectAt(view->toPixel(QPointF(50, 2))));
+        QVERIFY(doc->highlightSelectedNet());
+        QVERIFY(doc->isTracingNet());
+        QVERIFY(doc->infoLabel()->text().contains("Tracing the net"));
+        QTRY_COMPARE(doc->highlightedNets().size(), 1);
+        QVERIFY(!doc->isTracingNet());
+        QVERIFY(!doc->infoLabel()->text().contains("Tracing the net"));
+        QCOMPARE(doc->highlightedNets().first().shapes.size(), 5);
+        QCOMPARE(view->highlights().size(), 1);
+        QCOMPARE(view->highlights().first().shapes.size(), 5);
+        QVERIFY(doc->netList()->isVisible());
+        QVERIFY(doc->netList()->height() >= 60);   // (room in the side for it)
+        QCOMPARE(doc->netList()->topLevelItemCount(), 1);
+        QCOMPARE(doc->netList()->topLevelItem(0)->text(0), QString("IN"));
+        QCOMPARE(doc->netList()->topLevelItem(0)->text(2), QString("1"));
+        // Lit again from its other end: once.
+        QVERIFY(view->selectAt(view->toPixel(QPointF(99, 40))));
+        QVERIFY(doc->highlightSelectedNet());
+        QTRY_VERIFY(!doc->isTracingNet());
+        QCOMPARE(doc->highlightedNets().size(), 1);
+        // Another, in a colour of its own.
+        QVERIFY(view->selectAt(view->toPixel(QPointF(50, 12))));
+        QVERIFY(doc->highlightSelectedNet());
+        QTRY_COMPARE(view->highlights().size(), 2);
+        QVERIFY(view->highlights().at(0).color != view->highlights().at(1).color);
+        // Drawn: a pixel of the net in its colour, the dimmed layout apart.
+        {
+            const QImage picture = view->picture();
+            const QPoint onA = view->toPixel(QPointF(50, 2)).toPoint();
+            const QColor seen = picture.pixelColor(onA);
+            const QColor lit = view->highlights().at(0).color;
+            QVERIFY2(seen.hue() >= 0 && std::abs(seen.hue() - lit.hue()) < 25, qPrintable(seen.name() + " " + lit.name()));
+            const QString pictures = qEnvironmentVariable("QUCS_NET_PICTURES");
+            if (!pictures.isEmpty()) QVERIFY(doc->grab().save(pictures + "/nets-lit.png"));
+        }
+        // A click in the list shows the net.
+        emit doc->netList()->itemClicked(doc->netList()->topLevelItem(1), 0);
+        QVERIFY(view->visibleRegion().contains(QRectF(0, 10, 100, 4)));
+        // Escape: the selection first, then the nets.
+        QTest::keyClick(view, Qt::Key_Escape);
+        QVERIFY(!view->selection());
+        QCOMPARE(view->highlights().size(), 2);
+        QTest::keyClick(view, Qt::Key_Escape);
+        QVERIFY(view->highlights().isEmpty());
+        QVERIFY(doc->highlightedNets().isEmpty());
+        QVERIFY(!doc->netList()->isVisible());
+        // show_layout: by a text, by a point, and taken away.
+        QJsonObject j = json(call("show_layout", {{"path", "nets.gds"}, {"highlight_net", QJsonArray{QJsonObject{{"text", "OUT"}},
+                                                                                                        QJsonObject{{"at", QJsonArray{505, 5}}, {"layer", "1/0"}}}}}));
+        QVERIFY2(j.value("nets lit").toArray().size() == 2, qPrintable(QJsonDocument(j).toJson()));
+        QCOMPARE(j.value("nets lit").toArray().at(0).toObject().value("name").toString(), QString("IN"));
+        QCOMPARE(j.value("nets lit").toArray().at(0).toObject().value("shape count").toInt(), 5);
+        QCOMPARE(j.value("nets lit").toArray().at(1).toObject().value("name").toString(), QString("net 2"));
+        QCOMPARE(doc->highlightedNets().size(), 2);
+        // The layout those nets were traced on, once the file is read again:
+        // let go (the call's hook on the tab, which held it, let go with
+        // its answer).
+        {
+            const std::weak_ptr<const Layout> traced = doc->layout();
+            QVERIFY(doc->reload());
+            QTRY_VERIFY(!doc->isLoading());
+            QVERIFY(doc->layout() && doc->layout() != traced.lock());
+            QTRY_VERIFY(traced.expired());
+        }
+        j = json(call("show_layout", {{"path", "nets.gds"}, {"highlight_net", QJsonObject{{"text", "NOPE"}}}}));
+        QVERIFY(j.value("nets not lit").toArray().first().toString().contains("NOPE"));
+        QVERIFY(failed(call("show_layout", {{"path", "nets.gds"}, {"highlight_net", 5}})));
+        j = json(call("show_layout", {{"path", "nets.gds"}, {"highlight_net", "clear"}}));
+        QVERIFY(doc->highlightedNets().isEmpty());
+        // Another cell shown: the nets lit there are gone.
+        QVERIFY(view->selectAt(view->toPixel(QPointF(50, 2))));
+        QVERIFY(doc->highlightSelectedNet());
+        QTRY_COMPARE(doc->highlightedNets().size(), 1);
+        doc->showCell(doc->layout()->cellIndex("PAD"));
+        QVERIFY(doc->highlightedNets().isEmpty());
+        QVERIFY(view->highlights().isEmpty());
+    }
+
+    // A long net traced in a thread of its own: the window goes on, Escape
+    // stops it (nothing lit), another cell shown stops it, and a tab closed
+    // while one goes waits for it.
+    void aLongNetIsTracedWithoutHoldingTheWindow()
+    {
+        writeChain(path("chain.gds"), 30000);
+        LayoutDoc* doc = open(path("chain.gds"));
+        QVERIFY(doc != nullptr);
+        LayoutView* view = doc->view();
+        view->showRegion(QRectF(-5, -5, 40, 10));
+        QVERIFY(view->selectAt(view->toPixel(QPointF(1, 0.5))));
+        QVERIFY(doc->highlightSelectedNet());
+        QVERIFY(doc->isTracingNet());
+        // (Escape: the trace first, the selection after.)
+        QTest::keyClick(view, Qt::Key_Escape);
+        QTRY_VERIFY_WITH_TIMEOUT(!doc->isTracingNet(), 60000);
+        QVERIFY(doc->highlightedNets().isEmpty());
+        QVERIFY(view->selection());
+        // By show_layout, stopped by another cell shown: said, not lit.
+        QJsonObject j;
+        bool answered = false;
+        control->callTool("show_layout", {{"path", "chain.gds"}, {"highlight_net", QJsonObject{{"at", QJsonArray{1, 0.5}}, {"layer", "1/0"}}}},
+                      [&](const QJsonObject& r) {
+                          j = json(r);
+                          answered = true;
+                      });
+        QTRY_VERIFY(doc->isTracingNet());
+        doc->showCell(doc->layout()->mainCell());   // (the same cell: not stopped)
+        QVERIFY(doc->isTracingNet());
+        doc->stopTracingNets();
+        QTRY_VERIFY_WITH_TIMEOUT(answered, 60000);
+        QVERIFY2(j.value("nets not lit").toArray().first().toString().contains("stopped"), qPrintable(QJsonDocument(j).toJson()));
+        QVERIFY(doc->highlightedNets().isEmpty());
+        // Traced whole, to max_shapes: lit, and said so.
+        QVERIFY(view->selectAt(view->toPixel(QPointF(1, 0.5))));   // (the cell shown again: nothing selected)
+        QVERIFY(doc->highlightSelectedNet());
+        QTRY_VERIFY_WITH_TIMEOUT(!doc->isTracingNet(), 120000);
+        QCOMPARE(doc->highlightedNets().size(), 1);
+        QVERIFY(doc->highlightedNets().first().stopped);
+        QCOMPARE(doc->highlightedNets().first().shapes.size(), 20000);
+        // A tab closed while one goes: it is stopped and waited for.
+        QVERIFY(view->selectAt(view->toPixel(QPointF(1, 0.5))));
+        doc->clearHighlightedNets();
+        QVERIFY(doc->highlightSelectedNet());
+        QVERIFY(doc->isTracingNet());
+        closeAll();
+        // show_layout's tab closed while its net is traced: answered all the
+        // same (the trace's answer goes with the tab), the net not lit.
+        doc = open(path("chain.gds"));
+        QVERIFY(doc != nullptr);
+        answered = false;
+        j = {};
+        control->callTool("show_layout", {{"path", "chain.gds"}, {"highlight_net", QJsonObject{{"at", QJsonArray{1, 0.5}}, {"layer", "1/0"}}}},
+                          [&](const QJsonObject& r) {
+                              j = json(r);
+                              answered = true;
+                          });
+        QTRY_VERIFY(doc->isTracingNet());
+        closeAll();
+        QTRY_VERIFY_WITH_TIMEOUT(answered, 30000);
+        QVERIFY2(j.value("nets not lit").toArray().first().toString().contains("tab was closed"), qPrintable(QJsonDocument(j).toJson()));
     }
 
     void find_shapesFindsByPlaceAndLayer()

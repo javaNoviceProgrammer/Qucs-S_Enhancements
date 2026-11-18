@@ -38,7 +38,13 @@ double Technology::landing(int via, int metal, double lineWidth) const
     const Via& v = vias.at(via);
     double side = std::max(metal == v.lower ? v.landingLower : v.landingUpper, lineWidth);
     if (metal < minWidth.size()) side = std::max(side, minWidth.at(metal));
-    if (metal < minArea.size() && minArea.at(metal) > 0) side = std::max(side, std::ceil(std::sqrt(minArea.at(metal)) * 1000 - 1e-9) / 1000);   // (to a nanometre over)
+    // A landing grown to the area rule: a square of the area's root, up to
+    // whole steps of two grids, so that one centred on a grid point keeps
+    // its edges on the grid (the root of 300 µm² is no length a mask has).
+    if (metal < minArea.size() && minArea.at(metal) > 0) {
+        const double step = 2 * grid;
+        side = std::max(side, std::ceil(std::sqrt(minArea.at(metal)) / step - 1e-9) * step);
+    }
     return side;
 }
 
@@ -143,17 +149,22 @@ bool readViaChoiceOf(const Technology& t, const QJsonValue& v, QVector<int>* cho
     return true;
 }
 
-// The vias a rule's 'layer' names: one by its name, or every via on a layer
-// given as "3/0".
+// The vias a rule's 'layer' names: every via on a cut layer, given as "3/0"
+// or by the name of a via on it - a deck's V2 is the cut layer, so that a
+// rule on V2 binds V2x3's cuts as much as V2's.
 QVector<int> viasNamed(const Technology& t, const QJsonValue& v)
 {
-    QVector<int> out;
-    for (int i = 0; i < t.vias.size(); ++i)
-        if (v.isString() && t.vias.at(i).name.compare(v.toString(), Qt::CaseInsensitive) == 0) out << i;
-    if (!out.isEmpty()) return out;
     LayerId id;
+    bool found = false;
+    for (int i = 0; i < t.vias.size() && !found; ++i)
+        if (v.isString() && t.vias.at(i).name.compare(v.toString(), Qt::CaseInsensitive) == 0) {
+            id = t.vias.at(i).layer;
+            found = true;
+        }
     QString ignored;
-    if (readLayerId(v, &id, &ignored, QString()))
+    if (!found) found = readLayerId(v, &id, &ignored, QString());
+    QVector<int> out;
+    if (found)
         for (int i = 0; i < t.vias.size(); ++i)
             if (t.vias.at(i).layer == id) out << i;
     return out;
@@ -163,13 +174,16 @@ QVector<int> viasNamed(const Technology& t, const QJsonValue& v)
 //  width     a metal's least width: a class narrower never runs on it;
 //            a landing there is never narrower
 //  spacing   a metal's least distance to any other metal on it (lines of
-//            other nets, metal already there, pads), or a via layer's
-//            least distance between cuts
+//            other nets, metal already there, pads, and the net's own
+//            metal: its notch rule unless the metal has one of its own), or
+//            a via layer's least distance between cuts of separate vias
 //  exclusion a metal's least distance to another layer's shapes (an
 //            obstacle rule on that metal)
 //  inclusion lines on a metal stay inside another layer's shapes, by min
-//  enclosure a via's cuts enclosed by a metal, by min: its landing grown
-//  area      a metal's least area of a net's metal: landings grown to it
+//  enclosure a via layer's cuts enclosed by a metal, by min: the landing of
+//            each via on it grown
+//  area      a metal's least area of a net's metal: landings grown to it,
+//            in whole steps of two grids
 //  notch     a metal's own notch rule
 bool readRules(const QJsonValue& v, Technology* t, QString* error)
 {
@@ -195,6 +209,11 @@ bool readRules(const QJsonValue& v, Technology* t, QString* error)
         rule.type = r.value(QLatin1String("type")).toString();
         rule.layer = r.value(QLatin1String("layer")).toVariant().toString();
         rule.name = r.value(QLatin1String("name")).toString(QStringLiteral("%1 on %2").arg(rule.type, rule.layer));
+        for (const DesignRule& had : std::as_const(t->rules))
+            if (had.name.compare(rule.name, Qt::CaseInsensitive) == 0) {
+                *error = QStringLiteral("Two rules are named %1: a finding names the rule it breaks").arg(rule.name);
+                return false;
+            }
         static const QStringList types{"width", "spacing", "exclusion", "inclusion", "enclosure", "area", "notch"};
         if (!types.contains(rule.type)) {
             *error = QStringLiteral("%1: 'type' is one of %2").arg(rule.name, types.join(QStringLiteral(", ")));
@@ -215,6 +234,11 @@ bool readRules(const QJsonValue& v, Technology* t, QString* error)
         };
         const auto otherLayer = [&](const char* key, LayerId* id) {
             const QJsonValue x = r.value(QLatin1String(key));
+            if (x.isString() && t->metalIndex(x.toString()) >= 0) {
+                *error = QStringLiteral("%1: '%2' names the routing metal %3: metals do not meet ('%2' is another layer, \"30/0\")")
+                             .arg(rule.name, QLatin1String(key), x.toString());
+                return false;
+            }
             if (!readLayerId(x, id, error, rule.name)) {
                 *error = QStringLiteral("%1: '%2' is a layer, \"30/0\"").arg(rule.name, QLatin1String(key));
                 return false;
@@ -401,8 +425,12 @@ Technology readTechnology(const QJsonObject& o, QString* error)
     {
         const QJsonObject s = spacing.toObject();
         if (!onlyKeys(s, {"same_layer", "to_metal", "to_terminal", "notch"}, QStringLiteral("'spacing'"), &e)) return fail(e);
-        if (!length(s, "notch", &t.notch, &e, QStringLiteral("'spacing'"), false, false)) return fail(e);
         if (!length(s, "same_layer", &t.sameLayer, &e, QStringLiteral("'spacing'"), true, false)) return fail(e);
+        // A deck holds its spacing between a net's own shapes too, so a slot
+        // inside one net is held to 'same_layer' unless 'notch' says otherwise
+        // (0: slots inside a net are not looked at).
+        t.notch = t.sameLayer;
+        if (!length(s, "notch", &t.notch, &e, QStringLiteral("'spacing'"), false, false)) return fail(e);
         t.toMetal = t.sameLayer;
         if (!length(s, "to_metal", &t.toMetal, &e, QStringLiteral("'spacing'"), false, false)) return fail(e);
         t.toTerminal = t.toMetal;

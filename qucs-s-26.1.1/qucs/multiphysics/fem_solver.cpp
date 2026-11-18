@@ -4608,6 +4608,22 @@ static void spectraAgainstTheFirst(const Node& study, StudyRun& run)
     }
 }
 
+QStringList sweepProblems(const Model& model)
+{
+    QStringList out;
+    std::shared_ptr<ParameterScope> ps;
+    for (const Node& study : model.root.children) {
+        if (study.type != QLatin1String("study")) continue;
+        for (const Node& step : study.children) {
+            if (!step.enabled || step.type != QLatin1String("sweep")) continue;
+            if (!ps) ps = evaluateParameters(model);
+            QString why;
+            if (!sweepPlan(model, step, *ps, &why)) out << why;
+        }
+    }
+    return out;
+}
+
 std::optional<SweepPlan> sweepPlan(const Model& model, const Node& sweep, const ParameterScope& ps, QString* error)
 {
     SweepPlan plan;

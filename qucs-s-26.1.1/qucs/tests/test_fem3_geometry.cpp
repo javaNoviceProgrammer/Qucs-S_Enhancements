@@ -716,6 +716,38 @@ private slots:
                  QStringLiteral("the edges in the plane z = 1"));
     }
 
+    /// A side rule on nested solids - a shell round a gap round a core, each
+    /// a cylinder from z = 0 -: "of" the shell's floors every floor in its
+    /// footprint (the gap's and the core's too), "own" its own annulus
+    /// alone; the core's floor the same either way (a review had to give the shell's by its face's number).
+    void ownFacesOfNestedSolids()
+    {
+        Model m = model3d();
+        addCylinder(m, QStringLiteral("shell"), 0, 0, 1.8, 0, 2);
+        addCylinder(m, QStringLiteral("gap"), 0, 0, 1.5, 0, 2);
+        addCylinder(m, QStringLiteral("core"), 0, 0, 0.5, 0, 2);
+        const GeometryBuild3 b = build(m);
+        QVERIFY2(b.ok(), qPrintable(errorsOf(b)));
+        const Topology3& t = *b.topology;
+        QCOMPARE(pick(t, m, Level::Boundary, R"({"of": ["shell"], "side": "bottom"})").size(), 3);
+        const QVector<int> own = pick(t, m, Level::Boundary, R"({"of": ["shell"], "side": "bottom", "own": true})");
+        QCOMPARE(own.size(), 1);
+        QCOMPARE(own, pick(t, m, Level::Boundary, R"({"of": ["shell"], "side": "bottom", "except": {"of": ["gap"], "side": "bottom"}})"));
+        // (Its own domain's: the annulus, between the radii.)
+        const Topology3::Face& annulus = t.faces[std::size_t(own.front())];
+        QVERIFY2(annulus.bounds.x1 > 1.7 && t.domains[std::size_t(annulus.back >= 0 ? annulus.back : annulus.front)].owner == t.objectNames.indexOf(QStringLiteral("shell")),
+                 "the shell's own floor");
+        QCOMPARE(pick(t, m, Level::Boundary, R"({"of": ["core"], "side": "bottom", "own": true})"), pick(t, m, Level::Boundary, R"({"of": ["core"], "side": "bottom"})"));
+        // (No side: the faces on the shell's surface that bound its own
+        // domain - its floor, its roof and its outer wall; the wall it shares
+        // with the gap is the gap's surface, never the shell's.)
+        QCOMPARE(pick(t, m, Level::Boundary, R"({"of": ["shell"], "own": true})").size(), 3);
+        // (Without it: every floor and roof in its footprint, and its wall.)
+        QCOMPARE(pick(t, m, Level::Boundary, R"({"of": ["shell"]})").size(), 7);
+        QCOMPARE(describeSelection3(QJsonDocument::fromJson(R"({"of": ["shell"], "side": "bottom", "own": true})").object(), Level::Boundary),
+                 QStringLiteral("the faces of shell's own domains (bottom)"));
+    }
+
     /// What a 3D geometry refuses, and where.
     void errors()
     {
