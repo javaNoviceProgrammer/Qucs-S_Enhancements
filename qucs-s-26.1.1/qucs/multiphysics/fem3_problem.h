@@ -47,6 +47,15 @@ struct Options3 {
     /// The pass of physics solved in turn till they agree (a cycle of what
     /// they read: 1, 2...); 0 solved once.
     int pass = 0;
+    /// What it is doing now, told to the progress line: the physics and its
+    /// phase ("Magnetic Fields: factorizing (pass 1)") - a factorization of
+    /// an hour said as more than "Solving, 64 %". Empty: none told.
+    std::function<void(const QString&)> status;
+    /// \a what told (status()), with its pass where it has one.
+    void tell(const QString& what) const
+    {
+        if (status) status(pass > 0 ? QStringLiteral("%1 (pass %2)").arg(what).arg(pass) : what);
+    }
 };
 
 /*!

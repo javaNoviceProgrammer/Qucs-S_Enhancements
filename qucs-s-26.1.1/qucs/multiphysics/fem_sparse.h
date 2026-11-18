@@ -330,6 +330,11 @@ public:
     /// Accelerate's: its analysis the one kept from the last real LDLᵀ of the
     /// same pattern (a sweep's points on one mesh), not made again.
     bool reusedAnalysis() const;
+    /// The last compute()'s analysis (its ordering and symbolic
+    /// factorization: Accelerate's and MUMPS's) and its numeric
+    /// factorization (an LU's whole), in seconds - for the log.
+    double analysisSeconds() const;
+    double factorSeconds() const;
 
 private:
     struct Impl;

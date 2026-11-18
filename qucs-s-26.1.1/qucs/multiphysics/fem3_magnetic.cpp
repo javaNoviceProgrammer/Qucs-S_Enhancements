@@ -809,6 +809,9 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
         Eigen::VectorXd r;
         QElapsedTimer clock;
         clock.start();
+        // (A Newton's step's said, past the first.)
+        const QString step = a_nonlinear && it > 0 ? tr(", Newton's step %1").arg(it + 1) : QString();
+        o.tell(tr("%1: assembling%2").arg(name, step));
         assemble(q, a, J, a_magnets, M, r, gaugeScale);
         const qint64 assembled = clock.elapsed();
         if (a_lu && a_lu->info() == Eigen::Success && sameMatrix(M, a_factored)) {
@@ -817,12 +820,20 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
             a_lu.reset();
             a_factored = Eigen::SparseMatrix<double>();
             auto lu = std::make_unique<SparseRealLdlt>();
+            o.tell(tr("%1: factorizing, %2 unknowns%3").arg(name).arg(M.rows()).arg(step));
             lu->compute(M);
-            a_s.log << tr("%1: assembled in %2 s, %3 nonzeros; factorized in %4 s")
+            // (Its analysis - the ordering, kept from a pattern factorized
+            // before or made - and its numeric factorization each said.)
+            a_s.log << tr("%1: assembled in %2 s, %3 nonzeros; factorized in %4 s (its analysis %5 s%6, its numeric factorization %7 s; "
+                          "its factors %8 GB)")
                            .arg(name)
                            .arg(assembled / 1000.0, 0, 'f', 2)
                            .arg(M.nonZeros())
-                           .arg((clock.elapsed() - assembled) / 1000.0, 0, 'f', 2);
+                           .arg((clock.elapsed() - assembled) / 1000.0, 0, 'f', 2)
+                           .arg(lu->analysisSeconds(), 0, 'f', 2)
+                           .arg(lu->reusedAnalysis() ? tr(", kept from before") : QString())
+                           .arg(lu->factorSeconds(), 0, 'f', 2)
+                           .arg(lu->factorBytes() / 1073741824.0, 0, 'f', 2);
             if (lu->info() != Eigen::Success) {
                 *error = tr("%1: its system could not be factorized (%2) - is A held somewhere (Magnetic Insulation, a Magnetic Potential)?")
                              .arg(name, QString::fromStdString(lu->lastErrorMessage()));
@@ -839,6 +850,7 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
                            .arg(es.order())
                            .arg(q.nP)
                            .arg(a_lu->name());
+        o.tell(tr("%1: solving with its factors%2").arg(name, step));
         const Eigen::VectorXd x = solveWith(r);
         if (it == 0) a_s.log << tr("%1: relative residual %2, refined once").arg(name).arg(residual, 0, 'g', 2);
         if (!x.allFinite()) {
@@ -880,6 +892,7 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
         for (int c = 0; c < nc; ++c) unit[std::size_t(c)] = sourcesOf(c);
         std::vector<std::vector<double>> fields(static_cast<std::size_t>(nc));
         for (int c = 0; c < nc; ++c) {
+            o.tell(tr("%1: the inductance matrix, coil %2 of %3").arg(name).arg(c + 1).arg(nc));
             std::vector<double> a0(nE, 0.0);   // (held values nought)
             Eigen::SparseMatrix<double> M;
             Eigen::VectorXd r;
