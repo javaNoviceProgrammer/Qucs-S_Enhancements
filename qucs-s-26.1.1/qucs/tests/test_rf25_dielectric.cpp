@@ -324,11 +324,14 @@ private slots:
     // high.)
     void aThinFilmIsItsStacksOwn()
     {
-        // (Under the sanitizers the film in air alone: on the oxide and the
-        // silicon it is 8 of the function's 9 s in Release - 558 s sanitized
-        // here, and CI's Linux job cut the suite at its 900. A stack of
-        // several slabs is still solved there by anOxideOverTheSubstratesFace.)
-        for (const bool onOxide : slowBuild() ? QList<bool>{false} : QList<bool>{true, false}) {
+        // (Under the sanitizers not at all: the film on the oxide and the
+        // silicon was 558 s sanitized here, and the film in air alone, all
+        // that was left there from 14 November, still past QtTest's 900 s on
+        // CI's sanitized Linux job - a region 0.6 µm thick panelled on both
+        // its faces. A region's solve is still the other functions' there, a
+        // stack of several slabs anOxideOverTheSubstratesFace's.)
+        if (slowBuild()) QSKIP("a film's region 0.6 um thick: past QtTest's limit under the sanitizers on CI");
+        for (const bool onOxide : {true, false}) {
             rf::Layers t;
             const QList<double> zs = onOxide ? QList<double>{0, 500e-6, 504.7e-6, 505.3e-6} : QList<double>{0, 10e-6, 10.6e-6};
             const QList<double> er = onOxide ? QList<double>{11.7, 3.9, 28} : QList<double>{1, 28};

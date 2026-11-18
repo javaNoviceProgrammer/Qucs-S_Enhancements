@@ -151,7 +151,11 @@ private slots:
                 rf::processShapes({{QStringLiteral("M1"), {spiralOutline(n, 100, 12, turns)}}}, {}, rf::Processing(), stack);
             QVERIFY2(processed.ok() && processed.conductors.size() == 1, qPrintable(processed.problems.join(" | ")));
             rf::MeshSettings how;
-            how.cellsAcross = 4;
+            // (Two cells across under the sanitizers: at four, the two loops'
+            // dense solves were 451 s sanitized on an M2 Ultra, 3.7 s in
+            // Release - past ctest's 900 s for the suite on CI's Linux job.
+            // The loops are compared on one meshing either way.)
+            how.cellsAcross = slow ? 2 : 4;
             const rf::Mesh mesh = rf::meshOf(processed.conductors, how, stack, 14e9);
             const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, in, out, 1e-6, 2e9);
             QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));

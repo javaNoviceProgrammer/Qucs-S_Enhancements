@@ -246,6 +246,19 @@ class TestFem3WaveTd : public QObject
     Q_OBJECT
 
 private slots:
+    // A sanitized build's factorizations a library's whatever their size:
+    // MUMPS's on CI's Linux job, Accelerate's on a Mac - the distribution's
+    // or the system's, optimized, where Eigen's LU is compiled into the test
+    // at -O0 with the sanitizers. (aFastSweepAgreesWithEachWavelength's
+    // sweeps and exact solves by Eigen's LU took 496 s sanitized on an M2 Ultra,
+    // 122 by Accelerate's, and went past QtTest's 900 s on CI.) What the
+    // sanitizers are to see is the engine's own code, not the LU.
+    void initTestCase()
+    {
+        if (slowBuild() && !qEnvironmentVariableIsSet("QUCS_FEM_MUMPS_FROM")) qputenv("QUCS_FEM_MUMPS_FROM", "0");
+        if (slowBuild() && !qEnvironmentVariableIsSet("QUCS_FEM_ACCELERATE_FROM")) qputenv("QUCS_FEM_ACCELERATE_FROM", "0");
+    }
+
     // The hollow guide with a PML behind each port, in the frequency domain:
     // each port a source (a sheet of current, its mode both ways) and a
     // monitor splitting its field into what comes and what goes - S21 =
@@ -590,8 +603,13 @@ private slots:
         QVERIFY2(log.join(QLatin1Char('\n')).contains(QLatin1String("7 wavelengths, 3 solved exactly")), qPrintable(log.join(QLatin1Char('\n'))));
         t.restart();
         double worst = 0;
+        // (Each wavelength's exact solve kept for the held basis's check
+        // below, not solved again: half the function's time, some 250 s by
+        // Eigen's LU sanitized on an M2 Ultra.)
+        std::vector<Wave3Result> exacts;
         for (std::size_t k = 0; k < f.size(); ++k) {
-            const Wave3Result exact = solveWave3(m, b.parameters, *b.topology, b.mesh, st, f[k]);
+            exacts.push_back(solveWave3(m, b.parameters, *b.topology, b.mesh, st, f[k]));
+            const Wave3Result& exact = exacts.back();
             QVERIFY2(exact.ok(), qPrintable(exact.error));
             const double diff = maxDiff(fast[k].S, exact.S, 1);
             worst = std::max(worst, diff);
@@ -613,10 +631,7 @@ private slots:
         QVERIFY2(said.contains(QLatin1String("basis kept to 8 columns (as asked)")), qPrintable(said));
         QVERIFY2(!said.contains(QLatin1String("7 wavelengths, 7 solved exactly")), qPrintable(said));
         double heldWorst = 0;
-        for (std::size_t k = 0; k < f.size(); ++k) {
-            const Wave3Result exact = solveWave3(m, b.parameters, *b.topology, b.mesh, st, f[k]);
-            heldWorst = std::max(heldWorst, maxDiff(held[k].S, exact.S, 1));
-        }
+        for (std::size_t k = 0; k < f.size(); ++k) heldWorst = std::max(heldWorst, maxDiff(held[k].S, exacts[k].S, 1));
         qInfo("held to 8 columns: |ΔS| %.2e at worst", heldWorst);
         QVERIFY2(heldWorst < 1e-5, qPrintable(QString::number(heldWorst)));
     }

@@ -19,6 +19,8 @@
  */
 #include <QDirIterator>
 #include <QtTest>
+
+#include "test_scale.h"
 #include <QAbstractEventDispatcher>
 #include <ctime>
 #include <QWindow>
@@ -4105,7 +4107,10 @@ private slots:
         QVERIFY(doc->isTracingNet());
         // (Escape: the trace first, the selection after.)
         QTest::keyClick(view, Qt::Key_Escape);
-        QTRY_VERIFY_WITH_TIMEOUT(!doc->isTracingNet(), 60000);
+        // (Each wait as the build's limits are scaled - test_scale.h: on CI's
+        // sanitized Linux job the whole trace below took 205 s, past its
+        // 120.)
+        QTRY_VERIFY_WITH_TIMEOUT(!doc->isTracingNet(), qucs_test::scaled(60000));
         QVERIFY(doc->highlightedNets().isEmpty());
         QVERIFY(view->selection());
         // By show_layout, stopped by another cell shown: said, not lit.
@@ -4120,13 +4125,13 @@ private slots:
         doc->showCell(doc->layout()->mainCell());   // (the same cell: not stopped)
         QVERIFY(doc->isTracingNet());
         doc->stopTracingNets();
-        QTRY_VERIFY_WITH_TIMEOUT(answered, 60000);
+        QTRY_VERIFY_WITH_TIMEOUT(answered, qucs_test::scaled(60000));
         QVERIFY2(j.value("nets not lit").toArray().first().toString().contains("stopped"), qPrintable(QJsonDocument(j).toJson()));
         QVERIFY(doc->highlightedNets().isEmpty());
         // Traced whole, to max_shapes: lit, and said so.
         QVERIFY(view->selectAt(view->toPixel(QPointF(1, 0.5))));   // (the cell shown again: nothing selected)
         QVERIFY(doc->highlightSelectedNet());
-        QTRY_VERIFY_WITH_TIMEOUT(!doc->isTracingNet(), 120000);
+        QTRY_VERIFY_WITH_TIMEOUT(!doc->isTracingNet(), qucs_test::scaled(120000));
         QCOMPARE(doc->highlightedNets().size(), 1);
         QVERIFY(doc->highlightedNets().first().stopped);
         QCOMPARE(doc->highlightedNets().first().shapes.size(), 20000);
@@ -4149,7 +4154,7 @@ private slots:
                           });
         QTRY_VERIFY(doc->isTracingNet());
         closeAll();
-        QTRY_VERIFY_WITH_TIMEOUT(answered, 30000);
+        QTRY_VERIFY_WITH_TIMEOUT(answered, qucs_test::scaled(30000));
         QVERIFY2(j.value("nets not lit").toArray().first().toString().contains("tab was closed"), qPrintable(QJsonDocument(j).toJson()));
     }
 
