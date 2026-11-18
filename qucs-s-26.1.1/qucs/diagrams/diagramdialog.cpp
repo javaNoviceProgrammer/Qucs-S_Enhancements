@@ -649,34 +649,29 @@ DiagramDialog::DiagramDialog(Diagram *d, QWidget *parent, Graph *currentGraph)
                   Row, 0, 1, 2);
     Row++;
 
-    if (Diag->Name != "Rect3D") {
-      GridOn = new QCheckBox(tr("show Grid"), Tab2);
-      gp->addWidget(GridOn, Row, 0);
-      Row++;
+    // (A 3D diagram's too: on the box's back walls.)
+    GridOn = new QCheckBox(tr("show Grid"), Tab2);
+    gp->addWidget(GridOn, Row, 0);
+    Row++;
 
-      // (Its colour: on the Theme tab, with the other parts'.)
-      GridLabel2 = new QLabel(tr("Grid Style: "), Tab2);
-      gp->addWidget(GridLabel2, Row, 0);
-      GridStyleBox = new QComboBox(Tab2);
-      GridStyleBox->addItem(tr("solid line"));
-      GridStyleBox->addItem(tr("dash line"));
-      GridStyleBox->addItem(tr("dot line"));
-      GridStyleBox->addItem(tr("dash dot line"));
-      GridStyleBox->addItem(tr("dash dot dot line"));
-      gp->addWidget(GridStyleBox, Row, 1);
-      Row++;
-      GridStyleBox->setCurrentIndex(Diag->GridPen.style() - 1);
+    // (Its colour: on the Theme tab, with the other parts'.)
+    GridLabel2 = new QLabel(tr("Grid Style: "), Tab2);
+    gp->addWidget(GridLabel2, Row, 0);
+    GridStyleBox = new QComboBox(Tab2);
+    GridStyleBox->addItem(tr("solid line"));
+    GridStyleBox->addItem(tr("dash line"));
+    GridStyleBox->addItem(tr("dot line"));
+    GridStyleBox->addItem(tr("dash dot line"));
+    GridStyleBox->addItem(tr("dash dot dot line"));
+    gp->addWidget(GridStyleBox, Row, 1);
+    Row++;
+    GridStyleBox->setCurrentIndex(Diag->GridPen.style() - 1);
 
-      GridOn->setChecked(Diag->xAxis.GridOn);
-      if (!Diag->xAxis.GridOn)
-        slotSetGridBox(0);
-      connect(GridOn, &QCheckBox::stateChanged, this,
-              &DiagramDialog::slotSetGridBox);
-    } else {
-      GridOn = 0;
-      GridStyleBox = 0;
-      NotationBox = 0;
-    }
+    GridOn->setChecked(Diag->xAxis.GridOn);
+    if (!Diag->xAxis.GridOn)
+      slotSetGridBox(0);
+    connect(GridOn, &QCheckBox::stateChanged, this,
+            &DiagramDialog::slotSetGridBox);
 
     NotationLabel = new QLabel(tr("Number notation: "), Tab2);
     gp->addWidget(NotationLabel, Row, 0);
