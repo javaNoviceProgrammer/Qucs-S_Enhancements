@@ -30,6 +30,7 @@
 #include <QXmlStreamReader>
 #include <QtTest>
 
+#include <algorithm>
 #include <cmath>
 #include <set>
 
@@ -513,8 +514,9 @@ private slots:
     }
 
     // A bar's Joule heat, its ends held cold and its sides insulated: T rises
-    // by σ(V/L)² L²/(8k) in the middle - order 2's exactly, ec and ht solved
-    // in turn till they agree.
+    // by σ(V/L)² L²/(8k) in the middle - order 2's exactly, ec solved once and
+    // then ht, which reads it (ec reads nothing of ht's: no iterations); its
+    // conductivity a function of T, the two in turn till they agree.
     void jouleHeating()
     {
         Model m = model3d(0.4);
@@ -534,7 +536,42 @@ private slots:
         QVERIFY2(std::abs(global(sv.s(), QStringLiteral("ht.Tmax")) - (300 + rise)) < 1e-6 * rise, qPrintable(sv.s().globalText(QStringLiteral("ht.Tmax"))));
         QVERIFY(std::abs(valueAt(sv.s(), QStringLiteral("ht.T"), 0.5, 0.25, 0.25) - (300 + Q * 0.5e-3 * 1.5e-3 / 800)) < 1e-6 * rise);
         QVERIFY(std::abs(global(sv.s(), QStringLiteral("ht.P")) - Q * 2e-3 * 0.5e-3 * 0.5e-3) < 1e-6 * Q * 5e-10);
-        QVERIFY2(sv.s().log.join(QLatin1Char('\n')).contains(QStringLiteral("iteration 2")), qPrintable(sv.s().log.join(QLatin1Char('\n'))));
+        // (One way: each solved once, in the order of what it reads.)
+        const QString log = sv.s().log.join(QLatin1Char('\n'));
+        QVERIFY2(!log.contains(QStringLiteral(", iteration 1:")), qPrintable(log));
+        // A conductivity of T (a cycle; nought times T, the answer the same):
+        // the two in turn till they agree.
+        for (Node& c : m.find(ec)->children)
+            if (c.type == QLatin1String("currents/conservation")) c.props.insert(QStringLiteral("sigma"), QStringLiteral("5e7[S/m]*(1 + 0*ht.T/1[K])"));
+        const Solved cycle = solve(m);
+        QVERIFY2(cycle.error.isEmpty(), qPrintable(cycle.error));
+        QVERIFY2(std::abs(global(cycle.s(), QStringLiteral("ht.Tmax")) - (300 + rise)) < 1e-6 * rise, qPrintable(cycle.s().globalText(QStringLiteral("ht.Tmax"))));
+        QVERIFY2(cycle.s().log.join(QLatin1Char('\n')).contains(QStringLiteral("iteration 2")), qPrintable(cycle.s().log.join(QLatin1Char('\n'))));
+    }
+
+    // The order physics are solved in, by what they read: each after what it
+    // reads; a cycle a group, solved in turn; the rest in their own order.
+    void solveOrder()
+    {
+        const auto order = [](const std::vector<int>& subset, const std::vector<std::pair<int, int>>& edges) {
+            const auto reads = [&edges](int i, int j) { return std::find(edges.begin(), edges.end(), std::make_pair(i, j)) != edges.end(); };
+            QStringList out;
+            for (const std::vector<int>& g : solveOrder3(subset, reads)) {
+                QStringList members;
+                for (int k : g) members << QString::number(k);
+                out << members.join(QLatin1Char(','));
+            }
+            return out.join(QLatin1Char(' '));
+        };
+        QCOMPARE(order({0, 1, 2}, {}), QStringLiteral("0 1 2"));
+        // (A coil's field, 0, reads the currents, 1: the currents first.)
+        QCOMPARE(order({0, 1}, {{0, 1}}), QStringLiteral("1 0"));
+        // (Heat, 2, reads the currents, 1, whose conductivity reads heat: a
+        // cycle; the field, 0, reads the currents - after the cycle.)
+        QCOMPARE(order({0, 1, 2}, {{0, 1}, {1, 2}, {2, 1}}), QStringLiteral("1,2 0"));
+        // (A chain read backwards; a physics that reads its own field is no
+        // cycle of the step's.)
+        QCOMPARE(order({4, 7, 9}, {{4, 7}, {7, 9}, {9, 9}}), QStringLiteral("9 7 4"));
     }
 
     // A slab held at its bottom, its top a film to 290 K: the 1D solution, a

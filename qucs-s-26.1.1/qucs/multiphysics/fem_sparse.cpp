@@ -39,7 +39,7 @@ namespace {
 
 std::atomic<int> chosen{int(DirectSolver::Automatic)};
 std::atomic<long long> usedAccelerateLu{0}, usedEigenLu{0}, usedAccelerateCholesky{0}, usedEigenCholesky{0}, usedIterative{0};
-std::atomic<long long> usedMumpsLu{0}, usedMumpsLdlt{0}, usedMumpsCholesky{0}, usedStrumpackLu{0};
+std::atomic<long long> usedMumpsLu{0}, usedMumpsLdlt{0}, usedMumpsCholesky{0}, usedStrumpackLu{0}, usedAccelerateLdlt{0};
 
 /// Accelerate's LU in this build and on this macOS (26 and later - which
 /// says 16.0 to a program built with an older SDK).
@@ -454,6 +454,7 @@ SolverUse solverUse()
     u.mumpsLdlt = usedMumpsLdlt;
     u.mumpsCholesky = usedMumpsCholesky;
     u.strumpackLu = usedStrumpackLu;
+    u.accelerateLdlt = usedAccelerateLdlt;
     return u;
 }
 
@@ -467,6 +468,7 @@ QString solverUseText(const SolverUse& before, const SolverUse& after)
     QStringList used;
     if (after.accelerateLu > before.accelerateLu) used << QStringLiteral("Accelerate's LU");
     if (after.accelerateCholesky > before.accelerateCholesky) used << QStringLiteral("Accelerate's Cholesky");
+    if (after.accelerateLdlt > before.accelerateLdlt) used << QStringLiteral("Accelerate's LDLT");
     if (after.mumpsLu > before.mumpsLu) used << QStringLiteral("MUMPS's LU");
     if (after.mumpsLdlt > before.mumpsLdlt) used << QStringLiteral("MUMPS's LDLT");
     if (after.mumpsCholesky > before.mumpsCholesky) used << QStringLiteral("MUMPS's Cholesky");
@@ -995,7 +997,7 @@ template class SparseLu<std::complex<double>>;
 
 // ------------------------------------------------- complex symmetric LDLT
 
-#if defined(QUCS_ACCELERATE) && defined(QUCS_ACCELERATE_LU)
+#if defined(QUCS_ACCELERATE)
 namespace {
 
 /// The last complex LDLT's symbolic factorization (Accelerate's: its METIS
@@ -1017,10 +1019,11 @@ struct KeptSymbolic {
     }
 };
 
-KeptSymbolic& keptLdltSymbolic()
+/// The complex LDLT's kept, or the real one's (SparseRealLdlt).
+KeptSymbolic& keptLdltSymbolic(bool real = false)
 {
-    static KeptSymbolic kept;
-    return kept;
+    static KeptSymbolic kept, keptReal;
+    return real ? keptReal : kept;
 }
 
 /// A pattern's digest (FNV-1a over its column starts and row indices).
@@ -1273,6 +1276,245 @@ QString SparseComplexLdlt::name() const
     if (a_impl->accelerate) return QStringLiteral("Accelerate's LDLT");
     if (a_impl->mumps) return QStringLiteral("MUMPS's LDLT");
     return a_impl->lu ? a_impl->lu->name() : QStringLiteral("Eigen's LU");
+}
+
+// --------------------------------------------- real symmetric indefinite LDLT
+
+struct SparseRealLdlt::Impl {
+    Backend backend = Backend::Eigen;
+    double limit = 0, bytes = 0;
+    Eigen::ComputationInfo info = Eigen::InvalidInput;
+    std::string error;
+    bool reusedAnalysis = false;
+    std::unique_ptr<SparseLu<double>> lu;   // Eigen's or STRUMPACK's
+    std::unique_ptr<external::Factorization<double>> mumps;
+    int mumpsN = 0;
+    bool mumpsFactored = false;
+#if defined(QUCS_ACCELERATE)
+    Matrix lower;
+    std::vector<long> starts;
+    int n = 0;
+    bool analysed = false, factored = false;
+    SparseOpaqueSymbolicFactorization symbolic{};
+    SparseOpaqueFactorization_Double numeric{};
+    SparseMatrixStructure structure()
+    {
+        SparseAttributes_t a{};
+        a.kind = SparseSymmetric;
+        a.triangle = SparseLowerTriangle;
+        return SparseMatrixStructure{n, n, starts.data(), lower.innerIndexPtr(), a, 1};
+    }
+    void release()
+    {
+        if (factored) SparseCleanup(numeric);
+        if (analysed) SparseCleanup(symbolic);
+        factored = analysed = false;
+    }
+#endif
+    /// Past the memory limit: said, not factorized.
+    bool pastLimit()
+    {
+        if (!(limit > 0) || bytes <= limit) return false;
+        char text[160];
+        std::snprintf(text, sizeof text, "its factors would take %.1f GB, past the limit of %.1f GB", bytes / 1073741824.0, limit / 1073741824.0);
+        error = text;
+        info = Eigen::InvalidInput;
+        return true;
+    }
+    ~Impl()
+    {
+#if defined(QUCS_ACCELERATE)
+        release();
+#endif
+    }
+};
+
+SparseRealLdlt::SparseRealLdlt() : a_impl(std::make_unique<Impl>()) {}
+SparseRealLdlt::~SparseRealLdlt() = default;
+
+void SparseRealLdlt::compute(const Matrix& a)
+{
+    Impl& d = *a_impl;
+    d.error.clear();
+    d.bytes = 0;
+    d.reusedAnalysis = false;
+    d.lu.reset();
+    d.mumps.reset();
+    d.mumpsFactored = false;
+#if defined(QUCS_ACCELERATE)
+    d.release();
+#endif
+    if (a.rows() != a.cols()) {
+        d.info = Eigen::InvalidInput;
+        d.error = "the matrix is not square";
+        return;
+    }
+    const Backend chosen = choleskyBackend();
+    d.backend = a.rows() >= backendFrom(chosen) ? chosen : Backend::Eigen;
+    if (d.backend == Backend::Mumps) {
+        Matrix lower = a.triangularView<Eigen::Lower>();
+        lower.makeCompressed();
+        d.mumpsN = int(a.rows());
+        d.info = Eigen::Success;
+        d.mumps = external::makeMumps<double>(external::Kind::Symmetric);
+        if (d.mumpsN == 0) return;
+        const std::vector<long> starts(lower.outerIndexPtr(), lower.outerIndexPtr() + lower.cols() + 1);
+        const std::vector<int> rows(lower.innerIndexPtr(), lower.innerIndexPtr() + lower.nonZeros());
+        const std::vector<double> values(lower.valuePtr(), lower.valuePtr() + lower.nonZeros());
+        if (!d.mumps || !d.mumps->analyse(d.mumpsN, starts, rows, values)) {
+            d.error = d.mumps ? d.mumps->error() : std::string("no MUMPS in this build");
+            d.info = Eigen::InvalidInput;
+            return;
+        }
+        d.bytes = d.mumps->bytes();
+        if (d.pastLimit()) return;
+        ++usedMumpsLdlt;
+        if (!d.mumps->factorize(values)) {
+            d.error = d.mumps->error();
+            d.info = Eigen::NumericalIssue;
+            return;
+        }
+        d.mumpsFactored = true;
+        const Check check = checkSolve(
+            a, [&d](const Eigen::VectorXd& b) { return externalSolve<Eigen::VectorXd>(d.mumps.get(), true, d.mumpsN, b); }, "mumps-ldlt-real");
+        if (check.backward >= 1e-6) {
+            d.info = Eigen::NumericalIssue;
+            d.error = checkText(check);
+        }
+        return;
+    }
+#if defined(QUCS_ACCELERATE)
+    if (d.backend == Backend::Accelerate) {
+        d.lower = a.triangularView<Eigen::Lower>();
+        d.lower.makeCompressed();
+        d.n = int(a.rows());
+        d.starts.assign(d.lower.outerIndexPtr(), d.lower.outerIndexPtr() + d.lower.cols() + 1);
+        d.info = Eigen::Success;
+        if (d.n == 0) return;
+        accelerateError.clear();
+        // The pattern's analysis kept from the last real LDLT of the same
+        // pattern, or made and kept.
+        const long nonZeros = long(d.lower.nonZeros());
+        const quint64 digest = patternDigest(d.starts.data(), d.n, d.lower.innerIndexPtr(), nonZeros);
+        KeptSymbolic& kept = keptLdltSymbolic(true);
+        {
+            std::lock_guard<std::mutex> lock(kept.lock);
+            if (kept.held && kept.n == d.n && kept.nonZeros == nonZeros && kept.hash == digest) {
+                d.symbolic = SparseRetain(kept.symbolic);
+                d.reusedAnalysis = true;
+            }
+        }
+        if (!d.reusedAnalysis) {
+            SparseSymbolicFactorOptions so = symbolicOptions();
+            so.orderMethod = SparseOrderMetis;
+            d.symbolic = SparseFactor(SparseFactorizationLDLT, d.structure(), so);
+            if (d.symbolic.status == SparseStatusOK) {
+                std::lock_guard<std::mutex> lock(kept.lock);
+                if (kept.held) SparseCleanup(kept.symbolic);
+                kept.symbolic = SparseRetain(d.symbolic);
+                kept.held = true;
+                kept.n = d.n;
+                kept.nonZeros = nonZeros;
+                kept.hash = digest;
+            }
+        }
+        d.analysed = d.symbolic.status == SparseStatusOK;
+        if (!d.analysed) {
+            d.error = statusText(d.symbolic.status);
+            SparseCleanup(d.symbolic);
+            d.info = Eigen::InvalidInput;
+            return;
+        }
+        d.bytes = double(d.symbolic.factorSize_Double) + double(d.symbolic.workspaceSize_Double);
+        if (d.pastLimit()) return;
+        SparseMatrix_Double m{d.structure(), d.lower.valuePtr()};
+        ++usedAccelerateLdlt;
+        d.numeric = SparseFactor(d.symbolic, m);
+        d.factored = d.numeric.status == SparseStatusOK;
+        if (!d.factored) {
+            d.error = statusText(d.numeric.status);
+            SparseCleanup(d.numeric);
+            d.info = Eigen::NumericalIssue;
+            return;
+        }
+        const Check check = checkSolve(a, [this](const Eigen::VectorXd& b) { return solve(b); }, "accelerate-ldlt");
+        if (check.backward >= 1e-6) {
+            d.info = Eigen::NumericalIssue;
+            d.error = checkText(check);
+        }
+        return;
+    }
+#endif
+    // (Eigen's sparse LDLT does not pivot - a saddle point's zero block
+    // stops it -: an LU, Eigen's or STRUMPACK's.)
+    d.backend = Backend::Eigen;
+    d.lu = std::make_unique<SparseLu<double>>();
+    d.lu->compute(a);
+    d.info = d.lu->info();
+    if (d.info != Eigen::Success) d.error = d.lu->lastErrorMessage();
+}
+
+Eigen::ComputationInfo SparseRealLdlt::info() const
+{
+    return a_impl->info;
+}
+
+std::string SparseRealLdlt::lastErrorMessage() const
+{
+    return a_impl->error;
+}
+
+Eigen::MatrixXd SparseRealLdlt::solveMany(const Eigen::MatrixXd& b) const
+{
+    const Impl& d = *a_impl;
+    if (d.mumps) return externalSolve<Eigen::MatrixXd>(d.mumps.get(), d.mumpsFactored && d.info == Eigen::Success, d.mumpsN, b);
+#if defined(QUCS_ACCELERATE)
+    if (d.backend == Backend::Accelerate) {
+        Eigen::MatrixXd x = b;
+        if (d.n == 0 || !d.factored || b.rows() != d.n || d.info != Eigen::Success) {
+            if (d.n != 0 || b.rows() != 0) x.setConstant(std::numeric_limits<double>::quiet_NaN());
+            return x;
+        }
+        if (x.cols() > 0) SparseSolve(d.numeric, DenseMatrix_Double{d.n, int(x.cols()), d.n, SparseAttributes_t{}, x.data()});
+        return x;
+    }
+#endif
+    if (!d.lu || d.info != Eigen::Success) return Eigen::MatrixXd::Constant(b.rows(), b.cols(), std::numeric_limits<double>::quiet_NaN());
+    return d.lu->solveMany(b);
+}
+
+Eigen::VectorXd SparseRealLdlt::solve(const Eigen::VectorXd& b) const
+{
+    const Eigen::MatrixXd B = b;
+    return solveMany(B).col(0);
+}
+
+QString SparseRealLdlt::name() const
+{
+    if (a_impl->backend == Backend::Accelerate) return QStringLiteral("Accelerate's LDLT");
+    if (a_impl->mumps) return QStringLiteral("MUMPS's LDLT");
+    return a_impl->lu ? a_impl->lu->name() : QStringLiteral("Eigen's LU");
+}
+
+Backend SparseRealLdlt::backend() const
+{
+    if (a_impl->lu) return a_impl->lu->backend();
+    return a_impl->backend;
+}
+
+void SparseRealLdlt::setMemoryLimit(double bytes)
+{
+    a_impl->limit = bytes;
+}
+
+double SparseRealLdlt::factorBytes() const
+{
+    return a_impl->bytes;
+}
+
+bool SparseRealLdlt::reusedAnalysis() const
+{
+    return a_impl->backend == Backend::Accelerate && a_impl->reusedAnalysis;
 }
 
 // ---------------------------------------------------------------- Cholesky

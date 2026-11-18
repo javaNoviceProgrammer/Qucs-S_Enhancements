@@ -309,9 +309,17 @@ struct StudyResult3 {
     std::vector<Estimate3> estimates;
 };
 
+/// The order physics \a subset (field indices) are solved in, by what each
+/// reads (\a reads(i, j): physics i reads field j): groups, each after
+/// every group it reads; a group of more than one a cycle of what they read,
+/// solved in turn till they agree, any other solved once. Where nothing
+/// orders them, the subset's own order.
+std::vector<std::vector<int>> solveOrder3(const std::vector<int>& subset, const std::function<bool(int, int)>& reads);
+
 /// Solves study \a studyTag (the first when empty) of 3D \a model on \a mesh:
-/// its Stationary steps, each its physics (all when none chosen) in turn till
-/// they agree, and its Time Dependent ones - heat by BDF (its ρ Cp ∂T/∂t),
+/// its Stationary steps, each its physics (all when none chosen) in the
+/// order of what they read - once each, those of a cycle in turn till they
+/// agree (solveOrder3()) -, and its Time Dependent ones - heat by BDF (its ρ Cp ∂T/∂t),
 /// the other physics at rest at each step, kept at the output times; a step
 /// of another kind is refused, said. Each physics' estimate is said in its
 /// log first; past \a asked's limit it is not solved unless forced, and what

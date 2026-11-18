@@ -74,15 +74,46 @@ bool slowBuild()
     return false;
 }
 
-/// Whether the saddle point's LDLT is not Accelerate's: Eigen's LU of it
-/// (CI's macOS 15, Linux below MUMPS's size, QUCS_FEM_SOLVER=eigen), or a
-/// sanitized build. There the meshes are coarser: by Eigen's LU the loop
-/// took 140 s and the solenoid 210 s on an M2 Ultra (Accelerate's: 3.6 s),
-/// and CI's macOS runner, some 1.5 times slower, cut the solenoid at 300 s;
-/// sanitized on CI's Linux job uniformInZ alone went past 900 s.
+/// Whether the saddle point's LDLT may not be Accelerate's: off macOS (an
+/// LU of Eigen's below MUMPS's size), QUCS_FEM_SOLVER=eigen, or a sanitized
+/// build. There the meshes are coarser: by Eigen's LU of the complex
+/// matrix the loop took 140 s and the solenoid 210 s on an M2 Ultra
+/// (Accelerate's: 3.6 s), and CI's macOS runner, some 1.5 times slower, cut
+/// the solenoid at 300 s; sanitized on CI's Linux job uniformInZ alone went
+/// past 900 s. (Accelerate's real LDLT is macOS 10.13's: CI's macOS 15
+/// too.)
 bool coarse()
 {
-    return slowBuild() || !acceleratedLu();
+    return slowBuild() || choleskyBackend() != Backend::Accelerate;
+}
+
+/// A saddle point [K Bᵀ; B 0]: K a grid's Laplacian (\a side² unknowns, its
+/// edge held), B a constraint on each of \a constraints pairs of them -
+/// symmetric, indefinite, nonsingular, as the magnetostatics' gauge makes
+/// its system.
+Eigen::SparseMatrix<double> saddlePoint(int side, int constraints)
+{
+    const int n = side * side;
+    std::vector<Eigen::Triplet<double>> t;
+    for (int i = 0; i < side; ++i)
+        for (int j = 0; j < side; ++j) {
+            const int k = i * side + j;
+            t.emplace_back(k, k, 4.0);
+            if (i > 0) t.emplace_back(k, k - side, -1.0);
+            if (i + 1 < side) t.emplace_back(k, k + side, -1.0);
+            if (j > 0) t.emplace_back(k, k - 1, -1.0);
+            if (j + 1 < side) t.emplace_back(k, k + 1, -1.0);
+        }
+    for (int c = 0; c < constraints; ++c) {
+        const int p = (c * 7919) % n, q = (p + 1 + (c * 104729) % (n - 1)) % n;
+        t.emplace_back(n + c, p, 1.0);
+        t.emplace_back(p, n + c, 1.0);
+        t.emplace_back(n + c, q, -0.5);
+        t.emplace_back(q, n + c, -0.5);
+    }
+    Eigen::SparseMatrix<double> m(n + constraints, n + constraints);
+    m.setFromTriplets(t.begin(), t.end());
+    return m;
 }
 
 Model model3d(double hmax)
@@ -150,6 +181,64 @@ void addFeature(Model& m, const QString& physics, const QString& type, const QJs
     for (auto it = props.begin(); it != props.end(); ++it) f.props.insert(it.key(), it.value());
     QString why;
     QVERIFY2(m.add(physics, f, -1, &why) != nullptr, qPrintable(why));
+}
+
+/// A cylinder of radius \a r from \a z0, \a h high.
+void addCylinderAt(Model& m, const QString& label, double r, double z0, double h)
+{
+    Node n = m.make(QStringLiteral("cylinder"));
+    n.label = label;
+    n.props.insert(QStringLiteral("center"), pairOf(0, 0));
+    n.props.insert(QStringLiteral("radius"), QString::number(r, 'g', 17));
+    n.props.insert(QStringLiteral("z"), QString::number(z0, 'g', 17));
+    n.props.insert(QStringLiteral("height"), QString::number(h, 'g', 17));
+    m.add(m.geometry().tag, n);
+}
+
+/// A coax \a len mm long shorted by an end cap 0.3 mm thick - its core 0.5
+/// mm, its shell 1.5 to 1.8 mm, copper - fed at z = 0 between its core and
+/// its shell by a currents physics, whose current a coil of a magnetic
+/// physics reads: mf.L_1 its DC inductance. (A layer a millimetre.)
+Model shortedCoax(double hmax, int len, QString* ecTag, QString* mfTag)
+{
+    Model m = model3d(hmax);
+    addCylinderAt(m, QStringLiteral("shell"), 1.8, 0, len);
+    addCylinderAt(m, QStringLiteral("gap"), 1.5, 0, len);
+    addCylinderAt(m, QStringLiteral("core"), 0.5, 0, len);
+    addCylinderAt(m, QStringLiteral("cap"), 1.8, len, 0.3);
+    for (const char* o : {"shell", "gap", "core"}) zDivisions(m, QString::fromLatin1(o), len);
+    zDivisions(m, QStringLiteral("cap"), 1);
+    const QJsonObject metal{{QStringLiteral("only"), QJsonArray{QStringLiteral("shell"), QStringLiteral("core"), QStringLiteral("cap")}}};
+    Node ec = m.make(QStringLiteral("currents"));
+    ec.props.insert(QStringLiteral("order"), QStringLiteral("2"));
+    ec.props.insert(QStringLiteral("selection"), metal);
+    const QString et = ec.tag;
+    m.add(m.component().tag, ec);
+    for (Node& c : m.find(et)->children)
+        if (c.type == QLatin1String("currents/conservation")) {
+            c.props.insert(QStringLiteral("source"), QStringLiteral("user"));
+            c.props.insert(QStringLiteral("sigma"), QStringLiteral("5.8e7[S/m]"));
+        }
+    // (The core's floor its terminal; the shell's own floor, an annulus -
+    // its side rule's floors less the gap's and the core's -, its ground.)
+    addFeature(m, et, QStringLiteral("currents/terminal"), ofSide(QStringLiteral("core"), QStringLiteral("bottom")), {{QStringLiteral("name"), QStringLiteral("1")}});
+    QJsonObject ground = ofSide(QStringLiteral("shell"), QStringLiteral("bottom"));
+    ground.insert(QStringLiteral("except"), ofSide(QStringLiteral("gap"), QStringLiteral("bottom")));
+    addFeature(m, et, QStringLiteral("currents/ground"), ground);
+    const QString mf = addMagnetic(m, 2);
+    addFeature(m, mf, QStringLiteral("magnetic/coil"), metal,
+               {{QStringLiteral("name"), QStringLiteral("1")}, {QStringLiteral("ec"), QJsonArray{et}}, {QStringLiteral("terminal"), QStringLiteral("1")}});
+    *ecTag = et;
+    *mfTag = mf;
+    return m;
+}
+
+/// The lines of \a log that begin with \a name and hold \a text.
+int linesOf(const QStringList& log, const QString& name, const QString& text)
+{
+    int n = 0;
+    for (const QString& line : log) n += line.startsWith(name + QStringLiteral(": ")) && line.contains(text) ? 1 : 0;
+    return n;
 }
 
 /// A domain feature on \a object of user's \a props (µr...).
@@ -539,6 +628,118 @@ private slots:
         // in the box, each its own.)
         QVERIFY2(l11 > 0 && l22 > 0 && std::abs(l12 - l21) < 1e-6 * l11 && l12 > 0 && l12 * l12 < l11 * l22,
                  qPrintable(QStringLiteral("%1 %2; %3 %4").arg(l11).arg(l12).arg(l21).arg(l22)));
+    }
+
+    // The DC inductance of a coax from a currents physics through a coil
+    // (nothing tested that path against an exact
+    // answer): its length's dL/dlen, from two lengths (their end caps' and
+    // feeds' the same), µ0/2π (ln(b/a) + 1/4 + c⁴ ln(c/b)/(c² - b²)² - (3c²
+    // - b²)/(4 (c² - b²))). Each physics solved once - the coil's magnetic
+    // field reads the currents, which read nothing of it: no iterations -,
+    // and the magnetic field's saddle point factorized once.
+    void dcInductanceFromCurrents()
+    {
+        const double a = 0.5e-3, b = 1.5e-3, c = 1.8e-3;
+        const double Lp = Mu0 / (2 * M_PI)
+                          * (std::log(b / a) + 0.25 + c * c * c * c * std::log(c / b) / ((c * c - b * b) * (c * c - b * b)) - (3 * c * c - b * b) / (4 * (c * c - b * b)));
+        // (0.15 mm: 1.2 % low in the review's 10 to 20 mm; Eigen's LU and a
+        // sanitized build coarser.)
+        const double hmax = coarse() ? 0.25 : 0.15;
+        double L[2] = {0, 0};
+        const int lengths[2] = {2, 4};
+        for (int k = 0; k < 2; ++k) {
+            QString et, mf;
+            const Model m = shortedCoax(hmax, lengths[k], &et, &mf);
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            L[k] = global(sv.s(), QStringLiteral("mf.L_1"));
+            const QStringList& log = sv.s().log;
+            const QString mfName = m.find(mf)->name();
+            QVERIFY2(!log.join(QLatin1Char('\n')).contains(QStringLiteral(", iteration 1:")), qPrintable(log.join(QLatin1Char('\n'))));
+            QVERIFY2(linesOf(log, mfName, QStringLiteral("factorized in")) == 1, qPrintable(log.join(QLatin1Char('\n'))));
+            QVERIFY2(linesOf(log, mfName, QStringLiteral("assembled in")) == 1, qPrintable(log.join(QLatin1Char('\n'))));
+        }
+        const double perLength = (L[1] - L[0]) / 2e-3;
+        info(QStringLiteral("coax from currents: L %1, %2 H; dL/dlen %3 H/m, exact %4 H/m").arg(L[0]).arg(L[1]).arg(perLength).arg(Lp));
+        QVERIFY2(std::abs(perLength - Lp) < (coarse() ? 3e-2 : 2e-2) * Lp, qPrintable(QStringLiteral("dL/dlen %1 H/m, exact %2 H/m").arg(perLength).arg(Lp)));
+    }
+
+    // A cycle - the currents' conductivity reads the magnetic field (nought
+    // times |B|: the answer the same) -: the two in turn till they agree,
+    // the magnetic matrix the same at each pass and factorized once, its
+    // factors kept for the next.
+    void aCycleFactorizesOnce()
+    {
+        QString et, mf;
+        Model m = shortedCoax(0.3, 1, &et, &mf);
+        for (Node& c : m.find(et)->children)
+            if (c.type == QLatin1String("currents/conservation")) c.props.insert(QStringLiteral("sigma"), QStringLiteral("5.8e7[S/m]*(1 + 0*mf.normB/1[T])"));
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+        const QStringList& log = sv.s().log;
+        const QString mfName = m.find(mf)->name();
+        QVERIFY2(log.join(QLatin1Char('\n')).contains(QStringLiteral("iteration 2")), qPrintable(log.join(QLatin1Char('\n'))));
+        QVERIFY2(linesOf(log, mfName, QStringLiteral("factorized in")) == 1, qPrintable(log.join(QLatin1Char('\n'))));
+        QVERIFY2(linesOf(log, mfName, QStringLiteral("factors kept")) >= 1, qPrintable(log.join(QLatin1Char('\n'))));
+        QVERIFY(global(sv.s(), QStringLiteral("mf.L_1")) > 0);
+    }
+
+    // The real LDLT of a saddle point the complex path's (the complex
+    // symmetric LDLT of the same matrix, its imaginary parts nought, which
+    // the magnetostatics took before) to rounding, by each backend this
+    // build has - Accelerate's from its size (here from 0), MUMPS's, Eigen's
+    // LU; its memory limit kept.
+    void realLdltAgreesWithComplex()
+    {
+        const Eigen::SparseMatrix<double> a = saddlePoint(80, 900);
+        Eigen::VectorXd b(a.rows());
+        for (int k = 0; k < int(b.size()); ++k) b[k] = std::sin(0.37 * k) + 0.25;
+        const QByteArray fromA = qgetenv("QUCS_FEM_ACCELERATE_FROM"), fromM = qgetenv("QUCS_FEM_MUMPS_FROM");
+        qputenv("QUCS_FEM_ACCELERATE_FROM", "0");
+        qputenv("QUCS_FEM_MUMPS_FROM", "0");
+        std::vector<std::pair<DirectSolver, QString>> backends{{DirectSolver::Eigen, QStringLiteral("Eigen's LU")}};
+        if (accelerateInBuild()) backends.emplace_back(DirectSolver::Accelerate, QStringLiteral("Accelerate's LDLT"));
+        if (mumpsInBuild()) backends.emplace_back(DirectSolver::Mumps, QStringLiteral("MUMPS's LDLT"));
+        for (const auto& [solver, name] : backends) {
+            setDirectSolver(solver);
+            SparseRealLdlt real;
+            real.compute(a);
+            QVERIFY2(real.info() == Eigen::Success, qPrintable(name + QStringLiteral(": ") + QString::fromStdString(real.lastErrorMessage())));
+            QCOMPARE(real.name(), name);
+            SparseComplexLdlt complex;
+            complex.compute(a.cast<std::complex<double>>());
+            QVERIFY2(complex.info() == Eigen::Success, qPrintable(QString::fromStdString(complex.lastErrorMessage())));
+            const Eigen::VectorXd x = real.solve(b), y = complex.solve(b.cast<std::complex<double>>()).real();
+            const double gap = (x - y).norm() / y.norm(), residual = (b - a * x).norm() / b.norm();
+            info(QStringLiteral("%1: |x - x_complex| / |x| %2, residual %3").arg(name).arg(gap).arg(residual));
+            QVERIFY2(gap < 1e-10 && residual < 1e-10, qPrintable(QStringLiteral("%1: %2, %3").arg(name).arg(gap).arg(residual)));
+            // (Many right-hand sides at once: each the one's.)
+            Eigen::MatrixXd B(a.rows(), 2);
+            B.col(0) = b;
+            B.col(1) = 2 * b;
+            const Eigen::MatrixXd X = real.solveMany(B);
+            QVERIFY((X.col(0) - x).norm() < 1e-12 * x.norm() && (X.col(1) - 2 * x).norm() < 1e-12 * x.norm());
+            // The memory limit (where the backend says its factors' size).
+            if (solver != DirectSolver::Eigen) {
+                QVERIFY(real.factorBytes() > 0);
+                SparseRealLdlt small;
+                small.setMemoryLimit(1024);
+                small.compute(a);
+                QVERIFY(small.info() != Eigen::Success);
+                QVERIFY2(QString::fromStdString(small.lastErrorMessage()).contains(QStringLiteral("past the limit")), small.lastErrorMessage().c_str());
+            }
+        }
+        setDirectSolver(DirectSolver::Automatic);
+        // (Accelerate's analysis kept for the same pattern.)
+        if (accelerateInBuild()) {
+            SparseRealLdlt again;
+            again.compute(a);
+            QVERIFY(again.reusedAnalysis());
+        }
+        if (fromA.isNull()) qunsetenv("QUCS_FEM_ACCELERATE_FROM");
+        else qputenv("QUCS_FEM_ACCELERATE_FROM", fromA);
+        if (fromM.isNull()) qunsetenv("QUCS_FEM_MUMPS_FROM");
+        else qputenv("QUCS_FEM_MUMPS_FROM", fromM);
     }
 
     // An iron ring round a wire of 50 A, its B-H curve's: H round it I /
