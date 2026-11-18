@@ -271,6 +271,20 @@ double Filament::resistance() const
     return length() / (sigma * area);
 }
 
+double facesInside(double width, double thickness)
+{
+    if (!(width > 0) || !(thickness > 0)) return 1;
+    const double w = width, t = thickness, r = w * w + t * t;
+    // The two faces, each half the current: half each one's own, a strip's
+    // ln w - 3/2, and half their mutual, two strips w wide t apart face to
+    // face (the mean of ln r over both widths, in closed form).
+    const double mutual = (w * (w * std::log(r) - 2 * w + 2 * t * std::atan(w / t))
+                           - (r * std::log(r) / 2 - w * w / 2 - t * t * std::log(t))) / (w * w);
+    const double faces = 0.5 * (std::log(w) - 1.5) + 0.5 * mutual;
+    const double slab = 2 * M_PI * t / (12 * w);
+    return std::clamp((faces - std::log(selfDistance(w, t))) / slab, 0.0, 1.0);
+}
+
 double selfDistance(double width, double thickness)
 {
     if (!(width > 0)) return 0;

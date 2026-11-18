@@ -1131,6 +1131,10 @@ struct Context {
     /// Each run in the plane's own on its metal's other face, where the
     /// metal is solved as its two (thickened()); -1 on a sheet.
     QList<int> twin;
+    /// Each run with a twin: how much of a wide slab's inside its faces'
+    /// surface impedance holds at a low frequency (facesInside()), of its
+    /// conductor's breadth across it at its middle. Empty, or one: all.
+    QList<double> inside;
     /// A metal or impedance ground's loss, where it is asked for in the full
     /// wave too (Layer::lossInFullWave): each pair of planar runs near enough
     /// to share the ground current their mirror images carry, and what they
@@ -2026,6 +2030,25 @@ template <typename Add> void ownImpedances(const Context& c, double f, Add rawAd
         // crowds as one - its reactance its resistance, a thick metal's.
         Complex own, across;
         faceImpedances(run.sigma, run.thickness, f, &own, &across);
+        // The faces' even current's inside, the slab's, held to its
+        // section's (Context::inside): at a low frequency by its share k,
+        // and less and less of it once the two faces' skins part, at a skin
+        // depth half the thickness - X' = X (1 - (1 - k)/(1 + (t/2 delta)^4)),
+        // X the even mode's reactance -, until the current is on the faces'
+        // skins, whose reactance is a narrow conductor's as it is a wide
+        // one's. A square loop of wire took a wide slab's inside, six times
+        // its own beyond its faces' field, and read the more the finer its
+        // cells across. (Faded as the
+        // slab's own reactance falls, (X/X0)^2, it still took 40 % at four
+        // skin depths, and a 20 µm line of 3 µm gold read L 0.5 % lower at
+        // 10 GHz than its 2D eddy solve allows.)
+        if (const double k = c.inside.value(a, 1.0); k < 1 && run.sigma > 0) {
+            const double halfDepths = run.thickness / 2 * std::sqrt(M_PI * f * kMu0 * run.sigma);
+            const double fade = 1 / (1 + std::pow(halfDepths, 4));
+            const Complex shift(0, -(1 - k) * fade * 0.5 * (own + across).imag());
+            own += shift;
+            across += shift;
+        }
         const QList<Context::Part>& parts = c.parts.value(a);
         if (!parts.isEmpty()) {
             // A run along an edge that carries current down its wall too
@@ -3931,6 +3954,61 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (t < 0) continue;
             c.twin[a] = t;
             c.twin[t] = a;
+        }
+    }
+    // Each twin's breadth across its conductor at its middle - the stretch
+    // of the line across the run that lies on its layer's shapes, joined
+    // where they touch, out to a hundred thicknesses -, and how much of a
+    // wide slab's inside its faces hold there (Context::inside).
+    if (thick.any) {
+        c.inside = QList<double>(c.planar, 1.0);
+        for (int a = 0; a < c.planar; ++a) {
+            const Filament& run = c.runs.at(a);
+            if (c.twin.at(a) < 0 || !(run.thickness > 0) || !(run.width > 0)) continue;
+            const QPointF d = run.to - run.from;
+            const double length = std::hypot(d.x(), d.y());
+            if (!(length > 0)) continue;
+            const QPointF normal(-d.y() / length, d.x() / length), middle = (run.from + run.to) / (2 * micrometre);
+            const double reach = 100 * run.thickness / micrometre;
+            const QPointF p0 = middle - reach * normal, p1 = middle + reach * normal;
+            const QRectF line = QRectF(p0, p1).normalized().adjusted(-1e-9, -1e-9, 1e-9, 1e-9);
+            QList<std::pair<double, double>> on;   // (the stretches inside each shape, -reach to reach)
+            for (const int s : shapesOn.value(mesh.cells.at(ends.at(a).first).layer)) {
+                const QPolygonF& outline = conductors.at(s).outline;
+                if (!outline.boundingRect().intersects(line)) continue;
+                QList<double> at;
+                for (int i = 0; i < outline.size(); ++i) {
+                    const QPointF e0 = outline.at(i), e1 = outline.at((i + 1) % outline.size());
+                    const QPointF e = e1 - e0, q = e0 - p0, l = p1 - p0;
+                    const double den = l.x() * e.y() - l.y() * e.x();
+                    if (std::abs(den) < 1e-30) continue;
+                    const double u = (q.x() * e.y() - q.y() * e.x()) / den, v = (q.x() * l.y() - q.y() * l.x()) / den;
+                    if (v >= 0 && v < 1 && u >= 0 && u <= 1) at << (2 * u - 1) * reach;
+                }
+                std::sort(at.begin(), at.end());
+                if (outline.containsPoint(p0, Qt::OddEvenFill)) at.prepend(-reach);
+                if (at.size() % 2) at << reach;
+                for (int i = 0; i + 1 < at.size(); i += 2) on << std::make_pair(at.at(i), at.at(i + 1));
+            }
+            std::sort(on.begin(), on.end());
+            double lo = 0, hi = 0;
+            bool found = false;
+            for (const auto& [s0, s1] : on) {
+                if (!found) {
+                    if (s0 <= 0 && s1 >= 0) {
+                        lo = s0;
+                        hi = s1;
+                        found = true;
+                    }
+                    continue;
+                }
+                if (s0 <= hi + 1e-9 * reach) hi = std::max(hi, s1);
+            }
+            // (Stretches that start before it and reach it, joined below.)
+            for (auto it = on.crbegin(); found && it != on.crend(); ++it)
+                if (it->second >= lo - 1e-9 * reach && it->first < lo) lo = it->first;
+            const double breadth = found ? (hi - lo) * micrometre : run.width;
+            c.inside[a] = facesInside(std::max(breadth, run.width), run.thickness);
         }
     }
     QStringList viaSaid;

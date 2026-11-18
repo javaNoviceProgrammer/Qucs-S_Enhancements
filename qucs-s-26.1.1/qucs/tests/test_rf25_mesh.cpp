@@ -234,7 +234,7 @@ private slots:
         // width - 5 µm, 19 - the corners near a cap, where neither side
         // reaches the level, dropped straight across by up to that and
         // flattened it, 4.9 and 15 µm off the drawn outline (the review of
-        // 2c232022). Across by the curves' tolerance at most, and slid along
+        // 69534653). Across by the curves' tolerance at most, and slid along
         // their own sides else, each outline stays within it of itself, the
         // mesh says so, and its area within a part in a thousand (the disc
     // -0.027 %, where it was -0.33 %).
@@ -243,7 +243,7 @@ private slots:
             // (Through Processing as the tab runs it - its curves simplified
             //  first, to longer sides - and then meshed: meshed as drawn, the
             //  test passed where the app's outlines went 0.24 and 0.27 µm off,
-            //  the review of 10b60005.)
+            //  the review of 05304ec3.)
             const rf::Processed processed = rf::processShapes({{QStringLiteral("M1"), {outline}}}, {}, rf::Processing(), stack);
             if (processed.conductors.size() != 1) return -1;
             rf::MeshSettings how;
@@ -306,9 +306,12 @@ private slots:
                  qPrintable(sheet.warnings.join(" | ")));
         for (rf::Layer& l : stack.layers)
             if (l.name == QLatin1String("M1")) l.twoSheets = true;
+        // (As its two faces it holds its section's own inside - P52 -: said
+        //  only of a conductor more than about twice as tall as it is wide.)
         const rf::Mesh faces = rf::meshOf(wire, how, stack, 1e9);
-        QVERIFY2(says(faces.warnings, "solved as its two faces, their surface impedance holds the inside of a wide slab"),
-                 qPrintable(faces.warnings.join(" | ")));
+        QVERIFY2(!says(faces.warnings, "inductance at a low frequency reads high"), qPrintable(faces.warnings.join(" | ")));
+        const rf::Mesh tall = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 500, 2)}, how, stack, 1e9);
+        QVERIFY2(says(tall.warnings, "more than about twice as tall as it is wide"), qPrintable(tall.warnings.join(" | ")));
         // (Thin against its width: nothing said.)
         const rf::Mesh wide = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 500, 100)}, how, m.stack(), 1e9);
         QVERIFY2(!says(wide.warnings, "inductance at a low frequency reads high"), qPrintable(wide.warnings.join(" | ")));
@@ -316,7 +319,7 @@ private slots:
         //  perimeter is 9.8 - and a square pad's its side: a pad 40 µm
         //  across of this 5 µm metal, which twice its area over its
         //  perimeter took for 20 µm wide, is thin against it - the review
-        //  of 54357932.)
+        //  of b1b442fb.)
         QVERIFY2(says(sheet.warnings, "as narrow as 10 "), qPrintable(sheet.warnings.join(" | ")));
         const rf::Mesh pad = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 40, 40)}, how, m.stack(), 1e9);
         QVERIFY2(!says(pad.warnings, "inductance at a low frequency reads high"), qPrintable(pad.warnings.join(" | ")));

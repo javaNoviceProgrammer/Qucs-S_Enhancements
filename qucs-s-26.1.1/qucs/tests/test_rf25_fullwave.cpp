@@ -990,6 +990,61 @@ private slots:
         }
     }
 
+    // A wire as thick as it is wide, solved as its two faces, holds its own
+    // inside at a low frequency, not a wide slab's: a square loop of 0.5 by 0.5 mm wire read 24.7, 25.9 and
+    // 26.7 nH at 2, 4 and 8 cells across, heading for 27.8, where a Neumann
+    // sum over 16 by 16 filaments of each side gives 24.17 - the faces'
+    // surface impedance held mu0 t/12 a square, 4.17 nH over the loop, where
+    // the section's own beyond the faces' field is 0.17 of it. Now 22.8,
+    // 23.4 and 23.8, heading for 24.4; a wide metal's near what it was. (At 100 kHz
+    // and 6e5 S/m, the metal a quarter of its skin depth thick: at 10 kHz
+    // the charges' term outweighs the currents' some 1e14 times, and the
+    // solve keeps only a few digits of L.)
+    void aWireAsThickAsItIsWideHoldsItsOwnInsideAsItsFaces()
+    {
+        QVERIFY(std::abs(rf::facesInside(1, 1) - 0.1728) < 1e-3);
+        QVERIFY(std::abs(rf::facesInside(4, 1) - 0.586) < 1e-3);
+        QVERIFY(std::abs(rf::facesInside(10e-6, 1e-6) - 0.7764) < 1e-3);
+        QVERIFY(rf::facesInside(1000, 1) > 0.99 && rf::facesInside(1000, 1) <= 1);
+        QCOMPARE(rf::facesInside(0.25, 1), 0.0);
+        rf::Stack st = grounded(1, 5e-3, 0, 0.5e-3, 6e5);
+        st.layers[0].variant = QStringLiteral("open");
+        st.layers[2].twoSheets = true;
+        rf::Conductor loop;
+        loop.layer = QStringLiteral("M1");
+        loop.outline = QPolygonF(QList<QPointF>{{-5250, -100}, {-5250, -5250}, {5250, -5250}, {5250, 5250}, {-5250, 5250}, {-5250, 100},
+                                                {-4750, 100}, {-4750, 4750}, {4750, 4750}, {4750, -4750}, {-4750, -4750}, {-4750, -100}});
+        rf::FullWavePort p = edgePort(QPointF(-5000, -100), QString(), QPointF(0, 1));
+        p.terminals = true;
+        rf::PortTerminal t;
+        t.name = QStringLiteral("T1");
+        t.at = QPointF(-5000, 100);
+        t.face = true;
+        t.facing = QPointF(0, -1);
+        p.returns = {t};
+        QList<double> nh, skin;
+        for (const int across : {2, 4}) {
+            rf::MeshSettings how;
+            how.cellsAcross = across;
+            const rf::Mesh mesh = rf::meshOf({loop}, how, st, 1e8);
+            const rf::FullWave w = rf::fullWaveOf(mesh, {loop}, st, {p}, {1e5, 1e8});
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            nh << w.z.at(0).at(0).at(0).imag() / (2 * M_PI * 1e5) * 1e9;
+            skin << w.z.at(1).at(0).at(0).imag() / (2 * M_PI * 1e8) * 1e9;
+        }
+        qWarning("A square loop of wire as its two faces: %.3f and %.3f nH at 2 and 4 across, against 24.17; at 100 MHz %.3f and %.3f",
+                 nh.at(0), nh.at(1), skin.at(0), skin.at(1));
+        QVERIFY2(nh.at(1) > nh.at(0) && nh.at(1) < 24.17 * 1.005 && nh.at(1) > 24.17 * 0.95,
+                 qPrintable(QStringLiteral("%1 %2").arg(nh.at(0)).arg(nh.at(1))));
+        // (At 100 MHz, the skin a seventh of its thickness, the faces' skins'
+        //  reactance as it was: 22.367 and 22.424 nH before the inside was
+        //  held to the section's, 22.366 and 22.423 now. Its share faded as
+        //  the slab's own reactance falls left 22.315 and 22.376, as its
+        //  square, and 22.231 and 22.297, as itself.)
+        QVERIFY2(std::abs(skin.at(0) - 22.367) < 0.001 * 22.367 && std::abs(skin.at(1) - 22.424) < 0.001 * 22.424,
+                 qPrintable(QStringLiteral("%1 %2").arg(skin.at(0)).arg(skin.at(1))));
+    }
+
     // A layer that ends, its correction held as its factors - as past 5000
     // cells, a calibration's long strips over a mesa - is the correction held
     // whole: compressed and dense alike, the same S. Held as its factors, its
@@ -1158,7 +1213,7 @@ private slots:
     // A dispersive substrate that ends at its shapes: the full wave's
     // correction for its shapes is made once, of statics, so inside them it
     // is its permittivity as given at every frequency - and the answer says
-    // so (the review of 3789cfcb: nothing said it).
+    // so (the review of 357538a7: nothing said it).
     void aDispersiveLayerThatEndsSaysHowItIsTaken()
     {
         rf::Stack stack = grounded(9.8, 100e-6, 0.01, 1e-6, 5.8e7);
@@ -1182,7 +1237,7 @@ private slots:
         const rf::FullWave u = rf::fullWaveOf(mesh, conductors, uniaxial, {edgePort(QPointF(0, 50)), edgePort(QPointF(600, 50))}, {5e9}, 1e-6, &control);
         QVERIFY2(!u.ok() && u.problems.join(' ').contains(QStringLiteral("SUB is uniaxial and ends at its shapes")), qPrintable(why(u)));
         // Nor a magnetic one, which would be magnetic across the whole plane
-        // (the review of fa249cbd) - a magnetic loss alone the same.
+        // (the review of 975d4569) - a magnetic loss alone the same.
         for (const auto& [mur, mtand] : {std::pair{3.0, 0.0}, std::pair{1.0, 0.05}}) {
             rf::Stack magnetic = grounded(9.4, 100e-6, 0, 1e-6, 5.8e7);
             for (rf::Layer& l : magnetic.layers)
@@ -2219,7 +2274,7 @@ private slots:
         line(grounded(4, 100e-6), 1000, 100, 4, 100e-6, 4, {fl}, &plain);
         QVERIFY(lp.epsilonEff > 1.5 * rf::lineParameters(plain, 0, 1000e-6, fl).epsilonEff);
         // A magnetic loss alone, mu_r 1: the quasi-static solve says it
-        // leaves it out (the review of fa249cbd).
+        // leaves it out (the review of 975d4569).
         rf::Stack lossy = grounded(4, 100e-6);
         for (rf::Layer& layer : lossy.layers)
             if (layer.kind == rf::Layer::Substrate) layer.mtand = 0.05;
@@ -2602,7 +2657,7 @@ private slots:
             rf::portsOf(m, &problem);
             QVERIFY2(problem.contains(QStringLiteral("nought or above")), qPrintable(problem));
             ports->children.back().props.insert(QStringLiteral("r"), QStringLiteral("47"));
-            // An element is no port elsewhere either (the review of 8abc6cbb):
+            // An element is no port elsewhere either (the review of 705280f8):
             // the quasi-static loop's two ends are the model's two measuring
             // ports, the element listed before them; and a TRL calibration of
             // the two-port it is is not refused as a three-port.
