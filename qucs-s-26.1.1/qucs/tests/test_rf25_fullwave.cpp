@@ -5251,6 +5251,80 @@ private slots:
             }
         }
     }
+
+    // A sweep's near-field blocks kept from one frequency to the next on a
+    // thread (rf25_fullwave.cpp's NearBlocks, the floating structures of 19
+    // November): made to scale with the frequency by themselves, a lower
+    // frequency takes a higher one's as they are. The floating line over a
+    // decade and a half on one thread, from 1 kHz down to 1 Hz: factorized
+    // at the first frequency alone, the rest on its blocks, in as many
+    // iterations; its Z the same as factorized at every frequency, to
+    // GMRES's residual.
+    void aSweepKeepsItsNearFieldsBlocks()
+    {
+        rf::Stack st = grounded(9.8, 200e-6, 0, 0, 5.8e7);
+        st.layers.removeFirst();
+        const double l = 1000;
+        const QList<rf::Conductor> c = gssg(l);
+        const rf::Mesh mesh = meshed(c, 3, 100e-6);
+        const QList<double> fs{1e3, 300, 100, 30, 10, 3, 1};
+        QList<rf::FullWave> ways;
+        for (const bool reuse : {true, false}) {
+            rf::FullWaveControl control;
+            control.matrix = rf::FullWaveControl::Matrix::Compressed;
+            control.threads = 1;
+            control.reuseNear = reuse;
+            ways << rf::fullWaveOf(mesh, c, st, gssgPorts(l, false), fs, 1e-6, &control);
+            QVERIFY2(ways.last().ok(), qPrintable(why(ways.last())));
+            qWarning("%s: at most %d iterations", reuse ? "kept" : "made at each", ways.last().iterations);
+            QVERIFY2(ways.last().iterations < 60, qPrintable(QString::number(ways.last().iterations)));
+        }
+        QVERIFY2(says(ways.at(0).lines, "Of the 7 frequencies solved with the charges as unknowns of their own, 6 were preconditioned")
+                     && says(ways.at(0).lines, "1 factorized their own"),
+                 qPrintable(ways.at(0).lines.join(" | ")));
+        QVERIFY2(!says(ways.at(1).lines, "were preconditioned by the near field's blocks as a higher"), qPrintable(ways.at(1).lines.join(" | ")));
+        for (int k = 0; k < fs.size(); ++k) {
+            double most = 0, apart = 0;
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j) {
+                    most = std::max(most, std::abs(ways.at(1).z[k][i][j]));
+                    apart = std::max(apart, std::abs(ways.at(0).z[k][i][j] - ways.at(1).z[k][i][j]));
+                }
+            qWarning("%g Hz: kept within %.2e of made", fs.at(k), apart / most);
+            QVERIFY2(apart < 1e-8 * most, qPrintable(QStringLiteral("%1 Hz: %2").arg(fs.at(k)).arg(apart / most)));
+        }
+        // A line of 20 µm of copper, its loss and its jw L changing places
+        // across the sweep: 10 MHz's blocks take 3 MHz 20 iterations where
+        // its own take 13, each frequency's own 11 to 14. Given 16, 3 MHz on
+        // 10 MHz's falls short, factorizes its own and is solved again - not
+        // with its charges eliminated -, its Z the same as made at every
+        // frequency.
+        {
+            const rf::Stack thick = grounded(9.8, 100e-6, 0, 20e-6, 5.8e7);
+            const QList<rf::Conductor> line{strip(0, 0, 2000, 100)};
+            const QList<double> down{1e7, 3e6, 1e6, 3e5, 1e5, 3e4, 1e4};
+            QList<rf::FullWave> both;
+            for (const bool reuse : {true, false}) {
+                rf::FullWaveControl control;
+                control.matrix = rf::FullWaveControl::Matrix::Compressed;
+                control.threads = 1;
+                control.reuseNear = reuse;
+                control.augmentedMost = 16;
+                both << rf::fullWaveOf(meshed(line, 4, 25e-6, 4), line, thick, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))}, down,
+                                       1e-6, &control);
+                QVERIFY2(both.last().ok(), qPrintable(why(both.last())));
+                QVERIFY2(!says(both.last().lines, "fell short"), qPrintable(both.last().lines.join(" | ")));
+                QVERIFY2(both.last().lines.filter(QStringLiteral("loops and a tree")).size() == down.size(),
+                         qPrintable(both.last().lines.join(" | ")));
+            }
+            for (int k = 0; k < down.size(); ++k) {
+                const Matrix2 kept = zOf(both.at(0), k), made = zOf(both.at(1), k);
+                QVERIFY2((kept - made).cwiseAbs().maxCoeff() < 1e-8 * made.cwiseAbs().maxCoeff(),
+                         qPrintable(QStringLiteral("%1 Hz: %2").arg(down.at(k)).arg((kept - made).cwiseAbs().maxCoeff() / made.cwiseAbs().maxCoeff())));
+            }
+        }
+    }
+
 };
 
 QTEST_MAIN(TestRf25Fullwave)
