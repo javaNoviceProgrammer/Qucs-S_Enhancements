@@ -109,7 +109,20 @@ qucs_add_fem_test(test_fem3_fe)
 qucs_add_fem_test(test_fem3_solve)
 qucs_add_fem_test(test_fem3_solid)
 qucs_add_fem_test(test_fem3_magnetic)
-qucs_add_fem_test(test_fem3_eddy)
+# test_fem3_eddy as two ctest entries, each its own 900 s: the fast sweep's
+# and the heat's tests (each against exact solves at every frequency) apart
+# from the rest - together some 550 s under ASan on an idle M2 Ultra, past 900
+# beside other builds and on CI's slower runners. A test function added to
+# it is named in one of the two lists, or it does not run.
+add_executable(test_fem3_eddy test_fem3_eddy.cpp)
+target_link_libraries(test_fem3_eddy fem Qt6::Test)
+target_compile_definitions(test_fem3_eddy PRIVATE QUCS_EXAMPLES_DIR="${QUCS_EXAMPLES_DIR}")
+add_test(NAME test_fem3_eddy COMMAND test_fem3_eddy aRoundWire aCoax twoCoilsAndTheirRoles coreLosses aMeshCoarserThanItsSkinDepth
+         aTouchstoneOfTheCoils aDiscUnderARing aTerminalWhereAIsFree)
+add_test(NAME test_fem3_eddy_sweep COMMAND test_fem3_eddy aFastSweep heatOfTheLosses conductivityOfTemperature)
+set_tests_properties(test_fem3_eddy test_fem3_eddy_sweep PROPERTIES
+  ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1"
+  TIMEOUT 900)
 qucs_add_fem_test(test_fem3_semiconductor)
 # (177 s alone on an M2 Ultra on 11 November, where the 2D suite takes 81 s
 # alone and 462 s on CI's macOS runner: some 1010 s there by that rate, past

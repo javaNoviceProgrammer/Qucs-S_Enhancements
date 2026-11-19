@@ -131,14 +131,14 @@ private:
     struct Conductors {
         std::vector<char> conducting;   // by domain
         std::vector<int> eqV;           // by node dof: its equation (offset by nA + nP), -1 none, -3 held
-        std::vector<cd> heldPsi;        // by node dof: its held ψ
+        std::vector<cd> heldV;          // by node dof: its held potential (V; ψ = V/(jω))
         std::vector<char> electrode;    // by node dof: a terminal's or a ground's
         std::vector<char> electrodeFaces;   // by mesh face: a terminal's or a ground's
         std::vector<int> terminalOf;    // by node dof: the coil whose terminal it is on, -1
         std::vector<int> eqU;           // by coil: its potential's equation (a current held), -1 none (turns, or its voltage held)
         int nV = 0;
     };
-    bool buildConductors(Conductors& h, double omega, QString* error);
+    bool buildConductors(Conductors& h, QString* error);
     /// The faces currents physics \a tag holds, by topology face - its
     /// terminal's index in \a names (a Terminal's name, a Floating's own), -2
     /// a ground's (Ground, Electric Potential), -1 none: the last condition
@@ -152,13 +152,45 @@ private:
     double carriedCurrent(const Coil& c) const;
     void publishConductivity();
     bool solveHarmonic(const Options3& o, QString* error);
+    bool sweepFrequencies(const Options3& o, const std::vector<double>& frequencies, double tolerance, const std::function<bool(int)>& each,
+                          QString* error) override;
+    /// The frequency domain's system, whatever ω: its conductors and
+    /// equations, K0 and K1 (the matrix K0 + jω K1), its right-hand side
+    /// b(ω) = bc + jω bj, its ports' (1 A each, ω's none), and what makes
+    /// its results.
+    struct Harmonic {
+        Conductors h;
+        Equations q;
+        double gaugeScale = 1;
+        std::vector<double> held;   // by edge dof: A's held value
+        std::vector<std::vector<std::array<Expression, 3>>> unit;   // by coil: turns' J at 1 A
+        Eigen::SparseMatrix<cd> K0, K1;
+        Eigen::VectorXcd bc, bj;
+        std::vector<int> ports;     // the coils fed a current
+        Eigen::MatrixXcd P;         // by port: its right-hand side (none: not swept)
+        int oV = 0, n = 0;
+        double assembled = 0;       // s
+    };
+    bool prepareHarmonic(const Options3& o, Harmonic& hs, QString* error);
+    /// [the solution, each port's] at ω, by a factorization of K0 + jω K1;
+    /// and (\a moments 1, 2) their first and second derivatives in ω after
+    /// them, each a solve of the same factors - x' = A⁻¹ (b' - j K1 x), x''
+    /// = -2 A⁻¹ j K1 x'.
+    bool solveExactly(const Options3& o, const Harmonic& hs, double omega, Eigen::MatrixXcd& X, QString* error, int moments = 0);
+    /// The field, the coils' results and the impedance matrix of solutions
+    /// \a X ([the solution, each port's]) at ω.
+    void finishHarmonic(const Options3& o, const Harmonic& hs, double omega, const Eigen::MatrixXcd& X);
     void setHarmonicGlobals();
-    /// The harmonic system at ω (\a omega): (K + jωσM) A + jω C ψ + Bᵀ λ =
-    /// J, jω (Cᵀ A + L ψ) = the currents held (each terminal's equation's),
-    /// B A = 0; \a r its right-hand side less what the held values give
-    /// (\a held: by A's edge dof, its held value; ψ's by Conductors), \a M
-    /// its matrix where \a matrix.
-    void assembleHarmonic(const Equations& q, const Conductors& h, double omega, const std::vector<double>& held, const std::vector<cd>& heldPsi,
+    /// The harmonic system, (K + jωσM) A + jω C ψ + Bᵀ λ = J, jω (Cᵀ A +
+    /// L ψ) = the currents held (each terminal's equation's), B A = 0, is
+    /// K0 + jω K1 - its matrix affine in ω, each conductor's block jω's
+    /// (ψ = V/(jω)). \a parts 1 assembles K0 (the curl-curl, the gauge) and
+    /// the sources J (and the surface currents where \a sheets); 2 K1 (σ's
+    /// blocks). Both of the same pattern, explicit noughts kept: K0 + jω K1
+    /// a sum of their values. \a r: the sources (1) less what the held
+    /// values give - \a held by A's edge dof, \a heldV (volts: K1 ψ jω = K1
+    /// V) by node; \a M the matrix where \a matrix.
+    void assembleHarmonic(const Equations& q, const Conductors& h, int parts, const std::vector<double>& held, const std::vector<cd>& heldV,
                           const std::vector<std::array<Expression, 3>>& J, bool matrix, bool sheets, Eigen::SparseMatrix<cd>& M,
                           Eigen::VectorXcd& r, double gaugeScale) const;
     double gaugeScaleOf() const;
@@ -197,6 +229,7 @@ private:
     // a current (its ports) and their impedance matrix, the losses (resistive
     // and magnetic) and the energy (time averages).
     double a_omega = 0;
+    bool a_harmonic = false;   // its sources a frequency domain's (a single conductor's found)
     std::vector<cd> a_U, a_I, a_flux;
     std::vector<int> a_ports;
     std::vector<std::vector<cd>> a_Z;
@@ -540,7 +573,7 @@ std::vector<std::array<Expression, 3>> MagneticProblem3::sourcesOf(int only) con
                 if (!coil.on[d] || (only >= 0 && only != k)) continue;
                 // (In the frequency domain a single conductor's current is
                 // found, not given.)
-                if (a_omega > 0 && coil.single) continue;
+                if (a_harmonic && coil.single) continue;
                 // (A coil alone at 1 A: N / I_ec times its J.)
                 const double scale = only >= 0 ? coil.perAmp : coil.scale;
                 terms << QStringLiteral("%1*%2.J%3").arg(scale, 0, 'g', 17).arg(coil.ec, QString::fromLatin1(axes[c]));
@@ -917,6 +950,7 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
     // conductors.)
     if (o.frequency > 0) return solveHarmonic(o, error);
     a_omega = 0;
+    a_harmonic = false;
     f.terminals.clear();
     a_U.clear();
     a_I.clear();
@@ -1199,7 +1233,7 @@ double MagneticProblem3::carriedCurrent(const Coil& c) const
     return any ? sum : NaN;
 }
 
-bool MagneticProblem3::buildConductors(Conductors& h, double omega, QString* error)
+bool MagneticProblem3::buildConductors(Conductors& h, QString* error)
 {
     const Field3& f = a_s.fields()[std::size_t(a_fi)];
     const Space3& ns = *f.space;
@@ -1249,7 +1283,7 @@ bool MagneticProblem3::buildConductors(Conductors& h, double omega, QString* err
         }
     }
     h.eqV.assign(N, -1);
-    h.heldPsi.assign(N, cd(0));
+    h.heldV.assign(N, cd(0));
     h.electrode.assign(N, 0);
     h.terminalOf.assign(N, -1);
     for (int e = 0; e < ns.elements(); ++e) {
@@ -1331,7 +1365,6 @@ bool MagneticProblem3::buildConductors(Conductors& h, double omega, QString* err
     }
     // The equations: each coil's terminal one (its current held), or held
     // at its voltage; a ground's nought; the rest one each.
-    const cd jw(0, omega);
     h.eqU.assign(a_coils.size(), -1);
     int next = 0;
     for (int c = 0; c < int(a_coils.size()); ++c) {
@@ -1346,14 +1379,14 @@ bool MagneticProblem3::buildConductors(Conductors& h, double omega, QString* err
         }
         const int c = h.terminalOf[k];
         h.eqV[k] = c >= 0 && h.eqU[std::size_t(c)] >= 0 ? h.eqU[std::size_t(c)] : -3;
-        if (c >= 0 && a_coils[std::size_t(c)].role == Coil::Voltage) h.heldPsi[k] = evalAt(a_coils[std::size_t(c)].voltage, Vec3{}) / jw;
+        if (c >= 0 && a_coils[std::size_t(c)].role == Coil::Voltage) h.heldV[k] = evalAt(a_coils[std::size_t(c)].voltage, Vec3{});
     }
     h.nV = next;
     return true;
 }
 
-void MagneticProblem3::assembleHarmonic(const Equations& q, const Conductors& h, double omega, const std::vector<double>& held,
-                                        const std::vector<cd>& heldPsi, const std::vector<std::array<Expression, 3>>& J, bool matrix,
+void MagneticProblem3::assembleHarmonic(const Equations& q, const Conductors& h, int parts, const std::vector<double>& held,
+                                        const std::vector<cd>& heldV, const std::vector<std::array<Expression, 3>>& J, bool matrix,
                                         bool sheets, Eigen::SparseMatrix<cd>& M, Eigen::VectorXcd& r, double gaugeScale) const
 {
     const Field3& f = a_s.fields()[std::size_t(a_fi)];
@@ -1362,7 +1395,11 @@ void MagneticProblem3::assembleHarmonic(const Equations& q, const Conductors& h,
     const Mesh3& mesh = a_s.mesh();
     const Solution3::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
     const int oP = q.nA, oV = q.nA + q.nP, n = oV + h.nV;
-    const cd jw(0, omega);
+    // (K1's σ blocks of jω 1; K0's none. K0's curl-curl, gauge and sources
+    // alone in it.)
+    const bool k0 = parts == 1;
+    const cd jw = k0 ? cd(0) : cd(1);
+    const double curl = k0 ? 1.0 : 0.0;
     using T = Eigen::Triplet<cd>;
     std::vector<T> tm;
     r = Eigen::VectorXcd::Zero(n);
@@ -1400,7 +1437,7 @@ void MagneticProblem3::assembleHarmonic(const Equations& q, const Conductors& h,
         };
         if (constNu) readNu(false);
         if (conducting && constSigma) readSigma(false);
-        const bool sourced = J[std::size_t(d)][0].isValid() || J[std::size_t(d)][1].isValid() || J[std::size_t(d)][2].isValid();
+        const bool sourced = k0 && (J[std::size_t(d)][0].isValid() || J[std::size_t(d)][1].isValid() || J[std::size_t(d)][2].isValid());
         std::fill(Ke.begin(), Ke.end(), cd(0));
         std::fill(Cav.begin(), Cav.end(), cd(0));
         std::fill(Lvv.begin(), Lvv.end(), cd(0));
@@ -1429,20 +1466,20 @@ void MagneticProblem3::assembleHarmonic(const Equations& q, const Conductors& h,
                         Jv[k] = ev.eval(J[std::size_t(d)][std::size_t(k)]);
                         if (!std::isfinite(Jv[k])) Jv[k] = 0;
                     }
-            if (matrix)
-                for (int j = 0; j < nb; ++j) {
-                    // ν curl Wj, σ Wj
-                    cd nc[3];
-                    for (int k = 0; k < 3; ++k) nc[k] = nu[3 * k] * b.c[j][0] + nu[3 * k + 1] * b.c[j][1] + nu[3 * k + 2] * b.c[j][2];
-                    double sw[3] = {0, 0, 0};
-                    if (conducting)
-                        for (int k = 0; k < 3; ++k) sw[k] = s9[3 * k] * b.v[j][0] + s9[3 * k + 1] * b.v[j][1] + s9[3 * k + 2] * b.v[j][2];
-                    for (int i = 0; i < nb; ++i) {
-                        cd v = b.c[i][0] * nc[0] + b.c[i][1] * nc[1] + b.c[i][2] * nc[2];
-                        if (conducting) v += jw * (b.v[i][0] * sw[0] + b.v[i][1] * sw[1] + b.v[i][2] * sw[2]);
-                        Ke[std::size_t(i * nb + j)] += w * v;
-                    }
+            // (Also for a right-hand side alone: what the held values give.)
+            for (int j = 0; j < nb; ++j) {
+                // ν curl Wj, σ Wj
+                cd nc[3];
+                for (int k = 0; k < 3; ++k) nc[k] = nu[3 * k] * b.c[j][0] + nu[3 * k + 1] * b.c[j][1] + nu[3 * k + 2] * b.c[j][2];
+                double sw[3] = {0, 0, 0};
+                if (conducting)
+                    for (int k = 0; k < 3; ++k) sw[k] = s9[3 * k] * b.v[j][0] + s9[3 * k + 1] * b.v[j][1] + s9[3 * k + 2] * b.v[j][2];
+                for (int i = 0; i < nb; ++i) {
+                    cd v = curl * (b.c[i][0] * nc[0] + b.c[i][1] * nc[1] + b.c[i][2] * nc[2]);
+                    if (conducting) v += jw * (b.v[i][0] * sw[0] + b.v[i][1] * sw[1] + b.v[i][2] * sw[2]);
+                    Ke[std::size_t(i * nb + j)] += w * v;
                 }
+            }
             if (conducting)
                 for (int k = 0; k < npn; ++k) {
                     double sgk[3];
@@ -1451,7 +1488,7 @@ void MagneticProblem3::assembleHarmonic(const Equations& q, const Conductors& h,
                     for (int l = 0; l < npn; ++l) Lvv[std::size_t(l * npn + k)] += w * jw * (g[l][0] * sgk[0] + g[l][1] * sgk[1] + g[l][2] * sgk[2]);
                 }
             for (int k = 0; k < npn; ++k)
-                for (int j = 0; j < nb; ++j) Be[std::size_t(k * nb + j)] += w * gaugeScale * (g[k][0] * b.v[j][0] + g[k][1] * b.v[j][1] + g[k][2] * b.v[j][2]);
+                for (int j = 0; j < nb; ++j) Be[std::size_t(k * nb + j)] += curl * w * gaugeScale * (g[k][0] * b.v[j][0] + g[k][1] * b.v[j][1] + g[k][2] * b.v[j][2]);
             if (sourced)
                 for (int i = 0; i < nb; ++i) Fe[std::size_t(i)] += w * (Jv[0] * b.v[i][0] + Jv[1] * b.v[i][1] + Jv[2] * b.v[i][2]);
         }
@@ -1475,8 +1512,8 @@ void MagneticProblem3::assembleHarmonic(const Equations& q, const Conductors& h,
                     const cd v = Cav[std::size_t(i * npn + k)];
                     if (vk >= 0) {
                         if (matrix) tm.emplace_back(ei, oV + vk, v);
-                    } else if (vk == -3 && heldPsi[std::size_t(nd[k])] != cd(0)) {
-                        r(ei) -= v * heldPsi[std::size_t(nd[k])];
+                    } else if (vk == -3 && heldV[std::size_t(nd[k])] != cd(0)) {
+                        r(ei) -= v * heldV[std::size_t(nd[k])];
                     }
                 }
         }
@@ -1514,14 +1551,14 @@ void MagneticProblem3::assembleHarmonic(const Equations& q, const Conductors& h,
                 const cd v = Lvv[std::size_t(l * npn + k)];
                 if (vl >= 0) {
                     if (matrix) tm.emplace_back(oV + vk, oV + vl, v);
-                } else if (vl == -3 && heldPsi[std::size_t(nd[l])] != cd(0)) {
-                    r(oV + vk) -= v * heldPsi[std::size_t(nd[l])];
+                } else if (vl == -3 && heldV[std::size_t(nd[l])] != cd(0)) {
+                    r(oV + vk) -= v * heldV[std::size_t(nd[l])];
                 }
             }
         }
     }
     // The surface currents: ∫ Js·Wi on their faces (the sweep's: none).
-    if (sheets) {
+    if (sheets && k0) {
         const int degree = es.order() == 1 ? 2 : 4;
         for (int fi = 0; fi < int(mesh.faces.size()); ++fi) {
             const Mesh3::Face& mf = mesh.faces[std::size_t(fi)];
@@ -1638,7 +1675,7 @@ double MagneticProblem3::gaugeScaleOf() const
     return 1 / (Mu0 * hTypical * hTypical);
 }
 
-bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
+bool MagneticProblem3::prepareHarmonic(const Options3& o, Harmonic& hs, QString* error)
 {
     Field3& f = field();
     const EdgeSpace3& es = *f.edges;
@@ -1651,14 +1688,12 @@ bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
                      .arg(name);
         return false;
     }
-    const double omega = 2 * M_PI * o.frequency;
-    const cd jw(0, omega);
-    a_omega = omega;
     a_inductance.clear();
+    a_harmonic = true;
     if (!buildSources(error)) return false;
-    Conductors h;
-    if (!buildConductors(h, omega, error)) return false;
-    Equations q;
+    Conductors& h = hs.h;
+    Equations& q = hs.q;
+    if (!buildConductors(h, error)) return false;
     if (!buildEquations(q, error)) return false;
     // A coil's terminal and ground on faces whose tangential A is held
     // (Magnetic Insulation, a Magnetic Potential): n × E = 0 on them, the
@@ -1677,32 +1712,74 @@ bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
                      .arg(face + 1);
         return false;
     }
-    const double gaugeScale = gaugeScaleOf();
-    skinDepthCheck(h, omega);
+    hs.gaugeScale = gaugeScaleOf();
     const std::size_t nE = std::size_t(es.size()), nN = std::size_t(ns.size());
-    std::vector<double> held(nE, 0.0);
+    hs.held.assign(nE, 0.0);
     for (std::size_t k = 0; k < nE; ++k)
-        if (q.eqA[k] == -3) held[k] = q.fixedA[k];
-    const int oV = q.nA + q.nP;
-    const std::vector<std::array<Expression, 3>> J = sourcesOf(-1);
-    const QString at = tr(" at %1").arg(formatQuantity(o.frequency, Dim::of(0, 0, -1)));
+        if (q.eqA[k] == -3) hs.held[k] = q.fixedA[k];
+    hs.oV = q.nA + q.nP;
+    hs.n = hs.oV + h.nV;
+    const int nc = int(a_coils.size());
+    hs.unit.assign(static_cast<std::size_t>(nc), {});
+    for (int c = 0; c < nc; ++c)
+        if (!a_coils[std::size_t(c)].single) hs.unit[std::size_t(c)] = sourcesOf(c);
+    // K0 and the sources less what the held A gives with it; K1 and what
+    // the held A and the held potentials give with it - b(ω) = (r0 + rV +
+    // the currents held) + jω rA.
     o.tell(tr("%1: assembling").arg(name));
     QElapsedTimer clock;
     clock.start();
-    Eigen::SparseMatrix<cd> M;
-    Eigen::VectorXcd r;
-    assembleHarmonic(q, h, omega, held, h.heldPsi, J, true, true, M, r, gaugeScale);
-    for (int c = 0; c < int(a_coils.size()); ++c)
-        if (h.eqU[std::size_t(c)] >= 0 && a_coils[std::size_t(c)].role == Coil::Current) r(oV + h.eqU[std::size_t(c)]) += evalAt(a_coils[std::size_t(c)].current, Vec3{});
-    const qint64 assembled = clock.elapsed();
+    const std::vector<std::array<Expression, 3>> J = sourcesOf(-1);
+    const std::vector<double> none(nE, 0.0);
+    const std::vector<cd> noneV(nN, cd(0));
+    Eigen::VectorXcd r0, rA, rV;
+    assembleHarmonic(q, h, 1, hs.held, noneV, J, true, true, hs.K0, r0, hs.gaugeScale);
+    assembleHarmonic(q, h, 2, hs.held, noneV, J, true, false, hs.K1, rA, hs.gaugeScale);
+    Eigen::SparseMatrix<cd> unused;
+    assembleHarmonic(q, h, 2, none, h.heldV, J, false, false, unused, rV, hs.gaugeScale);
+    hs.bc = r0 + rV;
+    for (int c = 0; c < nc; ++c)
+        if (h.eqU[std::size_t(c)] >= 0 && a_coils[std::size_t(c)].role == Coil::Current) hs.bc(hs.oV + h.eqU[std::size_t(c)]) += evalAt(a_coils[std::size_t(c)].current, Vec3{});
+    hs.bj = rA;
+    // Each port's right-hand side, 1 A in it (ω's none): a conductor's on
+    // its terminal's equation, turns' their current density.
+    hs.ports.clear();
+    for (int c = 0; c < nc; ++c) {
+        const Coil& coil = a_coils[std::size_t(c)];
+        if (coil.single && coil.role != Coil::Current) continue;
+        hs.ports.push_back(c);
+    }
+    hs.P = Eigen::MatrixXcd::Zero(hs.n, o.sweep ? Eigen::Index(hs.ports.size()) : 0);
+    if (o.sweep)
+        for (int jp = 0; jp < int(hs.ports.size()); ++jp) {
+            const int c = hs.ports[std::size_t(jp)];
+            if (a_coils[std::size_t(c)].single) hs.P(hs.oV + h.eqU[std::size_t(c)], jp) = 1.0;
+            else {
+                Eigen::VectorXcd rj;
+                assembleHarmonic(q, h, 1, none, noneV, hs.unit[std::size_t(c)], false, false, unused, rj, hs.gaugeScale);
+                hs.P.col(jp) = rj;
+            }
+        }
+    hs.assembled = clock.elapsed() / 1000.0;
+    return true;
+}
+
+bool MagneticProblem3::solveExactly(const Options3& o, const Harmonic& hs, double omega, Eigen::MatrixXcd& X, QString* error, int moments)
+{
+    const QString name = a_node->name();
+    const QString at = tr(" at %1").arg(formatQuantity(omega / (2 * M_PI), Dim::of(0, 0, -1)));
+    const cd jw(0, omega);
+    const Eigen::SparseMatrix<cd> M = hs.K0 + jw * hs.K1;
     o.tell(tr("%1: factorizing, %2 unknowns").arg(name).arg(M.rows()));
+    QElapsedTimer clock;
+    clock.start();
     SparseComplexLdlt lu;
     lu.compute(M);
     a_s.log << tr("%1%2: assembled in %3 s, %4 nonzeros; factorized in %5 s (%6%7)")
                    .arg(name, at)
-                   .arg(assembled / 1000.0, 0, 'f', 2)
+                   .arg(hs.assembled, 0, 'f', 2)
                    .arg(M.nonZeros())
-                   .arg((clock.elapsed() - assembled) / 1000.0, 0, 'f', 2)
+                   .arg(clock.elapsed() / 1000.0, 0, 'f', 2)
                    .arg(lu.name(), lu.factorBytes() > 0 ? tr("; its factors %1 MB%2")
                                                               .arg(lu.factorBytes() / 1048576.0, 0, 'f', 1)
                                                               .arg(lu.reusedAnalysis() ? tr(", its analysis kept from before") : QString())
@@ -1712,17 +1789,31 @@ bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
                      .arg(name, QString::fromStdString(lu.lastErrorMessage()));
         return false;
     }
+    o.tell(tr("%1: solving with its factors").arg(name));
+    // [b(ω), the ports'], each refined once against the matrix; then their
+    // derivatives in ω, asked.
+    const int cols = 1 + int(hs.P.cols());
+    X.resize(hs.n, cols * (1 + std::clamp(moments, 0, 2)));
     double residual = 0;
-    const auto solveWith = [&lu, &M, &residual](const Eigen::VectorXcd& b) -> Eigen::VectorXcd {
+    const auto solveRefined = [&](const Eigen::VectorXcd& b) {
         Eigen::VectorXcd x = lu.solve(b);
         x += lu.solve(b - M * x);
-        const double bn = b.norm();
-        residual = bn > 0 ? (b - M * x).norm() / bn : 0;
         return x;
     };
-    o.tell(tr("%1: solving with its factors").arg(name));
-    const Eigen::VectorXcd x = solveWith(r);
-    if (!x.allFinite()) {
+    const cd j1(0, 1);
+    for (int j = 0; j < cols; ++j) {
+        const Eigen::VectorXcd b = j == 0 ? Eigen::VectorXcd(hs.bc + jw * hs.bj) : Eigen::VectorXcd(hs.P.col(j - 1));
+        X.col(j) = solveRefined(b);
+        const double bn = b.norm();
+        if (j == 0) residual = bn > 0 ? (b - M * X.col(j)).norm() / bn : 0;
+        if (moments >= 1) {
+            Eigen::VectorXcd d = -j1 * (hs.K1 * X.col(j));
+            if (j == 0) d += j1 * hs.bj;
+            X.col(cols + j) = solveRefined(d);
+        }
+        if (moments >= 2) X.col(2 * cols + j) = solveRefined(Eigen::VectorXcd(-2.0 * j1 * (hs.K1 * X.col(cols + j))));
+    }
+    if (!X.allFinite()) {
         *error = tr("%1: its solve is not finite").arg(name);
         return false;
     }
@@ -1730,29 +1821,46 @@ bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
                   "relative residual %8, refined once")
                    .arg(name, at)
                    .arg(M.rows())
-                   .arg(q.nA)
-                   .arg(es.order())
-                   .arg(q.nP)
-                   .arg(h.nV)
+                   .arg(hs.q.nA)
+                   .arg(field().edges->order())
+                   .arg(hs.q.nP)
+                   .arg(hs.h.nV)
                    .arg(residual, 0, 'g', 2);
-    // A (by edge dof) and V = jω ψ (by node) of a solution x, the held
-    // values \a heldA and \a heldPsi.
-    const auto unpack = [&](const Eigen::VectorXcd& sol, const std::vector<double>& heldA, const std::vector<cd>& heldPsi, std::vector<cd>& A,
-                            std::vector<cd>& V) {
+    return true;
+}
+
+void MagneticProblem3::finishHarmonic(const Options3& o, const Harmonic& hs, double omega, const Eigen::MatrixXcd& X)
+{
+    Field3& f = field();
+    const EdgeSpace3& es = *f.edges;
+    const Space3& ns = *f.space;
+    const Mesh3& mesh = a_s.mesh();
+    const QString name = a_node->name();
+    const Conductors& h = hs.h;
+    const Equations& q = hs.q;
+    const int oV = hs.oV;
+    const cd jw(0, omega);
+    a_omega = omega;
+    skinDepthCheck(h, omega);
+    const std::size_t nE = std::size_t(es.size()), nN = std::size_t(ns.size());
+    // A (by edge dof) and V (by node: jω ψ, or held) of a solution, the
+    // held values its own (the main one's) or none (a port's).
+    const auto unpack = [&](const Eigen::VectorXcd& sol, bool heldToo, std::vector<cd>& A, std::vector<cd>& V) {
         A.assign(nE, cd(0));
-        for (std::size_t k = 0; k < nE; ++k) A[k] = q.eqA[k] >= 0 ? sol(q.eqA[k]) : q.eqA[k] == -3 ? cd(heldA[k]) : cd(0);
+        for (std::size_t k = 0; k < nE; ++k) A[k] = q.eqA[k] >= 0 ? sol(q.eqA[k]) : q.eqA[k] == -3 && heldToo ? cd(hs.held[k]) : cd(0);
         V.assign(nN, cd(0));
-        for (std::size_t k = 0; k < nN; ++k) V[k] = jw * (h.eqV[k] >= 0 ? sol(oV + h.eqV[k]) : h.eqV[k] == -3 ? heldPsi[k] : cd(0));
+        for (std::size_t k = 0; k < nN; ++k) V[k] = h.eqV[k] >= 0 ? jw * sol(oV + h.eqV[k]) : h.eqV[k] == -3 && heldToo ? h.heldV[k] : cd(0);
     };
+    const Eigen::VectorXcd x = X.col(0);
     std::vector<cd> A, V;
-    unpack(x, held, h.heldPsi, A, V);
+    unpack(x, true, A, V);
     f.values.assign(2 * nE + 3 * nN, 0.0);
     for (std::size_t k = 0; k < nE; ++k) {
         f.values[k] = A[k].real();
         f.values[nE + nN + k] = A[k].imag();
     }
     for (std::size_t k = 0; k < nN; ++k) {
-        f.values[nE + k] = q.eqP[k] >= 0 ? x(q.nA + q.eqP[k]).real() / gaugeScale : 0.0;
+        f.values[nE + k] = q.eqP[k] >= 0 ? x(q.nA + q.eqP[k]).real() / hs.gaugeScale : 0.0;
         f.values[2 * nE + nN + k] = V[k].real();
         f.values[2 * nE + 2 * nN + k] = V[k].imag();
     }
@@ -1762,9 +1870,6 @@ bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
     // ∫ A·j, j their current density at 1 A.
     const PrismRule& rule = es.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
     const int nc = int(a_coils.size());
-    std::vector<std::vector<std::array<Expression, 3>>> unit(static_cast<std::size_t>(nc));
-    for (int c = 0; c < nc; ++c)
-        if (!a_coils[std::size_t(c)].single) unit[std::size_t(c)] = sourcesOf(c);
     const auto currents = [&](const std::vector<cd>& Av, const std::vector<cd>& Vv) {
         std::vector<cd> out(static_cast<std::size_t>(nc), cd(0));
         PointEvaluator3 ev(a_s);
@@ -1823,7 +1928,7 @@ bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
         for (int e = 0; e < es.elements(); ++e) {
             const int d = mesh.domain[std::size_t(e)];
             if (d < 0 || !f.domains[std::size_t(d)]) continue;
-            const auto& ju = unit[std::size_t(c)][std::size_t(d)];
+            const auto& ju = hs.unit[std::size_t(c)][std::size_t(d)];
             if (!ju[0].isValid() && !ju[1].isValid() && !ju[2].isValid()) continue;
             const int* ed = es.dofs(e);
             for (const auto& qp : rule.points) {
@@ -1840,12 +1945,13 @@ bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
         }
         return total;
     };
-    const auto voltageOf = [&](int c, const Eigen::VectorXcd& sol, const std::vector<cd>& Av, const std::vector<cd>& heldPsi) -> cd {
+    const auto voltageOf = [&](int c, const Eigen::VectorXcd& sol, const std::vector<cd>& Av, bool heldToo) -> cd {
         const Coil& coil = a_coils[std::size_t(c)];
         if (!coil.single) return jw * fluxOf(c, Av);
         if (h.eqU[std::size_t(c)] >= 0) return jw * sol(oV + h.eqU[std::size_t(c)]);
-        for (std::size_t k = 0; k < nN; ++k)
-            if (h.terminalOf[k] == c) return jw * heldPsi[k];
+        if (heldToo)
+            for (std::size_t k = 0; k < nN; ++k)
+                if (h.terminalOf[k] == c) return h.heldV[k];
         return 0;
     };
     a_U.assign(std::size_t(nc), cd(0));
@@ -1853,27 +1959,24 @@ bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
     a_flux.assign(std::size_t(nc), cd(0));
     const std::vector<cd> found = currents(A, V);
     f.terminals.clear();
-    a_ports.clear();
+    a_ports = hs.ports;
     for (int c = 0; c < nc; ++c) {
         const Coil& coil = a_coils[std::size_t(c)];
-        a_U[std::size_t(c)] = voltageOf(c, x, A, h.heldPsi);
+        a_U[std::size_t(c)] = voltageOf(c, x, A, true);
         if (coil.single) a_I[std::size_t(c)] = coil.role == Coil::Current ? cd(evalAt(coil.current, Vec3{})) : coil.role == Coil::Floating ? cd(0) : found[std::size_t(c)];
         else {
             a_I[std::size_t(c)] = evalAt(coil.current, Vec3{});
             a_flux[std::size_t(c)] = fluxOf(c, A);
         }
-        const bool port = !coil.single || coil.role == Coil::Current;
-        if (port) a_ports.push_back(c);
         Field3::Terminal t;
         t.name = coil.name;
-        t.floating = port;
+        t.floating = std::find(hs.ports.begin(), hs.ports.end(), c) != hs.ports.end();
         t.potential = a_U[std::size_t(c)].real();
         t.charge = a_I[std::size_t(c)].real();
         f.terminals.push_back(t);
     }
     // A current held as given: what flows in as solved, said where it is
-    // not (to a part in 10⁴: a coil fed where A is not held, its current
-    // half lost through the gauge).
+    // not (to a part in 10⁴).
     for (int c = 0; c < nc; ++c) {
         const Coil& coil = a_coils[std::size_t(c)];
         if (!coil.single || coil.role != Coil::Current) continue;
@@ -1884,26 +1987,173 @@ bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
     // Swept: each port fed 1 A in turn, the others none (a conductor's
     // voltage held at nought), no other source - their impedance matrix.
     a_Z.clear();
-    if (o.sweep && !a_ports.empty()) {
-        const int np = int(a_ports.size());
+    if (o.sweep && !hs.ports.empty() && X.cols() == 1 + Eigen::Index(hs.ports.size())) {
+        const int np = int(hs.ports.size());
         a_Z.assign(std::size_t(np), std::vector<cd>(std::size_t(np), cd(0)));
-        const std::vector<double> none(nE, 0.0);
-        const std::vector<cd> nonePsi(nN, cd(0));
         for (int jp = 0; jp < np; ++jp) {
-            const int c = a_ports[std::size_t(jp)];
-            o.tell(tr("%1: the impedance matrix, coil %2 of %3").arg(name).arg(jp + 1).arg(np));
-            Eigen::VectorXcd rj;
-            if (a_coils[std::size_t(c)].single) {
-                rj = Eigen::VectorXcd::Zero(M.rows());
-                rj(oV + h.eqU[std::size_t(c)]) = 1.0;
-            } else {
-                Eigen::SparseMatrix<cd> unused;
-                assembleHarmonic(q, h, omega, none, nonePsi, unit[std::size_t(c)], false, false, unused, rj, gaugeScale);
-            }
-            const Eigen::VectorXcd xj = solveWith(rj);
+            const Eigen::VectorXcd xj = X.col(1 + jp);
             std::vector<cd> Aj, Vj;
-            unpack(xj, none, nonePsi, Aj, Vj);
-            for (int kp = 0; kp < np; ++kp) a_Z[std::size_t(kp)][std::size_t(jp)] = voltageOf(a_ports[std::size_t(kp)], xj, Aj, nonePsi);
+            unpack(xj, false, Aj, Vj);
+            for (int kp = 0; kp < np; ++kp) a_Z[std::size_t(kp)][std::size_t(jp)] = voltageOf(hs.ports[std::size_t(kp)], xj, Aj, false);
+        }
+    }
+}
+
+bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
+{
+    Harmonic hs;
+    if (!prepareHarmonic(o, hs, error)) return false;
+    const double omega = 2 * M_PI * o.frequency;
+    Eigen::MatrixXcd X;
+    if (!solveExactly(o, hs, omega, X, error)) return false;
+    finishHarmonic(o, hs, omega, X);
+    return true;
+}
+
+bool MagneticProblem3::sweepFrequencies(const Options3& o, const std::vector<double>& frequencies, double tolerance,
+                                        const std::function<bool(int)>& each, QString* error)
+{
+    const QString name = a_node->name();
+    const int Nf = int(frequencies.size());
+    Harmonic hs;
+    if (!prepareHarmonic(o, hs, error)) return false;
+    QElapsedTimer clock;
+    clock.start();
+    const int cols = 1 + int(hs.P.cols());
+    // The rows' scale, |K0 + jω K1|'s diagonal (the gauge's rows, none: the
+    // edges' mean): a residual of the conductors' rows - jωσ's, small at a
+    // low frequency - weighed as one of A's.
+    const Eigen::VectorXcd d0 = hs.K0.diagonal(), d1 = hs.K1.diagonal();
+    double meanA = 0;
+    for (int k = 0; k < hs.q.nA; ++k) meanA += std::abs(d0(k)) / std::max(1, hs.q.nA);
+    const auto weightsAt = [&](double omega) {
+        Eigen::VectorXd w(hs.n);
+        for (int k = 0; k < hs.n; ++k) {
+            const double dk = std::abs(d0(k) + cd(0, omega) * d1(k));
+            w(k) = 1 / std::sqrt(dk > 0 ? dk : std::max(meanA, 1e-300));
+        }
+        return w;
+    };
+    // The reduced basis: the solutions at the frequencies solved exactly,
+    // orthonormal; K0 and K1 on it (Vᵀ, no conjugate: their symmetry kept).
+    Eigen::MatrixXcd V(hs.n, 0);
+    Eigen::MatrixXcd R0, R1, Vbc, Vbj, VP;
+    const auto grow = [&](const Eigen::MatrixXcd& X) {
+        for (int j = 0; j < int(X.cols()); ++j) {
+            Eigen::VectorXcd v = X.col(j);
+            const double before = v.norm();
+            if (!(before > 0)) continue;
+            for (int pass = 0; pass < 2; ++pass)
+                if (V.cols() > 0) v -= V * (V.adjoint() * v);
+            const double after = v.norm();
+            if (!(after > 1e-10 * before)) continue;
+            V.conservativeResize(Eigen::NoChange, V.cols() + 1);
+            V.col(V.cols() - 1) = v / after;
+        }
+        R0 = V.transpose() * (hs.K0 * V);
+        R1 = V.transpose() * (hs.K1 * V);
+        Vbc = V.transpose() * hs.bc;
+        Vbj = V.transpose() * hs.bj;
+        VP = V.transpose() * hs.P;
+    };
+    // A frequency on the basis: its coefficients, and its residual - the
+    // columns' worst, weighed, of their right-hand side.
+    const auto reduced = [&](int k, Eigen::MatrixXcd& Y) {
+        const double omega = 2 * M_PI * frequencies[std::size_t(k)];
+        const cd jw(0, omega);
+        const Eigen::MatrixXcd Ar = R0 + jw * R1;
+        Eigen::MatrixXcd Br(V.cols(), cols);
+        Br.col(0) = Vbc + jw * Vbj;
+        if (cols > 1) Br.rightCols(cols - 1) = VP;
+        Y = Ar.partialPivLu().solve(Br);
+        const Eigen::VectorXd w = weightsAt(omega);
+        const Eigen::MatrixXcd X = V * Y;
+        double worst = 0;
+        for (int j = 0; j < cols; ++j) {
+            const Eigen::VectorXcd b = j == 0 ? Eigen::VectorXcd(hs.bc + jw * hs.bj) : Eigen::VectorXcd(hs.P.col(j - 1));
+            const Eigen::VectorXcd r = b - hs.K0 * X.col(j) - jw * (hs.K1 * X.col(j));
+            const double nb = w.cwiseProduct(b.cwiseAbs()).norm();
+            if (nb > 0) worst = std::max(worst, w.cwiseProduct(r.cwiseAbs()).norm() / nb);
+        }
+        return worst;
+    };
+    std::vector<int> byFrequency(static_cast<std::size_t>(Nf));
+    for (int k = 0; k < Nf; ++k) byFrequency[std::size_t(k)] = k;
+    std::sort(byFrequency.begin(), byFrequency.end(), [&](int a, int b) { return frequencies[std::size_t(a)] < frequencies[std::size_t(b)]; });
+    std::vector<char> exact(static_cast<std::size_t>(Nf), 0);
+    const auto solveAt = [&](int k) {
+        Eigen::MatrixXcd X;
+        if (!solveExactly(o, hs, 2 * M_PI * frequencies[std::size_t(k)], X, error, 2)) return false;
+        exact[std::size_t(k)] = 1;
+        grow(X);
+        return true;
+    };
+    // Its band's ends and middle first; then where the residual is largest,
+    // until every one's is under the tolerance.
+    std::vector<int> start;
+    if (Nf <= 3) start = byFrequency;
+    else start = {byFrequency.front(), byFrequency[std::size_t(Nf / 2)], byFrequency.back()};
+    for (int k : start) {
+        if (o.cancelled && o.cancelled()) {
+            *error = tr("cancelled");
+            return false;
+        }
+        o.tell(tr("%1: the fast sweep, solved exactly at %2").arg(name, formatQuantity(frequencies[std::size_t(k)], Dim::of(0, 0, -1))));
+        if (!solveAt(k)) return false;
+    }
+    std::vector<Eigen::MatrixXcd> Y(static_cast<std::size_t>(Nf));
+    std::vector<double> residual(static_cast<std::size_t>(Nf), 0.0);
+    int rounds = 0;
+    for (;;) {
+        ++rounds;
+        double worst = 0;
+        int at = -1;
+        for (int k = 0; k < Nf; ++k) {
+            if (o.cancelled && o.cancelled()) {
+                *error = tr("cancelled");
+                return false;
+            }
+            residual[std::size_t(k)] = reduced(k, Y[std::size_t(k)]);
+            if (!exact[std::size_t(k)] && residual[std::size_t(k)] > worst) {
+                worst = residual[std::size_t(k)];
+                at = k;
+            }
+        }
+        if (at < 0 || worst <= tolerance) break;
+        o.tell(tr("%1: the fast sweep, solved exactly at %2 (its residual %3)")
+                   .arg(name, formatQuantity(frequencies[std::size_t(at)], Dim::of(0, 0, -1)))
+                   .arg(worst, 0, 'g', 2));
+        if (!solveAt(at)) return false;
+    }
+    int solved = 0;
+    double largest = 0;
+    QStringList where;
+    for (int k : byFrequency) {
+        if (exact[std::size_t(k)]) {
+            ++solved;
+            where << formatQuantity(frequencies[std::size_t(k)], Dim::of(0, 0, -1));
+        } else
+            largest = std::max(largest, residual[std::size_t(k)]);
+    }
+    a_s.log << tr("%1: fast sweep, %2 frequencies, %3 solved exactly (%4), the rest on their solutions' reduced basis of %5 - its largest "
+                  "residual %6 (tolerance %7), %8 rounds, %9 s")
+                   .arg(name)
+                   .arg(Nf)
+                   .arg(solved)
+                   .arg(where.join(QLatin1String(", ")))
+                   .arg(V.cols())
+                   .arg(largest, 0, 'g', 2)
+                   .arg(tolerance, 0, 'g', 2)
+                   .arg(rounds)
+                   .arg(clock.elapsed() / 1000.0, 0, 'f', 2);
+    // Each frequency's fields and results in turn, as its own solve's, then
+    // told.
+    for (int k = 0; k < Nf; ++k) {
+        const Eigen::MatrixXcd X = V * Y[std::size_t(k)];
+        finishHarmonic(o, hs, 2 * M_PI * frequencies[std::size_t(k)], X);
+        if (!each(k)) {
+            if (error->isEmpty()) *error = tr("cancelled");
+            return false;
         }
     }
     return true;
