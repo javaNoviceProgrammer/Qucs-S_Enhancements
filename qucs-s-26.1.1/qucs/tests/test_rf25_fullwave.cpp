@@ -4952,7 +4952,8 @@ private slots:
     // own dispersion, and its quasi-static solve's with the grounds tied;
     // and a line shorted to both grounds at its middle, an inductance, its L
     // at 1 Hz its megahertz one (its ports through terminals: one conductor,
-    // a coplanar port finds no return beside it).
+    // a coplanar port finds no return beside it), compressed too since 19
+    // November.
     void twoPortsTiedToTheSameReturnsHoldAtALowFrequency()
     {
         const rf::Stack st = grounded(9.8, 200e-6, 0, 0, 5.8e7);
@@ -5022,10 +5023,12 @@ private slots:
                     const auto value = [open](Complex z, double f) { return open ? -1 / (2 * M_PI * f * z.imag()) : z.imag() / (2 * M_PI * f); };
                     // (Compressed and shorted, at 1 Hz - its charges' term
                     //  10^25 times its currents' - GMRES with the charges as
-                    //  unknowns falls short and the eliminated system answers,
-                    //  said: the limit of rf25-limits.md, not the ties'.)
-                    const int from = compressed && !open ? 1 : 0;
-                    if (from > 0) QVERIFY2(says(w.last().lines, "fell short of its residual"), qPrintable(w.last().lines.join(" | ")));
+                    //  unknowns fell short and the eliminated system answered,
+                    //  said; held since the near field is factorized as the
+                    //  loop-tree basis's blocks - the floating structures of
+                    //  19 November -, never falling short.)
+                    const int from = 0;
+                    QVERIFY2(!says(w.last().lines, "fell short of its residual"), qPrintable(w.last().lines.join(" | ")));
                     double worst = 0;
                     for (int k = from; k < fs.size(); ++k)
                         for (int i = 0; i < 2; ++i)
@@ -5143,6 +5146,111 @@ private slots:
             }
     }
 
+    // Conductors that all float, compressed at a low frequency: a
+    // ground-signal-signal-ground
+    // line with no plane under it, every conductor floating, and a MIM's two
+    // plates, neither on a via. The near field's LU, in the runs' own basis,
+    // gave loops' currents that were the rounding of its cells' P / jw -
+    // the line's GMRES lost at 10 kHz, its true residual 3.7 after 300
+    // iterations and the eliminated system's no better in 3000; the MIM
+    // short at 1 kHz and below, solved with its charges eliminated and said
+    // to be past its limit. The near field now factorized as the loop-tree
+    // basis's blocks (solveCompressed()): both converge with the charges as
+    // unknowns of their own from 1 kHz down to 1 Hz, in as many iterations
+    // at each - some 45 and 20 -, the line's Z the dense one's to 10^-6 and
+    // the MIM's C to 10^-4 - the compressed matrix's own tolerance -, nothing
+    // said of the low-frequency limit or of GMRES.
+    void conductorsThatAllFloatConvergeCompressedAtAHertz()
+    {
+        const QList<double> fs{1e3, 1};
+        const auto check = [](const char* what, const rf::FullWave& dense, const rf::FullWave& squeezed) -> QString {
+            if (!dense.ok() || !squeezed.ok()) return why(dense) + why(squeezed);
+            if (!says(squeezed.lines, "loops and a tree") || says(squeezed.lines, "fell short"))
+                return QStringLiteral("%1: %2").arg(what, squeezed.lines.join(" | "));
+            // (S at such frequencies said not to the digits, as of any line:
+            //  Z's terms against the ports' reference. Nothing else.)
+            for (const QString& x : squeezed.warnings)
+                if (!x.contains(QStringLiteral("S there is not to the digits"))) return QStringLiteral("%1: %2").arg(what, x);
+            for (const rf::FullWave* w : {&dense, &squeezed})
+                if (says(w->warnings, "past its low-frequency limit") || says(w->warnings, "a coil may read as an open"))
+                    return QStringLiteral("%1: %2").arg(what, w->warnings.join(" | "));
+            return {};
+        };
+        {
+            rf::Stack st = grounded(9.8, 200e-6, 0, 0, 5.8e7);
+            st.layers.removeFirst();
+            const double l = 1000;
+            const QList<rf::Conductor> c = gssg(l);
+            const rf::Mesh mesh = meshed(c, 3, 100e-6);
+            QList<rf::FullWave> ways;
+            for (const auto matrix : {rf::FullWaveControl::Matrix::Dense, rf::FullWaveControl::Matrix::Compressed}) {
+                rf::FullWaveControl control;
+                control.matrix = matrix;
+                control.threads = 1;
+                ways << rf::fullWaveOf(mesh, c, st, gssgPorts(l, false), fs, 1e-6, &control);
+            }
+            // (Some 45 iterations at each frequency and port.)
+            qWarning("GSSG with no plane, compressed: at most %d iterations", ways.at(1).iterations);
+            QVERIFY2(ways.at(1).iterations < 60, qPrintable(QString::number(ways.at(1).iterations)));
+            const QString bad = check("GSSG", ways.at(0), ways.at(1));
+            QVERIFY2(bad.isEmpty(), qPrintable(bad));
+            for (int k = 0; k < fs.size(); ++k) {
+                double most = 0, apart = 0;
+                for (int i = 0; i < 4; ++i)
+                    for (int j = 0; j < 4; ++j) {
+                        most = std::max(most, std::abs(ways.at(0).z[k][i][j]));
+                        apart = std::max(apart, std::abs(ways.at(1).z[k][i][j] - ways.at(0).z[k][i][j]));
+                    }
+                qWarning("GSSG with no plane at %g Hz: compressed Z within %.2e of dense", fs.at(k), apart / most);
+                QVERIFY2(apart < 1e-6 * most, qPrintable(QStringLiteral("%1 Hz: %2").arg(fs.at(k)).arg(apart / most)));
+            }
+        }
+        {
+            rf::Stack st = grounded(4.1, 5e-6);
+            rf::Layer gap;
+            gap.kind = rf::Layer::Dielectric;
+            gap.name = QStringLiteral("MIM");
+            gap.tag = QStringLiteral("mim");
+            gap.thickness = 40e-9;
+            gap.epsr = 6.892;
+            rf::Layer top = st.layers.at(2);
+            top.name = QStringLiteral("M2");
+            top.tag = QStringLiteral("m2");
+            rf::Layer over;
+            over.kind = rf::Layer::Dielectric;
+            over.name = QStringLiteral("OX");
+            over.tag = QStringLiteral("ox");
+            over.thickness = 2e-6;
+            over.epsr = 4.1;
+            st.layers << gap << top << over;
+            rf::Conductor plate = strip(0, 0, 10, 10);
+            plate.layer = QStringLiteral("M2");
+            const QList<rf::Conductor> both{strip(-0.6, -0.6, 11.2, 11.2), plate};
+            rf::MeshSettings how;
+            how.maximum = 1.25e-6;
+            how.cellsAcross = 0;
+            const rf::Mesh mesh = rf::meshOf(both, how, st, 1e9);
+            QList<rf::FullWave> ways;
+            for (const auto matrix : {rf::FullWaveControl::Matrix::Dense, rf::FullWaveControl::Matrix::Compressed}) {
+                rf::FullWaveControl control;
+                control.matrix = matrix;
+                control.threads = 1;
+                ways << rf::fullWaveOf(mesh, both, st, {internalPort(QPointF(5, 5), QStringLiteral("M2"), QStringLiteral("M1"))}, fs, 1e-6,
+                                       &control);
+            }
+            // (Some 20.)
+            qWarning("MIM, compressed: at most %d iterations", ways.at(1).iterations);
+            QVERIFY2(ways.at(1).iterations < 30, qPrintable(QString::number(ways.at(1).iterations)));
+            const QString bad = check("MIM", ways.at(0), ways.at(1));
+            QVERIFY2(bad.isEmpty(), qPrintable(bad));
+            for (int k = 0; k < fs.size(); ++k) {
+                const auto capacitance = [&](const rf::FullWave& w) { return -1.0 / (2 * M_PI * fs.at(k) * w.z[k][0][0].imag()); };
+                const double dense = capacitance(ways.at(0)), squeezed = capacitance(ways.at(1));
+                qWarning("MIM at %g Hz: compressed %.6f fF, dense %.6f fF (%.2e)", fs.at(k), squeezed * 1e15, dense * 1e15, squeezed / dense - 1);
+                QVERIFY2(std::abs(squeezed / dense - 1) < 1e-4, qPrintable(QStringLiteral("%1 Hz: %2 against %3").arg(fs.at(k)).arg(squeezed).arg(dense)));
+            }
+        }
+    }
 };
 
 QTEST_MAIN(TestRf25Fullwave)
