@@ -34,6 +34,7 @@
 #include <QSet>
 
 #include <algorithm>
+#include <functional>
 #include <cmath>
 #include <deque>
 #include <vector>
@@ -331,10 +332,9 @@ void prepare(Traced& t, const Plot& plot, const QList<Token>& words, const Optio
         thinOnly(gridRow, rowInk, spanX, y0, y1);
         thinOnly(gridCol, colInk, spanY, x0, x1);
         // A grid line is at a mark, or one of a set of them in one colour: a
-        // band inked across the frame alone, at no mark, is a curve lying
-        // flat - a reference level, a peak's baseline (the SOI MMI
-        // benchmark's E3: such a line lost, or kept only where a curve
-        // crossed it).
+        // band inked across the frame alone is a curve lying flat - a
+        // reference level, a peak's baseline (the SOI MMI benchmark's E3:
+        // such a line lost, or kept only where a curve crossed it).
         const auto atMarksOnly = [&](std::vector<uchar>& flags, int from, int to, bool rows, const Axis& axis) {
             // (Its marks as they beat: a flat curve meeting the frame's edge
             // is found as a mark there too, out of step with the rest.)
@@ -376,20 +376,17 @@ void prepare(Traced& t, const Plot& plot, const QList<Token>& words, const Optio
                 bands << band;
                 k = e;
             }
-            double m0 = 0, m1 = 0;
-            int marked = 0;
-            for (const Band& band : std::as_const(bands))
-                if (band.atMark) {
-                    m0 += band.c0;
-                    m1 += band.c1;
-                    ++marked;
-                }
-            if (marked > 0) {
-                m0 /= marked;
-                m1 /= marked;
-            }
+            // At a mark, a band is grid if grey or black, or one of a colour
+            // another band at a mark has too; at none, one of two or more
+            // such. A lone band in a colour of its own is a curve lying flat,
+            // even at a labelled tick: a 0 dB line, a floor, a target (the
+            // recheck of 27.1.4's E3': at a labelled tick it was always dropped).
             for (const Band& band : std::as_const(bands)) {
-                if (band.atMark || (marked >= 2 && std::hypot(band.c0 - m0, band.c1 - m1) < 0.12)) continue;
+                const bool grey = std::hypot(band.c0 - 1.0 / 3, band.c1 - 1.0 / 3) < 0.08;
+                int sharers = 0;
+                for (const Band& other : std::as_const(bands))
+                    if (&other != &band && other.atMark && std::hypot(band.c0 - other.c0, band.c1 - other.c1) < 0.12) ++sharers;
+                if (band.atMark ? (grey || sharers >= 1) : sharers >= 2) continue;
                 for (int j = band.a; j < band.b; ++j) flags[size_t(j)] = 0;
             }
         };
@@ -1517,7 +1514,22 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
             pieces[size_t(id)].marker = true;
         }
     }
-    if (typical > 0 && (rings || !loneKept.isEmpty())) {
+    // How thick the family's lines are (as at the end, below): dots no wider
+    // than that are a dotted or dash-dot line's, not markers touching - a
+    // paper's dash-dot curve, its dots found as discs along it, came back as
+    // markers alone (the recheck of 27.1.4's N2, Zhang p5/2).
+    double lineThickness = std::max(1.0, 0.5 * scale);
+    {
+        std::vector<int> thin;
+        for (size_t i = 0; i < t.label.size(); i += 3)
+            if (t.label[i] == family && t.alpha[i] >= 90) thin.push_back(std::min(hrun[i], vrun[i]));
+        if (thin.size() >= 4) {
+            std::nth_element(thin.begin(), thin.begin() + thin.size() / 2, thin.end());
+            lineThickness = std::clamp(double(thin[thin.size() / 2]), 1.0, 12 * scale);
+        }
+    }
+    const bool dots = !rings && !loneKept.isEmpty() && typical > 0 && typical <= 1.8 * lineThickness;
+    if (typical > 0 && (rings || !loneKept.isEmpty()) && !dots) {
         // Markers touching each other so closely that their holes are gone,
         // or filled ones, or on a line: the peaks of how far
         // each pixel is from the family's edge, a marker's radius apart.
@@ -1617,6 +1629,30 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
             }
             return hits >= 6 && hits >= 0.7 * (16 - covered);
         };
+        // And a marker's middle is deeper than what is half a marker away
+        // from it, but for its neighbours: a line's middle is as deep both
+        // ways along the line - a ridge - and a thick line was taken for a
+        // row of discs touching: 221 markers made of a paper's solid curve
+        // (the recheck of 27.1.4's N2, Rosa p1). Each way, the deepest of a
+        // small arc there: the line turns, and lies at any angle.
+        const auto fallsAway = [&](int x, int y, float v) {
+            const double d = std::max(2.0, 0.5 * typical);
+            float deepest[16];
+            for (int k = 0; k < 16; ++k) {
+                deepest[k] = 0;
+                for (const double da : {-M_PI / 16, 0.0, M_PI / 16})
+                    for (const double r : {d - 1, d, d + 1}) {
+                        const double a = k * M_PI / 8 + da;
+                        const int sx = int(std::floor(x + 0.5 + r * std::cos(a))), sy = int(std::floor(y + 0.5 + r * std::sin(a)));
+                        if (t.inBounds(sx, sy)) deepest[k] = std::max(deepest[k], dt[size_t(t.at(sx, sy))]);
+                    }
+            }
+            // (By a pixel at least: an anti-aliased line's middle is bumpy.)
+            const float ridge = v - std::max(1.0f, 0.3f * v);
+            for (int k = 0; k < 8; ++k)
+                if (deepest[k] > ridge && deepest[k + 8] > ridge) return false;
+            return true;
+        };
         for (int y = 1; y + 1 < h; ++y)
             for (int x = 1; x + 1 < w; ++x) {
                 const float v = dt[size_t(t.at(x, y))];
@@ -1627,7 +1663,7 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
                 bool top = true;
                 for (int dy = -1; dy <= 1 && top; ++dy)
                     for (int dx = -1; dx <= 1 && top; ++dx) top = dt[size_t(t.at(x + dx, y + dy))] <= v;
-                if (top && roundIt(x, y)) candidates.push_back(Peak{v, x, y});
+                if (top && roundIt(x, y) && fallsAway(x, y, v)) candidates.push_back(Peak{v, x, y});
             }
         std::sort(candidates.begin(), candidates.end(), [](const Peak& a, const Peak& b) { return a.v > b.v; });
         QList<QPointF> fromPeaks;
@@ -1641,7 +1677,7 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
         }
         centres << fromPeaks;
         out.fromChains += int(fromPeaks.size());
-    } else if (!rings) {
+    } else if (!rings && !dots) {
         // No lone markers to learn their size from: marks on a line, found as
         // patches thick both ways where a line is thin both ways.
         std::vector<int> thin;
@@ -2533,25 +2569,33 @@ int dropShortBits(Series& s, double least)
 // two or more, parted by steps longer than one - and those steps go up and
 // down by more than a marker, or the bits lie by \a centres (markers of the
 // colour): the strokes of markers not found put in a row, not a curve.
-bool markerBits(const QList<QPointF>& pixels, const QList<QPointF>& centres, double size)
+bool markerBits(const QList<QPointF>& pixels, const QList<QPointF>& centres, double size, const std::function<bool(QPointF, QPointF)>& inked)
 {
     if (pixels.size() < 2) return false;
     int bits = 1, reversals = 0;
     double lastRise = 0;
-    QRectF bit(pixels.first(), QSizeF(0, 0));
+    // (A bit's extent by its corners: QRectF::united passes over a rectangle
+    // of no size, and a bit made of points never grew - a curve of any
+    // length was "bits" where its ink had two gaps.)
+    QPointF lo = pixels.first(), hi = pixels.first();
     for (int i = 1; i < pixels.size(); ++i) {
         const QPointF step = pixels.at(i) - pixels.at(i - 1);
-        if (std::hypot(step.x(), step.y()) > size) {
+        // (A step longer than a marker over the line's own ink is no gap
+        // between bits: a line walked in long steps - a wiggling curve's,
+        // every wiggle a "reversal" - was taken for bits and dropped: the
+        // recheck of 27.1.4's N2, Zhang p5/2.)
+        if (std::hypot(step.x(), step.y()) > size && !(inked && inked(pixels.at(i - 1), pixels.at(i)))) {
             ++bits;
-            bit = QRectF(pixels.at(i), QSizeF(0, 0));
+            lo = hi = pixels.at(i);
             if (std::abs(step.y()) > size) {
                 reversals += lastRise * step.y() < 0;
                 lastRise = step.y();
             }
             continue;
         }
-        bit = bit.united(QRectF(pixels.at(i), QSizeF(0, 0)));
-        if (std::max(bit.width(), bit.height()) > 1.5 * size) return false;
+        lo = QPointF(std::min(lo.x(), pixels.at(i).x()), std::min(lo.y(), pixels.at(i).y()));
+        hi = QPointF(std::max(hi.x(), pixels.at(i).x()), std::max(hi.y(), pixels.at(i).y()));
+        if (std::max(hi.x() - lo.x(), hi.y() - lo.y()) > 1.5 * size) return false;
     }
     if (bits < 2) return false;
     if (reversals >= 1) return true;
@@ -2569,8 +2613,24 @@ bool markerBits(const QList<QPointF>& pixels, const QList<QPointF>& centres, dou
 // (markers of its colour, pixels, \a size across) taken out: what is left of
 // a row of markers once they are lifted out, put together with a line. So
 // are stretches of marker-sized bits (markerBits()): markers not found.
-int dropStretchesOnMarkers(Series& s, const Traced& t, const QTransform& toWork, const QList<QPointF>& centres, double size)
+int dropStretchesOnMarkers(Series& s, const Traced& t, int family, const QTransform& toWork, const QList<QPointF>& centres, double size)
 {
+    // Whether the family's ink lies all the way between two pixels.
+    const auto inked = [&](QPointF a, QPointF b) {
+        const double length = QLineF(a, b).length();
+        const int steps = std::max(2, int(std::ceil(length)));
+        for (int k = 1; k < steps; ++k) {
+            const QPointF q = a + (b - a) * (double(k) / steps);
+            bool ink = false;
+            for (int dy = -1; dy <= 1 && !ink; ++dy)
+                for (int dx = -1; dx <= 1 && !ink; ++dx) {
+                    const int x = int(std::floor(q.x())) + dx, y = int(std::floor(q.y())) + dy;
+                    ink = t.inBounds(x, y) && t.label[size_t(t.at(x, y))] == family;
+                }
+            if (!ink) return false;
+        }
+        return true;
+    };
     if (s.shape != Series::Shape::Line || s.points.size() < 2) return 0;
     QList<int> starts{0};
     for (const int b : std::as_const(s.breaks))
@@ -2594,7 +2654,7 @@ int dropStretchesOnMarkers(Series& s, const Traced& t, const QTransform& toWork,
                     break;
                 }
         }
-        if (on >= 0.6 * (to - from) || markerBits(pixels, centres, size)) {
+        if (on >= 0.6 * (to - from) || markerBits(pixels, centres, size, inked)) {
             ++dropped;
             continue;
         }
@@ -2767,7 +2827,7 @@ bool extractRaster(Source& source, Plot& plot, const Options& options, QStringLi
             // that is more gaps than line is no curve: scraps of the colour
             // put in a row.
             if (!m.centres.isEmpty() && m.size > 0)
-                for (Series& s : pieces) alongMarkers += dropStretchesOnMarkers(s, t, plot.work, m.centres, m.size);
+                for (Series& s : pieces) alongMarkers += dropStretchesOnMarkers(s, t, family, plot.work, m.centres, m.size);
             // (A line all of whose stretches went is gone.)
             pieces.removeIf([](const Series& s) { return s.shape == Series::Shape::Line && s.points.size() < 2; });
             // (In a colour with markers of its own, where scraps of them
