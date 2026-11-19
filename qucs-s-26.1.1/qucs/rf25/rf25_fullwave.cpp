@@ -106,9 +106,12 @@ constexpr double kAugmentedFrom = 1e10;
 /// The iterations a compressed solve tries the charges as unknowns of their
 /// own for, before it solves with them eliminated. In the loop-tree basis
 /// (LoopTree) a centimetre loop at 10 Hz converged in 4 and an open line at
-/// 1 Hz in 11; in the runs' own an open line, its cells' potentials 10^11 V
-/// against milliohms, took all 3,000 at 100 kHz and did not converge below
-/// (step 5's follow-ups) - which this stands guard against.
+/// 1 Hz in 11 - 4 and 6 since its near field is factorized as that basis's
+/// blocks, and a line whose conductors all float in 45 at every frequency,
+/// where it was lost at 10 kHz -; in the runs' own an open line, its cells'
+/// potentials 10^11 V against milliohms, took all 3,000 at 100 kHz and did
+/// not converge below (step 5's follow-ups) - which this stands guard
+/// against.
 constexpr int kAugmentedMost = 300;
 /// An ended layer's correction to P (rf25_dielectric.h) held dense up to
 /// this many cells, as its factors past them.
@@ -2691,6 +2694,8 @@ public:
     bool tree(int run) const { return a_tree[std::size_t(run)] != 0; }
     int components() const { return int(a_roots.size()); }
     bool grounded(int component) const { return a_roots.at(component) == a_ground; }
+    /// A floating component's root cell; -1 for one rooted on the ground.
+    int rootCell(int component) const { return grounded(component) ? -1 : a_roots.at(component); }
     int componentOf(int cell) const { return a_component[std::size_t(cell)]; }
 
     /// I = L i + T t, of the loops' and the tree runs' currents by run.
@@ -3459,10 +3464,14 @@ void System::operator()(const VectorC& x, VectorC& y) const
  * whole of A - so that a loop of current, which leaves no charge, is as
  * free of P in it as in the system, and the two scales of a low frequency,
  * jw L and P / jw, stand as they do there. What the compressed solve is
- * preconditioned with, by its LU.
+ * preconditioned with, by its LU. Given \a runsOut and \a pOut, its parts
+ * instead - the runs' block (their impedances, the vias' with them) and the
+ * cells' P -, nothing returned: what the charges as unknowns of their own
+ * are preconditioned with, each block factorized apart (solveCompressed()).
  */
 Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, const Kernels& k,
-                                       const std::vector<Eigen::Triplet<Complex>>& own, bool augmented = false)
+                                       const std::vector<Eigen::Triplet<Complex>>& own,
+                                       Eigen::SparseMatrix<Complex>* runsOut = nullptr, Eigen::SparseMatrix<Complex>* pOut = nullptr)
 {
     const int nr = c.nr, nc = c.nc, nv = int(c.vias.size());
     const Complex jw = k.jw;
@@ -3511,20 +3520,14 @@ Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, c
             if (ri != rj) near.emplace_back(rj, ri, v);
         }
     }
-    if (augmented) {
-        // The charges unknowns of their own, as the system has them:
-        //     [ near    -A^T P_near ]
-        //     [ A        jw         ]
-        const Eigen::SparseMatrix<Complex> drop = transposed * pNear;
-        for (int j = 0; j < drop.outerSize(); ++j)
-            for (Eigen::SparseMatrix<Complex>::InnerIterator it(drop, j); it; ++it) near.emplace_back(int(it.row()), nr + j, -it.value());
-        for (int j = 0; j < incidence.outerSize(); ++j)
-            for (Eigen::SparseMatrix<Complex>::InnerIterator it(incidence, j); it; ++it) near.emplace_back(nr + int(it.row()), j, it.value());
-        for (int i = 0; i < nc; ++i) near.emplace_back(nr + i, nr + i, jw);
-        Eigen::SparseMatrix<Complex> m(nr + nc, nr + nc);
-        m.setFromTriplets(near.begin(), near.end());
-        m.makeCompressed();
-        return m;
+    if (runsOut != nullptr && pOut != nullptr) {
+        // (The charges unknowns of their own: the parts alone, which the
+        //  loop-tree solve factorizes as its own blocks.)
+        runsOut->resize(nr, nr);
+        runsOut->setFromTriplets(near.begin(), near.end());
+        runsOut->makeCompressed();
+        *pOut = pNear;
+        return {};
     }
     Eigen::SparseMatrix<Complex> charged = transposed * (pNear * incidence);
     charged /= jw;
@@ -3676,8 +3679,8 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
     // cell's own potential, whose charges' term is then the current the
     // charge takes - its potentials' rounding, 10^-5 V of 10^11 at 1 Hz on an
     // open line, then a part in 10^16 of it, where weighed against the drops
-    // along the runs it was all of theirs; preconditioned by the augmented
-    // system's near field's LU through the basis.
+    // along the runs it was all of theirs; preconditioned by the near field
+    // in that basis, its blocks factorized apart (below).
     const int na = nr + nc;
     const auto pOf = [&p, &c, nc](const VectorC& q) {
         VectorC v = VectorC::Zero(nc);
@@ -3698,14 +3701,61 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
         for (int a = 0; a < nr; ++a) y[a] = scale[a] * (loops.tree(a) ? n[a] - dropOf(v, a) : around[a]);
         y.tail(nc) = loops.charges(x.head(nr)) + x.tail(nc);
     };
+    // Preconditioned by the near field in the loop-tree basis - as its
+    // blocks, not as its augmented system in the runs' own: there a run's row
+    // off the tree holds its cells' P / jw, some 10^16 times its own jw L at
+    // 1 Hz on a 100 µm cell, which cancels only round a loop, and the loops'
+    // currents its LU gave were that cancellation's rounding - in the
+    // loop-tree basis its answer left 83 times what it was given at 10 kHz
+    // on a coplanar line, 5e9 times at 1 Hz, and 1.8e13 times on a MIM's
+    // plates 40 nm apart. Where the far field is small - a ground plane under
+    // the line - GMRES made do with that to some kilohertz; where it is not,
+    // it took the rounding for the operator and was lost: a ground-signal-
+    // signal-ground line with no plane, every conductor floating, left a true
+    // residual of 3.7 after 300 iterations at 10 kHz, the eliminated system no
+    // better in 3000, more iterations changing nothing; the MIM fell back to
+    // the eliminated system at 1 kHz and was said to be past its limit. Its
+    // blocks:
+    //  - the tree runs and the charges: Q' = J - A_t t into the tree runs'
+    //    rows leaves (N_tt + A_t^T P A_t / jw) t, the eliminated near field
+    //    on the tree alone - no loop in it, nothing to cancel;
+    //  - then the loops: the current round them, divergence-free, of
+    //        [ N   -A^T ] [I]   [g]
+    //        [ A     0  ] [psi] = [0]
+    //    g the loops' rows less N's of the tree runs' currents, psi what holds
+    //    the current to its loops - no P in it, its size the runs' own drops;
+    //    each floating component's root's row of A, which its others' sum,
+    //    psi there held at nought instead.
+    // Left out, the loops' own drive along the tree runs: their jw L against
+    // the tree runs' P / jw, under 10^-10 of it wherever the charges are
+    // unknowns of their own (kAugmentedFrom). Refined against the near field
+    // taken whole in the loop-tree basis, the floating line took 42
+    // iterations for 45, the rest as many: left out, the preconditioner one
+    // linear operator, as GMRES wants it.
+    Eigen::SparseMatrix<Complex> nearRuns, nearP;
+    fem::SparseLu<Complex> treeLu, loopLu;
+    std::vector<int> treeRuns;
+    for (int a = 0; a < nr; ++a)
+        if (loops.tree(a)) treeRuns.push_back(a);
+    const int nt = int(treeRuns.size());
+    double loopScale = 1;
     const Operator loopPrecondition = [&](const VectorC& x, VectorC& y) {
-        VectorC r(na);
-        r.head(nr) = loops.ofTransposed(x.head(nr).cwiseQuotient(scale.cast<Complex>()));
-        r.tail(nc) = x.tail(nc);
-        const VectorC w = lu.solve(r);
+        const VectorC rr = x.head(nr).cwiseQuotient(scale.cast<Complex>());
+        const VectorC v = nearP * (x.tail(nc) / jw);
+        VectorC rt(nt);
+        for (int j = 0; j < nt; ++j) rt[j] = rr[treeRuns[std::size_t(j)]] + dropOf(v, treeRuns[std::size_t(j)]);
+        const VectorC t = nt > 0 ? VectorC(treeLu.solve(rt)) : VectorC();
+        VectorC along = VectorC::Zero(nr);
+        for (int j = 0; j < nt; ++j) along[treeRuns[std::size_t(j)]] = t[j];
+        VectorC b = VectorC::Zero(na);
+        b.head(nr) = -(nearRuns * along);
+        for (int a = 0; a < nr; ++a)
+            if (!loops.tree(a)) b[a] += rr[a];
+        b.head(nr) /= loopScale;
+        const VectorC w = loopLu.solve(b);
         y.resize(na);
-        y.head(nr) = loops.ofCurrents(w.head(nr));
-        y.tail(nc) = jw * w.tail(nc);
+        for (int a = 0; a < nr; ++a) y[a] = loops.tree(a) ? along[a] : w[a];
+        y.tail(nc) = x.tail(nc) - loops.charges(along);
     };
     const int augmentedMost = control != nullptr && control->augmentedMost > 0 ? control->augmentedMost : kAugmentedMost;
     MatrixC both;
@@ -3714,22 +3764,66 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
     for (bool again = true; again;) {
         again = false;
         system.charges = !augmented;
-        {
-            const Eigen::SparseMatrix<Complex> near = nearField(c, z, k, own, augmented);
-            lu.compute(near);
-            if (augmented) {
-                const VectorC diagonal = near.diagonal();
-                for (int a = 0; a < nr; ++a) {
-                    const double size = loops.tree(a) ? std::abs(k.potential(c.head.at(a), c.head.at(a))) / std::abs(jw)
-                                                      : std::abs(diagonal[a]);
-                    scale[a] = size > 0 ? 1 / size : 1.0;
-                }
+        const fem::SparseLu<Complex>* failed = nullptr;
+        if (augmented) {
+            (void)nearField(c, z, k, own, &nearRuns, &nearP);
+            const VectorC diagonal = nearRuns.diagonal();
+            for (int a = 0; a < nr; ++a) {
+                const double size = loops.tree(a) ? std::abs(k.potential(c.head.at(a), c.head.at(a))) / std::abs(jw)
+                                                  : std::abs(diagonal[a]);
+                scale[a] = size > 0 ? 1 / size : 1.0;
             }
+            // (The blocks, of the near field's parts: above.)
+            std::vector<Eigen::Triplet<Complex>> terms;
+            for (int a = 0; a < nr; ++a) {
+                if (c.tail.at(a) >= 0) terms.emplace_back(c.tail.at(a), a, Complex(1, 0));
+                terms.emplace_back(c.head.at(a), a, Complex(-1, 0));
+            }
+            Eigen::SparseMatrix<Complex> incidence(nc, nr), pick(nr, nt);
+            incidence.setFromTriplets(terms.begin(), terms.end());
+            terms.clear();
+            for (int j = 0; j < nt; ++j) terms.emplace_back(treeRuns[std::size_t(j)], j, Complex(1, 0));
+            pick.setFromTriplets(terms.begin(), terms.end());
+            const Eigen::SparseMatrix<Complex> onTree = incidence * pick;
+            Eigen::SparseMatrix<Complex> tree = Eigen::SparseMatrix<Complex>(pick.transpose()) * nearRuns * pick;
+            Eigen::SparseMatrix<Complex> charged = Eigen::SparseMatrix<Complex>(onTree.transpose()) * (nearP * onTree);
+            charged /= jw;
+            tree += charged;
+            tree.makeCompressed();
+            if (nt > 0) treeLu.compute(tree);
+            // (The loops' rows scaled to the runs' own sizes, so that psi is
+            //  of A's.)
+            double sum = 0;
+            for (int a = 0; a < nr; ++a) sum += std::abs(diagonal[a]);
+            loopScale = sum > 0 ? sum / nr : 1.0;
+            std::vector<char> pinned(std::size_t(nc), 0);
+            for (int m = 0; m < loops.components(); ++m)
+                if (loops.rootCell(m) >= 0) pinned[std::size_t(loops.rootCell(m))] = 1;
+            terms.clear();
+            for (int j = 0; j < nearRuns.outerSize(); ++j)
+                for (Eigen::SparseMatrix<Complex>::InnerIterator it(nearRuns, j); it; ++it)
+                    terms.emplace_back(int(it.row()), int(it.col()), it.value() / loopScale);
+            for (int j = 0; j < incidence.outerSize(); ++j)
+                for (Eigen::SparseMatrix<Complex>::InnerIterator it(incidence, j); it; ++it) {
+                    const int cell = int(it.row());
+                    terms.emplace_back(j, nr + cell, -it.value());
+                    if (pinned[std::size_t(cell)] == 0) terms.emplace_back(nr + cell, j, it.value());
+                }
+            for (int i = 0; i < nc; ++i)
+                if (pinned[std::size_t(i)] != 0) terms.emplace_back(nr + i, nr + i, Complex(1, 0));
+            Eigen::SparseMatrix<Complex> held(na, na);
+            held.setFromTriplets(terms.begin(), terms.end());
+            held.makeCompressed();
+            loopLu.compute(held);
+            failed = nt > 0 && treeLu.info() != Eigen::Success ? &treeLu : loopLu.info() != Eigen::Success ? &loopLu : nullptr;
+        } else {
+            lu.compute(nearField(c, z, k, own));
+            failed = lu.info() != Eigen::Success ? &lu : nullptr;
         }
-        if (lu.info() != Eigen::Success) {
+        if (failed != nullptr) {
             out.problems << tr("At %1 GHz the near field's LU, which the compressed solve is preconditioned with, failed: %2")
                                 .arg(f / 1e9, 0, 'g', 4)
-                                .arg(QString::fromStdString(lu.lastErrorMessage()));
+                                .arg(QString::fromStdString(failed->lastErrorMessage()));
             return out;
         }
         // (With the charges as unknowns, the rest alone, e: Q holds
