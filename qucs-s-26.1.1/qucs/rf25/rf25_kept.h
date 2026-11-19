@@ -63,6 +63,10 @@ QByteArray stampOf(const QByteArray& bytes);
 /// which change nothing that is solved - an export added or its file named
 /// leaves a solution standing, and kept.
 QByteArray solveStampOf(const Model& model);
+/// The same, and the files \a model reads at the solve beside it, \a folder
+/// its own: each TRL standard's model and the layout it names. The model's
+/// stamp alone where there are none.
+QByteArray solveStampOf(const Model& model, const QString& folder);
 /// \a kept written to \a path, whole or not at all; false and why if not.
 bool writeSolution(const QString& path, const KeptSolution& kept, QString* error = nullptr);
 /// The solution kept at \a path; none where there is none, or it is not

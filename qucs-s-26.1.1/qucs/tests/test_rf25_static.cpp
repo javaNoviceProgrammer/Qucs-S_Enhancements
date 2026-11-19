@@ -2549,6 +2549,85 @@ private slots:
         QVERIFY2(rf::extractStepSaid(rf::ExtractControl::Loop, 0, 0, 0).contains(QStringLiteral("loop's inductance")),
                  qPrintable(rf::extractStepSaid(rf::ExtractControl::Loop, 0, 0, 0)));
     }
+    // A line's values per metre, summed over copies of its middle out to 100
+    // times the stack's height a cell's length apart, are summed one by one
+    // only near: past 300 cells' sides, in groups by Simpson's rule. One by one, a 10 nm square over 200 µm took 36 s
+    // for its 36 cells, a nanometre's six minutes; three lines 0.2 µm wide a
+    // third of their 9.9 s. The groups' values against every copy's: 4e-8
+    // for the square, 5e-9 for the lines, and the same to the digit where
+    // every copy is near. The square as a thin wire on the interface over a
+    // ground - eps_eff (eps_r + 1)/2, a flat strip's radius a quarter of its
+    // width: 2 pi eps0 eps_eff / ln(2h / r) - to 5 %.
+    void aLinesValuesPerMetreAreQuickWhereItsCellsAreShort()
+    {
+        const rf::Stack stack = grounded(4, 200e-6);
+        const rf::Conductor square = strip(0, 0, 0.01, 0.01);
+        rf::MeshSettings how;
+        how.maximum = 100e-6;
+        how.cellsAcross = 3;
+        const rf::Mesh mesh = rf::meshOf({square}, how, rf::Stack(), 0);
+        QElapsedTimer clock;
+        clock.start();
+        const rf::Extraction e = rf::extract(mesh, {square}, stack);
+        const qint64 ms = clock.elapsed();
+        QVERIFY2(e.ok() && e.perMetre.fromMiddle, qPrintable(e.problems.join(" | ")));
+        const double c = e.perMetre.maxwell.at(0).at(0);
+        const double wire = 2 * M_PI * rf::kEps0 * 2.5 / std::log(2 * 200e-6 / 2.5e-9);
+        qWarning("a 10 nm square over 200 µm: %.4f pF/m in %lld ms; a thin wire's %.4f pF/m", c * 1e12, ms, wire * 1e12);
+        QVERIFY2(std::abs(c / wire - 1) < 0.05, qPrintable(QStringLiteral("%1 against %2").arg(c).arg(wire)));
+        // (Every copy's, one by one: 11.91136455 pF/m.)
+        QVERIFY2(std::abs(c / 11.91136455e-12 - 1) < 2e-7, qPrintable(QString::number(c * 1e12, 'g', 12)));
+        if (!slowBuild()) QVERIFY2(ms < 2000, qPrintable(QStringLiteral("%1 ms").arg(ms)));
+    }
+
+    // A singular matrix is no answer: the same cells given twice - as two
+    // overlapping shapes were meshed before the mesh refused them - gave a
+    // capacitance of NaN said to be solved, a warning its only word.
+    void aSingularMatrixIsNoAnswer()
+    {
+        const rf::Stack stack = grounded(4, 200e-6);
+        const rf::Conductor s = strip(0, 0, 800, 40);
+        rf::Mesh twice = meshed({s}, 40);
+        QVERIFY(!twice.cells.isEmpty());
+        twice.cells += twice.cells;
+        const rf::Extraction e = rf::extract(twice, {s}, stack);
+        QVERIFY2(!e.ok() && e.problems.join(' ').contains(QStringLiteral("came to nothing finite")), qPrintable(e.problems.join(" | ")));
+    }
+
+    // A stack whose images grow past what a number holds is refused, said
+    // which layer reflects the most: twenty films of 0.1 and 0.2 µm, eps_r
+    // 28 and 3.9, over silicon grew coefficients past a double's range,
+    // paths of one length summed with alternating signs, and the potential
+    // came out NaN - a capacitance of NaN said to be solved. Ten such films, or forty of 6 and 3.9, solve.
+    void aStackWhoseImagesGrowPastANumberIsRefused()
+    {
+        const auto films = [](int count, double high) {
+            rf::Stack st = grounded(11.7, 500e-6);
+            rf::Layer metal = st.layers.takeLast();
+            for (int i = 0; i < count; ++i) {
+                rf::Layer f;
+                f.kind = rf::Layer::Dielectric;
+                f.name = QStringLiteral("F%1").arg(i + 1);
+                f.tag = QStringLiteral("f%1").arg(i + 1);
+                f.thickness = i % 2 == 0 ? 0.1e-6 : 0.2e-6;
+                f.epsr = i % 2 == 0 ? high : 3.9;
+                st.layers << f;
+            }
+            st.layers << metal;
+            return st;
+        };
+        const rf::Conductor s = strip(0, 0, 200, 20);
+        const rf::Mesh mesh = meshed({s}, 20);
+        for (const auto& [count, high] : QList<std::pair<int, double>>{{10, 28}, {40, 6}}) {
+            const rf::Extraction e = rf::extract(mesh, {s}, films(count, high));
+            QVERIFY2(e.ok() && std::isfinite(e.maxwell.at(0).at(0)), qPrintable(QStringLiteral("%1 of %2: ").arg(count).arg(high) + e.problems.join(" | ")));
+        }
+        const rf::Extraction grown = rf::extract(mesh, {s}, films(20, 28));
+        QVERIFY2(!grown.ok() && grown.problems.join(' ').contains(QStringLiteral("grew past what a number holds"))
+                     && grown.problems.join(' ').contains(QStringLiteral("F3")),
+                 qPrintable(grown.problems.join(" | ")));
+    }
+
 };
 
 QTEST_MAIN(TestRf25Static)

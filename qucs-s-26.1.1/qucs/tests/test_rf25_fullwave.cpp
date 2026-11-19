@@ -1400,7 +1400,16 @@ private slots:
                                                   fs, 1e-6, &control);
             QVERIFY2(w.ok(), qPrintable(why(w)));
             QVERIFY2(says(w.lines, "The system held compressed") == squeezed, qPrintable(w.lines.join(" | ")));
-            QVERIFY2(!says(w.warnings, "past its low-frequency limit") && !says(w.warnings, "GMRES"), qPrintable(w.warnings.join(" | ")));
+            // (Compressed, at 1 and 10 Hz, S said not to the digits: Z11 -
+            //  Z21, 0.1 Ohm of 10^11, is past GMRES's residual - Z itself and
+            //  the loss are held below. Nothing else said.)
+            QStringList others;
+            for (const QString& x : w.warnings)
+                if (!(squeezed && x.contains(QStringLiteral("S there is not to the digits"))
+                      && (x.startsWith(QStringLiteral("At 1 Hz")) || x.startsWith(QStringLiteral("At 10 Hz")))))
+                    others << x;
+            QVERIFY2(!says(others, "past its low-frequency limit") && !says(others, "GMRES"), qPrintable(others.join(" | ")));
+            QVERIFY2(!squeezed || says(w.warnings, "At 1 Hz Z's terms are some"), qPrintable(w.warnings.join(" | ")));
             QVERIFY2(says(w.lines, "At 1 Hz the charges' term outweighs the currents'") && says(w.lines, "unknowns of their own"),
                      qPrintable(w.lines.join(" | ")));
             QVERIFY2(says(w.lines, "loops and a tree") == squeezed && !says(w.lines, "fell short"), qPrintable(w.lines.join(" | ")));
@@ -4786,13 +4795,12 @@ private slots:
         const Matrix2 zs = zOf(slant, 0);
         const std::complex<double> through = 2.0 * zs(1, 0) * 50.0 / ((zs(0, 0) + 50.0) * (zs(1, 1) + 50.0) - zs(0, 1) * zs(1, 0));
         QVERIFY2(std::abs(through) > 0.9, qPrintable(QString::number(std::abs(through))));
-        // Two shapes over each other, unmerged, share no cell's edge: the
-        // solve's warnings say so, naming them.
+        // Two shapes over each other, unmerged: the mesh refuses them, as
+        // overlapping - solved, they shared no cell's edge and the overlap
+        // was meshed twice, warned of alone, before a bug hunt.
         const QList<rf::Conductor> overlapping = {strip(0, 0, 20000, 4000), strip(9000, 700, 21000, 3300)};
-        const rf::FullWave apart = rf::fullWaveOf(rf::meshOf(overlapping, settings, stack, 3e9), overlapping, stack, ends, {2e9});
-        QVERIFY2(apart.ok(), qPrintable(apart.problems.join(" | ")));
-        QVERIFY2(apart.warnings.size() == 1 && apart.warnings.first().contains(QStringLiteral("no current crosses")),
-                 qPrintable(apart.warnings.join(" | ")));
+        const rf::Mesh apart = rf::meshOf(overlapping, settings, stack, 3e9);
+        QVERIFY2(!apart.ok() && says(apart.problems, "2 shapes on M1 overlap"), qPrintable(apart.problems.join(" | ")));
     }
 
 
@@ -5080,6 +5088,59 @@ private slots:
         QVERIFY2(inside.ok() && says(inside.warnings, "is inside a conductor, on none of its edges: it drives the one cell nearest"),
                  qPrintable(why(inside) + inside.warnings.join(" | ")));
         QVERIFY2(says(inside.portsSaid, "is on no face, and drives the one cell nearest"), qPrintable(inside.portsSaid.join(" | ")));
+    }
+
+    // Cells on a layer the stack has not, or on a dielectric, are said as
+    // such: the full wave said "no two cells of the mesh share an edge...
+    // mesh the layout more finely" where the quasi-static solve said which
+    void aCellOnALayerTheStackHasNotIsSaid()
+    {
+        const QList<rf::Conductor> c{strip(0, 0, 600, 50)};
+        const rf::Mesh mesh = meshed(c, 4, 50e-6);
+        rf::Stack none = grounded(4, 100e-6);
+        none.layers.removeLast();
+        const rf::FullWave w = rf::fullWaveOf(mesh, c, none, {edgePort(QPointF(0, 25)), edgePort(QPointF(600, 25))}, {1e9});
+        QVERIFY2(!w.ok() && says(w.problems, "The stack has no layer M1, which the mesh has cells on"), qPrintable(why(w)));
+        rf::Stack dielectric = grounded(4, 100e-6);
+        dielectric.layers.last().kind = rf::Layer::Dielectric;
+        dielectric.layers.last().thickness = 1e-6;
+        const rf::FullWave d = rf::fullWaveOf(mesh, c, dielectric, {edgePort(QPointF(0, 25)), edgePort(QPointF(600, 25))}, {1e9});
+        QVERIFY2(!d.ok() && says(d.problems, "M1 is a dielectric of the stack"), qPrintable(why(d)));
+    }
+
+    // And their Z's real parts, and S, at 1 Hz on longer lines: of two ports
+    // whose returns are on the same two conductors, the current round both
+    // ports' ties, along one ground and back along the other, is a loop of
+    // the line's jwL - as a difference of the returns' two differences of
+    // 10^12 Ohm each it was their rounding, a 2 mm line's Z at 1 Hz dense
+    // with real parts as large as itself and S21 nought (on its own fix). The loop a column of its own
+    // (columnBasis()): Re Z within 10^-9 of |Z|, dense and compressed, and
+    // dense S21 the line's through. (Compressed, S21 at 1 Hz wants Z11 - Z21
+    // to 10^-11 of Z, past GMRES's residual: said, not held here.)
+    void twoPortsTiedToTheSameReturnsHoldTheirRealPartsAtAHertz()
+    {
+        const rf::Stack st = grounded(9.8, 200e-6, 0, 0, 5.8e7);
+        const QString m1 = QStringLiteral("M1");
+        const QList<double> fs{1, 100};
+        for (const double l : {2000.0, 4000.0})
+            for (const bool compressed : {false, true}) {
+                const QList<rf::Conductor> cpw = {on(m1, 0, -50, l, 100), on(m1, 0, 100, l, 250), on(m1, 0, -350, l, 250)};
+                QList<rf::FullWavePort> ports = {edgePort(QPointF(0, 0), m1, QPointF(-1, 0)), edgePort(QPointF(l, 0), m1, QPointF(1, 0))};
+                for (rf::FullWavePort& p : ports) p.coplanar = true;
+                rf::FullWaveControl control;
+                control.matrix = compressed ? rf::FullWaveControl::Matrix::Compressed : rf::FullWaveControl::Matrix::Dense;
+                control.threads = 1;
+                const rf::FullWave w = rf::fullWaveOf(meshed(cpw, 3, 100e-6), cpw, st, ports, fs, 1e-6, &control);
+                QVERIFY2(w.ok(), qPrintable(why(w)));
+                for (int k = 0; k < fs.size(); ++k) {
+                    const Matrix2 z = zOf(w, k);
+                    const double real = z.real().cwiseAbs().maxCoeff() / z.cwiseAbs().maxCoeff();
+                    qWarning("%g µm, %s, %g Hz: Re Z within %.2e of |Z|, |S21| %.6f", l, compressed ? "compressed" : "dense", fs.at(k), real,
+                             std::abs(w.s.at(k).at(1).at(0)));
+                    QVERIFY2(real < 1e-9, qPrintable(QString::number(real)));
+                    if (!compressed) QVERIFY2(std::abs(w.s.at(k).at(1).at(0)) > 0.999, qPrintable(QString::number(std::abs(w.s.at(k).at(1).at(0)))));
+                }
+            }
     }
 
 };

@@ -1143,7 +1143,10 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& given, const
             QLineF face;
             QPointF outward;
             QString onLayer;
-            if (!faceEdge(outlines, at, metal, way, &face, &outward, &onLayer) || (main = edgeAlong(face)).polygon < 0) {
+            // (On the edge, as the solve has it: portPlace(). The nearest
+            //  edge however far was written.)
+            if (portPlace(outlines, at, metal, way) != PortPlace::OnEdge || !faceEdge(outlines, at, metal, way, &face, &outward, &onLayer)
+                || (main = edgeAlong(face)).polygon < 0) {
                 out.notes << tr("%1 is not written: no edge of a shape on %2 near its point faces the way it says.").arg(own, metal);
                 continue;
             }

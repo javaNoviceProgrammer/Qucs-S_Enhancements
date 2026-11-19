@@ -234,7 +234,7 @@ private slots:
         // width - 5 µm, 19 - the corners near a cap, where neither side
         // reaches the level, dropped straight across by up to that and
         // flattened it, 4.9 and 15 µm off the drawn outline (the review of
-        // 69534653). Across by the curves' tolerance at most, and slid along
+        // 2c232022). Across by the curves' tolerance at most, and slid along
         // their own sides else, each outline stays within it of itself, the
         // mesh says so, and its area within a part in a thousand (the disc
     // -0.027 %, where it was -0.33 %).
@@ -243,7 +243,7 @@ private slots:
             // (Through Processing as the tab runs it - its curves simplified
             //  first, to longer sides - and then meshed: meshed as drawn, the
             //  test passed where the app's outlines went 0.24 and 0.27 µm off,
-            //  the review of 05304ec3.)
+            //  the review of 10b60005.)
             const rf::Processed processed = rf::processShapes({{QStringLiteral("M1"), {outline}}}, {}, rf::Processing(), stack);
             if (processed.conductors.size() != 1) return -1;
             rf::MeshSettings how;
@@ -319,7 +319,7 @@ private slots:
         //  perimeter is 9.8 - and a square pad's its side: a pad 40 µm
         //  across of this 5 µm metal, which twice its area over its
         //  perimeter took for 20 µm wide, is thin against it - the review
-        //  of b1b442fb.)
+        //  of 54357932.)
         QVERIFY2(says(sheet.warnings, "as narrow as 10 "), qPrintable(sheet.warnings.join(" | ")));
         const rf::Mesh pad = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 40, 40)}, how, m.stack(), 1e9);
         QVERIFY2(!says(pad.warnings, "inductance at a low frequency reads high"), qPrintable(pad.warnings.join(" | ")));
@@ -772,16 +772,13 @@ private slots:
                      qPrintable(QStringLiteral("%1 edges on the slant on the left, %2 on the right, %3 shared").arg(onLeft.size()).arg(onRight.size())
                                     .arg(QSet<QString>(onLeft).intersect(onRight).size())));
         }
-        // Two shapes left unmerged over each other, sharing an edge's line:
-        // their cells cannot meet edge to edge - said, both named.
+        // Two shapes left unmerged over each other: refused, as overlapping
+        // (shapesOverlappingOnALayerAreRefused) - meshed, each whole, their
+        // cells met no edge and the overlap was twice, warned of alone, before
+        // a bug hunt.
         const rf::Conductor under = on(QStringLiteral("M1"), 0, 0, 1000, 300), over = on(QStringLiteral("M1"), 450, 70, 1100, 230);
         const rf::Mesh apart = rf::meshOf({under, over}, how, m.stack(), 3e9);
-        QVERIFY2(apart.ok(), qPrintable(apart.problems.join(" | ")));
-        QCOMPARE(apart.warnings.size(), 1);
-        QVERIFY2(apart.warnings.first().contains(QStringLiteral("M1's piece about 500, 150")) && apart.warnings.first().contains(QStringLiteral("M1's piece about 1000, 185"))
-                     && apart.warnings.first().contains(QStringLiteral("no current crosses")),
-                 qPrintable(apart.warnings.first()));
-        QVERIFY2(says(apart.lines, "no current crosses"), qPrintable(apart.lines.join(" | ")));
+        QVERIFY2(!apart.ok() && says(apart.problems, "2 shapes on M1 overlap"), qPrintable(apart.problems.join(" | ")));
         // Apart by a gap, or meeting at a corner alone, nothing is said.
         const rf::Mesh gap = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 1000, 300), on(QStringLiteral("M1"), 1050, 0, 1000, 300)}, how, m.stack(), 3e9);
         QVERIFY2(gap.warnings.isEmpty(), qPrintable(gap.warnings.join(" | ")));
@@ -1408,6 +1405,27 @@ private slots:
         QVERIFY2(many.ok(), qPrintable(many.problems.join(" | ")));
         QVERIFY2(says(many.lines, "10000 to solve the charge on"), qPrintable(many.lines.join(" | ")));
     }
+    // Shapes on one layer that overlap are refused, not meshed whole each
+    // with their overlap twice (a strip drawn
+    // as two rectangles overlapping by 200 µm read Z 2 % off, the same
+    // rectangle twice a capacitance of NaN, said to be solved). Touching,
+    // or on two layers, they mesh as before.
+    void shapesOverlappingOnALayerAreRefused()
+    {
+        rf::MeshSettings how;
+        how.maximum = 40e-6;
+        how.cellsAcross = 4;
+        const auto problems = [&how](const QList<rf::Conductor>& c) { return rf::meshOf(c, how, rf::Stack(), 0).problems.join(" | "); };
+        const QString M1 = QStringLiteral("M1"), M2 = QStringLiteral("M2");
+        QVERIFY2(problems({on(M1, 0, 0, 400, 40), on(M1, 400, 0, 400, 40)}).isEmpty(), "touching");
+        QVERIFY2(problems({on(M1, 0, 0, 500, 40), on(M2, 300, 0, 500, 40)}).isEmpty(), "two layers");
+        const QString overlap = problems({on(M1, 0, 0, 500, 40), on(M1, 300, 0, 500, 40)});
+        QVERIFY2(overlap.contains(QStringLiteral("2 shapes on M1 overlap")) && overlap.contains(QStringLiteral("Merge touching shapes")),
+                 qPrintable(overlap));
+        const QString twice = problems({on(M1, 0, 0, 800, 40), on(M1, 0, 0, 800, 40)});
+        QVERIFY2(twice.contains(QStringLiteral("2 shapes on M1 overlap")), qPrintable(twice));
+    }
+
 };
 
 QTEST_MAIN(TestRf25Mesh)

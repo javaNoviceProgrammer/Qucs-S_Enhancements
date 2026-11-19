@@ -674,6 +674,15 @@ private slots:
         QVERIFY2(one.ok(), qPrintable(one.problems.join(' ')));
         QCOMPARE(one.ports, 1);
         QVERIFY(one.notes.join(QLatin1Char(' ')).contains(QStringLiteral("P2 is not written")));
+        // One off its edge, 500 µm past the strip's end, as the solve refuses
+        // it: not written - the nearest edge however far was.
+        const QString off = QStringLiteral(
+            R"({"type": "rf_edge_port", "tag": "p1", "label": "P1", "properties": {"conductor": "M1", "x": "0", "y": "0", "facing": "-x"}},
+               {"type": "rf_edge_port", "tag": "p2", "label": "P2", "properties": {"conductor": "M1", "x": "2500[um]", "y": "0", "facing": "+x"}})");
+        const PalaceExport away = palaceExportOf(modelOf(microstrip(QStringLiteral(R"("thickness": "2[um]")")), off), {strip}, options);
+        QVERIFY2(away.ok(), qPrintable(away.problems.join(' ')));
+        QCOMPARE(away.ports, 1);
+        QVERIFY(away.notes.join(QLatin1Char(' ')).contains(QStringLiteral("P2 is not written")));
     }
 
     // Runs: opt in with QUCS_RF25_PALACE_OUT=<folder>. The

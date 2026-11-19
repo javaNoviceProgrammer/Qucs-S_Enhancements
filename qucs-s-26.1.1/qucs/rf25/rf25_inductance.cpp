@@ -737,9 +737,9 @@ QLineF wholeSideOf(const QList<Conductor>& conductors, const QLineF& edge, const
 
 namespace {
 
-/// Whether \a where is on \a edge: within a thousandth of its length (a
-/// micrometre at least) of it - a port the app places at an edge's middle,
-/// written to nine digits, is.
+/// Whether \a where is on \a edge: within a thousandth of its length,
+/// taken as a micrometre at least, of it - a port the app places at an
+/// edge's middle, written to nine digits, is.
 bool onEdge(const QLineF& edge, QPointF where)
 {
     const QPointF d = edge.p2() - edge.p1();
