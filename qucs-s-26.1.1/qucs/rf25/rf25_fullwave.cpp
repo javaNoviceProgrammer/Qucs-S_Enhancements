@@ -1107,6 +1107,14 @@ struct Context {
     /// coplanar one a column against each conductor beside it.
     MatrixC drive;
     QList<int> portOf;                   ///< which port each column is
+    /*!
+     * Where a port has more than one column, the columns the solves take
+     * instead, columns x columns (columnBasis()): each port's first, in the
+     * ports' order; then each port's others less its first. Each solve's Z
+     * and currents are of these, and the ports are tied as a Schur
+     * complement over the differences. Empty: the columns as they are.
+     */
+    MatrixC basis;
     /// The ports' own paths to the cells they drive (PortPath): none for a
     /// coplanar port, whose current comes back beside it. Their spans are
     /// among the vias'.
@@ -2824,6 +2832,42 @@ private:
     QList<int> a_roots;                  ///< by component
 };
 
+/*!
+ * The columns \a c's solves take where a port has more than one
+ * (Context::basis), of the \a np ports: empty where none has.
+ *
+ * Each column carries an ampere from its port's own cells to one of its
+ * returns, so that each holds the own cells' charge term: at 1 Hz some 10^12
+ * Ohm of a coplanar line's signal, in every term alike, and the columns'
+ * matrix all but one of rank. Tied as (B^T Z^-1 B)^-1, that inverse lost
+ * what was below it - the line's C at 1 Hz 234 % off, a part in 10^13 at 10
+ * Hz, two terminals' 10^59, with nothing said. A port's other columns less its first carry the ampere between
+ * its returns alone, the own cells' drive cancelling to the bit: solved as
+ * columns of their own, that term is in each port's first column alone, and
+ * the tie a Schur complement taking from it what the differences add.
+ */
+MatrixC columnBasis(const Context& c, int np)
+{
+    const int nk = c.np;
+    if (nk == np) return {};
+    QList<QList<int>> of(np);
+    for (int k = 0; k < nk; ++k) of[c.portOf.at(k)] << k;
+    for (const QList<int>& columns : std::as_const(of))
+        if (columns.isEmpty()) return {};
+    MatrixC t = MatrixC::Zero(nk, nk);
+    int at = np;
+    for (int p = 0; p < np; ++p) {
+        const int first = of.at(p).first();
+        t(first, p) = 1;
+        for (int r = 1; r < of.at(p).size(); ++r) {
+            t(of.at(p).at(r), at) = 1;
+            t(first, at) = -1;
+            ++at;
+        }
+    }
+    return t;
+}
+
 AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, double augmentedFrom)
 {
     AtFrequency out;
@@ -2915,6 +2959,14 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, dou
     MatrixC pathZ = MatrixC::Zero(c.np, c.np);
     addPortPaths(c, k, rhs, pathZ);
     addSourceFields(c, k, rhs, pathZ);
+    // (Where a port has more than one column, the columns solved for:
+    //  Context::basis. Each term above is linear in the columns' drives.)
+    const bool based = c.basis.size() > 0;
+    const MatrixC drive = based ? MatrixC(c.drive * c.basis) : c.drive;
+    if (based) {
+        rhs = rhs * c.basis;
+        pathZ = c.basis.transpose() * pathZ * c.basis;
+    }
     out.fillSeconds = double(clock.nsecsElapsed()) * 1e-9;
     if (augmented) {
         // The runs and the cells' charges together:
@@ -2948,7 +3000,7 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, dou
         const MatrixC& extra = rhs;
         MatrixC both(na, c.np);
         both.topRows(nr) = extra;
-        both.bottomRows(nc) = c.drive;
+        both.bottomRows(nc) = drive;
         const DenseFactors<Complex> lu(std::move(big), threads, false);
         const MatrixC solved = lu.solve(both);
         out.current = solved.topRows(nr);
@@ -2972,7 +3024,7 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, dou
         for (int q = 0; q < c.np; ++q) {
             VectorC drop = VectorC::Zero(nr);
             for (std::size_t t = 0; t < treeRuns.size(); ++t) drop[treeRuns[t]] = field(Eigen::Index(t), q) - extra(treeRuns[t], q);
-            out.z.col(q) += loops.voltages(c.drive, drop, charged.col(q));
+            out.z.col(q) += loops.voltages(drive, drop, charged.col(q));
         }
         return out;
     }
@@ -2998,7 +3050,7 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, dou
     // own charge, J^T P J / jw, and of the charges the currents leave, with
     // what the vias' and the paths' currents add along its path - the
     // drive's coupling the other way round, by reciprocity.
-    out.z = c.drive.transpose() * pDrive / jw + pathZ - rhs.transpose() * out.current;
+    out.z = drive.transpose() * (based ? MatrixC(pDrive * c.basis) : pDrive) / jw + pathZ - rhs.transpose() * out.current;
     return out;
 }
 
@@ -3506,6 +3558,11 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
         phi.multiplyTransposed(dq, u);
         ph.col(q) = u;
     }
+    // (Where a port has more than one column, the columns solved for:
+    //  Context::basis - the drive's terms taken in the columns as they are,
+    //  then into these, each linear in the columns' drives.)
+    const bool based = c.basis.size() > 0;
+    const MatrixC drive = based ? MatrixC(c.drive * c.basis) : c.drive;
     MatrixC current(nr, columns), applied(nr, columns);
     // The charges unknowns of their own, in the loop-tree basis (LoopTree):
     // the runs' currents its loops' and its tree runs', and each cell's
@@ -3587,11 +3644,15 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
         pathZ = MatrixC::Zero(columns, columns);
         addPortPaths(c, k, rhs, pathZ);
         addSourceFields(c, k, rhs, pathZ);
+        if (based) {
+            rhs = rhs * c.basis;
+            pathZ = c.basis.transpose() * pathZ * c.basis;
+        }
         if (augmented) {
             both.resize(na, columns);
             for (int q = 0; q < columns; ++q) {
                 both.col(q).head(nr) = loops.transposed(rhs.col(q)).cwiseProduct(scale.cast<Complex>());
-                both.col(q).tail(nc) = c.drive.col(q);
+                both.col(q).tail(nc) = drive.col(q);
             }
         }
         out.iterations = 0;
@@ -3682,14 +3743,14 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
         for (int q = 0; q < columns; ++q) {   // (the port driven)
             VectorC n;
             system(current.col(q), n);
-            out.z.col(q) += loops.voltages(c.drive, n - rhs.col(q), pOf(both.col(q).tail(nc) / jw));
+            out.z.col(q) += loops.voltages(drive, n - rhs.col(q), pOf(both.col(q).tail(nc) / jw));
         }
         out.z -= rhs.transpose() * current;
         out.augmented = true;
         out.loopTree = true;
         return out;
     }
-    out.z = c.drive.transpose() * pd / jw + pathZ
+    out.z = drive.transpose() * (based ? MatrixC(pd * c.basis) : pd) / jw + pathZ
             - (rhs.transpose() * current + current.transpose() * rhs - current.transpose() * applied);
     return out;
 }
@@ -5555,6 +5616,9 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     out.threads = side * inner;
     if (control != nullptr && control->atOnce != nullptr) control->atOnce->store(side);
     if (control != nullptr && control->begins) control->begins(nf);
+    // (Where a port has more than one column, its others less its first
+    //  solved for as columns of their own.)
+    c.basis = columnBasis(c, np);
     // (A vector, not a QList: the threads write to it side by side, and a
     //  QList's implicit sharing is no place for that.)
     std::vector<AtFrequency> solved(static_cast<std::size_t>(nf));
@@ -5782,7 +5846,43 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     };
     for (int k = 0; k < nf; ++k) {
         AtFrequency a = solved[std::size_t(k)];
-        if (c.np != np) {
+        if (c.basis.size() > 0) {
+            // In the columns solved for (Context::basis): each port's first,
+            // then the differences, which carry no port's current. Tied, the
+            // differences' voltages nought: their currents w = -Z_ww^-1 Z_wu,
+            // and the ports' Z the Schur complement Z_uu - Z_uw Z_ww^-1 Z_wu.
+            const int nw = c.np - np;
+            const MatrixC zww = a.z.bottomRightCorner(nw, nw), zwu = a.z.bottomLeftCorner(nw, np);
+            Eigen::VectorXd d(nw);
+            for (int i = 0; i < nw; ++i) {
+                const double size = std::sqrt(std::abs(zww(i, i)));
+                d[i] = size > 0 && std::isfinite(size) ? size : 1.0;
+            }
+            const MatrixC scaled = d.cwiseInverse().asDiagonal() * zww * d.cwiseInverse().asDiagonal();
+            MatrixC w = d.cwiseInverse().asDiagonal() * Eigen::PartialPivLU<MatrixC>(scaled).solve(d.cwiseInverse().asDiagonal() * zwu);
+            // (Two returns over the same cells: a difference of nothing, its
+            //  row nought - of the least squares there, as below.)
+            if (!w.allFinite()) {
+                Eigen::CompleteOrthogonalDecomposition<MatrixC> cod(scaled);
+                cod.setThreshold(1e-10);
+                w = d.cwiseInverse().asDiagonal() * cod.solve(d.cwiseInverse().asDiagonal() * zwu);
+            }
+            const MatrixC z = a.z.topLeftCorner(np, np) - a.z.topRightCorner(np, nw) * w;
+            if (!z.allFinite() || !w.allFinite()) {
+                out.problems << tr("At %1 GHz the returns of the ports that have more than one could not be tied: their "
+                                   "columns came out singular.")
+                                    .arg(frequencies.at(k) / 1e9, 0, 'g', 4);
+                return out;
+            }
+            // (An ampere into each port, in the columns solved for, and in
+            //  the columns as they are for its returns' shares.)
+            MatrixC into(c.np, np);
+            into.topRows(np) = MatrixC::Identity(np, np);
+            into.bottomRows(nw) = -w;
+            if (k == topAt) shareOut(c.basis * into);
+            a.current = a.current * into;
+            a.z = z;
+        } else if (c.np != np) {
             MatrixC x = Eigen::PartialPivLU<MatrixC>(a.z).solve(ofPort);
             MatrixC y = ofPort.transpose() * x;
             MatrixC z = Eigen::PartialPivLU<MatrixC>(y).solve(MatrixC::Identity(np, np));
