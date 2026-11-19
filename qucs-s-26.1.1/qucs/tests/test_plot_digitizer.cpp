@@ -2985,8 +2985,11 @@ private slots:
         Source source(&pdf, file);
         const Plot found = firstPlot(source);
         QVERIFY(found.calibration.valid());
+        // (The raster route, slow under the sanitizers, with the counts that
+        // broke it: INT_MAX's overflow, a negative one, none.)
         for (const Options::Route route : {Options::Route::Vector, Options::Route::Raster})
             for (const int most : {std::numeric_limits<int>::max(), std::numeric_limits<int>::min(), -1, 0, 1, 24}) {
+                if (route == Options::Route::Raster && most != std::numeric_limits<int>::max() && most != -1 && most != 0) continue;
                 Plot plot = found;
                 Options o;
                 o.route = route;
@@ -3078,11 +3081,14 @@ private slots:
         // sine crossing it: taken for a grid line and left out, or kept only
         // between where the sine touched it, in a blend of the two colours
         // (the SOI MMI benchmark's E3). A grid line is at a mark, or one of a
-        // set of them in one colour.
+        // set of them in one colour. And at a labelled tick, a lone line in a
+        // colour of its own is still the curve: a reference level at 0 dB
+        // (the recheck of 27.1.4's E3': there it was always dropped).
+        for (const double level : {0.2, 0.5}) {
         Axes a;
         a.frame = QRectF(120, 200, 380, 200);
-        const auto flat = [](double) { return 0.2; };
-        const QString vector = path(QStringLiteral("e3_vector.pdf")), image = path(QStringLiteral("e3_image.pdf"));
+        const auto flat = [level](double) { return level; };
+        const QString vector = path(QStringLiteral("e3_vector_%1.pdf").arg(level)), image = path(QStringLiteral("e3_image_%1.pdf").arg(level));
         const auto draw = [&](QPainter& p, double u) { drawPlot(p, a, {Curve{flat, QColor(26, 51, 204), 1.2}, Curve{sine, QColor(220, 30, 40), 1.2}}, u); };
         QVERIFY(writeVector(vector, draw));
         QVERIFY(writeScan(image, plotImage(a, {Curve{flat, QColor(26, 51, 204), 1.2}, Curve{sine, QColor(220, 30, 40), 1.2}}, 300)));
@@ -3109,18 +3115,79 @@ private slots:
             const Series* blue = nullptr;
             for (const Series& s : std::as_const(plot.series))
                 if (s.shape == Series::Shape::Line && s.colour.blue() > s.colour.red() + 80 && (blue == nullptr || s.points.size() > blue->points.size())) blue = &s;
-            QVERIFY2(blue != nullptr, qPrintable(file + QStringLiteral(": the flat line")));
+            QVERIFY2(blue != nullptr, qPrintable(file + QStringLiteral(": the flat line at %1").arg(level)));
             double lo = 1e9, hi = -1e9, worst = 0;
             for (const QPointF& v : values(plot, *blue)) {
                 lo = std::min(lo, v.x());
                 hi = std::max(hi, v.x());
-                worst = std::max(worst, std::abs(v.y() - 0.2));
+                worst = std::max(worst, std::abs(v.y() - level));
             }
-            qInfo("%s: the flat line from x %.2f to %.2f, %s, at most %.4f off 0.2", file == vector ? "vector page" : "image page", lo, hi, qPrintable(blue->colour.name()), worst);
+            qInfo("%s, the line at %.1f (%s): from x %.2f to %.2f, %s, at most %.4f off", file == vector ? "vector page" : "image page", level, level == 0.5 ? "a labelled tick" : "no tick", lo, hi, qPrintable(blue->colour.name()), worst);
             QCOMPARE_GE(hi - lo, 0.9 * (a.xMax - a.xMin));
             QCOMPARE_LE(worst, 0.03);
             QVERIFY2(colourDistance(blue->colour, QColor(26, 51, 204)) < colourDistance(blue->colour, QColor(220, 30, 40)), qPrintable(blue->colour.name()));
         }
+        }
+    }
+
+    void aSolidAndADashDotCurveOfOneColour()
+    {
+        // A paper's figure: a thin solid curve and a thick dash-dot one, both
+        // blue, scanned. The dash-dot's dots set the markers' size, the solid
+        // line's middle was found as a row of discs touching, and what was
+        // left of the line - its points a little further apart than a dot is
+        // wide, its dip a "reversal" - was taken for bits of markers: one
+        // series of 224 markers, the solid curve lost (the recheck of
+        // 27.1.4's N2, Rosa p1). The solid curve is a line again.
+        Axes a;
+        a.frame = QRectF(120, 200, 380, 220);
+        a.yMin = -50;
+        a.yMax = 0;
+        a.yTicks = {-50, -40, -30, -20, -10, 0};
+        a.labels = false;
+        const auto solid = [](double x) { return -2 - 21 / (1 + std::pow((x - 8) / 0.8, 2)) - 0.3 * x * x; };
+        const auto dashed = [](double x) { return -1 - 45 * std::exp(-1.5 * x); };
+        const QString file = path(QStringLiteral("solid_and_dashdot.pdf"));
+        QVERIFY(writeScan(file, plotImage(a, {Curve{solid, QColor(8, 102, 168), 1.0}, Curve{dashed, QColor(8, 102, 168), 2.4, Qt::DashDotLine}}, 300)));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = plotInRegion(source, 0, a.frame.adjusted(-70, -10, 10, 30));
+        Reference low, high;
+        low.at = a.frame.bottomLeft();
+        low.hasX = low.hasY = true;
+        low.x = a.xMin;
+        low.y = a.yMin;
+        high.at = a.frame.topRight();
+        high.hasX = high.hasY = true;
+        high.x = a.xMax;
+        high.y = a.yMax;
+        plot.calibration.references = {low, high};
+        QString why;
+        QVERIFY2(plot.calibration.fit(&why), qPrintable(why));
+        Options o;
+        o.route = Options::Route::Raster;
+        o.colours = {QColor(8, 102, 168)};
+        QVERIFY2(extract(source, plot, o, &why), qPrintable(why));
+        // The solid curve: a line on it across most of the frame.
+        double covered = 0;
+        int markersOnIt = 0;
+        for (const Series& s : std::as_const(plot.series)) {
+            const QList<QPointF> v = values(plot, s);
+            int on = 0;
+            double lo = 1e9, hi = -1e9;
+            for (const QPointF& q : v)
+                if (std::abs(q.y() - solid(q.x())) < 0.6) {
+                    ++on;
+                    lo = std::min(lo, q.x());
+                    hi = std::max(hi, q.x());
+                }
+            qInfo("%s %s: %lld points, %d on the solid curve, x %.2f to %.2f", qPrintable(s.name), s.shape == Series::Shape::Line ? "line" : "markers", qlonglong(v.size()), on, lo, hi);
+            if (s.shape == Series::Shape::Line && on >= 0.7 * v.size()) covered = std::max(covered, hi - lo);
+            if (s.shape == Series::Shape::Markers) markersOnIt += on;
+        }
+        QCOMPARE_GE(covered, 0.8 * (a.xMax - a.xMin));
+        QCOMPARE_LE(markersOnIt, 5);
     }
 
     void aHeavyPageIsReadInTime()
