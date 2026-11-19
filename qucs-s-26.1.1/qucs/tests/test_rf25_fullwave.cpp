@@ -4928,6 +4928,127 @@ private slots:
                  qPrintable(wf.lines.join(" | ")));
     }
 
+    // Two ports whose returns are tied to the same conductors hold at a low
+    // frequency: a coplanar line's coplanar
+    // ports at both its ends, or ports each returning through terminals on
+    // both its grounds. Each port was a column against each return, every
+    // column holding the signal's charge term - 10^12 Ohm at 1 Hz, in every
+    // term alike - and tied as (B^T Z^-1 B)^-1 that inverse lost what lay
+    // below it: C at 1 Hz 234 % off, at 10 Hz 10^13 times, two terminals'
+    // 10^59, at 1 kHz 0.4 % dense and 5.5 % compressed, with nothing said.
+    // Solved as each port's first column and its others less it, the
+    // signal's term in the first alone, and tied as a Schur complement
+    // (Context::basis): C at every frequency its megahertz one to the line's
+    // own dispersion, and its quasi-static solve's with the grounds tied;
+    // and a line shorted to both grounds at its middle, an inductance, its L
+    // at 1 Hz its megahertz one (its ports through terminals: one conductor,
+    // a coplanar port finds no return beside it).
+    void twoPortsTiedToTheSameReturnsHoldAtALowFrequency()
+    {
+        const rf::Stack st = grounded(9.8, 200e-6, 0, 0, 5.8e7);
+        const QString m1 = QStringLiteral("M1");
+        const double l = 1000;
+        const QList<rf::Conductor> cpw = {on(m1, 0, -50, l, 100), on(m1, 0, 100, l, 250), on(m1, 0, -350, l, 250)};
+        // (Shorted: the line and its grounds one outline, joined across both
+        //  gaps at its middle by 50 µm of metal.)
+        rf::Conductor joined;
+        joined.layer = m1;
+        joined.outline = QPolygonF({QPointF(0, -350), QPointF(l, -350), QPointF(l, -100), QPointF(525, -100), QPointF(525, -50), QPointF(l, -50),
+                                    QPointF(l, 50), QPointF(525, 50), QPointF(525, 100), QPointF(l, 100), QPointF(l, 350), QPointF(0, 350),
+                                    QPointF(0, 100), QPointF(475, 100), QPointF(475, 50), QPointF(0, 50), QPointF(0, -50), QPointF(475, -50),
+                                    QPointF(475, -100), QPointF(0, -100)});
+        const QList<rf::Conductor> shorted{joined};
+        const QList<double> fs{1, 100, 1e4, 1e6};
+        const auto ports = [&](bool terminals) {
+            QList<rf::FullWavePort> out = {edgePort(QPointF(0, 0), m1, QPointF(-1, 0)), edgePort(QPointF(l, 0), m1, QPointF(1, 0))};
+            for (rf::FullWavePort& p : out) {
+                if (!terminals) {
+                    p.coplanar = true;
+                    continue;
+                }
+                p.terminals = true;
+                for (const double y : {150.0, -150.0}) {
+                    rf::PortTerminal t;
+                    t.name = y > 0 ? QStringLiteral("T") : QStringLiteral("U");
+                    t.at = QPointF(p.at.x(), y);
+                    t.metal = m1;
+                    t.face = true;
+                    t.facing = p.facing;
+                    p.returns << t;
+                }
+            }
+            return out;
+        };
+        // The open line's C against the quasi-static solve's, its grounds tied
+        // - a node of their own, floating over the plane - and the signal
+        // against them: what the tie is, whatever the frequency.
+        double tiedC = 0;
+        {
+            const rf::Extraction e = rf::extract(meshed(cpw, 3, 100e-6), cpw, st);
+            QVERIFY2(e.ok() && e.maxwell.size() == 3, qPrintable(e.problems.join(" | ")));
+            Eigen::Matrix2d m;
+            m(0, 0) = e.maxwell[0][0];
+            m(0, 1) = m(1, 0) = e.maxwell[0][1] + e.maxwell[0][2];
+            m(1, 1) = e.maxwell[1][1] + e.maxwell[1][2] + e.maxwell[2][1] + e.maxwell[2][2];
+            const Eigen::Matrix2d inverse = m.inverse();
+            tiedC = 1 / (inverse(0, 0) - 2 * inverse(0, 1) + inverse(1, 1));
+        }
+        for (const bool open : {true, false}) {
+            const QList<rf::Conductor>& c = open ? cpw : shorted;
+            const rf::Mesh mesh = meshed(c, 3, 100e-6);
+            for (const bool terminals : {false, true}) {
+                // (Shorted, its three strips one conductor: a coplanar port
+                //  finds no return beside it, and says so.)
+                if (!open && !terminals) continue;
+                QList<rf::FullWave> w;
+                for (const bool compressed : {false, true}) {
+                    rf::FullWaveControl control;
+                    control.matrix = compressed ? rf::FullWaveControl::Matrix::Compressed : rf::FullWaveControl::Matrix::Dense;
+                    control.threads = 1;
+                    w << rf::fullWaveOf(mesh, c, st, ports(terminals), fs, 1e-6, &control);
+                    QVERIFY2(w.last().ok(), qPrintable(why(w.last())));
+                    // (C of an open line, L of a shorted one, each term's at
+                    //  every frequency against its megahertz one.)
+                    const auto value = [open](Complex z, double f) { return open ? -1 / (2 * M_PI * f * z.imag()) : z.imag() / (2 * M_PI * f); };
+                    // (Compressed and shorted, at 1 Hz - its charges' term
+                    //  10^25 times its currents' - GMRES with the charges as
+                    //  unknowns falls short and the eliminated system answers,
+                    //  said: the limit of rf25-limits.md, not the ties'.)
+                    const int from = compressed && !open ? 1 : 0;
+                    if (from > 0) QVERIFY2(says(w.last().lines, "fell short of its residual"), qPrintable(w.last().lines.join(" | ")));
+                    double worst = 0;
+                    for (int k = from; k < fs.size(); ++k)
+                        for (int i = 0; i < 2; ++i)
+                            for (int j = 0; j < 2; ++j)
+                                worst = std::max(worst, std::abs(value(w.last().z[k][i][j], fs[k]) / value(w.last().z.last()[i][j], fs.last()) - 1));
+                    qWarning("%s, %s, %s: %s %.4f %s at 1 MHz, every term within %.2e of it from %g Hz", open ? "open" : "shorted at its middle",
+                             terminals ? "two terminals" : "coplanar", compressed ? "compressed" : "dense", open ? "C11" : "L11",
+                             value(w.last().z.last()[0][0], fs.last()) * (open ? 1e15 : 1e12), open ? "fF" : "pH", worst, fs.at(from));
+                    QVERIFY2(worst < 1e-8, qPrintable(QString::number(worst)));
+                    if (open) {
+                        const double c11 = value(w.last().z.last()[0][0], fs.last());
+                        qWarning("   C11 %.4f fF, the quasi-static solve's with its grounds tied %.4f (%+.2f %%)", c11 * 1e15, tiedC * 1e15, 100 * (c11 / tiedC - 1));
+                        QVERIFY2(std::abs(c11 / tiedC - 1) < 2e-3, qPrintable(QStringLiteral("%1 against %2").arg(c11).arg(tiedC)));
+                    }
+                    // (Its returns alike, either side: half its current each.)
+                    if (terminals)
+                        QVERIFY2(says(w.last().lines, "current comes back 50.0 % through T, 50.0 % through U"), qPrintable(w.last().lines.join(" | ")));
+                    for (int k = from; k < fs.size(); ++k) {
+                        const Matrix2 zk = zOf(w.last(), k);
+                        const double asymmetry = std::abs(zk(0, 1) - zk(1, 0)) / zk.cwiseAbs().maxCoeff();
+                        QVERIFY2(asymmetry < 1e-6, qPrintable(QStringLiteral("%1 at %2 Hz").arg(asymmetry).arg(fs.at(k))));
+                    }
+                }
+                // (Each frequency apart: one gap over the sweep is its 1 Hz
+                //  terms', 10^6 times its megahertz ones.)
+                for (int k = open ? 0 : 1; k < fs.size(); ++k) {
+                    const double apart = gapOf({w.at(0).z.at(k)}, {w.at(1).z.at(k)});
+                    QVERIFY2(apart < 1e-4, qPrintable(QStringLiteral("dense and compressed %1 apart at %2 Hz").arg(apart).arg(fs.at(k))));
+                }
+            }
+        }
+    }
+
 };
 
 QTEST_MAIN(TestRf25Fullwave)
