@@ -5361,6 +5361,81 @@ private slots:
         }
     }
 
+
+    // A threaded sweep whose frequencies fall short with the charges as
+    // unknowns of their own, the same to the bit from one run to the next.
+    // Each thread skips them below a ratio of the charges' term it fell short
+    // at itself (solveCompressed()), not one another thread has got to -
+    // which, read from the sweep's record, made whether a frequency was
+    // tried the threads' race. The open line of
+    // aSolvePastItsLowFrequencyLimitSaysSo forced short (two iterations) on
+    // three threads, its frequencies dealt in turn from the highest: 1 MHz
+    // and 10 Hz on the first, 10 kHz and 1 Hz on the second, 1 kHz on the
+    // third - three fall short, the two below them on their threads not
+    // tried, and Z and every note the same twice over, and again with its
+    // frequencies let begin one at a time.
+    void aThreadedSweepThatFallsShortIsTheSameRunToRun()
+    {
+        const rf::Stack st = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
+        const QList<rf::Conductor> cs{strip(0, 0, 2000, 100)};
+        const QList<double> fs{1, 10, 1e3, 1e4, 1e6};
+        QList<rf::FullWave> runs;
+        for (int run = 0; run < 2; ++run) {
+            rf::FullWaveControl control;
+            control.matrix = rf::FullWaveControl::Matrix::Compressed;
+            control.threads = 3;
+            control.augmentedMost = 2;
+            runs << rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, st, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))}, fs, 1e-6,
+                                   &control);
+            const rf::FullWave& w = runs.last();
+            QVERIFY2(w.ok() && says(w.lines, "3 at a time"), qPrintable(why(w) + w.lines.join(" | ")));
+            const QStringList fell = w.lines.filter(QStringLiteral("so solved with them eliminated"));
+            const QStringList skipped = w.lines.filter(QStringLiteral("fell short at a higher frequency of this sweep"));
+            QVERIFY2(fell.size() == 3 && skipped.size() == 2, qPrintable(w.lines.join(" | ")));
+            for (const char* f : {"At 1e+06 Hz", "At 1e+04 Hz", "At 1000 Hz"})
+                QVERIFY2(fell.join(' ').contains(QLatin1String(f)), qPrintable(fell.join(" | ")));
+            for (const char* f : {"At 10 Hz", "At 1 Hz"})
+                QVERIFY2(skipped.join(' ').contains(QLatin1String(f)), qPrintable(skipped.join(" | ")));
+        }
+        // And a third, its frequencies let begin one at a time, each after
+        // the last has ended, in whichever order the threads take them: the
+        // same again - whether a frequency is tried is its own thread's, not
+        // which of the others went first. (Read from one record for the
+        // sweep, five orders in six of the first three left fewer short.)
+        {
+            std::atomic_int tokens{0}, done{0};
+            rf::FullWaveControl control;
+            control.matrix = rf::FullWaveControl::Matrix::Compressed;
+            control.threads = 3;
+            control.augmentedMost = 2;
+            control.allowed = &tokens;
+            control.done = &done;
+            rf::FullWave gated;
+            std::thread solving([&] {
+                gated = rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, st, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))}, fs, 1e-6,
+                                       &control);
+            });
+            QElapsedTimer clock;
+            clock.start();
+            for (int k = 0; k < fs.size() && clock.elapsed() < 120000; ++k) {
+                tokens = 1;
+                while (done.load() <= k && clock.elapsed() < 120000) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            tokens = -1;
+            solving.join();
+            QVERIFY2(gated.ok(), qPrintable(why(gated)));
+            runs << gated;
+        }
+        for (int r = 1; r < runs.size(); ++r) {
+            QCOMPARE(runs.at(r).lines, runs.at(0).lines);
+            QCOMPARE(runs.at(r).warnings, runs.at(0).warnings);
+            for (int k = 0; k < fs.size(); ++k)
+                for (int i = 0; i < 2; ++i)
+                    for (int j = 0; j < 2; ++j)
+                        QVERIFY2(runs.at(0).z[k][i][j] == runs.at(r).z[k][i][j],
+                                 qPrintable(QStringLiteral("run %4: %1 Hz, Z%2%3 apart from the first").arg(fs.at(k)).arg(i + 1).arg(j + 1).arg(r + 1)));
+        }
+    }
 };
 
 QTEST_MAIN(TestRf25Fullwave)

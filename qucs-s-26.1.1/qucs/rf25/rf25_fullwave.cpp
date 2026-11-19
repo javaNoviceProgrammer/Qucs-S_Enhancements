@@ -3597,7 +3597,7 @@ struct NearBlocks {
  * square of I's - symmetric, where M is.
  */
 AtFrequency solveCompressed(const Context& c, const Compression& z, double f, int threads, const FullWaveControl* control,
-                            std::atomic<double>* shortAt = nullptr, NearBlocks* kept = nullptr)
+                            double* shortAt = nullptr, NearBlocks* kept = nullptr)
 {
     const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
     const int most = control != nullptr && control->mostIterations > 0 ? control->mostIterations : kMostIterations;
@@ -3682,10 +3682,15 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
     //  term in this sweep, a higher frequency: the ratio only grows as the
     //  frequency falls, and an open line's sweep spent kAugmentedMost
     //  iterations a frequency on it - the review of
-    //  0a6ae44e.)
-    if (augmented && shortAt != nullptr && out.chargeOverSeries >= shortAt->load()) {
+    //  0a6ae44e. Of the higher frequencies its own thread has solved, as
+    //  each thread's are dealt to it in turn, not of what the others have
+    //  got to: whether it is tried the sweep's and its threads' alone, the
+    //  same to the bit from one run to the next. Each thread falls short
+    //  once at most before it skips - as the threads under way did when the
+    //  record was the sweep's -, and none waits on another's.)
+    if (augmented && shortAt != nullptr && out.chargeOverSeries >= *shortAt) {
         augmented = false;
-        out.augmentedShortAt = shortAt->load();
+        out.augmentedShortAt = *shortAt;
     }
     System system{c, z, kx, ky, p, phi, g, d, jw, !augmented};
     fem::SparseLu<Complex> lu;
@@ -3927,11 +3932,7 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
                 if (!solved.converged) {
                     blocks.held = false;
                     out.augmentedTried = out.iterations;
-                    if (shortAt != nullptr) {
-                        double was = shortAt->load();
-                        while (out.chargeOverSeries < was && !shortAt->compare_exchange_weak(was, out.chargeOverSeries)) {
-                        }
-                    }
+                    if (shortAt != nullptr) *shortAt = std::min(*shortAt, out.chargeOverSeries);
                     augmented = false;
                     again = true;
                     break;
@@ -5948,10 +5949,11 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     std::iota(order.begin(), order.end(), 0);
     if (compress)
         std::stable_sort(order.begin(), order.end(), [&frequencies](int a, int b) { return frequencies.at(a) > frequencies.at(b); });
-    std::atomic<double> shortAt{std::numeric_limits<double>::infinity()};
-    // (Each thread's near-field blocks, kept from one of its frequencies to
-    //  its next, lower one: NearBlocks.)
+    // (Each thread's own, kept from one of its frequencies to its next,
+    //  lower one: the near field's blocks, NearBlocks; and the least ratio of
+    //  the charges' term it fell short at, solveCompressed().)
     std::vector<NearBlocks> kept(static_cast<std::size_t>(side));
+    std::vector<double> shortAt(static_cast<std::size_t>(side), std::numeric_limits<double>::infinity());
     const auto work = [&c, &z, &frequencies, &solved, &next, &failed, &order, &shortAt, &kept, control, nf, compress, inner,
                        side, symmetricLu](int thread) {
         const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
@@ -5966,7 +5968,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             const int k = order[std::size_t(n)];
             if (failed || (stop != nullptr && stop->load())) return;
             if (!allowedOne(control)) return;
-            solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, control, &shortAt, &kept[std::size_t(thread)])
+            solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, control, &shortAt[std::size_t(thread)], &kept[std::size_t(thread)])
                                                 : solveAt(c, frequencies.at(k), inner, symmetricLu, control != nullptr ? control->augmentedFrom : 0.0);
             if (!solved[std::size_t(k)].problems.isEmpty()) failed = true;
             if (control != nullptr && control->done != nullptr) ++*control->done;
