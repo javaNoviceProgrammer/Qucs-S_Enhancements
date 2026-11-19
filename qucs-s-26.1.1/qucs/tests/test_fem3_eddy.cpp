@@ -32,6 +32,7 @@
 #include <QRegularExpression>
 #include <QtTest>
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 
@@ -165,15 +166,19 @@ QString addMagnetic(Model& m)
 }
 
 /// The study's steps: a Frequency Domain step of \a frequencies alone (its
-/// coil sweep \a sweep).
-void frequencyStep(Model& m, const QString& frequencies, bool sweep = true)
+/// coil sweep \a sweep; its frequency sweep \a fastSweep, exact unless
+/// asked - each test's own solves).
+void frequencyStep(Model& m, const QString& frequencies, bool sweep = true, const QString& fastSweep = QStringLiteral("exact"))
 {
     for (Node& c : m.root.children)
         if (c.type == QLatin1String("study")) {
+            c.children.erase(std::remove_if(c.children.begin(), c.children.end(), [](const Node& s) { return s.type == QLatin1String("frequency"); }),
+                             c.children.end());
             for (Node& s : c.children) s.enabled = false;
             Node f = m.make(QStringLiteral("frequency"));
             f.props.insert(QStringLiteral("frequencies"), frequencies);
             f.props.insert(QStringLiteral("sweep"), sweep);
+            f.props.insert(QStringLiteral("fastsweep"), fastSweep);
             c.children.push_back(f);
         }
 }
@@ -437,6 +442,33 @@ Model roundWire(double hmax, double a, double R, double len, QString* ecTag, QSt
                {{QStringLiteral("name"), QStringLiteral("1")}, {QStringLiteral("ec"), QJsonArray{et}}, {QStringLiteral("terminal"), QStringLiteral("1")}});
     *ecTag = et;
     *mfTag = mf;
+    return m;
+}
+
+/// The wire of 10 A (0.3 mm and 4 layers sanitized, 0.2 and 6 else) and a
+/// heat physics on it of conductivity 0.01 W/(m K) - its ends at 293.15 K,
+/// its source the eddy currents' losses mf.Qrh.
+Model heatedWire(QString* mf, QString* heat)
+{
+    // (Sanitized: coarser, fewer layers - its cycle's solves past
+    // QtTest's 300 s at 0.2 mm and 6.)
+    QString et;
+    Model m = roundWire(slowBuild() ? 0.3 : 0.2, 0.5, 1.5, 1, &et, mf, slowBuild() ? 4 : 6);
+    coilOf(m, *mf, QStringLiteral("1"))->props.insert(QStringLiteral("I0"), QStringLiteral("10[A]"));
+    Node ht = m.make(QStringLiteral("heat"));
+    ht.props.insert(QStringLiteral("order"), QStringLiteral("1"));
+    ht.props.insert(QStringLiteral("selection"), objects(QStringLiteral("wire")));
+    *heat = ht.tag;
+    const QString h = *heat;
+    m.add(m.component().tag, ht);
+    for (Node& c : m.find(h)->children)
+        if (c.type == QLatin1String("heat/solid")) {
+            c.props.insert(QStringLiteral("source"), QStringLiteral("user"));
+            c.props.insert(QStringLiteral("k"), QStringLiteral("0.01[W/(m*K)]"));
+        }
+    addFeature(m, h, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("wire"), QStringLiteral("bottom")), {{QStringLiteral("T0"), QStringLiteral("293.15[K]")}});
+    addFeature(m, h, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("wire"), QStringLiteral("top")), {{QStringLiteral("T0"), QStringLiteral("293.15[K]")}});
+    addFeature(m, h, QStringLiteral("heat/source"), objects(QStringLiteral("wire")), {{QStringLiteral("Q0"), QStringLiteral("mf.Qrh")}});
     return m;
 }
 
@@ -791,59 +823,175 @@ private slots:
         QVERIFY2(sv.error.contains(QStringLiteral("terminal or ground")) && sv.error.contains(QStringLiteral("Magnetic Insulation")), qPrintable(why(sv)));
     }
 
+    // The fast sweep (a reduced basis, each exact solve's derivatives in it)
+    // against each frequency solved: the coax's voltage at 16 frequencies
+    // from 10 Hz to 300 kHz, and the two bars' impedance matrix at 13 from 1
+    // kHz to 1 MHz, each within 1e-6 of the exact solve's (1.5e-9 and 3e-10
+    // measured), from four factorizations at most (three measured).
+    void aFastSweep()
+    {
+        double largest = 0;
+        const auto compare = [&largest](Model m, const QString& frequencies, const QStringList& globals, int* exactSolves, double* worst,
+                                        const QString& tolerance = QString()) {
+            frequencyStep(m, frequencies, true, QStringLiteral("exact"));
+            QElapsedTimer t;
+            t.start();
+            const Solved exact = solve(m);
+            const double exactSeconds = t.elapsed() / 1000.0;
+            QVERIFY2(exact.error.isEmpty(), qPrintable(why(exact)));
+            frequencyStep(m, frequencies, true, QStringLiteral("fast"));
+            if (!tolerance.isEmpty())
+                for (Node& c : m.root.children)
+                    for (Node& st : c.children)
+                        if (st.type == QLatin1String("frequency")) st.props.insert(QStringLiteral("sweeptolerance"), tolerance);
+            t.restart();
+            const Solved fast = solve(m);
+            info(QStringLiteral("fast %1 s, exact %2 s").arg(t.elapsed() / 1000.0).arg(exactSeconds));
+            QVERIFY2(fast.error.isEmpty(), qPrintable(why(fast)));
+            QCOMPARE(fast.s().snapshotCount(), exact.s().snapshotCount());
+            *exactSolves = 0;
+            for (const QString& line : fast.s().log)
+                if (line.contains(QStringLiteral("factorized in"))) ++*exactSolves;
+            *worst = 0;
+            for (int k = 0; k < exact.s().snapshotCount(); ++k) {
+                exact.s().select(k);
+                fast.s().select(k);
+                QCOMPARE(fast.s().frequency(), exact.s().frequency());
+                for (const QString& g : globals) {
+                    const double a = global(exact.s(), g), b = global(fast.s(), g);
+                    double scale = 0;
+                    // (Of the largest of its kind: R, L, V.)
+                    for (const QString& h : globals)
+                        if (h.left(4) == g.left(4)) scale = std::max(scale, std::abs(global(exact.s(), h)));
+                    *worst = std::max(*worst, std::abs(a - b) / scale);
+                }
+            }
+            const QString log = fast.s().log.join(QLatin1Char('\n'));
+            const QRegularExpressionMatch mt = QRegularExpression(QStringLiteral("its largest residual ([0-9.e+-]+)")).match(log);
+            QVERIFY2(mt.hasMatch(), qPrintable(log));
+            largest = mt.captured(1).toDouble();
+        };
+        QString et, mf;
+        int solves = 0;
+        double worst = 0;
+        // Sanitized: the bars swept fast alone, at four frequencies - three
+        // factorizations, their Z symmetric at each (the projection keeps
+        // it). Each frequency solved exactly too passed QtTest's 300 s under
+        // ASan even at four: Eigen's dense algebra is compiled into the test
+        // at -O0 there.
+        if (slowBuild()) {
+            Model m = twoBars(&et, &mf);
+            frequencyStep(m, QStringLiteral("logspace(1[kHz], 1[MHz], 4)"), true, QStringLiteral("fast"));
+            const Solved fast = solve(m);
+            QVERIFY2(fast.error.isEmpty(), qPrintable(why(fast)));
+            QCOMPARE(fast.s().snapshotCount(), 4);
+            for (const QString& line : fast.s().log)
+                if (line.contains(QStringLiteral("factorized in"))) ++solves;
+            QVERIFY2(solves == 3, qPrintable(fast.s().log.join(QLatin1Char('\n'))));
+            for (int k = 0; k < 4; ++k) {
+                fast.s().select(k);
+                const double r12 = global(fast.s(), QStringLiteral("mf.R12")), r21 = global(fast.s(), QStringLiteral("mf.R21"));
+                const double l12 = global(fast.s(), QStringLiteral("mf.L12")), l21 = global(fast.s(), QStringLiteral("mf.L21"));
+                const double l11 = global(fast.s(), QStringLiteral("mf.L11")), r11 = global(fast.s(), QStringLiteral("mf.R11"));
+                QVERIFY2(std::abs(r12 - r21) < 1e-8 * r11 && std::abs(l12 - l21) < 1e-8 * l11, qPrintable(QStringLiteral("at %1: R12 %2, R21 %3").arg(k).arg(r12).arg(r21)));
+            }
+            return;
+        }
+        const Model coax = shortedCoax(0.15, 2, &et, &mf);
+        compare(coax, QStringLiteral("logspace(10[Hz], 300[kHz], 16)"), {QStringLiteral("mf.V_1"), QStringLiteral("mf.V_1_im")}, &solves, &worst);
+        info(QStringLiteral("coax: %1 solved exactly; V within %2").arg(solves).arg(worst));
+        QVERIFY2(worst < 1e-6, qPrintable(QStringLiteral("V off by %1").arg(worst)));
+        QVERIFY2(solves <= 4, qPrintable(QStringLiteral("%1 solved exactly").arg(solves)));
+        const Model bars = twoBars(&et, &mf);
+        const QStringList z{QStringLiteral("mf.R11"), QStringLiteral("mf.R12"), QStringLiteral("mf.R22"), QStringLiteral("mf.L11"), QStringLiteral("mf.L12"), QStringLiteral("mf.L22")};
+        const QString band = QStringLiteral("logspace(1[kHz], 1[MHz], 13)");
+        compare(bars, band, z, &solves, &worst);
+        info(QStringLiteral("bars: %1 solved exactly; Z within %2 (R and L each of their largest)").arg(solves).arg(worst));
+        QVERIFY2(worst < 1e-6, qPrintable(QStringLiteral("Z off by %1").arg(worst)));
+        QVERIFY2(solves <= 4, qPrintable(QStringLiteral("%1 solved exactly").arg(solves)));
+        // A tolerance its band's ends and middle do not meet: more solved
+        // where the residual is largest, till every residual is under it.
+        compare(bars, band, z, &solves, &worst, QStringLiteral("1e-9"));
+        info(QStringLiteral("bars at a tolerance of 1e-9: %1 solved exactly, its largest residual %2; Z within %3").arg(solves).arg(largest).arg(worst));
+        QVERIFY2(solves > 3 && largest <= 1e-9, qPrintable(QStringLiteral("%1 solved exactly, its largest residual %2").arg(solves).arg(largest)));
+    }
+
     // A heat physics of the eddy currents' losses (Heat Source mf.Qrh): its
-    // heat the losses' time average, mf.P; with σ of T (the wire's Ampère's
-    // Law: copper's 0.39 %/K) the two in turn till they agree, its resistance
-    // up by α times the wire's mean rise.
+    // heat the losses' time average, mf.P, its temperature solved at each
+    // frequency after the field (by the fast sweep).
     void heatOfTheLosses()
     {
-        QString et, mf;
-        // (Sanitized: coarser, fewer layers - its cycle's solves past
-        // QtTest's 300 s at 0.2 mm and 6.)
-        Model m = roundWire(slowBuild() ? 0.3 : 0.2, 0.5, 1.5, 1, &et, &mf, slowBuild() ? 4 : 6);
-        coilOf(m, mf, QStringLiteral("1"))->props.insert(QStringLiteral("I0"), QStringLiteral("10[A]"));
-        Node ht = m.make(QStringLiteral("heat"));
-        ht.props.insert(QStringLiteral("order"), QStringLiteral("1"));
-        ht.props.insert(QStringLiteral("selection"), objects(QStringLiteral("wire")));
-        const QString h = ht.tag;
-        m.add(m.component().tag, ht);
-        for (Node& c : m.find(h)->children)
-            if (c.type == QLatin1String("heat/solid")) {
-                c.props.insert(QStringLiteral("source"), QStringLiteral("user"));
-                c.props.insert(QStringLiteral("k"), QStringLiteral("0.01[W/(m*K)]"));
-            }
-        addFeature(m, h, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("wire"), QStringLiteral("bottom")), {{QStringLiteral("T0"), QStringLiteral("293.15[K]")}});
-        addFeature(m, h, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("wire"), QStringLiteral("top")), {{QStringLiteral("T0"), QStringLiteral("293.15[K]")}});
-        addFeature(m, h, QStringLiteral("heat/source"), objects(QStringLiteral("wire")), {{QStringLiteral("Q0"), QStringLiteral("mf.Qrh")}});
-        frequencyStep(m, QStringLiteral("10[Hz], 100[kHz]"));
+        QString mf, h;
+        Model m = heatedWire(&mf, &h);
+        // (Four frequencies by the fast sweep: the heat, reading the field,
+        // solved at each after it is set.)
+        frequencyStep(m, QStringLiteral("10[Hz], 1[kHz], 10[kHz], 100[kHz]"), true, QStringLiteral("fast"));
         QElapsedTimer t;
         t.start();
         const Solved sv = solve(m);
         QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
-        info(QStringLiteral("heat: two frequencies in %1 s").arg(t.elapsed() / 1000.0));
-        double r0[2];
-        for (int k = 0; k < 2; ++k) {
+        info(QStringLiteral("heat: four frequencies in %1 s").arg(t.elapsed() / 1000.0));
+        QVERIFY2(sv.s().log.join(QLatin1Char('\n')).contains(QStringLiteral("fast sweep, 4 frequencies")), qPrintable(sv.s().log.join(QLatin1Char('\n'))));
+        QCOMPARE(sv.s().snapshotCount(), 4);
+        double tmax[4];
+        for (int k = 0; k < 4; ++k) {
             sv.s().select(k);
             const double p = global(sv.s(), QStringLiteral("mf.P")), q = global(sv.s(), QStringLiteral("ht.P"));
-            r0[k] = global(sv.s(), QStringLiteral("mf.R_1"));
             info(QStringLiteral("snapshot %1: mf.P %2 W, ht.P %3 W, Tmax %4 K").arg(k).arg(p).arg(q).arg(global(sv.s(), QStringLiteral("ht.Tmax"))));
             QVERIFY2(std::abs(q - p) < 2e-3 * p, qPrintable(QStringLiteral("ht.P %1, mf.P %2").arg(q).arg(p)));
+            tmax[k] = global(sv.s(), QStringLiteral("ht.Tmax"));
         }
+        // (The heat solved at each: its rise there, more at 100 kHz, whose
+        // losses are 44 % more - ht.P alone reads the field's losses, solved
+        // or not.)
+        QVERIFY2(tmax[0] > 300 && tmax[3] > tmax[0] + 5, qPrintable(QStringLiteral("Tmax %1 K at 10 Hz, %2 K at 100 kHz").arg(tmax[0]).arg(tmax[3])));
+    }
+
+    // With σ of T (the wire's Ampère's Law: copper's 0.39 %/K) the field and
+    // the heat in turn till they agree, the resistance up by α times the
+    // wire's mean rise; a fast sweep asked of it refused (its matrix changes
+    // with T), each frequency solved exactly. (Apart from heatOfTheLosses:
+    // together past 250 s of QtTest's 300 under ASan.)
+    void conductivityOfTemperature()
+    {
+        QString mf, h;
+        Model m = heatedWire(&mf, &h);
+        frequencyStep(m, QStringLiteral("10[Hz]"));
+        const Solved cold = solve(m);
+        QVERIFY2(cold.error.isEmpty(), qPrintable(why(cold)));
+        const double rCold = global(cold.s(), QStringLiteral("mf.R_1"));
+        QElapsedTimer t;
         // σ of T: the magnetic field reads the heat, which reads it.
         addFeature(m, mf, QStringLiteral("magnetic/ampere"), objects(QStringLiteral("wire")),
                    {{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("mur"), QStringLiteral("1")},
                     {QStringLiteral("sigma"), QStringLiteral("5.8e7[S/m]/(1 + 0.0039[1/K]*(%1.T - 293.15[K]))").arg(h)}});
         frequencyStep(m, QStringLiteral("10[Hz]"));
-        t.restart();
+        // (Sanitized: its passes to 1e-4, not 1e-6 - 239 s of QtTest's 300
+        // beside other builds.)
+        if (slowBuild())
+            for (Node& c : m.root.children)
+                for (Node& st : c.children)
+                    if (st.type == QLatin1String("frequency")) st.props.insert(QStringLiteral("tolerance"), QStringLiteral("1e-4"));
+        t.start();
         const Solved hot = solve(m);
         info(QStringLiteral("heat: σ of T in %1 s").arg(t.elapsed() / 1000.0));
         QVERIFY2(hot.error.isEmpty(), qPrintable(why(hot)));
         const double r = global(hot.s(), QStringLiteral("mf.R_1"));
         const double volume = integral(hot.s(), QStringLiteral("1"), QStringLiteral("mf.sigma > 0"));
         const double rise = integral(hot.s(), QStringLiteral("%1.T - 293.15[K]").arg(h), QStringLiteral("mf.sigma > 0")) / volume;
-        info(QStringLiteral("σ of T: R %1 Ω, cold %2 Ω (up %3, α ΔT %4)").arg(r).arg(r0[0]).arg(r / r0[0] - 1).arg(0.0039 * rise));
+        info(QStringLiteral("σ of T: R %1 Ω, cold %2 Ω (up %3, α ΔT %4)").arg(r).arg(rCold).arg(r / rCold - 1).arg(0.0039 * rise));
         QVERIFY2(hot.s().log.join(QLatin1Char('\n')).contains(QStringLiteral("iteration 2")), qPrintable(hot.s().log.join(QLatin1Char('\n'))));
-        QVERIFY2(std::abs((r / r0[0] - 1) - 0.0039 * rise) < 2e-2 * 0.0039 * rise, qPrintable(QStringLiteral("R up %1, α ΔT %2").arg(r / r0[0] - 1).arg(0.0039 * rise)));
+        QVERIFY2(std::abs((r / rCold - 1) - 0.0039 * rise) < 2e-2 * 0.0039 * rise, qPrintable(QStringLiteral("R up %1, α ΔT %2").arg(r / rCold - 1).arg(0.0039 * rise)));
+        // Its matrix changing with T, not with ω alone: four frequencies
+        // asked fast each solved exactly, and said. (Not where sanitized:
+        // four cycles' solves past QtTest's 300 s.)
+        if (slowBuild()) return;
+        frequencyStep(m, QStringLiteral("10[Hz], 20[Hz], 50[Hz], 100[Hz]"), true, QStringLiteral("fast"));
+        const Solved cycle = solve(m);
+        QVERIFY2(cycle.error.isEmpty(), qPrintable(why(cycle)));
+        const QString log = cycle.s().log.join(QLatin1Char('\n'));
+        QVERIFY2(log.contains(QStringLiteral("not by the fast sweep")) && !log.contains(QStringLiteral("fast sweep, ")), qPrintable(log));
+        QCOMPARE(cycle.s().snapshotCount(), 4);
     }
 };
 

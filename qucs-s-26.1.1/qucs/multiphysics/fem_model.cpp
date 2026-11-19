@@ -3335,7 +3335,22 @@ QList<NodeKind> makeKinds()
               text(QStringLiteral("frequencies"), tr("Frequencies"), QStringLiteral("logspace(1[kHz], 1[GHz], 31)"),
                    tr("In Hz, or with a unit: logspace(start, stop, count) - evenly in the logarithm -, range(start, step, stop), "
                       "linspace(start, stop, count) or values split by commas")),
-              flag(QStringLiteral("sweep"), tr("Coil sweep (impedance matrix)"), true), solver, nonlinear,
+              flag(QStringLiteral("sweep"), tr("Coil sweep (impedance matrix)"), true),
+              inSpaces(choice(QStringLiteral("fastsweep"), tr("Frequency sweep"), {QStringLiteral("fast"), QStringLiteral("exact")},
+                              {tr("Fast: a few frequencies solved, the rest on their solutions (a reduced basis), each checked"),
+                               tr("Exact: every frequency solved")},
+                              QStringLiteral("fast"),
+                              tr("A 3D magnetic field at more than three frequencies, each above 0: its band's ends and middle solved "
+                                 "exactly - each a factorization -, every other frequency on the space their solutions span, its "
+                                 "residual checked, and another solved exactly where the largest is, until every residual is under the "
+                                 "tolerance. Not where the field reads what reads it (σ of a heat physics' T): each solved then")),
+                       Spaces::ThreeD),
+              inSpaces(shownIf(expr(QStringLiteral("sweeptolerance"), tr("Its tolerance"), QString(), QStringLiteral("1e-4"),
+                                    tr("Each frequency's residual on the reduced basis, |K x - b| of |b|, each row weighed by its "
+                                       "diagonal's root")),
+                               QStringLiteral("fastsweep=fast")),
+                       Spaces::ThreeD),
+              solver, nonlinear,
               expr(QStringLiteral("tolerance"), tr("Relative tolerance"), QString(), QStringLiteral("1e-6"),
                    tr("Of the physics solved in turn at each frequency")),
               integer(QStringLiteral("maxiter"), tr("Maximum iterations"), 50),

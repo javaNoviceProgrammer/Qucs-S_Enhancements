@@ -1594,7 +1594,12 @@ bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const d
     }
     s.smallSignal = true;
     const Dim hertz = Dim::of(0, 0, -1);
-    for (std::size_t n = 0; n < listed->size(); ++n) {
+    // Frequency n: its magnetic fields solved (\a solve) - at the first,
+    // the rest of its physics too -, or (the fast sweep's) set already and
+    // only what reads them solved; then the semiconductors' small signal,
+    // its globals and its snapshot.
+    std::vector<int> readers;
+    const auto atFrequency = [&](std::size_t n, bool solve, int magneticField) -> bool {
         const double f = (*listed)[n];
         s.setFrequency(f);
         if (magnetic) {
@@ -1609,8 +1614,10 @@ bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const d
                 of.status = [status = o.status, at](const QString& what) { status(at + QStringLiteral(": ") + what); };
                 of.status(tr("solving"));
             }
-            if (!solveTogether(problems, n == 0 ? rest : varying, [&of](int) { return of; }, s, node.name(), error)) return false;
+            const std::vector<int>& which = solve ? (n == 0 ? rest : varying) : readers;
+            if (!which.empty() && !solveTogether(problems, which, [&of](int) { return of; }, s, node.name(), error)) return false;
             for (int i : rest) s.fields()[std::size_t(i)].solved = true;
+            if (magneticField >= 0) s.fields()[std::size_t(magneticField)].solved = true;
             setSolvedGlobals(problems, rest);
         }
         for (int i : semis) {
@@ -1635,7 +1642,60 @@ bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const d
         }
         s.setGlobal(QStringLiteral("freq"), f, hertz, tr("frequency"));
         s.addSnapshot();
+        return true;
+    };
+    // The fast sweep (its "fastsweep", fast by default): more than three
+    // frequencies, each above 0, one magnetic field whose matrix is the same
+    // at each but for ω - it reads nothing that changes with the frequency
+    // (σ of a heat physics' T, which reads its losses, does) -: a few solved
+    // exactly, the rest on their solutions (Problem3::sweepFrequencies()).
+    int fast = -1;
+    if (magnetic && listed->size() > 3 && node.text(QStringLiteral("fastsweep")) != QLatin1String("exact")) {
+        QString why;
+        int count = 0;
+        for (int i : rest)
+            if (s.fields()[std::size_t(i)].type == QLatin1String("magnetic")) {
+                ++count;
+                fast = i;
+            }
+        if (count != 1) why = tr("more than one magnetic field");
+        for (double f : *listed)
+            if (!(f > 0)) why = tr("a frequency of 0 (solved at rest)");
+        if (fast >= 0 && why.isEmpty())
+            for (int j : varying)
+                if (j != fast && problems[std::size_t(fast)]->reads(j))
+                    why = tr("%1 reads %2, which reads it: its matrix changes with the frequency otherwise than by ω").arg(problems[std::size_t(fast)]->node()->name(),
+                                                                                                                      problems[std::size_t(j)]->node()->name());
+        if (!why.isEmpty()) {
+            s.log << tr("%1: each frequency solved exactly, not by the fast sweep - %2").arg(node.name(), why);
+            fast = -1;
+        }
     }
+    if (fast >= 0) {
+        // What does not change with the frequency solved first (a coil's
+        // currents physics), at rest; then the magnetic field's sweep, what
+        // reads it solved at each of its frequencies.
+        std::vector<int> fixed;
+        for (int i : rest)
+            if (std::find(varying.begin(), varying.end(), i) == varying.end()) fixed.push_back(i);
+        for (int i : varying)
+            if (i != fast) readers.push_back(i);
+        detail3::Options3 at0 = o;
+        at0.frequency = 0;
+        if (!fixed.empty() && !solveTogether(problems, fixed, [&at0](int) { return at0; }, s, node.name(), error)) return false;
+        for (int i : fixed) s.fields()[std::size_t(i)].solved = true;
+        // (1e-4: the coax's 16 frequencies over 4.5 decades and two bars' 13
+        // over three from their band's ends and middle alone, within 1.5e-9
+        // of each frequency's own solve - a Galerkin's error some residual
+        // squared.)
+        double tolerance = 1e-4;
+        if (const std::optional<double> t = evaluateConstant(node.text(QStringLiteral("sweeptolerance")), s.parameters().scope, Dim()); t && *t > 0)
+            tolerance = *t;
+        if (!problems[std::size_t(fast)]->sweepFrequencies(o, *listed, tolerance, [&](int k) { return atFrequency(std::size_t(k), false, fast); }, error))
+            return false;
+    } else
+        for (std::size_t n = 0; n < listed->size(); ++n)
+            if (!atFrequency(n, true, -1)) return false;
     if (!semis.empty()) s.log << tr("%1: the contacts' admittance at %2 frequencies").arg(node.name()).arg(listed->size());
     if (magnetic)
         s.log << tr("%1: the magnetic fields at %2 frequencies, from %3 to %4")

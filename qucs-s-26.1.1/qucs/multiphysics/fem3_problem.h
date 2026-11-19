@@ -121,6 +121,23 @@ public:
     /// Eigenfrequency step's solve at rest - two large factorizations not
     /// held at once.
     virtual void releaseFactors() {}
+    /// A Frequency Domain step's fast sweep: its field at every one of \a
+    /// frequencies (more than 0) from a few solved exactly, the rest on the
+    /// space their solutions span (a reduced basis, each checked by its
+    /// residual against \a tolerance and the space grown where it is
+    /// largest); \a each told k (false: stop) once its field and results
+    /// are frequency k's. False and why (empty: it has none - each
+    /// frequency solved instead).
+    virtual bool sweepFrequencies(const Options3& options, const std::vector<double>& frequencies, double tolerance,
+                                  const std::function<bool(int)>& each, QString* error)
+    {
+        (void)options;
+        (void)frequencies;
+        (void)tolerance;
+        (void)each;
+        error->clear();
+        return false;
+    }
     /// Whether its field changes in time (heat: ρ Cp ∂T/∂t), or is at rest
     /// at each step (electrostatics, currents).
     virtual bool hasMass() const { return false; }
