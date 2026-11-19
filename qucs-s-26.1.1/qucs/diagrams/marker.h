@@ -90,7 +90,7 @@ public: // power matching stuff. some sort of VarPos (ab?)use
   double  powFreq() const {return VarPos[0];}
   double  powReal() const {return VarDep[0];}
   double  powImag() const {return VarDep[1];}
-  void setPos(const double xpos) { VarPos[0] = xpos; }
+  void setPos(const double xpos) { VarPos[0] = xpos; a_wanted = VarPos; }
 
   /// A delta marker's reference: its text adds Δx, Δy and 1/Δx from it,
   /// and a line joins the two. Null: none, or one no longer in the diagram.
@@ -114,6 +114,12 @@ public: // power matching stuff. some sort of VarPos (ab?)use
 private:
   const Marker* a_reference = nullptr;
   std::vector<double> VarPos;   // values the marker is pointing to
+  /// Where it was put - clicked, moved, read, given: VarPos is the sample
+  /// of the data of the moment nearest it. A reload of data that is shorter
+  /// for a while (a shorter run, a dataset half written) moves the marker
+  /// to its last sample, and back to its place with the data back, not
+  /// left there for good and saved so.
+  std::vector<double> a_wanted;
   double VarDep[2];   // dependent value
   float  fCX, fCY;  // coordinates for the line from graph to marker body
 

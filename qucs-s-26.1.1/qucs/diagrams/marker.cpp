@@ -31,7 +31,9 @@
 #include "main.h"
 
 #include <QLocale>
+#include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QPainter>
 #include <QPainterPath>
 #include <QDebug>
@@ -192,6 +194,7 @@ void Marker::initText(int datapoints_before_branch)
     Text += x_axis_values->Var + ": " + QString::number(*x_value, 'g', Precision) + "\n";
     nn /= x_axis_values->count;
   }
+  a_wanted = VarPos;
 
   // createText();
 }
@@ -209,6 +212,8 @@ void Marker::createText()
     return;
   }
 
+  // From where it was put, not from the sample it was on last.
+  if (!a_wanted.empty()) VarPos = a_wanted;
   unsigned nVarPos = VarPos.size();
 
   if(nVarPos > pGraph->numAxes()){
@@ -282,6 +287,22 @@ void Marker::createText()
       Text += QString::fromUtf8("\nΔy: ") + numberText(shownValue() - ref->shownValue());
     }
     if (dx != 0.0) Text += QString::fromUtf8("\n1/Δx: ") + numberText(1.0 / dx);
+  }
+
+  // Put where the data does not reach now (a sweep ending before it):
+  // on the nearest sample, which its text says - it goes back to its
+  // place, and is saved there, with the data back.
+  {
+    QStringList beyond;
+    for (unsigned ii = 0; ii < a_wanted.size() && (pD = pGraph->axis(ii)); ++ii) {
+      if (pD->count < 1) continue;
+      const auto [lo, hi] = std::minmax_element(pD->Points, pD->Points + pD->count);
+      const double slack = 1e-9 * std::max(std::fabs(*hi - *lo), std::max(std::fabs(*lo), std::fabs(*hi)));
+      if (a_wanted[ii] < *lo - slack || a_wanted[ii] > *hi + slack)
+        beyond << pD->Var + " " + numberText(a_wanted[ii]);
+    }
+    if (!beyond.isEmpty())
+      Text += QObject::tr("\n(nearest: put at %1, beyond the data)").arg(beyond.join(QStringLiteral(", ")));
   }
 
   QUCS_ASSERT(diag());
@@ -377,6 +398,7 @@ bool Marker::moveLeftRight(bool left)
     px++;  // one position to the right
   }
   VarPos[0] = *px;
+  a_wanted = VarPos;
   createText();
   refreshDependents();
 
@@ -432,6 +454,7 @@ bool Marker::moveUpDown(bool up)
       VarPos[i] = *(pD->Points + pD->count - 1);
     }
   }
+  a_wanted = VarPos;
   createText();
 
   return true;
@@ -570,7 +593,9 @@ QString Marker::save()
   // As many digits as read it back as it was: at 6 it moved to another
   // sample on save, reopening and undo, and at an edge read the other side
   // of it.
-  for(auto i : VarPos){
+  // Where it was put (the sample it is on while the data is shorter is
+  // not where it goes).
+  for(auto i : a_wanted.empty() ? VarPos : a_wanted){
     s += QString::number(i, 'g', QLocale::FloatingPointShortest)+"/";
   }
   s.replace(s.length()-1,1,' ');
@@ -627,6 +652,7 @@ bool Marker::load(const QString& Line)
   // lengthening the line while the data was missing (createText() pads
   // it to the graph's axes when there is data).
   VarPos.resize(nVarPos);
+  a_wanted = VarPos;
 
   n  = s.section(' ',2,2);    // x1
   x1 = misc::clampCoordinate(n.toInt(&ok));
@@ -706,6 +732,7 @@ Marker* Marker::sameNewOne(Graph *pGraph_)
   pm->x2 = x2;  pm->y2 = y2;
 
   pm->VarPos = VarPos;
+  pm->a_wanted = a_wanted;
 
   pm->Text          = Text;
   pm->transparent   = transparent;

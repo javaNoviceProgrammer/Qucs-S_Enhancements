@@ -751,6 +751,43 @@ private slots:
         QCOMPARE(flattened(*zipped, "TOP"), flattened(*gds, "TOP"));
     }
 
+    // KLayout's context cell (data/klayout_context.py: a PCell placed, as
+    // KLayout's writer - and gdsfactory's through it - leaves a file): kept
+    // in the layout, but neither a top cell, nor counted, nor found, nor in
+    // the tree - as KLayout reads it and shows it not.
+    void klayoutsContextCellIsNotShown()
+    {
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_TEST_DATA "/klayout_context.gds"), path("context.gds")));
+        QString error;
+        const auto layout = read(path("context.gds"), &error);
+        QVERIFY2(layout, qPrintable(error));
+        QCOMPARE(layout->cells.size(), 3);
+        QVERIFY(layout->contextCell >= 0);
+        QCOMPARE(layout->cells.at(layout->contextCell).name, QString("$$$CONTEXT_INFO$$$"));
+        QCOMPARE(layout->shownCellCount(), 2);
+        QCOMPARE(layout->topCells.size(), 1);
+        QCOMPARE(layout->cells.at(layout->mainCell()).name, QString("TOP"));
+        LayoutDoc* doc = open(path("context.gds"));
+        QVERIFY(doc != nullptr);
+        QTreeWidget* cells = doc->cellTree();
+        QCOMPARE(cells->topLevelItemCount(), 1);
+        QCOMPARE(cells->topLevelItem(0)->text(0), QString("TOP"));
+        QVERIFY2(doc->infoLabel()->text().startsWith("2 cells"), qPrintable(doc->infoLabel()->text()));
+        doc->showSearch();
+        doc->findField()->setText("*");
+        QCOMPARE(cells->topLevelItemCount(), 2);
+        for (int i = 0; i < cells->topLevelItemCount(); ++i) QVERIFY(!cells->topLevelItem(i)->text(0).contains(QLatin1String("CONTEXT")));
+        doc->findField()->setText("context");
+        QCOMPARE(cells->topLevelItemCount(), 0);
+        doc->hideSearch();
+        // A layout of nothing but it: no cell to show.
+        Layout only;
+        only.cells.resize(1);
+        only.cells[0].name = QStringLiteral("$$$CONTEXT_INFO$$$");
+        only.contextCell = 0;
+        QCOMPARE(only.mainCell(), -1);
+    }
+
     // OASIS as KLayout writes it (data/klayout_sample.py): compressed
     // blocks, strict mode, the repetitions it finds itself - read as KLayout
     // counts it, layer for layer.

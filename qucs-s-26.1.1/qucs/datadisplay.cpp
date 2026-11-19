@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 
 namespace qucs_s::datadisplay {
 
@@ -244,6 +245,11 @@ QString said(double v)
 QJsonValue span(double low, double high)
 {
     if (!(low <= high)) return QJsonValue();
+    // An end at zero as the arithmetic left it, -4.857e-17 beside -0.93:
+    // zero, as drawn.
+    const double scale = std::max(std::fabs(low), std::fabs(high));
+    if (std::fabs(low) < 1e-9 * scale) low = 0.0;
+    if (std::fabs(high) < 1e-9 * scale) high = 0.0;
     if (sig(low) == sig(high)) return sig(low);
     return QJsonArray{sig(low), sig(high)};
 }
@@ -358,22 +364,38 @@ QJsonObject inDiagram(const markup::Stroke& s, markup::Gesture g, QPointF tip, D
     // it takes in).
     if (valued) {
         Range x, y, y2;
-        int pane = -2;
+        // A stacked diagram's panes each have their own y axes: the values
+        // in each pane apart (one span of a pane's volts and another's
+        // degrees said nothing).
+        std::map<int, std::pair<Range, Range>> panes;
         for (const QPointF& p : along) {
             if (!plot.contains(p)) continue;
             const MappedPoint m = d->pointToValue(localOf(d, p));
             x.take(m.x);
             y.take(m.y1);
             y2.take(m.y2);
-            pane = pane == -2 ? m.pane : (pane == m.pane ? pane : -1);
+            if (stacked != nullptr && m.pane >= 0) {
+                panes[m.pane].first.take(m.y1);
+                panes[m.pane].second.take(m.y2);
+            }
         }
         if (x.any()) {
             if (!d->Graphs.isEmpty() && !d->Graphs.first()->axisName(0).isEmpty())
                 o.insert(QStringLiteral("x is"), d->Graphs.first()->axisName(0));
             o.insert(QStringLiteral("x"), x.json());
-            o.insert(QStringLiteral("y"), y.json());
-            if (right) o.insert(QStringLiteral("y right"), y2.json());
-            if (stacked != nullptr && pane >= 0) o.insert(QStringLiteral("pane"), pane + 1);
+            if (panes.size() > 1) {
+                QJsonArray each;
+                for (const auto& [pane, ranges] : panes) {
+                    QJsonObject one{{QStringLiteral("pane"), pane + 1}, {QStringLiteral("y"), ranges.first.json()}};
+                    if (right) one.insert(QStringLiteral("y right"), ranges.second.json());
+                    each.append(one);
+                }
+                o.insert(QStringLiteral("panes"), each);
+            } else {
+                o.insert(QStringLiteral("y"), y.json());
+                if (right) o.insert(QStringLiteral("y right"), y2.json());
+                if (panes.size() == 1) o.insert(QStringLiteral("pane"), panes.begin()->first + 1);
+            }
         }
     }
 
@@ -584,10 +606,16 @@ QString diagramSaid(const QJsonObject& o)
     if (o.contains(QStringLiteral("title"))) s += QStringLiteral(" \"%1\"").arg(o.value(QStringLiteral("title")).toString());
     if (o.contains(QStringLiteral("x"))) {
         const QString xName = o.value(QStringLiteral("x is")).toString();
-        s += QStringLiteral(" over %1 %2, y %3")
-                 .arg(xName.isEmpty() ? QStringLiteral("x") : xName, spanSaid(o.value(QStringLiteral("x"))), spanSaid(o.value(QStringLiteral("y"))));
-        if (o.contains(QStringLiteral("y right"))) s += QStringLiteral(" (right axis %1)").arg(spanSaid(o.value(QStringLiteral("y right"))));
-        if (o.contains(QStringLiteral("pane"))) s += QStringLiteral(" in pane %1").arg(o.value(QStringLiteral("pane")).toInt());
+        s += QStringLiteral(" over %1 %2").arg(xName.isEmpty() ? QStringLiteral("x") : xName, spanSaid(o.value(QStringLiteral("x"))));
+        const auto ys = [](const QJsonObject& in) {
+            QString t = QStringLiteral(", y %1").arg(spanSaid(in.value(QStringLiteral("y"))));
+            if (in.contains(QStringLiteral("y right"))) t += QStringLiteral(" (right axis %1)").arg(spanSaid(in.value(QStringLiteral("y right"))));
+            if (in.contains(QStringLiteral("pane"))) t += QStringLiteral(" in pane %1").arg(in.value(QStringLiteral("pane")).toInt());
+            return t;
+        };
+        if (o.contains(QStringLiteral("panes")))
+            for (const QJsonValue& v : o.value(QStringLiteral("panes")).toArray()) s += ys(v.toObject());
+        else s += ys(o);
     }
     if (o.contains(QStringLiteral("round"))) s += QStringLiteral(", round the trace(s) ") + tracesSaid(o.value(QStringLiteral("round")).toArray());
     if (o.contains(QStringLiteral("highlights"))) s += QStringLiteral(", highlighting the trace(s) ") + tracesSaid(o.value(QStringLiteral("highlights")).toArray());

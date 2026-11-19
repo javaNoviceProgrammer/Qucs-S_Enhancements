@@ -732,7 +732,7 @@ void QucsControl::getLayout(const QJsonObject& args, const Done& done)
         QJsonObject result{{QStringLiteral("file"), QDir::toNativeSeparators(layout->file)},
                            {QStringLiteral("format"), formatName(*layout)},
                            {QStringLiteral("database unit"), micrometres(*layout, layout->dbu) + QStringLiteral(" µm")},
-                           {QStringLiteral("cells"), layout->cells.size()},
+                           {QStringLiteral("cells"), layout->shownCellCount()},
                            {QStringLiteral("shapes"), double(layout->shapeCount)},
                            {QStringLiteral("texts"), double(layout->labelCount)},
                            {QStringLiteral("placements"), double(layout->instanceCount)},

@@ -2056,18 +2056,12 @@ bool MagneticProblem3::sweepFrequencies(const Options3& o, const std::vector<dou
         Vbj = V.transpose() * hs.bj;
         VP = V.transpose() * hs.P;
     };
-    // A frequency on the basis: its coefficients, and its residual - the
-    // columns' worst, weighed, of their right-hand side.
-    const auto reduced = [&](int k, Eigen::MatrixXcd& Y) {
+    // Solutions X at frequency k: their residual - the columns' worst,
+    // weighed, of their right-hand side.
+    const auto residualOf = [&](int k, const Eigen::MatrixXcd& X) {
         const double omega = 2 * M_PI * frequencies[std::size_t(k)];
         const cd jw(0, omega);
-        const Eigen::MatrixXcd Ar = R0 + jw * R1;
-        Eigen::MatrixXcd Br(V.cols(), cols);
-        Br.col(0) = Vbc + jw * Vbj;
-        if (cols > 1) Br.rightCols(cols - 1) = VP;
-        Y = Ar.partialPivLu().solve(Br);
         const Eigen::VectorXd w = weightsAt(omega);
-        const Eigen::MatrixXcd X = V * Y;
         double worst = 0;
         for (int j = 0; j < cols; ++j) {
             const Eigen::VectorXcd b = j == 0 ? Eigen::VectorXcd(hs.bc + jw * hs.bj) : Eigen::VectorXcd(hs.P.col(j - 1));
@@ -2077,14 +2071,28 @@ bool MagneticProblem3::sweepFrequencies(const Options3& o, const std::vector<dou
         }
         return worst;
     };
+    // A frequency on the basis: its coefficients, and its residual.
+    const auto reduced = [&](int k, Eigen::MatrixXcd& Y) {
+        const cd jw(0, 2 * M_PI * frequencies[std::size_t(k)]);
+        const Eigen::MatrixXcd Ar = R0 + jw * R1;
+        Eigen::MatrixXcd Br(V.cols(), cols);
+        Br.col(0) = Vbc + jw * Vbj;
+        if (cols > 1) Br.rightCols(cols - 1) = VP;
+        Y = Ar.partialPivLu().solve(Br);
+        return residualOf(k, V * Y);
+    };
     std::vector<int> byFrequency(static_cast<std::size_t>(Nf));
     for (int k = 0; k < Nf; ++k) byFrequency[std::size_t(k)] = k;
     std::sort(byFrequency.begin(), byFrequency.end(), [&](int a, int b) { return frequencies[std::size_t(a)] < frequencies[std::size_t(b)]; });
+    // (A frequency solved exactly kept as solved - its results its own
+    // solve's, not the basis' rebuilding of it.)
     std::vector<char> exact(static_cast<std::size_t>(Nf), 0);
+    std::vector<Eigen::MatrixXcd> solvedX(static_cast<std::size_t>(Nf));
     const auto solveAt = [&](int k) {
         Eigen::MatrixXcd X;
         if (!solveExactly(o, hs, 2 * M_PI * frequencies[std::size_t(k)], X, error, 2)) return false;
         exact[std::size_t(k)] = 1;
+        solvedX[std::size_t(k)] = X.leftCols(cols);
         grow(X);
         return true;
     };
@@ -2125,18 +2133,21 @@ bool MagneticProblem3::sweepFrequencies(const Options3& o, const std::vector<dou
                    .arg(worst, 0, 'g', 2));
         if (!solveAt(at)) return false;
     }
+    // Every frequency's residual: on the basis, or its own solve's.
     int solved = 0;
-    double largest = 0;
+    double largest = 0, largestExact = 0;
     QStringList where;
     for (int k : byFrequency) {
         if (exact[std::size_t(k)]) {
             ++solved;
             where << formatQuantity(frequencies[std::size_t(k)], Dim::of(0, 0, -1));
-        } else
-            largest = std::max(largest, residual[std::size_t(k)]);
+            residual[std::size_t(k)] = residualOf(k, solvedX[std::size_t(k)]);
+            largestExact = std::max(largestExact, residual[std::size_t(k)]);
+        }
+        largest = std::max(largest, residual[std::size_t(k)]);
     }
     a_s.log << tr("%1: fast sweep, %2 frequencies, %3 solved exactly (%4), the rest on their solutions' reduced basis of %5 - its largest "
-                  "residual %6 (tolerance %7), %8 rounds, %9 s")
+                  "residual %6 of every frequency's, %10 of those solved exactly (tolerance %7), %8 rounds, %9 s")
                    .arg(name)
                    .arg(Nf)
                    .arg(solved)
@@ -2145,11 +2156,12 @@ bool MagneticProblem3::sweepFrequencies(const Options3& o, const std::vector<dou
                    .arg(largest, 0, 'g', 2)
                    .arg(tolerance, 0, 'g', 2)
                    .arg(rounds)
-                   .arg(clock.elapsed() / 1000.0, 0, 'f', 2);
+                   .arg(clock.elapsed() / 1000.0, 0, 'f', 2)
+                   .arg(largestExact, 0, 'g', 2);
     // Each frequency's fields and results in turn, as its own solve's, then
     // told.
     for (int k = 0; k < Nf; ++k) {
-        const Eigen::MatrixXcd X = V * Y[std::size_t(k)];
+        const Eigen::MatrixXcd X = exact[std::size_t(k)] ? solvedX[std::size_t(k)] : Eigen::MatrixXcd(V * Y[std::size_t(k)]);
         finishHarmonic(o, hs, 2 * M_PI * frequencies[std::size_t(k)], X);
         if (!each(k)) {
             if (error->isEmpty()) *error = tr("cancelled");
