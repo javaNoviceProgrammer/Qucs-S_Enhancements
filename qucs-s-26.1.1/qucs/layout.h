@@ -158,7 +158,15 @@ struct Layout {
     QString library;            ///< its name (GDSII LIBNAME), or empty
     double dbu = 0.001;         ///< the database unit, in µm
     QVector<Cell> cells;
-    QVector<int> topCells;      ///< cells no other places, the largest first
+    QVector<int> topCells;      ///< cells no other places, the largest first (not contextCell)
+    /// KLayout's $$$CONTEXT_INFO$$$, -1 if none: the cell its writer adds
+    /// (and gdsfactory's files have) to keep libraries' and PCells' context
+    /// and cells' meta info in properties - read by KLayout and not shown;
+    /// here kept (a layout written again keeps it) but not listed, counted
+    /// or shown.
+    int contextCell = -1;
+    /// The cells there are to show: all but contextCell.
+    int shownCellCount() const { return int(cells.size()) - (contextCell >= 0 ? 1 : 0); }
     QVector<LayerInfo> layers;  ///< by layer and datatype
     QStringList missing;        ///< cells placed that the file has not
     QStringList warnings;       ///< what gdstk said as it read
@@ -169,7 +177,13 @@ struct Layout {
     int cellIndex(const QString& name) const { return byName.value(name, -1); }
     int layerIndex(LayerKey key) const { return byLayer.value(key, -1); }
     /// The cell a view shows first: the largest top cell.
-    int mainCell() const { return topCells.isEmpty() ? (cells.isEmpty() ? -1 : 0) : topCells.first(); }
+    int mainCell() const
+    {
+        if (!topCells.isEmpty()) return topCells.first();
+        for (int c = 0; c < cells.size(); ++c)
+            if (c != contextCell) return c;
+        return -1;
+    }
 
     QHash<QString, int> byName;     ///< the cells by name
     QHash<LayerKey, int> byLayer;   ///< the layers by layer and datatype
