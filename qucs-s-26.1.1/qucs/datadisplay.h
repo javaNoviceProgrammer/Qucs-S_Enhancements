@@ -76,7 +76,8 @@ private:
 /// paintings and diagrams by their numbers (on the symbol, its paintings) -
 /// and, for each diagram it is in ("in diagrams"), the diagram's number and
 /// title, the values its points span on the axes ("x", "y", the right
-/// axis' "y right"; a stacked diagram's "pane"), the traces it is round,
+/// axis' "y right"; a stacked diagram's "pane", or each pane's in
+/// "panes" when it crosses several), the traces it is round,
 /// lies on or crosses with the values of theirs it takes in, and where its
 /// tip or point is - its values and the nearest trace's point. With
 /// \a points, its points simplified.
