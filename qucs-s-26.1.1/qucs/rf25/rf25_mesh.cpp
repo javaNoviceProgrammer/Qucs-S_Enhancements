@@ -920,6 +920,30 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         mesh.problems << tr("There are no shapes to mesh.");
         return mesh;
     }
+    // Shapes on one layer that overlap are refused: each would be meshed
+    // whole and the overlap twice - Z 2 % off, the same rectangle twice a
+    // capacitance of NaN (overlappingGroups()). The processing joins them,
+    // merged or not; this is what comes another way.
+    {
+        QList<QPolygonF> outlines;
+        QStringList layers;
+        for (const Conductor& c : given) {
+            outlines << c.outline;
+            layers << c.layer;
+        }
+        const QList<QList<int>> groups = overlappingGroups(outlines, layers);
+        if (!groups.isEmpty()) {
+            const QList<int>& g = groups.first();
+            const QRectF box = outlines.at(g.first()).boundingRect();
+            mesh.problems << tr("%1 shapes on %2 overlap, about %3, %4 µm: each would be meshed whole and their overlap "
+                                "twice. Join them (the processing's Merge touching shapes does), or draw them apart.")
+                                 .arg(g.size())
+                                 .arg(layers.at(g.first()))
+                                 .arg(box.center().x(), 0, 'g', 6)
+                                 .arg(box.center().y(), 0, 'g', 6);
+            return mesh;
+        }
+    }
 
     // The cell size: a wavelength at the highest frequency, in the fastest
     // dielectric of the stack, divided by the cells asked for - and never

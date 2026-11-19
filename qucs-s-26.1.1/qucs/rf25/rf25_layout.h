@@ -65,6 +65,16 @@ constexpr double kThickForInductance = 0.2;
 /// which gdstk's union alone does not always join. \a joined, given, counts
 /// the pieces it had to join after that union.
 QList<QPolygonF> unionOf(const QList<QPolygonF>& shapes, int* joined = nullptr);
+/*!
+ * The groups of \a shapes that overlap, each of two or more by their
+ * indices: two overlap where they have more than a sliver of area in common
+ * (a millionth of the smaller's), not where they only touch. \a layers,
+ * given, one for each shape: only shapes on one layer are compared. Shapes
+ * left unmerged that overlap are meshed whole each, their overlap twice: a
+ * strip drawn as two rectangles overlapping by 200 µm read Z 2 % off, the
+ * same rectangle twice a capacitance of NaN.
+ */
+QList<QList<int>> overlappingGroups(const QList<QPolygonF>& shapes, const QStringList& layers = {});
 /// Whether \a a and \a b share a stretch of an edge longer than \a tol (a
 /// side of one on a side of the other, within \a tol of its line).
 bool touchAlongAnEdge(const QPolygonF& a, const QPolygonF& b, double tol);

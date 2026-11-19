@@ -4214,6 +4214,49 @@ private slots:
                                     .arg(off).arg(std::abs(raw11)).arg(lines)));
         }
         qWarning().noquote() << lines;
+
+        // Given the lines' impedance and P2 a reference of its own: Z of S in
+        // the lines' impedance, and S in each port's own reference. Both
+        // ports were put into the first's, Z then made with the second's,
+        // and the references left as they were - Z, and a Touchstone file's
+        // [Reference], wrong.
+        for (const rf::Node& n : std::vector<rf::Node>(doc->model().ports().children)) {
+            if (n.type == QLatin1String("rf_trl"))
+                QVERIFY(doc->editNode(n.tag, [](rf::Node& x) { x.props.insert(QStringLiteral("impedance"), QStringLiteral("50")); },
+                                      QStringLiteral("lines' impedance")));
+            if (n.type == QLatin1String("rf_edge_port") && n.label == QLatin1String("P2"))
+                QVERIFY(doc->editNode(n.tag, [](rf::Node& x) { x.props.insert(QStringLiteral("impedance"), QStringLiteral("25")); },
+                                      QStringLiteral("P2's reference")));
+        }
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solve();
+        QVERIFY2(doc->waitForSolved(600000), "the solve ended");
+        const std::shared_ptr<const rf::FullWave> v = doc->fullWave();
+        QVERIFY2(v != nullptr && v->ok(), qPrintable(doc->solveProblem() + (v ? v->problems.join(" | ") : QString())));
+        QCOMPARE(v->references, (QList<double>{50, 25}));
+        QVERIFY2(!v->warnings.join(' ').contains(QStringLiteral("references differ")), qPrintable(v->warnings.join(" | ")));
+        for (int k = 0; k < v->frequencies.size(); ++k) {
+            const auto in50 = rf::scatteringOf(v->z.at(k), 50.0), own = rf::scatteringOf(v->z.at(k), v->references);
+            double apart = 0;
+            for (int i = 0; i < 2; ++i)
+                for (int j = 0; j < 2; ++j) apart = std::max(apart, std::abs(own.at(i).at(j) - v->s.at(k).at(i).at(j)));
+            QVERIFY2(std::abs(in50.at(0).at(0)) < 0.03 && std::abs(in50.at(1).at(1)) < 0.03 && apart < 1e-12,
+                     qPrintable(QStringLiteral("%1 GHz: S11 in 50 Ohm %2, S22 %3; S %4 from its Z's in its references")
+                                    .arg(v->frequencies.at(k) / 1e9).arg(std::abs(in50.at(0).at(0))).arg(std::abs(in50.at(1).at(1))).arg(apart)));
+        }
+        // Its solution kept is of its standards too: the stamp the model's
+        // and their files', so that one edited makes it to be solved again -
+        // an answer calibrated by them stood as current. A model with none is stamped as it was.
+        const QString folder = QFileInfo(model).absolutePath();
+        const QByteArray withStandards = rf::solveStampOf(doc->model(), folder);
+        QVERIFY(withStandards != rf::solveStampOf(doc->model()));
+        {
+            QFile thru(path(QStringLiteral("trl_thru.qrf25")));
+            QVERIFY(thru.open(QIODevice::Append));
+            thru.write("\n");
+        }
+        QVERIFY(rf::solveStampOf(doc->model(), folder) != withStandards);
+        QCOMPARE(rf::solveStampOf(rf::Model::blank(), folder), rf::solveStampOf(rf::Model::blank()));
     }
 
     // A port's returns given as a list:

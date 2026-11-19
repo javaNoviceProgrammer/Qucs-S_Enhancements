@@ -908,6 +908,18 @@ void Green::build() const
                              .arg(budget.mostPairs / 1e6, 0, 'g', 6).arg(hardestOf(layers));
         return;
     }
+    // Every image a number: a stack of many thin films of very different
+    // permittivities - twenty of 28 and 3.9 alternating over silicon - grew
+    // coefficients past what a double holds, paths of one length summed
+    // with alternating signs, and the potential came out NaN, a
+    // capacitance of NaN said to be solved.
+    for (const auto& t : std::as_const(series))
+        if (!std::isfinite(t.first) || !std::isfinite(t.second)) {
+            a_unbuilt << tr("The stack's images grew past what a number holds: %1 Fewer thin layers, or their "
+                            "permittivities nearer each other's, keep them finite.")
+                             .arg(hardestOf(layers));
+            return;
+        }
     // What was pruned, put back as one image at the mean distance of the
     // paths it stands for: near the charge those paths were worth nothing,
     // far from it only their charge is felt, and this is right in both.

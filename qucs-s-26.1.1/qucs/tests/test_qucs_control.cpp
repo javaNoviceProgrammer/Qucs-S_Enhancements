@@ -278,8 +278,8 @@ class TestQucsControl : public QObject
 
     /// A model whose solve takes its time, written to \a folder: a stack
     /// that takes its time, so that the solve is still going on a second
-    /// in - a mirror of forty films of 0.1 and 0.2 µm, εr 28 and 3.9, on
-    /// silicon. Its path; empty where the example layout is not in this
+    /// in - a mirror of a hundred and sixty films of 0.1 and 0.2 µm, εr 12
+    /// and 3.9, on silicon. Its path; empty where the example layout is not in this
     /// build.
     static QString slowRf25Model(const QString& folder)
     {
@@ -298,13 +298,17 @@ class TestQucsControl : public QObject
                 n.props.insert(QStringLiteral("thickness"), QStringLiteral("500[um]"));
                 n.props.insert(QStringLiteral("epsr"), QStringLiteral("11.7"));
             }
-        for (int i = 0; i < 40; ++i) {
+        for (int i = 0; i < 160; ++i) {
             qucs_s::rf25::Node film;
             film.type = QStringLiteral("rf_dielectric");
             film.tag = QStringLiteral("film%1").arg(i + 1);
             film.label = QStringLiteral("F%1").arg(i + 1);
             film.props.insert(QStringLiteral("thickness"), i % 2 == 0 ? QStringLiteral("0.1[um]") : QStringLiteral("0.2[um]"));
-            film.props.insert(QStringLiteral("epsr"), i % 2 == 0 ? QStringLiteral("28") : QStringLiteral("3.9"));
+            // (A hundred and sixty of 12 and 3.9: of 28 and 3.9, twenty such
+            //  films grew the stack's images past what a number holds - its
+            //  capacitance NaN, said to be solved, before a bug hunt; now refused. These take their time as those did,
+            //  some 6 s of Green's functions.)
+            film.props.insert(QStringLiteral("epsr"), i % 2 == 0 ? QStringLiteral("12") : QStringLiteral("3.9"));
             // (Lossless: each lossy layer is its own Green's function more,
             //  a second and a half each of a mirror's.)
             film.props.insert(QStringLiteral("tand"), QStringLiteral("0"));
@@ -2834,18 +2838,22 @@ private slots:
     void anRf25TabClosedWhileSolvingIsOpenedAgainWithItsLoop()
     {
         const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
-        // (The strip with its two ports, on the slow model's mirror of forty
-        //  films, so that its solve is still going on a second in.)
+        // (The strip with its two ports, on the slow model's mirror of a
+        //  hundred and sixty films, so that its solve is still going on a second in.)
         QVERIFY(QDir().mkpath(ws + "/rfreopen"));
         qucs_s::rf25::Model m = hfssLineModel();
         std::vector<qucs_s::rf25::Node>& stack = m.stackNode().children;
-        for (int i = 0; i < 40; ++i) {
+        for (int i = 0; i < 160; ++i) {
             qucs_s::rf25::Node film;
             film.type = QStringLiteral("rf_dielectric");
             film.tag = QStringLiteral("film%1").arg(i + 1);
             film.label = QStringLiteral("F%1").arg(i + 1);
             film.props.insert(QStringLiteral("thickness"), i % 2 == 0 ? QStringLiteral("0.1[um]") : QStringLiteral("0.2[um]"));
-            film.props.insert(QStringLiteral("epsr"), i % 2 == 0 ? QStringLiteral("28") : QStringLiteral("3.9"));
+            // (A hundred and sixty of 12 and 3.9: of 28 and 3.9, twenty such
+            //  films grew the stack's images past what a number holds - its
+            //  capacitance NaN, said to be solved, before a bug hunt; now refused. These take their time as those did,
+            //  some 6 s of Green's functions.)
+            film.props.insert(QStringLiteral("epsr"), i % 2 == 0 ? QStringLiteral("12") : QStringLiteral("3.9"));
             film.props.insert(QStringLiteral("tand"), QStringLiteral("0"));
             stack.insert(stack.end() - 1, film);
         }

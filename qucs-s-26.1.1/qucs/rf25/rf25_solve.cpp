@@ -782,25 +782,32 @@ std::shared_ptr<FullWave> trlOn(SolveJob& job, const FullWave& wave)
     const double r0 = wave.references.value(0, 50), r1 = wave.references.value(1, 50);
     QStringList said = c.lines;
     if (t.impedance > 0) {
-        for (S2& m : s) m = renormalized(m, t.impedance, r0);
         said << tr("Its S stated in the ports' references from the lines' %1 Ohm.").arg(t.impedance, 0, 'g', 4);
-        if (std::abs(r0 - r1) > 1e-9 * r0)
-            out->warnings << tr("The two ports' references differ (%1 and %2 Ohm): the calibrated S is in the first's.").arg(r0).arg(r1);
     } else {
         out->warnings << tr("The calibrated S is in the lines' own impedance, which a calibration of lines alone cannot know: "
                             "give it (the TRL calibration's lines' impedance) to have S in the ports' references.");
     }
     if (!wave.zSolved.isEmpty())
         said << tr("The ports' own de-embedding is not taken: the error boxes hold their faces with the fixtures.");
+    const Eigen::Matrix2cd one = Eigen::Matrix2cd::Identity();
     for (int k = 0; k < f.size() && k < s.size(); ++k) {
         const S2& m = s.at(k);
-        out->s[k] = {{m[0], m[1]}, {m[2], m[3]}};
         Eigen::Matrix2cd S;
         S << m[0], m[1], m[2], m[3];
-        const Eigen::Matrix2cd one = Eigen::Matrix2cd::Identity();
-        const Eigen::Matrix2cd root = Eigen::Vector2cd(std::sqrt(r0), std::sqrt(r1)).asDiagonal();
-        const Eigen::Matrix2cd z = root * (one + S) * (one - S).inverse() * root;
-        out->z[k] = {{z(0, 0), z(0, 1)}, {z(1, 0), z(1, 1)}};
+        if (t.impedance > 0) {
+            // Z of S in the lines' impedance, and S of Z in each port's own
+            // reference: both ports were put into the first's, Z then made
+            // with the second's, and the references left as they were - Z
+            // and a Touchstone file's [Reference] wrong where they differ
+            const Eigen::Matrix2cd z = t.impedance * (one + S) * (one - S).inverse();
+            out->z[k] = {{z(0, 0), z(0, 1)}, {z(1, 0), z(1, 1)}};
+            out->s[k] = scatteringOf(out->z.at(k), out->references);
+        } else {
+            out->s[k] = {{m[0], m[1]}, {m[2], m[3]}};
+            const Eigen::Matrix2cd root = Eigen::Vector2cd(std::sqrt(r0), std::sqrt(r1)).asDiagonal();
+            const Eigen::Matrix2cd z = root * (one + S) * (one - S).inverse() * root;
+            out->z[k] = {{z(0, 0), z(0, 1)}, {z(1, 0), z(1, 1)}};
+        }
     }
     // (As solved, beside the calibrated: what the currents are of.)
     if (out->zSolved.isEmpty()) out->zSolved = wave.z;

@@ -73,6 +73,15 @@ using qucs_s::layout::LayoutView;
 
 namespace {
 
+/// \a model's solve stamp with the files it reads beside it - a TRL
+/// calibration's standards - from where its solve reads them, the folder of
+/// \a document or the work folder (solveStampOf()).
+QByteArray modelStampOf(const Model& model, const QString& document)
+{
+    const QDir dir = document.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(document).absoluteDir();
+    return solveStampOf(model, dir.absolutePath());
+}
+
 /// The layout under a model of its own shapes alone, which names no file:
 /// one empty cell, the same one each time (a tab knows it by it).
 std::shared_ptr<const Layout> ownShapesLayout()
@@ -1558,11 +1567,11 @@ void RF25Doc::prepareDone()
     // An edit that changes nothing the solver is given - an export added,
     // its file named - leaves what was solved standing: the same model to
     // solve and the same layout make the same mesh.
-    const bool unchanged = (a_fullWave || a_extraction) && !a_solvedModel.isEmpty() && solveStampOf(a_model) == a_solvedModel
+    const bool unchanged = (a_fullWave || a_extraction) && !a_solvedModel.isEmpty() && modelStampOf(a_model, a_DocName) == a_solvedModel
                            && layoutStamp() == a_solvedLayout && a_mesh && int(a_mesh->cells.size()) == a_solvedCells;
     // (A convergence check stands while the model and its layout are those
     //  it checked: its meshes are its own.)
-    if (a_convergence && (solveStampOf(a_model) != a_convergenceModel || layoutStamp() != a_convergenceLayout))
+    if (a_convergence && (modelStampOf(a_model, a_DocName) != a_convergenceModel || layoutStamp() != a_convergenceLayout))
         a_convergence.reset();
     if (!unchanged) {
         a_extraction.reset();
@@ -1585,7 +1594,7 @@ void RF25Doc::prepareDone()
         a_kept.reset();
         if (wanted) {
             a_keptSaid.clear();
-        } else if (solveStampOf(a_model) != kept.modelHash || layoutStamp() != kept.layoutHash) {
+        } else if (modelStampOf(a_model, a_DocName) != kept.modelHash || layoutStamp() != kept.layoutHash) {
             // (Edited, or its layout written again, before the mesh came.)
             a_keptSaid = tr("The solution kept beside the model is of another version of it: it is to be solved again.");
         } else if (int(a_mesh->cells.size()) != kept.cells) {
@@ -2260,7 +2269,7 @@ void RF25Doc::solveWith(const SolveRequest& request)
     }
     if (!a_processed) return nothing(tr("The layout has not been processed."));
     auto job = std::make_shared<SolveJob>();
-    job->modelStamp = solveStampOf(a_model);
+    job->modelStamp = modelStampOf(a_model, a_DocName);
     job->layoutStamp = layoutStamp();
     {
         const QDir dir = a_DocName.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(a_DocName).absoluteDir();
@@ -2628,7 +2637,7 @@ void RF25Doc::readKeptSolution()
     std::optional<KeptSolution> kept = readSolution(path, &why);
     if (!kept)
         a_keptSaid = tr("The solution beside the model was not read: %1").arg(why);
-    else if (kept->modelHash != solveStampOf(a_model))
+    else if (kept->modelHash != modelStampOf(a_model, a_DocName))
         a_keptSaid = tr("The solution kept beside the model is of another version of it: it is to be solved again.");
     else if (kept->layoutHash != layoutStamp())
         a_keptSaid = tr("The solution kept beside the model was solved on another version of its layout file: it is to be "
@@ -2642,7 +2651,7 @@ void RF25Doc::keepSolution()
     // Beside a model that is a file, the solution shown of it as it is - an
     // edit since the solve leaves none shown, or another model's stamp.
     const bool wave = a_fullWave && a_fullWave->ok(), quasi = !a_fullWave && a_extraction && a_extraction->ok();
-    if (a_DocName.isEmpty() || (!wave && !quasi) || a_solvedModel.isEmpty() || solveStampOf(a_model) != a_solvedModel) return;
+    if (a_DocName.isEmpty() || (!wave && !quasi) || a_solvedModel.isEmpty() || modelStampOf(a_model, a_DocName) != a_solvedModel) return;
     KeptSolution kept;
     kept.modelHash = a_solvedModel;
     kept.layoutHash = a_solvedLayout;

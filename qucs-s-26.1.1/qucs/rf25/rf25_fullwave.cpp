@@ -1110,9 +1110,12 @@ struct Context {
     /*!
      * Where a port has more than one column, the columns the solves take
      * instead, columns x columns (columnBasis()): each port's first, in the
-     * ports' order; then each port's others less its first. Each solve's Z
-     * and currents are of these, and the ports are tied as a Schur
-     * complement over the differences. Empty: the columns as they are.
+     * ports' order; then its others' differences from it, those that carry
+     * a net current from one conductor to another; then the loops among
+     * those differences, which carry none into any conductor. Each solve's
+     * Z and currents are of these, and the ports are tied as a Schur
+     * complement over the differences and loops. Empty: the columns as they
+     * are.
      */
     MatrixC basis;
     /// The ports' own paths to the cells they drive (PortPath): none for a
@@ -2806,6 +2809,15 @@ public:
         return out;
     }
 
+    /// A drive's sum on one component as the whole number of amperes it is
+    /// (each column one in and one out), its shares' rounding some 10^-16:
+    /// how columnBasis() tells a loop, carrying none, from a charge's edge.
+    static Complex amperes(Complex sum)
+    {
+        const double whole = std::round(sum.real());
+        return std::abs(sum - whole) < 1e-9 ? Complex(whole, 0) : sum;
+    }
+
 private:
     int nodeOf(int cell) const { return cell >= 0 ? cell : a_ground; }
 
@@ -2842,9 +2854,16 @@ private:
  * matrix all but one of rank. Tied as (B^T Z^-1 B)^-1, that inverse lost
  * what was below it - the line's C at 1 Hz 234 % off, a part in 10^13 at 10
  * Hz, two terminals' 10^59, with nothing said. A port's other columns less its first carry the ampere between
- * its returns alone, the own cells' drive cancelling to the bit: solved as
- * columns of their own, that term is in each port's first column alone, and
- * the tie a Schur complement taking from it what the differences add.
+ * its returns alone, the own cells' drive cancelling to the bit, so that
+ * that term is in each port's first column alone. And of two ports whose
+ * returns are on the same two conductors, those differences less each other
+ * carry nothing into either, a loop round both ports' ties through the
+ * conductors, of an impedance jwL: as a difference of two differences of
+ * 10^12 Ohm each it was their rounding - a 2 mm line's Z at 1 Hz, dense,
+ * real parts as large as itself and S21 nought. Taken apart (the
+ * differences as the edges of a graph of the conductors, each beyond a
+ * spanning forest of them a loop with its way back along the forest), each
+ * loop is a column of its own, its small impedance its own solve's.
  */
 MatrixC columnBasis(const Context& c, int np)
 {
@@ -2854,17 +2873,98 @@ MatrixC columnBasis(const Context& c, int np)
     for (int k = 0; k < nk; ++k) of[c.portOf.at(k)] << k;
     for (const QList<int>& columns : std::as_const(of))
         if (columns.isEmpty()) return {};
-    MatrixC t = MatrixC::Zero(nk, nk);
-    int at = np;
-    for (int p = 0; p < np; ++p) {
-        const int first = of.at(p).first();
-        t(first, p) = 1;
-        for (int r = 1; r < of.at(p).size(); ++r) {
-            t(of.at(p).at(r), at) = 1;
-            t(first, at) = -1;
-            ++at;
+    // Each column's whole amperes into each conductor (component of the
+    // runs); where one is no whole number, no loops are taken apart.
+    const LoopTree loops(c);
+    const int n = loops.components();
+    std::vector<std::vector<int>> into(std::size_t(nk), std::vector<int>(std::size_t(n), 0));
+    bool whole = true;
+    for (int k = 0; k < nk; ++k) {
+        VectorC sum = VectorC::Zero(n);
+        for (int i = 0; i < c.nc; ++i)
+            if (c.drive(i, k) != Complex(0, 0)) sum[loops.componentOf(i)] += c.drive(i, k);
+        for (int m = 0; m < n; ++m) {
+            const Complex a = LoopTree::amperes(sum[m]);
+            if (a.imag() != 0 || a.real() != std::round(a.real())) whole = false;
+            into[std::size_t(k)][std::size_t(m)] = int(std::lround(a.real()));
         }
     }
+    MatrixC t = MatrixC::Zero(nk, nk);
+    for (int p = 0; p < np; ++p) t(of.at(p).first(), p) = 1;
+    int at = np;
+    // The differences: each a loop where it carries none into any
+    // conductor, an edge where an ampere from one to another.
+    struct Edge {
+        VectorC v;
+        int plus = -1, minus = -1;   ///< the conductors it carries an ampere into and out of
+    };
+    QList<Edge> edges;
+    QList<VectorC> loopsOf;
+    for (int p = 0; p < np; ++p) {
+        const int first = of.at(p).first();
+        for (int r = 1; r < of.at(p).size(); ++r) {
+            const int k = of.at(p).at(r);
+            VectorC v = VectorC::Zero(nk);
+            v[k] = 1;
+            v[first] = -1;
+            Edge e{v};
+            int others = 0;
+            for (int m = 0; whole && m < n; ++m) {
+                const int d = into[std::size_t(k)][std::size_t(m)] - into[std::size_t(first)][std::size_t(m)];
+                if (d == 1 && e.plus < 0) e.plus = m;
+                else if (d == -1 && e.minus < 0) e.minus = m;
+                else if (d != 0) ++others;
+            }
+            if (!whole || others > 0 || (e.plus < 0) != (e.minus < 0))
+                t.col(at++) = v;   // (no shape of the two: as it is)
+            else if (e.plus < 0)
+                loopsOf << v;
+            else
+                edges << e;
+        }
+    }
+    // A spanning forest of the conductors by the edges: each edge that joins
+    // two of its trees one of it, kept; each other a loop - it, less the way
+    // from its minus to its plus along the forest, which carries the same.
+    std::vector<int> joined(static_cast<std::size_t>(n));
+    std::iota(joined.begin(), joined.end(), 0);
+    const auto find = [&joined](int x) {
+        while (joined[std::size_t(x)] != x) x = joined[std::size_t(x)] = joined[std::size_t(joined[std::size_t(x)])];
+        return x;
+    };
+    QList<QList<QPair<int, int>>> forest(n);   // (by conductor: its neighbour, and the edge between)
+    for (int e = 0; e < edges.size(); ++e) {
+        const Edge& edge = edges.at(e);
+        const int a = find(edge.plus), b = find(edge.minus);
+        if (a != b) {
+            joined[std::size_t(a)] = b;
+            forest[edge.plus] << qMakePair(edge.minus, e);
+            forest[edge.minus] << qMakePair(edge.plus, e);
+            t.col(at++) = edge.v;
+            continue;
+        }
+        // (The way along the forest, from its minus to its plus.)
+        std::vector<int> cameBy(std::size_t(n), -2);
+        std::vector<int> from(std::size_t(n), -1);
+        QList<int> queue{edge.minus};
+        cameBy[std::size_t(edge.minus)] = -1;
+        for (int q = 0; q < queue.size() && cameBy[std::size_t(edge.plus)] == -2; ++q)
+            for (const QPair<int, int>& next : forest.at(queue.at(q)))
+                if (cameBy[std::size_t(next.first)] == -2) {
+                    cameBy[std::size_t(next.first)] = next.second;
+                    from[std::size_t(next.first)] = queue.at(q);
+                    queue << next.first;
+                }
+        VectorC loop = edge.v;
+        for (int m = edge.plus; m != edge.minus; m = from[std::size_t(m)]) {
+            const Edge& way = edges.at(cameBy[std::size_t(m)]);
+            // (Into m from the one before it: +1 where the edge carries its
+            //  ampere that way.)
+            loop -= way.plus == m ? way.v : VectorC(-way.v);
+        }
+        loopsOf << loop;
+    }
+    for (const VectorC& loop : std::as_const(loopsOf)) t.col(at++) = loop;
     return t;
 }
 
@@ -4189,6 +4289,27 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     if (mesh.cells.isEmpty()) {
         out.problems << tr("There are no cells to solve on: mesh the layout first.");
         return out;
+    }
+    // Each cell on a layer of the stack that carries a current: one it has
+    // not was passed over as reaching nothing, and the solve said "no two
+    // cells of the mesh share an edge... mesh the layout more finely" - the quasi-static solve said which.
+    {
+        QSet<QString> seen;
+        for (const MeshCell& cell : mesh.cells) {
+            if (seen.contains(cell.layer)) continue;
+            seen.insert(cell.layer);
+            const Layer* layer = stack.named(cell.layer);
+            if (layer == nullptr) {
+                out.problems << tr("The stack has no layer %1, which the mesh has cells on.").arg(cell.layer);
+                return out;
+            }
+            if (layer->kind == Layer::Dielectric || layer->kind == Layer::Substrate) {
+                out.problems << tr("%1 is a dielectric of the stack, and the mesh has cells on it: only a metal or a via "
+                                   "carries a current.")
+                                    .arg(cell.layer);
+                return out;
+            }
+        }
     }
     if (ports.isEmpty()) {
         out.problems << tr("A full-wave solve needs a port to drive it: put one on the layout.");
@@ -5876,21 +5997,17 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             // then the differences, which carry no port's current. Tied, the
             // differences' voltages nought: their currents w = -Z_ww^-1 Z_wu,
             // and the ports' Z the Schur complement Z_uu - Z_uw Z_ww^-1 Z_wu.
+            // (Scaled to a unit diagonal it was needed while the loops were
+            //  differences of differences; as columns of their own, not.)
             const int nw = c.np - np;
             const MatrixC zww = a.z.bottomRightCorner(nw, nw), zwu = a.z.bottomLeftCorner(nw, np);
-            Eigen::VectorXd d(nw);
-            for (int i = 0; i < nw; ++i) {
-                const double size = std::sqrt(std::abs(zww(i, i)));
-                d[i] = size > 0 && std::isfinite(size) ? size : 1.0;
-            }
-            const MatrixC scaled = d.cwiseInverse().asDiagonal() * zww * d.cwiseInverse().asDiagonal();
-            MatrixC w = d.cwiseInverse().asDiagonal() * Eigen::PartialPivLU<MatrixC>(scaled).solve(d.cwiseInverse().asDiagonal() * zwu);
+            MatrixC w = Eigen::PartialPivLU<MatrixC>(zww).solve(zwu);
             // (Two returns over the same cells: a difference of nothing, its
             //  row nought - of the least squares there, as below.)
             if (!w.allFinite()) {
-                Eigen::CompleteOrthogonalDecomposition<MatrixC> cod(scaled);
+                Eigen::CompleteOrthogonalDecomposition<MatrixC> cod(zww);
                 cod.setThreshold(1e-10);
-                w = d.cwiseInverse().asDiagonal() * cod.solve(d.cwiseInverse().asDiagonal() * zwu);
+                w = cod.solve(zwu);
             }
             const MatrixC z = a.z.topLeftCorner(np, np) - a.z.topRightCorner(np, nw) * w;
             if (!z.allFinite() || !w.allFinite()) {
@@ -5946,6 +6063,27 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         out.frequencies << frequencies.at(k);
         out.z << zRows;
         out.s << scatteringOf(zRows, out.references);
+        // Compressed with the charges as unknowns, Z is first order in GMRES's
+        // residual: where that leaves Z's terms further apart than a part of
+        // the ports' references, S - a line's S21 wants Z11 - Z21 to some
+        // 10^-11 of Z at 1 Hz - is not to the digits, said (a 2 mm coplanar line's S21 at 1 Hz 0.42, its Z right).
+        if (a.loopTree && a.z.size() > 0) {
+            const double largest = a.z.cwiseAbs().maxCoeff();
+            const double least = *std::min_element(out.references.begin(), out.references.end());
+            const double apart = a.residual * largest;
+            if (apart > 1e-3 * least) {
+                const QString w = tr("At %1 Hz Z's terms are some %2 Ohm, and GMRES's residual of %3 leaves them some %4 Ohm "
+                                     "from what they are, beside the ports' %5 Ohm: S there is not to the digits, as its "
+                                     "terms are small differences of Z's. Solve it dense, or start the sweep higher.")
+                                      .arg(frequencies.at(k), 0, 'g', 4)
+                                      .arg(largest, 0, 'g', 3)
+                                      .arg(a.residual, 0, 'g', 2)
+                                      .arg(apart, 0, 'g', 2)
+                                      .arg(least, 0, 'g', 4);
+                out.warnings << w;
+                out.lines << w;
+            }
+        }
         QList<QList<Complex>> perPort;
         for (int q = 0; q < np; ++q) {
             QList<Complex> column;

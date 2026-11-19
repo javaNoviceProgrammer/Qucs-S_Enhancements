@@ -15,7 +15,10 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDataStream>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
 #include <QSaveFile>
 
 #include <algorithm>
@@ -401,6 +404,43 @@ QByteArray solveStampOf(const Model& model)
     Model copy = withoutVisibility(model);
     if (Node* exports = copy.root.child(QStringLiteral("rf_exports"))) exports->children.clear();
     return stampOf(copy.toJson());
+}
+
+QByteArray solveStampOf(const Model& model, const QString& folder)
+{
+    // The files a TRL calibration's standards are read from at the solve,
+    // each a model of its own, and the layout each names: an answer
+    // calibrated by them stood as current when one was edited. With none, the model's own stamp alone, so that
+    // what was kept before reads as before.
+    const QDir dir(folder);
+    const auto pathOf = [](const QDir& in, const QString& v) {
+        const QString given = v.trimmed();
+        return given.isEmpty() ? QString() : QFileInfo(given).isAbsolute() ? given : QDir::cleanPath(in.absoluteFilePath(given));
+    };
+    QStringList files;
+    for (const Node& n : model.ports().children) {
+        if (!n.enabled || n.type != QLatin1String("rf_trl")) continue;
+        files << pathOf(dir, textOf(n, QStringLiteral("thru"))) << pathOf(dir, textOf(n, QStringLiteral("reflect")));
+        for (const QJsonValue& row : n.props.value(QLatin1String("lines")).toArray())
+            files << pathOf(dir, row.toArray().at(0).toString());
+    }
+    files.removeAll(QString());
+    if (files.isEmpty()) return solveStampOf(model);
+    QByteArray all = solveStampOf(model);
+    for (const QString& path : std::as_const(files)) {
+        QFile f(path);
+        const QByteArray bytes = f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        all += path.toUtf8() + '\0' + stampOf(bytes);
+        // (Its layout, where it names one beside it.)
+        if (const std::optional<Model> standard = Model::fromJson(bytes)) {
+            const QString layout = pathOf(QFileInfo(path).absoluteDir(), textOf(standard->layout(), QStringLiteral("file")));
+            if (!layout.isEmpty()) {
+                QFile g(layout);
+                all += layout.toUtf8() + '\0' + stampOf(g.open(QIODevice::ReadOnly) ? g.readAll() : QByteArray());
+            }
+        }
+    }
+    return stampOf(all);
 }
 
 bool writeSolution(const QString& path, const KeptSolution& kept, QString* error)

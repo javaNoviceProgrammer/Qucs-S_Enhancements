@@ -290,6 +290,32 @@ private slots:
         const rf::Processed off = rf::processShapes(shapes, {}, how, stack);
         QCOMPARE(off.byLayer().value(QStringLiteral("M1")), 2);
         QVERIFY(off.report.lines.isEmpty());
+
+        // But what overlaps is joined all the same, and said: left apart,
+        // each was meshed whole and the overlap twice. What only touches stays apart beside it.
+        QMap<QString, QList<QPolygonF>> overlapping;
+        overlapping[QStringLiteral("M1")] = {box(0, 0, 10, 2), box(6, 0, 10, 2), box(0, 0, 10, 2), box(16, 0, 4, 2)};
+        overlapping[QStringLiteral("M2")] = {box(0, 50, 5, 5), box(20, 50, 5, 5)};
+        const rf::Processed joined = rf::processShapes(overlapping, {}, how, stack);
+        QVERIFY2(joined.problems.isEmpty(), qPrintable(joined.problems.join(" | ")));
+        QCOMPARE(joined.byLayer().value(QStringLiteral("M1")), 2);
+        QCOMPARE(joined.byLayer().value(QStringLiteral("M2")), 2);
+        QVERIFY2(says(joined.report.lines, "M1: 3 overlapping shapes joined into 1, though shapes are not merged"),
+                 qPrintable(joined.report.summary()));
+        double area = 0;
+        for (const rf::Conductor& c : joined.conductors)
+            if (c.layer == QLatin1String("M1")) area += c.area();
+        QVERIFY2(std::abs(area - 40.0) < 0.01, qPrintable(QString::number(area)));
+        // The groups themselves: a corner or an edge in common is no overlap.
+        QCOMPARE(rf::overlappingGroups({box(0, 0, 10, 2), box(10, 0, 10, 2), box(20, 2, 5, 5)}).size(), 0);
+        QCOMPARE(rf::overlappingGroups({box(0, 0, 10, 2), box(9, 1, 10, 2)}, {QStringLiteral("M1"), QStringLiteral("M2")}).size(), 0);
+        // (Their boxes overlapping, the shapes not: two triangles across a
+        //  diagonal.)
+        QCOMPARE(rf::overlappingGroups({QPolygonF({QPointF(0, 0), QPointF(10, 0), QPointF(0, 10)}),
+                                        QPolygonF({QPointF(10, 10), QPointF(10, 1), QPointF(1, 10)})}).size(), 0);
+        const QList<QList<int>> groups = rf::overlappingGroups({box(0, 0, 10, 2), box(30, 0, 5, 5), box(9, 1, 10, 2), box(18, 1.5, 1, 1)});
+        QCOMPARE(groups.size(), 1);
+        QCOMPARE(groups.first(), (QList<int>{0, 2, 3}));
     }
 
     // Shapes that touch along part of an edge are one shape, however the
@@ -1106,7 +1132,11 @@ private slots:
         how.merge = false;
         const rf::Processed done = rf::processShapes(shapes, {}, how, stack);
         QVERIFY2(done.ok(), qPrintable(done.problems.join(" | ")));
-        QCOMPARE(done.byLayer().value(QStringLiteral("M1")), 3);
+        // (The two it keeps whole overlap, and are joined for that alone,
+        //  said: apart, their overlap was meshed
+        //  twice.)
+        QCOMPARE(done.byLayer().value(QStringLiteral("M1")), 2);
+        QVERIFY2(says(done.report.lines, "M1: 2 overlapping shapes joined into 1"), qPrintable(done.report.summary()));
         QCOMPARE(done.byLayer().value(QStringLiteral("M2")), 0);
         QCOMPARE(done.report.cut, 1);
         QCOMPARE(done.report.masked, 2);

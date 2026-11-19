@@ -1203,7 +1203,12 @@ private slots:
         Conductor bridged;
         bridged.layer = m;
         bridged.outline = QPolygonF(QList<QPointF>{{0, 0}, {10, 0}, {10, 5}, {20, 5}, {20, 0}, {30, 0}, {30, 10}, {20, 10}, {20, 5}, {10, 5}, {10, 10}, {0, 10}});
-        const HfssExport lobes = hfssExportOf(model, {bridged});
+        // (Its port on its edge, 10 µm tall: at 50 µm, 40 µm off it, it was
+        //  written on the nearest edge before a bug hunt.)
+        const Model onLobes = modelOf(microstripStack() + QLatin1Char(',')
+                                      + portsOf(QStringLiteral(R"({"type": "rf_edge_port", "tag": "p", "label": "P1", "properties": {"conductor": "M1", "x": "0", "y": "5[um]", "facing": "-x"}})"))
+                                      + QLatin1Char(',') + QLatin1String(kStudy));
+        const HfssExport lobes = hfssExportOf(onLobes, {bridged});
         QVERIFY2(lobes.ok(), qPrintable(lobes.problems.join(QLatin1Char(' '))));
         QCOMPARE(lobes.voids, 0);
         QCOMPARE(lobes.polygons, 1);
@@ -1220,7 +1225,9 @@ private slots:
             {"type": "rf_dielectric", "tag": "d", "label": "Ox", "properties": {"thickness": "2[um]", "epsr": "4"}},
             {"type": "rf_metal", "tag": "m2", "label": "M2", "properties": {"thickness": "3[um]", "sigma": "4e7"}},
             {"type": "rf_via", "tag": "v1", "label": "V1", "properties": {"from": "M1", "to": "M2", "sigma": "2e7"}}]})");
-        const Model model = modelOf(stack + QLatin1Char(',') + portsOf(QStringLiteral(R"({"type": "rf_edge_port", "tag": "p", "label": "P1", "properties": {"conductor": "M2", "x": "0", "y": "0", "facing": "-x"}})"))
+        // (P1 on its strip's end, 45 to 55 µm: at nought, 45 µm off it, it was written on
+        //  the nearest edge before a bug hunt.)
+        const Model model = modelOf(stack + QLatin1Char(',') + portsOf(QStringLiteral(R"({"type": "rf_edge_port", "tag": "p", "label": "P1", "properties": {"conductor": "M2", "x": "0", "y": "50[um]", "facing": "-x"}})"))
                                     + QLatin1Char(',') + QLatin1String(kStudy));
         // A plane on M1 with a clearance, keyholed as the union leaves it; in it the
         // pad; on the pad the via; on the via the line on M2.
@@ -1448,6 +1455,15 @@ private slots:
         const HfssExport partly = hfssExportOf(oneOff, coplanar(100));
         QCOMPARE(partly.ports, 1);
         QVERIFY(partly.notes.join(QLatin1Char('\n')).contains(QLatin1String("P2 is not written")));
+        // One off its edge, 400 µm past the line's end, as the solve refuses
+        // it: not written - the nearest edge however far was.
+        const Model past = modelOf(microstripStack() + QLatin1Char(',')
+                                   + portsOf(QStringLiteral(R"({"type": "rf_edge_port", "tag": "p1", "label": "P1", "properties": {"conductor": "M1", "x": "0", "y": "0", "facing": "-x"}},
+                                                              {"type": "rf_edge_port", "tag": "p2", "label": "P2", "properties": {"conductor": "M1", "x": "500[um]", "y": "0", "facing": "+x"}})"))
+                                   + QLatin1Char(',') + QLatin1String(kStudy));
+        const HfssExport away = hfssExportOf(past, coplanar(100));
+        QCOMPARE(away.ports, 1);
+        QVERIFY(away.notes.join(QLatin1Char('\n')).contains(QLatin1String("P2 is not written")));
         // A return with no edge to stand for it: said, of an edge port and of an
         // internal one, which are written all the same.
         const Model noReturn = modelOf(microstripStack() + QLatin1Char(',')

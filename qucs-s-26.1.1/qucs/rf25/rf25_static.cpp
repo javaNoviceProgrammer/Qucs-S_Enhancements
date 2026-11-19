@@ -1279,13 +1279,34 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                 const QList<ChargePart> pb = !walled ? QList<ChargePart>{}
                                              : kb != charges.constEnd() ? kb.value() : QList<ChargePart>{wholeCell(rect, zb)};
                 double sum = 0;
-                for (int k = -copies; k <= copies; ++k) {
+                // Each copy within 300 sides (or cells' lengths) whole; past
+                // that, in groups no wider than 3 % of their distance, each
+                // the integral of the copies' potential over its span by
+                // Simpson's rule - smooth there, a group's error some 10^-8 of
+                // its own. One by one, a 10 nm square took 36 s for its 36
+                // cells, copies out to 100 times the stack's height a cell's
+                // length apart.
+                const double whole = 300 * std::max(side, delta);
+                const auto potentialAt = [&](double k, bool own) {
+                    const QRectF copy = rect.translated(alongX ? k * delta : 0.0, alongX ? 0.0 : k * delta);
+                    return cellPotential(at, copy, g, side, own);
+                };
+                for (int k = -copies; k <= copies;) {
+                    const double far = std::min(std::abs(k), std::abs(k + 1)) * delta;
+                    const int step = far > whole ? std::min(std::max(1, int(0.03 * far / delta)), copies + 1 - k) : 1;
+                    if (step > 1) {
+                        const double lo = k - 0.5, hi = k + step - 0.5;
+                        sum += step / 6.0 * (potentialAt(lo, false) + 4 * potentialAt(0.5 * (lo + hi), false) + potentialAt(hi, false));
+                        k += step;
+                        continue;
+                    }
                     const double dx = alongX ? k * delta : 0.0, dy = alongX ? 0.0 : k * delta;
                     const QRectF copy = rect.translated(dx, dy);
                     sum += cellPotential(at, copy, g, side, a == b && k == 0);
                     // (Each copy's charge over its parts, near: partsCorrection().)
                     if (walled && std::hypot(at.x() - copy.center().x(), at.y() - copy.center().y()) < kNearWidths * side * (1 + 1e-6))
                         sum += partsCorrection(g, pa, movedBy(pb, dx, dy), copy, at, std::abs(za - zb));
+                    ++k;
                 }
                 // (A charge per metre on the strip puts delta of it on each copy.)
                 p(a, b) += sum * delta;
@@ -1831,6 +1852,17 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     out.c = mutualOf(out.maxwell);
     out.c0 = mutualOf(out.maxwell0);
     for (const Net& net : nets) out.names << net.name;
+    // Finite, or no answer: a matrix of NaN came back said to be solved, a
+    // warning its whole word (the same shape
+    // given twice, the matrix singular).
+    for (const QList<QList<double>>* m : {&out.maxwell, &out.maxwell0})
+        for (const QList<double>& row : *m)
+            for (const double v : row)
+                if (!std::isfinite(v)) {
+                    out.problems << tr("The solve came to nothing finite: its matrix is singular - two cells over each other, "
+                                       "or a cell of no size.");
+                    return out;
+                }
     // Physical, or said: a matrix no Maxwell matrix is not to be trusted
     // (P27 of the open items).
     if (const QStringList doubts = maxwellDoubts(out.maxwell, out.names); !doubts.isEmpty()) {

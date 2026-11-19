@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <numeric>
 
 namespace qucs_s::rf25 {
 
@@ -562,6 +563,51 @@ QList<QPolygonF> offsetOf(const QList<QPolygonF>& shapes, double distance)
     in.clear();
     for (gdstk::Polygon& p : owned) p.clear();
     return code == gdstk::ErrorCode::NoError ? moved : shapes;
+}
+
+QList<QList<int>> overlappingGroups(const QList<QPolygonF>& shapes, const QStringList& layers)
+{
+    const int n = int(shapes.size());
+    QList<QRectF> boxes;
+    QList<double> areas;
+    for (const QPolygonF& s : shapes) {
+        boxes << s.boundingRect();
+        areas << areaOf(s);
+    }
+    // (By their boxes' left sides: each compared with those that start
+    //  before it ends.)
+    QList<int> order(n);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&boxes](int a, int b) { return boxes.at(a).left() < boxes.at(b).left(); });
+    std::vector<int> group(static_cast<std::size_t>(n));
+    std::iota(group.begin(), group.end(), 0);
+    const auto find = [&group](int x) {
+        while (group[std::size_t(x)] != x) x = group[std::size_t(x)] = group[std::size_t(group[std::size_t(x)])];
+        return x;
+    };
+    bool any = false;
+    for (int i = 0; i < n; ++i) {
+        const int a = order.at(i);
+        for (int j = i + 1; j < n; ++j) {
+            const int b = order.at(j);
+            if (boxes.at(b).left() >= boxes.at(a).right()) break;
+            if (!layers.isEmpty() && layers.value(a) != layers.value(b)) continue;
+            const QRectF both = boxes.at(a).intersected(boxes.at(b));
+            if (!(both.width() > 0 && both.height() > 0)) continue;
+            const double least = std::min(areas.at(a), areas.at(b));
+            if (both.width() * both.height() <= 1e-6 * least) continue;
+            if (areaOf(shapes.at(a).intersected(shapes.at(b))) <= 1e-6 * least) continue;
+            group[std::size_t(find(a))] = find(b);
+            any = true;
+        }
+    }
+    if (!any) return {};
+    QMap<int, QList<int>> byRoot;
+    for (int i = 0; i < n; ++i) byRoot[find(i)] << i;
+    QList<QList<int>> out;
+    for (const QList<int>& g : std::as_const(byRoot))
+        if (g.size() > 1) out << g;
+    return out;
 }
 
 bool touchAlongAnEdge(const QPolygonF& a, const QPolygonF& b, double tol)
@@ -1427,6 +1473,31 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
             if (touching > 0)
                 out.report.lines << tr("%1: %2 piece(s) the union had left touching along an edge joined to what they "
                                        "touch.").arg(layer).arg(touching);
+        } else if (shapes.size() > 1) {
+            // Not merged, as asked - but what overlaps is joined all the
+            // same: left apart, each is meshed whole and the overlap twice
+            // (overlappingGroups()). What only touches stays apart.
+            const QList<QList<int>> groups = overlappingGroups(shapes);
+            if (!groups.isEmpty()) {
+                QList<bool> taken(shapes.size(), false);
+                QList<QPolygonF> joined;
+                int from = 0;
+                for (const QList<int>& g : groups) {
+                    QList<QPolygonF> these;
+                    for (const int i : g) {
+                        these << shapes.at(i);
+                        taken[i] = true;
+                    }
+                    joined << unionOf(these);
+                    from += int(g.size());
+                }
+                for (int i = 0; i < shapes.size(); ++i)
+                    if (!taken.at(i)) joined << shapes.at(i);
+                out.report.lines << tr("%1: %2 overlapping shapes joined into %3, though shapes are not merged: left apart, "
+                                       "each is meshed whole and their overlap twice.")
+                                        .arg(layer).arg(from).arg(from - int(shapes.size()) + int(joined.size()));
+                shapes = joined;
+            }
         }
 
         // Curves thinned: a circle drawn of many segments, each corner a
