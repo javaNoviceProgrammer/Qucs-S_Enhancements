@@ -870,6 +870,9 @@ private:
     void femConvergeAdaptive(MultiphysicsDoc* doc, const QJsonObject& args, const Done& done);
     QJsonObject femConverged(MultiphysicsDoc* doc, const QString& tag);
     QJsonObject femPlot(const QJsonObject& args);
+    /// fem_plot's showing (a plot group, an expression, the geometry, the
+    /// mesh, a step): femPlot() takes the pen's arguments round it.
+    QJsonObject femPlotShown(MultiphysicsDoc* doc, const QJsonObject& args);
     QJsonObject femExport(const QJsonObject& args);
     // A 3D model's (.qfem3d, Multiphysics 3D's): the same tools.
     /// The 3D model a fem_ tool's 'path' names - open, or its file opened -,

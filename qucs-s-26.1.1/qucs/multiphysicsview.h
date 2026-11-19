@@ -4,7 +4,7 @@
  *                      with a click, those of the node chosen shown), its
  *                      mesh, its results (a color map with its legend,
  *                      contours, arrows); panned, zoomed, the value under
- *                      the pointer
+ *                      the pointer; drawn on with the pen
  *
  * This file is part of Qucs-S.
  *
@@ -17,6 +17,7 @@
 #define QUCS_MULTIPHYSICSVIEW_H
 
 #include "fem_results.h"
+#include "markup.h"
 
 #include <QImage>
 #include <QPainterPath>
@@ -137,11 +138,34 @@ public:
     /// The frames the GPU has drawn (for the tests).
     int gpuFrames() const;
 
+    /// The pen taken up: a left drag draws on the model with the pen in
+    /// hand (markup.h), or erases, rather than panning or picking (the
+    /// middle button still pans, the wheel zooms).
+    bool penActive() const { return a_pen; }
+    void setPenActive(bool active);
+    /// What is drawn: strokes in the geometry's unit (y up) on one part,
+    /// penPart(), so that they stay where they were drawn as the view pans
+    /// and zooms, and through the geometry, the mesh and the results.
+    const qucs_s::markup::Drawing& drawing() const { return a_drawing; }
+    static QString penPart() { return QStringLiteral("model"); }
+    /// A stroke added as though it was drawn (send_input, the tests).
+    void addStroke(const qucs_s::markup::Stroke& stroke);
+    /// The last change to the drawing undone; whether there was one.
+    bool undoDrawing();
+    /// Every stroke taken away; whether there were any.
+    bool clearDrawing();
+    /// The strokes numbered \a ids marked addressed (drawn faded, left out
+    /// of what a prompt tells), or not; how many changed.
+    int setAddressed(const QList<int>& ids, bool addressed = true);
+
 signals:
     /// A click on an entity of the pick level (\a entity -1: on none).
     void picked(qucs_s::fem::Level level, int entity);
     void pointerMoved(QPointF point, bool inside);
     void viewChanged();
+    void penActiveChanged(bool active);
+    /// A stroke drawn, erased, undone or cleared, or marked addressed.
+    void drawingChanged();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -181,6 +205,10 @@ private:
     QColor domainFill(int d, const Colors& c, bool faded) const;
     static QColor qualityColor(double quality);
     static QColor rayColor(const PlotScene::Rays& rays, std::size_t ray, std::size_t point);
+    void paintStrokes(QPainter& p);
+    void eraseAt(QPointF pixel);
+    /// A stroke being drawn let go, what an eraser took kept.
+    void endInking();
 
     Show a_show = Show::Geometry;
     bool a_axisymmetric = false;
@@ -219,6 +247,14 @@ private:
     QPoint a_pressPos, a_lastPos;
     bool a_dragging = false;
     bool a_pressed = false;
+
+    bool a_pen = false;
+    qucs_s::markup::Drawing a_drawing;
+    qucs_s::markup::Stroke a_stroke;               // the one being drawn
+    bool a_inking = false;
+    bool a_erasing = false;
+    bool a_erased = false;
+    QList<qucs_s::markup::Stroke> a_beforeErase;  // the strokes as an eraser's drag found them
 };
 
 } // namespace qucs_s::fem

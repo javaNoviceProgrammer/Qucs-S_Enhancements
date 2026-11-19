@@ -22,6 +22,7 @@
 #include <QComboBox>
 #include <QCompleter>
 #include <QFontDatabase>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -30,6 +31,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMouseEvent>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -482,6 +484,210 @@ private slots:
             ++it;
         }
         QVERIFY(solved);
+    }
+
+    // The pen, as the other viewers have it, at the toolbar's right with the
+    // view's icons after it: a drag draws on the model rather than panning or
+    // picking, through the geometry, the mesh and the results; Escape and
+    // Ctrl+Z are its own; what it drew is read against the geometry and the
+    // color map shown, for Claude.
+    void thePenDrawsOnTheModel()
+    {
+        namespace markup = qucs_s::markup;
+        // A parallel-plate gap, 10 by 1 mm, solved: its potential shown.
+        const QJsonObject model = QJsonDocument::fromJson(R"({"format": "qucs-s multiphysics 1",
+            "parameters": [{"name": "d", "expression": "1[mm]"}],
+            "components": [{"unit": "mm", "geometry": [{"type": "rectangle", "label": "gap", "size": ["10[mm]", "d"]}],
+              "materials": [{"label": "glass", "epsilonr": "5", "selection": {"all": true}}],
+              "physics": [{"type": "electrostatics", "tag": "es", "order": "1", "features": [
+                {"type": "terminal", "name": "1", "selection": {"of": ["gap"], "side": "top"}},
+                {"type": "ground", "selection": {"of": ["gap"], "side": "bottom"}}]}],
+              "mesh": {"size": "coarse"}}],
+            "studies": [{"type": "study", "steps": [{"type": "stationary"}]}]})").object();
+        QJsonObject r = call("fem_model", {{"action", "new"}, {"path", "pen_plates"}, {"model", model}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call("fem_solve");
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        auto* doc = qobject_cast<MultiphysicsDoc*>(app->DocumentTab->currentWidget());
+        QVERIFY(doc != nullptr);
+        GraphicsView* view = doc->view();
+        QCOMPARE(view->show(), GraphicsView::Show::Results);
+        QVERIFY(doc->plotScene() && doc->plotScene()->surface);
+
+        // The toolbar: the plot's boxes, a stretch, then the pen, Zoom
+        // Extents and Save Image - those two icons now, not words.
+        markup::PenButton* penButton = doc->penButton();
+        QVERIFY(penButton != nullptr && penButton->isVisible());
+        QWidget* bar = penButton->parentWidget();
+        auto* row = qobject_cast<QHBoxLayout*>(bar->layout());
+        QVERIFY(row != nullptr);
+        const int penAt = row->indexOf(penButton), fitAt = row->indexOf(doc->fitButton()), imageAt = row->indexOf(doc->imageButton());
+        QVERIFY2(penAt >= 0 && fitAt == penAt + 1 && imageAt == fitAt + 1 && imageAt == row->count() - 1,
+                 qPrintable(QStringLiteral("%1 %2 %3 of %4").arg(penAt).arg(fitAt).arg(imageAt).arg(row->count())));
+        QVERIFY(row->itemAt(penAt - 1)->spacerItem() != nullptr);   // (the stretch before them)
+        QVERIFY(row->indexOf(bar->findChild<QComboBox*>("mpPlotGroup")) < penAt);
+        for (QToolButton* b : {doc->fitButton(), doc->imageButton()}) {
+            QCOMPARE(b->toolButtonStyle(), Qt::ToolButtonIconOnly);
+            QVERIFY(!b->icon().isNull() && b->text().isEmpty());
+            // Flat until hovered, taking no focus, styled as a layout tab's
+            // (and RF 2.5D's) icons beside its pen.
+            QVERIFY(b->autoRaise() && b->focusPolicy() == Qt::NoFocus && b->property("layoutTool").toBool());
+            QCOMPARE(b->styleSheet(), penButton->styleSheet());
+            QCOMPARE(b->iconSize(), QSize(16, 16));
+            QVERIFY(b->width() < 40);
+            QVERIFY(!b->toolTip().isEmpty());
+        }
+        QVERIFY(penButton->x() < doc->fitButton()->x() && doc->fitButton()->x() < doc->imageButton()->x());
+        QVERIFY(bar->findChild<QComboBox*>("mpPlotGroup")->geometry().right() < penButton->x());
+        // Zoom Extents still fits it all.
+        view->setView(QPointF(100, 100), view->scale() / 10);
+        doc->fitButton()->click();
+        QVERIFY(std::abs(view->center().y() - 0.5) < 0.5);
+
+        markup::Pen pen;
+        pen.color = QColor(0xff, 0x78, 0x00);   // (the menu's orange: said by its name)
+        pen.width = 4;
+        markup::setCurrentPen(pen);
+        const auto send = [view](QEvent::Type type, QPointF pixel, Qt::MouseButton button, Qt::MouseButtons held) {
+            QMouseEvent e(type, pixel, view->mapToGlobal(pixel), button, held, Qt::NoModifier);
+            QCoreApplication::sendEvent(view, &e);
+        };
+        // A stroke through \a points of the model (mm), as the mouse draws it.
+        const auto draw = [&send, view](const QList<QPointF>& points, Qt::MouseButton button = Qt::LeftButton) {
+            send(QEvent::MouseButtonPress, view->toPixel(points.first()), button, button);
+            for (int i = 1; i < points.size(); ++i) send(QEvent::MouseMove, view->toPixel(points.at(i)), Qt::NoButton, button);
+            send(QEvent::MouseButtonRelease, view->toPixel(points.last()), button, Qt::NoButton);
+        };
+        QList<QPointF> ring;
+        for (int i = 0; i <= 48; ++i) {
+            const double a = 2 * M_PI * i / 48;
+            ring << QPointF(5 + 6.5 * std::cos(a), 0.5 + 1.6 * std::sin(a));
+        }
+
+        // Put down, a drag pans the view and draws nothing.
+        const QPointF before = view->center();
+        draw({QPointF(2, 0.5), QPointF(4, 0.5), QPointF(6, 0.5)});
+        QVERIFY(view->center() != before);
+        QVERIFY(view->drawing().isEmpty());
+        doc->fitButton()->click();
+
+        // Taken up: a ring round the gap is a stroke, the view not moved.
+        penButton->click();
+        QVERIFY(view->penActive() && penButton->isChecked());
+        const QPointF fitted = view->center();
+        const double scale = view->scale();
+        draw(ring);
+        QCOMPARE(view->center(), fitted);
+        QCOMPARE(view->drawing().strokes().size(), 1);
+        const markup::Stroke stroke = view->drawing().strokes().first();
+        QCOMPARE(stroke.on, GraphicsView::penPart());
+        QVERIFY2(QLineF(stroke.points.first(), ring.first()).length() < 1e-6, qPrintable(QString::number(stroke.points.first().x())));
+        QVERIFY(std::abs(stroke.width - 4 / scale) < 1e-9);   // the pen's 4 pixels, in mm at this zoom
+        // Drawn where it was drawn, and with the view: zoomed in, still there.
+        const auto penPixels = [view](QPointF at) {
+            const QImage image = view->picture();
+            const QPoint p = (view->toPixel(at) * image.devicePixelRatio()).toPoint();
+            int orange = 0;
+            for (int dy = -2; dy <= 2; ++dy)
+                for (int dx = -2; dx <= 2; ++dx) {
+                    const QColor c = image.pixelColor(p + QPoint(dx, dy));
+                    if (c.red() > 220 && std::abs(c.green() - 0x80) < 40 && c.blue() < 60) ++orange;
+                }
+            return orange;
+        };
+        QVERIFY2(penPixels(ring.at(12)) > 0, "the stroke is not drawn where it was drawn");
+        view->zoomBy(1.6);
+        QVERIFY2(penPixels(ring.at(12)) > 0, "the stroke did not zoom with the view");
+        doc->fitButton()->click();
+
+        // A dot in the gap's middle, a line along its top.
+        draw({QPointF(5, 0.5)});
+        draw({QPointF(1, 1), QPointF(3, 1), QPointF(5, 1), QPointF(7, 1), QPointF(9, 1)});
+        QCOMPARE(view->drawing().strokes().size(), 3);
+        shoot(app, "pen-model");
+
+        // Read against the geometry and the potential shown.
+        const QJsonArray read = doc->readDrawing(false);
+        QCOMPARE(read.size(), 3);
+        const QJsonObject r1 = read.at(0).toObject(), r2 = read.at(1).toObject(), r3 = read.at(2).toObject();
+        QCOMPARE(r1.value("drawn as").toString(), QStringLiteral("ring"));
+        const QJsonObject around = r1.value("around").toObject();
+        QCOMPARE(around.value("domains").toArray(), QJsonArray{QStringLiteral("domain 1 (gap)")});
+        QCOMPARE(around.value("boundaries").toArray().size(), 4);
+        QCOMPARE(around.value("points").toArray().size(), 4);
+        QVERIFY2(r1.value("least inside").toString().startsWith("es.V = ") && r1.value("greatest inside").toString().startsWith("es.V = "),
+                 qPrintable(QJsonDocument(r1).toJson()));
+        QCOMPARE(r2.value("drawn as").toString(), QStringLiteral("dot"));
+        QCOMPARE(r2.value("on").toString(), QStringLiteral("domain 1 (gap)"));
+        QVERIFY2(r2.value("value at").toString() == QStringLiteral("es.V = 500 mV"), qPrintable(QJsonDocument(r2).toJson()));
+        QCOMPARE(r3.value("drawn as").toString(), QStringLiteral("line"));
+        const QJsonArray along = r3.value("along").toArray();
+        QVERIFY2(along.size() == 1 && along.at(0).toString().contains("outer, of domain 1"), qPrintable(QJsonDocument(r3).toJson()));
+        QVERIFY2(r3.value("value at its start").toString() == QStringLiteral("es.V = 1 V"),
+                 qPrintable(QJsonDocument(r3).toJson()));
+
+        // Through the mesh and the geometry: kept, and read there without values.
+        doc->showMesh();
+        QCOMPARE(view->drawing().strokes().size(), 3);
+        QVERIFY(penPixels(ring.at(12)) > 0);
+        QVERIFY(!doc->readDrawing(false).at(1).toObject().contains("value at"));
+
+        // Ctrl+Z with the pen up undoes the drawing, not the model.
+        r = call("fem_edit", {{"action", "parameters"}, {"parameters", QJsonArray{QJsonObject{{"name", "d"}, {"expression", "2[mm]"}}}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const int undoAt = doc->undoStack()->index();
+        view->setFocus();
+        QTest::keyClick(view, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(view->drawing().strokes().size(), 2);
+        QCOMPARE(doc->undoStack()->index(), undoAt);
+        // Escape puts it down, the model as it was.
+        QTest::keyClick(view, Qt::Key_Escape);
+        QVERIFY(!view->penActive() && !penButton->isChecked());
+        QCOMPARE(doc->undoStack()->index(), undoAt);
+
+        // Claude: each prompt's note, read_drawings, fem_plot's pen.
+        const QString file = doc->getDocName();
+        const auto [revision, said] = app->drawingsOf(file, 0);
+        QVERIFY(revision > 0);
+        QVERIFY2(said.contains("the model, stroke 1: an orange pen ring around domain 1 (gap)") && said.contains("In the geometry's unit, mm"),
+                 qPrintable(said));
+        QVERIFY(app->drawingsOf(file, revision).second.isEmpty());
+        r = call("read_drawings", {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        const QJsonObject one = json(r).value("documents").toArray().first().toObject();
+        QVERIFY2(one.value("measures").toString().startsWith("the geometry's unit (mm)"), qPrintable(text(r)));
+        QCOMPARE(one.value("strokes").toArray().size(), 2);
+        QVERIFY(one.value("strokes").toArray().first().toObject().contains("points"));
+        r = call("fem_plot", {{"pen", true}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(view->penActive() && penButton->isChecked());
+        QVERIFY2(json(r).value("pen").toString().startsWith("taken up"), qPrintable(text(r)));
+        QVERIFY2(text(r).contains("domain 1 (gap)"), qPrintable(text(r)));
+        QVERIFY2(app->drawingsOf(file, 0).second.contains("fem_plot's pen: false puts it down"), qPrintable(app->drawingsOf(file, 0).second));
+        r = call("fem_plot", {{"addressed", QJsonArray{99}}});
+        QVERIFY2(failed(r) && text(r).contains("no stroke 99 (its strokes: 1, 2)"), qPrintable(text(r)));
+        QVERIFY(failed(call("fem_plot", {{"pen", "yes"}})));
+        QVERIFY(failed(call("fem_plot", {{"drawings", "all"}})));
+        r = call("fem_plot", {{"addressed", QJsonArray{1}}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY2(!app->drawingsOf(file, 0).second.contains("stroke 1: an orange") && app->drawingsOf(file, 0).second.contains("marked addressed, left out: stroke 1"),
+                 qPrintable(app->drawingsOf(file, 0).second));
+        // A plot shown and the pen put down in one call: read against it.
+        r = call("fem_plot", {{"show", "geometry"}, {"pen", false}});
+        QVERIFY2(!failed(r) && json(r).value("shown").toString().startsWith("the geometry") && !view->penActive(), qPrintable(text(r)));
+        // Saved as an image with what the pen drew.
+        const QString png = path("pen_plates.png");
+        QString why;
+        QVERIFY2(doc->exportImage(png, &why), qPrintable(why));
+        QImage saved(png);
+        QVERIFY(!saved.isNull());
+        r = call("fem_plot", {{"drawings", "clear"}});
+        QVERIFY2(!failed(r) && view->drawing().isEmpty() && json(r).value("drawings").toString() == QStringLiteral("nothing is drawn on the model"),
+                 qPrintable(text(r)));
+        QVERIFY(doc->exportImage(png, &why));
+        QVERIFY2(QImage(png) != saved, "the strokes are not in the saved image");
+        QVERIFY(app->drawingsOf(file, 0).second.isEmpty());
+        markup::setCurrentPen(markup::Pen());
     }
 
     // A model changed after it was solved: its solution kept on show,

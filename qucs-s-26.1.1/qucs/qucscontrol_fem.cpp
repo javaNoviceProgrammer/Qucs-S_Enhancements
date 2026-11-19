@@ -3208,11 +3208,93 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
 QJsonObject QucsControl::femPlot(const QJsonObject& args)
 {
     QString error;
+    const bool penAsked = args.contains(QLatin1String("pen")) || args.contains(QLatin1String("drawings")) || args.contains(QLatin1String("addressed"));
     // (A 3D model's: Multiphysics 3D's.)
-    if (Multiphysics3DDoc* three = fem3DocumentFor(args, &error)) return fem3Plot(three, args);
+    if (Multiphysics3DDoc* three = fem3DocumentFor(args, &error)) {
+        if (penAsked) return errorResult(tr("'pen', 'drawings' and 'addressed' are a 2D model's: a 3D model's view has no pen."));
+        return fem3Plot(three, args);
+    }
     if (!error.isEmpty()) return errorResult(error);
+    // The pen's arguments checked before anything is done, as show_picture
+    // checks them.
+    const QJsonValue pen = args.value(QLatin1String("pen"));
+    if (args.contains(QLatin1String("pen")) && !pen.isBool())
+        return errorResult(tr("'pen' is true (the user's pen taken up: a drag on the Graphics view draws on the model) or false (put down)."));
+    const QString drawings = args.value(QLatin1String("drawings")).toString().trimmed().toLower();
+    if (args.contains(QLatin1String("drawings")) && drawings != QLatin1String("clear"))
+        return errorResult(tr("'drawings' is clear: what the pen drew on the model taken away (the pen's Undo gives it back)."));
+    const QJsonValue addressed = args.value(QLatin1String("addressed"));
+    const bool addressedNone = addressed.isString() && addressed.toString().trimmed().compare(QLatin1String("none"), Qt::CaseInsensitive) == 0;
+    QList<int> addressedIds;
+    if (args.contains(QLatin1String("addressed")) && !addressedNone) {
+        bool good = addressed.isArray() && !addressed.toArray().isEmpty();
+        for (const QJsonValue& v : addressed.toArray()) {
+            good = good && v.isDouble() && v.toDouble() == std::floor(v.toDouble()) && v.toDouble() >= 1 && v.toDouble() <= 1e9;
+            if (good) addressedIds << v.toInt();
+        }
+        if (!good)
+            return errorResult(tr("'addressed' is a list of the pen's stroke numbers, as read_drawings numbers them (marked dealt with: faded, and "
+                                  "left out of what a prompt tells), or none."));
+    }
     MultiphysicsDoc* doc = femDocument(args, &error);
     if (doc == nullptr) return errorResult(error);
+    GraphicsView* view = doc->view();
+    if (!addressedIds.isEmpty()) {
+        QStringList missing, there;
+        for (const int id : std::as_const(addressedIds))
+            if (view->drawing().find(GraphicsView::penPart(), id) == nullptr) missing << QString::number(id);
+        if (!missing.isEmpty()) {
+            for (const qucs_s::markup::Stroke& s : view->drawing().strokes()) there << QString::number(s.id);
+            return errorResult(tr("The model has no stroke %1 (its strokes: %2).")
+                                   .arg(missing.join(QStringLiteral(", ")), there.isEmpty() ? tr("none") : there.join(QStringLiteral(", "))));
+        }
+    }
+    // What to show, then the pen: what the strokes are read against is what
+    // the view shows once the call is done.
+    const bool showAsked = args.contains(QLatin1String("plot")) || args.contains(QLatin1String("expression")) || args.contains(QLatin1String("show"))
+                           || args.contains(QLatin1String("step"));
+    QJsonObject o;
+    if (showAsked || !penAsked) {
+        const QJsonObject shown = femPlotShown(doc, args);
+        if (!penAsked && view->drawing().isEmpty() && !view->penActive()) return shown;
+        if (shown.value(QLatin1String("isError")).toBool()) return shown;
+        o = QJsonDocument::fromJson(shown.value(QLatin1String("content")).toArray().at(0).toObject().value(QLatin1String("text")).toString().toUtf8()).object();
+    } else {
+        a_app->DocumentTab->setCurrentWidget(doc);
+        o.insert(QStringLiteral("model"), titleOf(doc));
+    }
+    QStringList done;
+    if (drawings == QLatin1String("clear"))
+        done << (view->clearDrawing() ? tr("what the pen drew taken away (the pen's Undo gives it back)") : tr("nothing was drawn to take away"));
+    if (!addressedIds.isEmpty()) {
+        done << tr("%n stroke(s) marked addressed: drawn faded, and left out of what a prompt tells", "", view->setAddressed(addressedIds, true));
+    } else if (addressedNone) {
+        QList<int> all;
+        for (const qucs_s::markup::Stroke& s : view->drawing().strokes()) all << s.id;
+        done << tr("%n stroke(s) no longer marked addressed", "", view->setAddressed(all, false));
+    }
+    if (pen.isBool()) {
+        doc->penButton()->setChecked(pen.toBool());
+        done << (pen.toBool() ? tr("the pen taken up") : tr("the pen put down"));
+    }
+    if (!done.isEmpty()) o.insert(QStringLiteral("done"), done.join(QStringLiteral("; ")));
+    o.insert(QStringLiteral("pen"), view->penActive() ? tr("taken up: a drag on the Graphics view draws on the model (Escape puts it down)")
+                                                      : tr("put down: the toolbar's pen takes it up"));
+    // What the user drew, read stroke by stroke against the geometry and
+    // the color map shown - the latest 40.
+    if (!view->drawing().isEmpty()) {
+        insertDrawings(o, doc->readDrawing(false));
+        o.insert(QStringLiteral("measures"), tr("the geometry's unit (%1), y up; domains, boundaries and points by the numbers the model's selections use")
+                                                 .arg(doc->unitName().isEmpty() ? tr("none built") : doc->unitName()));
+    } else {
+        o.insert(QStringLiteral("drawings"), tr("nothing is drawn on the model"));
+    }
+    return jsonResult(o);
+}
+
+QJsonObject QucsControl::femPlotShown(MultiphysicsDoc* doc, const QJsonObject& args)
+{
+    QString error;
     a_app->DocumentTab->setCurrentWidget(doc);
     const QString show = args.value(QLatin1String("show")).toString();
     if (show == QLatin1String("geometry")) {
