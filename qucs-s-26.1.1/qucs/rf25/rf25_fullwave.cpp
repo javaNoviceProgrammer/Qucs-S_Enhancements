@@ -4800,6 +4800,31 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                                           .arg(name, x, y, shown(mesh.cells.at(to.first().first).layer), against);
             continue;
         }
+        // On the edge it drives (portPlace()): taken however far it was, a
+        // port off the layout drove the nearest face, one inside a strip its
+        // long side, one facing the wrong way its far end, nothing said.
+        switch (portPlace(conductors, port.at, port.metal, port.facing)) {
+        case PortPlace::OnEdge:
+            break;
+        case PortPlace::FacingOtherWay:
+            out.problems << tr("%1, at %2, %3 µm, is on an edge that does not face the way it is said to: turn its facing "
+                               "to the edge's outward side, or leave it to the edge.")
+                                .arg(name, x, y);
+            return out;
+        case PortPlace::Inside: {
+            const QString w = tr("%1, at %2, %3 µm, is inside a conductor, on none of its edges: it drives the one cell "
+                                 "nearest. An edge port belongs on the edge it drives; an internal port drives the cells "
+                                 "under a point.")
+                                  .arg(name, x, y);
+            out.warnings << w;
+            out.lines << w;
+            break;
+        }
+        case PortPlace::Outside:
+            out.problems << tr("%1, at %2, %3 µm, is on no conductor%4: put it on the edge it is to drive.")
+                                .arg(name, x, y, port.metal.isEmpty() ? QString() : tr(" of %1").arg(shown(port.metal)));
+            return out;
+        }
         QPointF on, along;
         const QList<int> face = faceCells(mesh, conductors, cellOf, port.at, &on, &along, port.metal, port.facing);
         if (face.isEmpty()) {

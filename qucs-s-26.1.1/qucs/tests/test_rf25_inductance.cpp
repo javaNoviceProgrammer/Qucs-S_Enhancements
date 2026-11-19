@@ -1379,6 +1379,28 @@ private slots:
                  qPrintable(factors.problems.join(" | ")));
         qWarning().noquote() << factors.problems.join(" | ");
     }
+    // A loop's ends on its conductor's edges:
+    // the nearest edge was taken however far, so that an end 4 mm off the
+    // layout went in at the nearest face, nothing said. Off every shape it
+    // is refused; inside one, on none of its edges, said; on an edge, a
+    // thousandth of its length off it, as before.
+    void aLoopsEndOffItsConductorIsRefused()
+    {
+        const rf::Stack stack = grounded(4, 200e-6);
+        const rf::Conductor bar = strip(0, 0, 1000, 50);
+        const rf::Mesh mesh = meshed({bar}, 25);
+        const rf::Inductance on = rf::inductanceOf(mesh, {bar}, stack, QPointF(0, 25), QPointF(1000, 25), 1e-6, 1e9);
+        QVERIFY2(on.ok(), qPrintable(on.problems.join(" | ")));
+        const rf::Inductance hair = rf::inductanceOf(mesh, {bar}, stack, QPointF(-0.01, 25), QPointF(1000.01, 25), 1e-6, 1e9);
+        QVERIFY2(hair.ok() && std::abs(hair.l / on.l - 1) < 1e-12, qPrintable(hair.problems.join(" | ")));
+        const rf::Inductance off = rf::inductanceOf(mesh, {bar}, stack, QPointF(0, 25), QPointF(5000, 25), 1e-6, 1e9);
+        QVERIFY2(!off.ok() && off.problems.join(' ').contains(QStringLiteral("Its end, at 5000, 25 µm, is on no conductor")),
+                 qPrintable(off.problems.join(" | ")));
+        const rf::Inductance inside = rf::inductanceOf(mesh, {bar}, stack, QPointF(0, 25), QPointF(500, 25), 1e-6, 1e9);
+        QVERIFY2(inside.lines.join(' ').contains(QStringLiteral("Its end, at 500, 25 µm, is inside a conductor, on none of its edges")),
+                 qPrintable(inside.lines.join(" | ") + inside.problems.join(" | ")));
+    }
+
 };
 
 QTEST_MAIN(TestRf25Inductance)

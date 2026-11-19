@@ -3483,6 +3483,11 @@ private slots:
         rf::Node strip = m.make(QStringLiteral("rf_shape"));
         strip.props = QJsonObject{{"layer", "M1"}, {"x", "0"}, {"y", "0"}, {"width", "L"}, {"height", "w"}};
         QVERIFY(m.add(m.layout().child(QStringLiteral("rf_shapes"))->tag, strip) != nullptr);
+        // (P2 on the strip's far end, wherever L puts it: an edge port is on
+        //  the edge it drives - 100 µm past it, at L 900, it drove that end
+        //  before a bug hunt.)
+        for (rf::Node& p : m.ports().children)
+            if (p.label == QLatin1String("P2")) p.props.insert(QStringLiteral("x"), QStringLiteral("L"));
         m.root.child(QStringLiteral("rf_study"))->props.insert(QStringLiteral("kind"), QStringLiteral("quasi_static"));
         QVERIFY(m.add(m.root.tag, m.make(QStringLiteral("rf_analyses"))) != nullptr);
         rf::Node sweep = m.make(QStringLiteral("rf_sweep"));
@@ -4888,10 +4893,9 @@ private slots:
         doc->solve();
         QVERIFY(doc->waitForSolved(300000));
 
-        // A port's metal and the way it faces reach the solve: facing +y,
-        // P1 drives the strip's long side, not its end; on a metal that is
-        // not there, nothing.
-        const int atTheEnd = int(doc->fullWave()->portsSaid.value(0).section(QLatin1Char(' '), 3, 3).toInt());
+        // A port's metal and the way it faces reach the solve: facing +y, at
+        // the strip's end, P1 is on no edge facing so, and is refused (it
+        // drove the strip's long side, 25 µm off, before a bug hunt); on a metal that is not there, nothing.
         QVERIFY(doc->editNode(p1, [](rf::Node& n) {
             n.props.insert(QStringLiteral("facing"), QStringLiteral("+y"));
             n.props.insert(QStringLiteral("deembed"), QStringLiteral("0"));
@@ -4899,10 +4903,7 @@ private slots:
         QVERIFY(doc->waitForPrepared(60000));
         doc->solve();
         QVERIFY(doc->waitForSolved(300000));
-        QVERIFY2(doc->fullWave() != nullptr && doc->fullWave()->ok(), qPrintable(doc->solveProblem()));
-        const int alongTheSide = int(doc->fullWave()->portsSaid.value(0).section(QLatin1Char(' '), 3, 3).toInt());
-        QVERIFY2(atTheEnd > 0 && alongTheSide > 2 * atTheEnd,
-                 qPrintable(QStringLiteral("%1 and %2 cells").arg(atTheEnd).arg(alongTheSide)));
+        QVERIFY2(doc->solveProblem().contains(QStringLiteral("does not face the way it is said to")), qPrintable(doc->solveProblem()));
         QVERIFY(doc->editNode(p1, [](rf::Node& n) {
             n.props.insert(QStringLiteral("facing"), QStringLiteral("auto"));
             n.props.insert(QStringLiteral("conductor"), QStringLiteral("M9"));
@@ -4910,7 +4911,7 @@ private slots:
         QVERIFY(doc->waitForPrepared(60000));
         doc->solve();
         QVERIFY(doc->waitForSolved(300000));
-        QVERIFY2(doc->solveProblem().contains(QStringLiteral("on no cell")), qPrintable(doc->solveProblem()));
+        QVERIFY2(doc->solveProblem().contains(QStringLiteral("is on no conductor of M9")), qPrintable(doc->solveProblem()));
 
         // With no ports, a full-wave solve has nothing to drive.
         for (const rf::Node& p : std::vector<rf::Node>(doc->model().ports().children))
