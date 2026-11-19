@@ -48,12 +48,13 @@ struct ShownValues {
 /// - a dot, a mark: "on" (the point it is on, else the boundary, else the
 ///   domain);
 /// - a corner: "at", what its point is on;
-/// - a line, an arrow: "from" and "points at" (what its ends are on);
-///   "along" (the boundaries it follows); an arrow's "tip" and "tail";
-/// - a highlighter's stroke: "highlights" (the boundaries it follows, else
-///   the domains it lies on).
+/// - a line, an arrow: "from" and "points at" (what its ends are on: an
+///   arrow's tail, its end farther from its tip, and its tip); "along" (the
+///   boundaries it follows); an arrow's "tip" and "tail";
+/// - a highlighter's line or mark: "highlights" alone (the boundaries it
+///   follows, else the domains it lies on); its arrow that and an arrow's.
 /// With \a values: the value where it points ("value at", a dot's, a mark's
-/// middle, a corner's point, an arrow's tip; a line's "value at its start"
+/// middle, a corner's point, an arrow's tip; a pen's line's "value at its start"
 /// and "value at its end"), and a ring's "least inside" and "greatest
 /// inside" with where. \a points: its points simplified.
 QJsonArray readModelStrokes(const Topology* topology, const QList<markup::Stroke>& strokes, bool points, const ShownValues& values = {});

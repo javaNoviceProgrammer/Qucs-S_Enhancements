@@ -280,19 +280,29 @@ QJsonArray readModelStrokes(const Topology* topology, const QList<markup::Stroke
         case markup::Gesture::Line:
         case markup::Gesture::Arrow: {
             if (s.highlighter) {
-                // What it lies along, else on.
+                // What it lies along, else on - and that is all a
+                // highlighter's line or mark says, as a layout's reading has
+                // it; its arrow goes on to where it points.
                 if (topology) {
                     QStringList lit = followed(*topology, s, reach);
-                    if (lit.isEmpty()) lit = under(*topology, s);
-                    if (!lit.isEmpty()) o.insert(QStringLiteral("highlights"), named(lit, QStringLiteral("more")));
+                    const bool along = !lit.isEmpty();
+                    if (!along) lit = under(*topology, s);
+                    if (!lit.isEmpty()) o.insert(QStringLiteral("highlights"), named(lit, along ? QStringLiteral("boundaries") : QStringLiteral("domains")));
                 }
+                if (g != markup::Gesture::Arrow) break;
             } else if (g == markup::Gesture::Mark) {
                 // A mark: the one thing it is on, at its middle.
                 put("on", on(s.bounds().center()));
                 put("value at", valueText(values, s.bounds().center()));
                 break;
             }
-            const QPointF start = s.points.first(), end = tips.at(i);
+            // An arrow's tail is whichever end lies farther from its tip (a
+            // head drawn first, or at the shaft's start, puts the tip at the
+            // stroke's first point), as a layout's reading takes it.
+            const QPointF end = tips.at(i);
+            const QPointF start = g == markup::Gesture::Arrow && QLineF(end, s.points.last()).length() > QLineF(end, s.points.first()).length()
+                                      ? s.points.last()
+                                      : s.points.first();
             if (topology && !s.highlighter) {
                 const QStringList along = followed(*topology, s, reach);
                 if (!along.isEmpty()) o.insert(QStringLiteral("along"), named(along, QStringLiteral("boundaries")));
@@ -303,11 +313,9 @@ QJsonArray readModelStrokes(const Topology* topology, const QList<markup::Stroke
                 o.insert(QStringLiteral("tip"), pointJson(end));
                 o.insert(QStringLiteral("tail"), pointJson(start));
                 put("value at", valueText(values, end));
-            } else if (g == markup::Gesture::Line) {
+            } else {
                 put("value at its start", valueText(values, start));
                 put("value at its end", valueText(values, end));
-            } else {
-                put("value at", valueText(values, s.bounds().center()));
             }
             break;
         }

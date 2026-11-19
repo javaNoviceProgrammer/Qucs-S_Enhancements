@@ -626,6 +626,38 @@ private slots:
         QVERIFY2(r3.value("value at its start").toString() == QStringLiteral("es.V = 1 V"),
                  qPrintable(QJsonDocument(r3).toJson()));
 
+        // An arrow drawn head first - its shaft from the tip out, then its head
+        // at the shaft's start - reads its tail at the end away from the tip,
+        // from nothing (outside the geometry), pointing at the bottom. (Far
+        // from the top line's ends: a short stroke drawn just after a line,
+        // near one of its ends, is that line's arrowhead.)
+        draw({QPointF(5, 0), QPointF(5.5, -0.5), QPointF(6, -1), QPointF(6.5, -1.5)});
+        draw({QPointF(5.5, 0.1), QPointF(5, 0), QPointF(5.3, -0.45)});
+        // A highlighter along the bottom: what it highlights, and nothing more.
+        markup::Pen highlighter = pen;
+        highlighter.tool = markup::Tool::Highlighter;
+        markup::setCurrentPen(highlighter);
+        draw({QPointF(1, 0), QPointF(3, 0), QPointF(5, 0), QPointF(7, 0), QPointF(9, 0)});
+        markup::setCurrentPen(pen);
+        {
+            const QJsonArray more = doc->readDrawing(false);
+            QCOMPARE(more.size(), 6);
+            const QJsonObject arrow = more.at(3).toObject(), head = more.at(4).toObject(), lit = more.at(5).toObject();
+            QCOMPARE(arrow.value("drawn as").toString(), QStringLiteral("arrow"));
+            QCOMPARE(head.value("drawn as").toString(), QStringLiteral("arrowhead"));
+            QCOMPARE(arrow.value("tip").toArray(), (QJsonArray{5, 0}));
+            QCOMPARE(arrow.value("tail").toArray(), (QJsonArray{6.5, -1.5}));
+            QVERIFY2(arrow.value("points at").toString().contains("outer, of domain 1") && !arrow.contains("from"),
+                     qPrintable(QJsonDocument(arrow).toJson()));
+            QCOMPARE(lit.value("tool").toString(), QStringLiteral("highlighter"));
+            const QJsonArray highlights = lit.value("highlights").toArray();
+            QVERIFY2(highlights.size() == 1 && highlights.at(0).toString().contains("outer, of domain 1"), qPrintable(QJsonDocument(lit).toJson()));
+            for (const char* key : {"from", "points at", "along", "value at", "value at its start", "value at its end"})
+                QVERIFY2(!lit.contains(QLatin1String(key)), key);
+        }
+        for (int i = 0; i < 3; ++i) QVERIFY(view->undoDrawing());
+        QCOMPARE(view->drawing().strokes().size(), 3);
+
         // Through the mesh and the geometry: kept, and read there without values.
         doc->showMesh();
         QCOMPARE(view->drawing().strokes().size(), 3);
