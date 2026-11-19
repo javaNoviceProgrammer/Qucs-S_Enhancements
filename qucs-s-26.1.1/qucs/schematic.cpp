@@ -519,6 +519,13 @@ void Schematic::becomeCurrent(bool update)
 // ---------------------------------------------------
 void Schematic::setName(const QString &Name_)
 {
+    // A data display named again (Save As, renamed in the files) shows
+    // what it showed: its dataset and its schematic kept. It was pointed
+    // at a dataset of its new name - none - its traces empty from the next
+    // reload on, and saved so. (A schematic's next run writes its new
+    // name's.)
+    const bool display = isDataDisplayPage() && Name_.endsWith(QLatin1String(".dpl"), Qt::CaseInsensitive) && !a_DataSet.isEmpty();
+    const QString dataSet = a_DataSet, dataDisplay = a_DataDisplay;
     a_DocName = Name_;
     // Where files named beside it are looked for (subcircuits, SPICE
     // libraries): here too after Save As, not only after a load - else a
@@ -533,6 +540,10 @@ void Schematic::setName(const QString &Name_)
         a_DataDisplay = base + ".dpl";
     else
         a_DataDisplay = base + ".sch";
+    if (display) {
+        a_DataSet = dataSet;
+        if (!dataDisplay.isEmpty()) a_DataDisplay = dataDisplay;
+    }
     if (a_pageBar != nullptr) a_pageBar->updateKind();   // (saved as a .dpl, or as something else)
 }
 
