@@ -3042,7 +3042,7 @@ void LayoutDoc::updateInfo()
         return;
     }
     QString text = tr("%1, %2 and %3 on %4; a database unit of %5 µm")
-                       .arg(counted(quint64(a_layout->cells.size()), QT_TRANSLATE_NOOP("LayoutDoc", "%1 cell"), QT_TRANSLATE_NOOP("LayoutDoc", "%1 cells")),
+                       .arg(counted(quint64(a_layout->shownCellCount()), QT_TRANSLATE_NOOP("LayoutDoc", "%1 cell"), QT_TRANSLATE_NOOP("LayoutDoc", "%1 cells")),
                             counted(a_layout->shapeCount, QT_TRANSLATE_NOOP("LayoutDoc", "%1 shape"), QT_TRANSLATE_NOOP("LayoutDoc", "%1 shapes")),
                             counted(a_layout->labelCount, QT_TRANSLATE_NOOP("LayoutDoc", "%1 text"), QT_TRANSLATE_NOOP("LayoutDoc", "%1 texts")),
                             counted(quint64(a_layout->layers.size()), QT_TRANSLATE_NOOP("LayoutDoc", "%1 layer"), QT_TRANSLATE_NOOP("LayoutDoc", "%1 layers")),
@@ -3104,7 +3104,7 @@ void LayoutDoc::find(const QString& text)
                                               : QRegularExpression::escape(t),
                                          QRegularExpression::CaseInsensitiveOption);
         for (int c = 0; c < a_layout->cells.size(); ++c)
-            if (pattern.match(a_layout->cells.at(c).name).hasMatch()) a_found.append(c);
+            if (c != a_layout->contextCell && pattern.match(a_layout->cells.at(c).name).hasMatch()) a_found.append(c);
         std::sort(a_found.begin(), a_found.end(), [this](int a, int b) { return a_layout->cells.at(a).name < a_layout->cells.at(b).name; });
     }
     fillCells();

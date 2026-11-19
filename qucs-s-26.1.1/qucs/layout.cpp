@@ -472,8 +472,10 @@ void finish(Layout& layout)
         }
         for (int child : placed) layout.cells[child].parents++;
     }
+    // (KLayout's context cell, placed by none: not a top cell to show)
+    if (const int c = layout.cellIndex(QStringLiteral("$$$CONTEXT_INFO$$$")); c >= 0 && layout.cells[c].parents == 0) layout.contextCell = c;
     for (int c = 0; c < n; ++c)
-        if (layout.cells[c].parents == 0) layout.topCells.append(c);
+        if (layout.cells[c].parents == 0 && c != layout.contextCell) layout.topCells.append(c);
     std::sort(layout.topCells.begin(), layout.topCells.end(), [&](int a, int b) {
         const QRectF& ra = layout.cells[a].bounds;
         const QRectF& rb = layout.cells[b].bounds;
