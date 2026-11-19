@@ -503,7 +503,7 @@ public:
     static void holdReading(bool held) { readingHeld().store(held); }
     /// The toolbar's icons another tab may show beside its own, drawn as
     /// this tab draws them (in the text's colour of the moment).
-    enum class ToolIcon { Fit, Ruler, Reload };
+    enum class ToolIcon { Fit, Ruler, Reload, Picture };
     static QIcon toolIcon(ToolIcon which);
     /// \a button made one of this tab's toolbar buttons: an icon of 16
     /// pixels, flat until hovered, taking no focus. toolButtonRules() is the

@@ -137,7 +137,7 @@ constexpr int AllLevels = 100;   // the depth box's "all"
 class GlyphIcon : public QIconEngine
 {
 public:
-    enum Kind { Sidebar, Minus, Plus, Fit, Ruler, Text, Grid, Search, More, Close, Up, Down, Route, Reload };
+    enum Kind { Sidebar, Minus, Plus, Fit, Ruler, Text, Grid, Search, More, Close, Up, Down, Route, Reload, Picture };
     explicit GlyphIcon(Kind kind) : a_kind(kind) {}
     QIconEngine* clone() const override { return new GlyphIcon(a_kind); }
     void paint(QPainter* p, const QRect& rect, QIcon::Mode mode, QIcon::State) override
@@ -216,6 +216,12 @@ public:
             p->drawPolyline(QPolygonF{tip + QPointF(-1.1, -3.0), tip, tip + QPointF(-3.15, 0.56)});
             break;
         }
+        case Picture:
+            // A picture: its frame, hills and the sun.
+            p->drawRoundedRect(QRectF(1.5, 2.5, 13, 11), 1.5, 1.5);
+            p->drawPolyline(QPolygonF{QPointF(1.5, 12), QPointF(6, 7.5), QPointF(9, 10.5), QPointF(10.5, 9), QPointF(14.5, 13)});
+            p->drawEllipse(QPointF(10.5, 5.75), 1.25, 1.25);
+            break;
         case Up: p->drawPolyline(QPolygonF{QPointF(4, 10), QPointF(8, 6), QPointF(12, 10)}); break;
         case Down: p->drawPolyline(QPolygonF{QPointF(4, 6), QPointF(8, 10), QPointF(12, 6)}); break;
         }
@@ -2210,6 +2216,7 @@ QIcon LayoutDoc::toolIcon(ToolIcon which)
     switch (which) {
     case ToolIcon::Fit: return glyph(GlyphIcon::Fit);
     case ToolIcon::Ruler: return glyph(GlyphIcon::Ruler);
+    case ToolIcon::Picture: return glyph(GlyphIcon::Picture);
     case ToolIcon::Reload: break;
     }
     return glyph(GlyphIcon::Reload);

@@ -18,6 +18,7 @@
 #include "fem_material_plot.h"
 #include "fem_optimize.h"
 #include "fem_adapt.h"
+#include "multiphysicsstrokes.h"
 #include "multiphysicsview.h"
 #include "qucsdoc.h"
 
@@ -362,8 +363,25 @@ public:
     QWidget* progressRow() const { return a_progressRow; }
     QLabel* stageLabel() const { return a_stage; }
     QProgressBar* progressBar() const { return a_progress; }
-    /// The Graphics view as a PNG file.
+    /// The Graphics view as a PNG file (what the pen drew with it).
     bool exportImage(const QString& path, QString* error = nullptr);
+
+    /// The pen, at the right of the toolbar: taken up, a drag on the
+    /// Graphics view draws on the model (GraphicsView::drawing()).
+    qucs_s::markup::PenButton* penButton() const { return a_penButton; }
+    QToolButton* fitButton() const { return a_fit; }
+    QToolButton* imageButton() const { return a_image; }
+    /// What the color map shown reads at a point (none where results with
+    /// a surface are not shown): the status bar's "T = 312.4 K".
+    qucs_s::fem::ShownValues shownValues();
+    /// What the pen drew read for Claude against the geometry, and the
+    /// values the results show where it points (readModelStrokes()); \a
+    /// points: each stroke's points.
+    QJsonArray readDrawing(bool points = false);
+    /// The readings a sentence each, for a prompt (modelSentences()).
+    QString drawingSentences(int most = 30);
+    /// The geometry's unit as it is said ("µm"); empty with none built.
+    QString unitName() const;
 
     /// A new model's content: a geometry, a study (File > New).
     static qucs_s::fem::Model starterModel();
@@ -416,6 +434,9 @@ private:
     void fillInstanceBox();
     void watchFiles();
     void pointerMoved(QPointF point, bool inside);
+    /// The pen's menu as the drawing is; the toolbar's icons' style sheet.
+    void updatePen();
+    void restyleTools();
     void picked(qucs_s::fem::Level level, int entity);
 
     qucs_s::fem::Model a_model;
@@ -482,6 +503,7 @@ private:
     QComboBox* a_showBox = nullptr;
     QComboBox* a_plotBox = nullptr;
     QComboBox* a_instanceBox = nullptr;
+    qucs_s::markup::PenButton* a_penButton = nullptr;
     QToolButton* a_fit = nullptr;
     QToolButton* a_image = nullptr;
     QWidget* a_progressRow = nullptr;

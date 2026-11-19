@@ -279,7 +279,7 @@ void GraphicsView::setPickLevel(Level level)
 {
     a_pickLevel = level;
     a_hovered = -1;
-    setCursor(level == Level::None ? Qt::ArrowCursor : Qt::PointingHandCursor);
+    setCursor(a_pen ? Qt::CrossCursor : level == Level::None ? Qt::ArrowCursor : Qt::PointingHandCursor);
     redraw();
 }
 
@@ -430,6 +430,15 @@ void GraphicsView::wheelEvent(QWheelEvent* event)
 
 bool GraphicsView::event(QEvent* event)
 {
+    // The pen's Escape and Ctrl+Z before the window's: its Undo would take
+    // back an edit of the model, its Escape end what it is doing.
+    if (event->type() == QEvent::ShortcutOverride && (a_pen || a_inking || a_erasing)) {
+        auto* key = static_cast<QKeyEvent*>(event);
+        if ((key->key() == Qt::Key_Escape && key->modifiers() == Qt::NoModifier) || key->matches(QKeySequence::Undo)) {
+            event->accept();
+            return true;
+        }
+    }
     if (event->type() == QEvent::NativeGesture) {
         auto* g = static_cast<QNativeGestureEvent*>(event);
         if (g->gestureType() == Qt::ZoomNativeGesture) {
@@ -442,6 +451,25 @@ bool GraphicsView::event(QEvent* event)
 
 void GraphicsView::mousePressEvent(QMouseEvent* event)
 {
+    // With the pen up, the left button draws or erases, before it picks or
+    // pans (a double click: two dots, QWidget's two presses).
+    if (a_pen && event->button() == Qt::LeftButton) {
+        if (a_inking || a_erasing) return;
+        setFocus(Qt::MouseFocusReason);
+        const qucs_s::markup::Pen pen = qucs_s::markup::currentPen();
+        if (pen.tool == qucs_s::markup::Tool::Eraser) {
+            a_erasing = true;
+            a_erased = false;
+            a_beforeErase = a_drawing.strokes();
+            eraseAt(event->position());
+        } else {
+            a_stroke = qucs_s::markup::begin(pen, penPart(), toModel(event->position()), a_scale);
+            a_inking = true;
+            redraw();
+        }
+        event->accept();
+        return;
+    }
     a_pressPos = a_lastPos = event->position().toPoint();
     a_pressed = event->button() == Qt::LeftButton || event->button() == Qt::MiddleButton;
     a_dragging = event->button() == Qt::MiddleButton;
@@ -451,6 +479,20 @@ void GraphicsView::mousePressEvent(QMouseEvent* event)
 void GraphicsView::mouseMoveEvent(QMouseEvent* event)
 {
     const QPoint pos = event->position().toPoint();
+    // The pen and the eraser follow every move, the least of them too.
+    if (a_inking) {
+        if (QLineF(toPixel(a_stroke.points.last()), event->position()).length() >= qucs_s::markup::LeastStep) {
+            a_stroke.points << toModel(event->position());
+            redraw();
+        }
+        emit pointerMoved(toModel(pos), true);
+        return;
+    }
+    if (a_erasing) {
+        eraseAt(event->position());
+        emit pointerMoved(toModel(pos), true);
+        return;
+    }
     if (a_pressed && (event->buttons() & (Qt::LeftButton | Qt::MiddleButton))) {
         if (!a_dragging && (pos - a_pressPos).manhattanLength() > 4) a_dragging = true;
         if (a_dragging) {
@@ -461,7 +503,8 @@ void GraphicsView::mouseMoveEvent(QMouseEvent* event)
         a_lastPos = pos;
         return;
     }
-    if (a_pickLevel != Level::None) {
+    // (With the pen up nothing is picked: nothing lit under the pointer.)
+    if (a_pickLevel != Level::None && !a_pen) {
         const int h = entityAt(a_pickLevel, pos);
         if (h != a_hovered) {
             a_hovered = h;
@@ -473,17 +516,46 @@ void GraphicsView::mouseMoveEvent(QMouseEvent* event)
 
 void GraphicsView::mouseReleaseEvent(QMouseEvent* event)
 {
+    if ((a_inking || a_erasing) && event->button() == Qt::LeftButton) {
+        if (a_inking) a_drawing.add(a_stroke);
+        else if (a_erased) a_drawing.changed(a_beforeErase);
+        a_stroke = qucs_s::markup::Stroke();
+        a_inking = a_erasing = a_erased = false;
+        a_beforeErase.clear();
+        redraw();
+        emit drawingChanged();
+        return;
+    }
     const bool click = a_pressed && !a_dragging && event->button() == Qt::LeftButton;
     a_pressed = false;
     if (a_dragging) {
         a_dragging = false;
-        setCursor(a_pickLevel == Level::None ? Qt::ArrowCursor : Qt::PointingHandCursor);
+        setCursor(a_pen ? Qt::CrossCursor : a_pickLevel == Level::None ? Qt::ArrowCursor : Qt::PointingHandCursor);
     }
     if (click && a_pickLevel != Level::None) emit picked(a_pickLevel, entityAt(a_pickLevel, event->position()));
 }
 
 void GraphicsView::keyPressEvent(QKeyEvent* event)
 {
+    // With the pen up, Ctrl+Z is its own; Escape lets go of the stroke
+    // being drawn, then puts the pen down - one thing at a time. (Both
+    // claimed ahead of the window's shortcuts: event().)
+    if (a_pen && event->matches(QKeySequence::Undo)) {
+        if (!a_inking && !a_erasing) undoDrawing();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape && event->modifiers() == Qt::NoModifier && (a_inking || a_erasing || a_pen)) {
+        if (a_inking) {
+            a_inking = false;
+            a_stroke = qucs_s::markup::Stroke();
+            redraw();
+        } else if (a_erasing) {
+            endInking();
+        } else {
+            setPenActive(false);
+        }
+        return;
+    }
     switch (event->key()) {
     case Qt::Key_F:
     case Qt::Key_Home: fit(); return;
@@ -561,6 +633,7 @@ void GraphicsView::paintFrame(QPainter& p, GpuCanvas* gl)
         p.setPen(c.ink);
         p.drawText(rect(), Qt::AlignCenter | Qt::TextWordWrap,
                    tr("Build the geometry to see it here: its features in the Multiphysics panel, then Build All."));
+        paintStrokes(p);
         a_gl = nullptr;
         return;
     }
@@ -600,7 +673,93 @@ void GraphicsView::paintFrame(QPainter& p, GpuCanvas* gl)
         p.setPen(QColor(200, 40, 40));
         p.drawText(QRectF(10, 26, width() - 20, 40), Qt::AlignLeft | Qt::TextWordWrap, a_plot->problems.join(QLatin1Char('\n')));
     }
+    // What the pen drew, over all of it.
+    paintStrokes(p);
     a_gl = nullptr;
+}
+
+void GraphicsView::paintStrokes(QPainter& p)
+{
+    QList<qucs_s::markup::Stroke> strokes = a_drawing.on(penPart());
+    if (a_inking) strokes << a_stroke;
+    if (strokes.isEmpty()) return;
+    p.save();
+    qucs_s::markup::paint(p, strokes, [this](QPointF pt) { return toPixel(pt); }, a_scale);
+    p.restore();
+}
+
+// ----------------------------------------------------------------------
+// The pen
+
+void GraphicsView::setPenActive(bool active)
+{
+    if (active == a_pen) return;
+    a_pen = active;
+    // Put down mid-stroke: the stroke let go, what an eraser took kept.
+    if (!active) endInking();
+    if (active && a_hovered >= 0) {
+        a_hovered = -1;
+        redraw();
+    }
+    setCursor(active ? Qt::CrossCursor : a_pickLevel == Level::None ? Qt::ArrowCursor : Qt::PointingHandCursor);
+    emit penActiveChanged(active);
+}
+
+void GraphicsView::endInking()
+{
+    if (!a_inking && !a_erasing) return;
+    if (a_erasing && a_erased) a_drawing.changed(a_beforeErase);
+    a_inking = a_erasing = a_erased = false;
+    a_stroke = qucs_s::markup::Stroke();
+    a_beforeErase.clear();
+    redraw();
+    emit drawingChanged();
+}
+
+void GraphicsView::addStroke(const qucs_s::markup::Stroke& stroke)
+{
+    if (stroke.points.isEmpty()) return;
+    a_drawing.add(stroke);
+    redraw();
+    emit drawingChanged();
+}
+
+bool GraphicsView::undoDrawing()
+{
+    if (!a_drawing.undo()) return false;
+    redraw();
+    emit drawingChanged();
+    return true;
+}
+
+bool GraphicsView::clearDrawing()
+{
+    endInking();
+    if (!a_drawing.clear()) return false;
+    redraw();
+    emit drawingChanged();
+    return true;
+}
+
+int GraphicsView::setAddressed(const QList<int>& ids, bool addressed)
+{
+    const int changed = a_drawing.setAddressed(penPart(), ids, addressed);
+    if (changed > 0) {
+        redraw();
+        emit drawingChanged();
+    }
+    return changed;
+}
+
+void GraphicsView::eraseAt(QPointF pixel)
+{
+    bool erased = false;
+    while (a_drawing.eraseAt(penPart(), toModel(pixel), qucs_s::markup::EraserReach / a_scale)) erased = true;
+    if (erased) {
+        a_erased = true;
+        redraw();
+        emit drawingChanged();
+    }
 }
 
 void GraphicsView::setAxisymmetric(bool on)

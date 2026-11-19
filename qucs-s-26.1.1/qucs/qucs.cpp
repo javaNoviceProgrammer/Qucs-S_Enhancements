@@ -610,6 +610,12 @@ std::pair<quint64, QString> QucsApp::drawingsOf(const QString &file, quint64 kno
                                           : penSaid(qucs_s::datadisplay::sentencesOf(qucs_s::datadisplay::readDrawing(page, true)),
                                                     page->pageBar() != nullptr ? page->pageBar()->penButton() : nullptr, "show_schematic")};
     }
+    // A 2D multiphysics model's Graphics view, read against its geometry
+    // and the color map shown.
+    if (auto *fem = dynamic_cast<MultiphysicsDoc *>(doc)) {
+      const quint64 revision = fem->view()->drawing().revision();
+      return {revision, revision == known ? QString() : penSaid(fem->drawingSentences(), fem->penButton(), "fem_plot")};
+    }
     if (auto *deck = dynamic_cast<PptxDoc *>(doc)) {
       const quint64 revision = deck->view()->drawing().revision();
       return {revision, revision == known ? QString() : penSaid(qucs_s::markup::sentencesOf(deck->readDrawing(true), true), deck->penButton(), "show_pptx")};

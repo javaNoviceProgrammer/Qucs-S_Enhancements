@@ -28,6 +28,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QDateTime>
 #include <QElapsedTimer>
@@ -49,6 +50,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QSignalBlocker>
 #include <QSaveFile>
 #include <QSplitter>
 #include <QStatusBar>
@@ -448,10 +450,28 @@ void MultiphysicsDoc::buildUi()
             if (v.size() > 3 && v[3].toInt() > 0) n.props.insert(QStringLiteral("mode"), v[3].toInt());
         }, tr("Show %1").arg(a_instanceBox->itemText(index)));
     });
-    row->addSpacing(10);
-    a_fit = button(tr("Zoom Extents"), tr("Show it all (F)"), "mpFit");
+    row->addStretch(1);
+    // At the right: the pen, as the other viewers have it - what the user
+    // draws over the model, Claude reads (its menu: the arrow beside it) -,
+    // then the view's own tools as icons, drawn and styled as a layout's
+    // tab draws them (they were words after the plot's boxes).
+    a_penButton = new qucs_s::markup::PenButton(tr("Model"), bar);
+    a_penButton->setObjectName(QStringLiteral("mpPen"));
+    a_penButton->setProperty("layoutTool", true);
+    row->addWidget(a_penButton);
+    const auto tool = [&](const QIcon& icon, const QString& tip, const char* name) {
+        auto* b = new QToolButton(bar);
+        b->setIcon(icon);
+        b->setToolTip(tip);
+        b->setAccessibleName(tip.section(QLatin1String(" ("), 0, 0).section(QLatin1String(": "), 0, 0));
+        b->setObjectName(QLatin1String(name));
+        LayoutDoc::makeToolButton(b);
+        row->addWidget(b);
+        return b;
+    };
+    a_fit = tool(LayoutDoc::toolIcon(LayoutDoc::ToolIcon::Fit), tr("Zoom Extents: show it all (F)"), "mpFit");
     connect(a_fit, &QToolButton::clicked, this, [this] { a_view->fit(); });
-    a_image = button(tr("Image…"), tr("Save the Graphics view as a PNG image"), "mpImage");
+    a_image = tool(LayoutDoc::toolIcon(LayoutDoc::ToolIcon::Picture), tr("Save Image: the Graphics view as a PNG image"), "mpImage");
     connect(a_image, &QToolButton::clicked, this, [this] {
         const QString base = getDocName().isEmpty() ? QStringLiteral("model.png") : QFileInfo(getDocName()).completeBaseName() + QStringLiteral(".png");
         const QString path = QFileDialog::getSaveFileName(this, tr("Save Image"), QFileInfo(getDocName()).absoluteDir().filePath(base),
@@ -460,7 +480,7 @@ void MultiphysicsDoc::buildUi()
         QString why;
         if (!exportImage(path, &why)) QMessageBox::warning(this, tr("Save Image"), why);
     });
-    row->addStretch(1);
+    restyleTools();
     all->addWidget(bar);
 
     // A job's progress in a row of its own below: its stage as whole as the
@@ -501,6 +521,19 @@ void MultiphysicsDoc::buildUi()
     a_view = new GraphicsView(a_splitter);
     connect(a_view, &GraphicsView::pointerMoved, this, &MultiphysicsDoc::pointerMoved);
     connect(a_view, &GraphicsView::picked, this, &MultiphysicsDoc::picked);
+    // The pen taken up and put down; its menu's undo and clearing (one part:
+    // the model, through its geometry, mesh and results).
+    connect(a_penButton, &QToolButton::toggled, a_view, &GraphicsView::setPenActive);
+    connect(a_view, &GraphicsView::penActiveChanged, this, [this](bool on) {
+        const QSignalBlocker block(a_penButton);
+        a_penButton->setChecked(on);
+    });
+    a_penButton->setColorChooser([this](const QColor& now) { return QColorDialog::getColor(now, this, tr("The Pen's Colour")); });
+    connect(a_penButton, &qucs_s::markup::PenButton::undoRequested, a_view, [this] { a_view->undoDrawing(); });
+    connect(a_penButton, &qucs_s::markup::PenButton::clearPartRequested, a_view, [this] { a_view->clearDrawing(); });
+    connect(a_penButton, &qucs_s::markup::PenButton::clearAllRequested, a_view, [this] { a_view->clearDrawing(); });
+    connect(a_view, &GraphicsView::drawingChanged, this, &MultiphysicsDoc::updatePen);
+    updatePen();
     a_bottom = new QTabWidget(a_splitter);
     a_bottom->setObjectName(QStringLiteral("mpBottom"));
     a_bottom->setDocumentMode(true);
@@ -585,6 +618,18 @@ void MultiphysicsDoc::changeEvent(QEvent* event)
 {
     QFrame::changeEvent(event);
     if (event->type() == QEvent::PaletteChange) a_view->update();
+    if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange)
+        QTimer::singleShot(0, this, &MultiphysicsDoc::restyleTools);   // (once the palette has settled)
+}
+
+void MultiphysicsDoc::restyleTools()
+{
+    // (The layout tab's flat icons, hovered and checked as there: each its
+    //  own sheet, as RF 2.5D's tab has them - one on the bar would draw its
+    //  words' buttons square.)
+    const QString sheet = LayoutDoc::toolButtonRules(palette());
+    for (QToolButton* b : {static_cast<QToolButton*>(a_penButton), a_fit, a_image})
+        if (b != nullptr && b->styleSheet() != sheet) b->setStyleSheet(sheet);
 }
 
 // ------------------------------------------------------------------ QucsDoc
@@ -4146,38 +4191,74 @@ void MultiphysicsDoc::pointerMoved(QPointF point, bool inside)
         return;
     }
     std::shared_ptr<const Topology> t = a_view->topology();
-    const QString unit = t ? (t->unitName == QLatin1String("um") ? QStringLiteral("µm") : t->unitName) : QString();
-    QString text = tr("x = %1, y = %2 %3").arg(formatNumber(point.x(), 6), formatNumber(point.y(), 6), unit);
+    QString text = tr("x = %1, y = %2 %3").arg(formatNumber(point.x(), 6), formatNumber(point.y(), 6), unitName());
     if (t) {
         const int d = t->domainAt(point);
         if (d >= 0) text += tr("   domain %1 (%2)").arg(d + 1).arg(t->objectNames.value(t->domains[std::size_t(d)].owner));
     }
-    if (a_view->show() == GraphicsView::Show::Results && a_scene && a_scene->surface && !a_plotGroup.isEmpty()) {
-        const Node* g = a_model.find(a_plotGroup);
-        const std::shared_ptr<SolutionSet> set = g ? solutions(g->text(QStringLiteral("study"))) : nullptr;
-        Solution* sol = nullptr;
-        if (set) {
-            const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")),
-                                                     g->text(QStringLiteral("frequency")), g->integer(QStringLiteral("mode")));
-            if (!chosen.empty()) sol = select(*set, chosen.front());
-        }
-        const Node* surface = nullptr;
-        if (g)
-            for (const Node& p : g->children)
-                if (p.type == QLatin1String("surface") && p.enabled) surface = &p;
-        if (sol && surface) {
-            if (!a_locator) a_locator = std::make_unique<Locator>(sol->mesh());
-            QString why;
-            Dim dim;
-            const std::optional<double> v = evaluateAt(*sol, *a_locator, surface->text(QStringLiteral("expression")), point, &why, &dim);
-            if (v) {
-                const DisplayUnit du = displayUnit(surface->text(QStringLiteral("unit")), dim);
-                text += QStringLiteral("   %1 = %2").arg(surface->text(QStringLiteral("expression")),
-                                                        du.name.isEmpty() ? formatQuantity(*v, dim) : formatNumber((*v - du.offset) / du.scale, 5) + QLatin1Char(' ') + du.name);
-            }
-        }
+    if (const ShownValues shown = shownValues()) {
+        if (const std::optional<double> v = shown.at(point)) text += QStringLiteral("   %1 = %2").arg(shown.expression, shown.said(*v));
     }
     a_status->setText(text);
+}
+
+QString MultiphysicsDoc::unitName() const
+{
+    std::shared_ptr<const Topology> t = a_view->topology();
+    return t ? (t->unitName == QLatin1String("um") ? QStringLiteral("µm") : t->unitName) : QString();
+}
+
+ShownValues MultiphysicsDoc::shownValues()
+{
+    // The color map shown: its plot group's surface plot, read on the
+    // solution the group shows (its point, time, frequency, mode).
+    ShownValues out;
+    if (a_view->show() != GraphicsView::Show::Results || !a_scene || !a_scene->surface || a_plotGroup.isEmpty()) return out;
+    const Node* g = a_model.find(a_plotGroup);
+    if (!g) return out;
+    const std::shared_ptr<SolutionSet> set = solutions(g->text(QStringLiteral("study")));
+    if (!set) return out;
+    const std::vector<Instance> chosen = instances(*set, false, g->integer(QStringLiteral("point")), g->text(QStringLiteral("time")),
+                                                   g->text(QStringLiteral("frequency")), g->integer(QStringLiteral("mode")));
+    Solution* sol = chosen.empty() ? nullptr : select(*set, chosen.front());
+    const Node* surface = nullptr;
+    for (const Node& p : g->children)
+        if (p.type == QLatin1String("surface") && p.enabled) surface = &p;
+    if (!sol || !surface) return out;
+    if (!a_locator) a_locator = std::make_unique<Locator>(sol->mesh());
+    const QString expression = surface->text(QStringLiteral("expression"));
+    const QString unit = surface->text(QStringLiteral("unit"));
+    out.expression = expression;
+    // (The set held while the values are read: the solution is its.)
+    auto dim = std::make_shared<Dim>();
+    out.at = [this, set, sol, expression, dim](QPointF at) -> std::optional<double> {
+        QString why;
+        return evaluateAt(*sol, *a_locator, expression, at, &why, dim.get());
+    };
+    out.said = [unit, dim](double v) {
+        const DisplayUnit du = displayUnit(unit, *dim);
+        return du.name.isEmpty() ? formatQuantity(v, *dim) : formatNumber((v - du.offset) / du.scale, 5) + QLatin1Char(' ') + du.name;
+    };
+    return out;
+}
+
+void MultiphysicsDoc::updatePen()
+{
+    const qucs_s::markup::Drawing& d = a_view->drawing();
+    const int n = int(d.strokes().size());
+    a_penButton->setDrawingState(d.canUndo(), n, n);
+}
+
+QJsonArray MultiphysicsDoc::readDrawing(bool points)
+{
+    std::shared_ptr<const Topology> t = a_view->topology();
+    return readModelStrokes(t.get(), a_view->drawing().on(GraphicsView::penPart()), points, shownValues());
+}
+
+QString MultiphysicsDoc::drawingSentences(int most)
+{
+    const QString unit = unitName();
+    return modelSentences(readDrawing(true), unit.isEmpty() ? tr("the geometry's unit") : unit, most);
 }
 
 bool MultiphysicsDoc::exportImage(const QString& path, QString* error)
