@@ -5259,7 +5259,7 @@ private slots:
     // decade and a half on one thread, from 1 kHz down to 1 Hz: factorized
     // at the first frequency alone, the rest on its blocks, in as many
     // iterations; its Z the same as factorized at every frequency, to
-    // GMRES's residual.
+    // GMRES's residual; and on three threads, twice, the same to the bit.
     void aSweepKeepsItsNearFieldsBlocks()
     {
         rf::Stack st = grounded(9.8, 200e-6, 0, 0, 5.8e7);
@@ -5293,6 +5293,30 @@ private slots:
             qWarning("%g Hz: kept within %.2e of made", fs.at(k), apart / most);
             QVERIFY2(apart < 1e-8 * most, qPrintable(QStringLiteral("%1 Hz: %2").arg(fs.at(k)).arg(apart / most)));
         }
+        // The same sweep on three threads, twice: each thread's frequencies
+        // dealt to it in turn (the highest to the first, and round), and the
+        // blocks outgrown on iterations alone - which blocks each frequency
+        // is solved on the sweep's and its threads', and Z the same to the
+        // bit from one run to the next, whatever else the machine is doing.
+        {
+            QList<rf::FullWave> runs;
+            for (int run = 0; run < 2; ++run) {
+                rf::FullWaveControl control;
+                control.matrix = rf::FullWaveControl::Matrix::Compressed;
+                control.threads = 3;
+                runs << rf::fullWaveOf(mesh, c, st, gssgPorts(l, false), fs, 1e-6, &control);
+                QVERIFY2(runs.last().ok(), qPrintable(why(runs.last())));
+                // (Three threads: three frequencies, two and two; four on
+                //  a higher one's blocks.)
+                QVERIFY2(says(runs.last().lines, "3 at a time") && says(runs.last().lines, "of their own, 4 were preconditioned"),
+                         qPrintable(runs.last().lines.join(" | ")));
+            }
+            for (int k = 0; k < fs.size(); ++k)
+                for (int i = 0; i < 4; ++i)
+                    for (int j = 0; j < 4; ++j)
+                        QVERIFY2(runs.at(0).z[k][i][j] == runs.at(1).z[k][i][j],
+                                 qPrintable(QStringLiteral("%1 Hz, Z%2%3 apart from one run to the next").arg(fs.at(k)).arg(i + 1).arg(j + 1)));
+        }
         // A line of 20 µm of copper, its loss and its jw L changing places
         // across the sweep: 10 MHz's blocks take 3 MHz 20 iterations where
         // its own take 13, each frequency's own 11 to 14. Given 16, 3 MHz on
@@ -5317,6 +5341,18 @@ private slots:
                 QVERIFY2(both.last().lines.filter(QStringLiteral("loops and a tree")).size() == down.size(),
                          qPrintable(both.last().lines.join(" | ")));
             }
+            // (And with no limit on its iterations, 10 MHz's blocks outgrown
+            //  at 3 MHz - 6 iterations past their 14, past kReuseShare -, a
+            //  later frequency factorizing its own.)
+            rf::FullWaveControl free;
+            free.matrix = rf::FullWaveControl::Matrix::Compressed;
+            free.threads = 1;
+            const rf::FullWave outgrown = rf::fullWaveOf(meshed(line, 4, 25e-6, 4), line, thick, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))},
+                                                         down, 1e-6, &free);
+            const QStringList said = outgrown.lines.filter(QStringLiteral("were preconditioned by the near field's blocks"));
+            qWarning("%s", qPrintable(said.join(' ')));
+            QVERIFY2(outgrown.ok() && said.size() == 1 && !said.first().contains(QStringLiteral("; 1 factorized their own")),
+                     qPrintable(outgrown.lines.join(" | ")));
             for (int k = 0; k < down.size(); ++k) {
                 const Matrix2 kept = zOf(both.at(0), k), made = zOf(both.at(1), k);
                 QVERIFY2((kept - made).cwiseAbs().maxCoeff() < 1e-8 * made.cwiseAbs().maxCoeff(),
