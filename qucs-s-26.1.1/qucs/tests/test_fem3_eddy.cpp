@@ -479,6 +479,26 @@ class TestFem3Eddy : public QObject
     Q_OBJECT
 
 private slots:
+    // Its functions in two ctest entries, each its own time limit:
+    // QUCS_TEST_PART 1 those before aDiscUnderARing, 2 it and those after (the
+    // disc, the fast sweep's and the heat's) - by their place here, so that
+    // one added lands in a part -, unset all. Under ASan beside other builds
+    // some 650 and 610 s; split at aFastSweep the first was 854 of its 900.
+    void init()
+    {
+        const QByteArray part = qgetenv("QUCS_TEST_PART");
+        if (part.isEmpty()) return;
+        const QMetaObject* mo = metaObject();
+        int second = -1, here = -1;
+        for (int k = mo->methodOffset(); k < mo->methodCount(); ++k) {
+            const QByteArray name = mo->method(k).name();
+            if (name == "aDiscUnderARing") second = k;
+            if (name == QTest::currentTestFunction()) here = k;
+        }
+        if (second < 0 || here < 0) return;
+        if (part != QByteArray::number(here >= second ? 2 : 1)) QSKIP("in the test's other part (QUCS_TEST_PART)");
+    }
+
     void initTestCase()
     {
         // (A sanitized build's LDLTs the libraries' at every size: Eigen's
@@ -830,8 +850,8 @@ private slots:
     // measured), from four factorizations at most (three measured).
     void aFastSweep()
     {
-        double largest = 0;
-        const auto compare = [&largest](Model m, const QString& frequencies, const QStringList& globals, int* exactSolves, double* worst,
+        double largest = 0, ends = 0;
+        const auto compare = [&largest, &ends](Model m, const QString& frequencies, const QStringList& globals, int* exactSolves, double* worst,
                                         const QString& tolerance = QString()) {
             frequencyStep(m, frequencies, true, QStringLiteral("exact"));
             QElapsedTimer t;
@@ -853,6 +873,7 @@ private slots:
             for (const QString& line : fast.s().log)
                 if (line.contains(QStringLiteral("factorized in"))) ++*exactSolves;
             *worst = 0;
+            ends = 0;
             for (int k = 0; k < exact.s().snapshotCount(); ++k) {
                 exact.s().select(k);
                 fast.s().select(k);
@@ -864,6 +885,9 @@ private slots:
                     for (const QString& h : globals)
                         if (h.left(4) == g.left(4)) scale = std::max(scale, std::abs(global(exact.s(), h)));
                     *worst = std::max(*worst, std::abs(a - b) / scale);
+                    // (Its band's ends solved exactly by both: kept as solved,
+                    // the same to rounding.)
+                    if (k == 0 || k == exact.s().snapshotCount() - 1) ends = std::max(ends, std::abs(a - b) / scale);
                 }
             }
             const QString log = fast.s().log.join(QLatin1Char('\n'));
@@ -899,7 +923,9 @@ private slots:
         }
         const Model coax = shortedCoax(0.15, 2, &et, &mf);
         compare(coax, QStringLiteral("logspace(10[Hz], 300[kHz], 16)"), {QStringLiteral("mf.V_1"), QStringLiteral("mf.V_1_im")}, &solves, &worst);
-        info(QStringLiteral("coax: %1 solved exactly; V within %2").arg(solves).arg(worst));
+        info(QStringLiteral("coax: %1 solved exactly; V within %2, at its band's ends %3").arg(solves).arg(worst).arg(ends));
+        // (5e-14 measured; rebuilt from the basis 9e-10.)
+        QVERIFY2(ends < 1e-12, qPrintable(QStringLiteral("V at its band's ends off by %1").arg(ends)));
         QVERIFY2(worst < 1e-6, qPrintable(QStringLiteral("V off by %1").arg(worst)));
         QVERIFY2(solves <= 4, qPrintable(QStringLiteral("%1 solved exactly").arg(solves)));
         const Model bars = twoBars(&et, &mf);
