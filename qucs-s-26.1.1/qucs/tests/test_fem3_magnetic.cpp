@@ -649,8 +649,10 @@ private slots:
         const double a = 0.5e-3, b = 1.5e-3, c = 1.8e-3;
         const double Lp = Mu0 / (2 * M_PI)
                           * (std::log(b / a) + 0.25 + c * c * c * c * std::log(c / b) / ((c * c - b * b) * (c * c - b * b)) - (3 * c * c - b * b) / (4 * (c * c - b * b)));
-        // (0.15 mm: 1.2 % low in the review's 10 to 20 mm; Eigen's LU and a
-        // sanitized build coarser, 0.25 mm: 2.75 % low.)
+        // (0.15 mm: +0.18 %; Eigen's LU and a sanitized build coarser, 0.25
+        // mm: +0.40 % - 1.26 and 2.75 % low while the coil carried its
+        // currents physics' J scaled to that physics' own current, its curved
+        // section's, where this field's triangles are straight.)
         const double hmax = coarse() ? 0.25 : 0.15;
         double L[2] = {0, 0};
         const int lengths[2] = {2, 4};
@@ -708,7 +710,7 @@ private slots:
         }
         const double perLength = (L[1] - L[0]) / 2e-3;
         info(QStringLiteral("coax from currents: L %1, %2 H; dL/dlen %3 H/m, exact %4 H/m").arg(L[0]).arg(L[1]).arg(perLength).arg(Lp));
-        QVERIFY2(std::abs(perLength - Lp) < (coarse() ? 4e-2 : 2e-2) * Lp, qPrintable(QStringLiteral("dL/dlen %1 H/m, exact %2 H/m").arg(perLength).arg(Lp)));
+        QVERIFY2(std::abs(perLength - Lp) < (coarse() ? 1e-2 : 5e-3) * Lp, qPrintable(QStringLiteral("dL/dlen %1 H/m, exact %2 H/m").arg(perLength).arg(Lp)));
     }
 
     // A cycle - the currents' conductivity reads the magnetic field (nought

@@ -139,6 +139,17 @@ private:
         int nV = 0;
     };
     bool buildConductors(Conductors& h, double omega, QString* error);
+    /// The faces currents physics \a tag holds, by topology face - its
+    /// terminal's index in \a names (a Terminal's name, a Floating's own), -2
+    /// a ground's (Ground, Electric Potential), -1 none: the last condition
+    /// on a face its own, as that physics takes them.
+    std::vector<int> heldFacesOf(const QString& tag, QStringList* names) const;
+    /// What coil \a c's currents physics' J carries in at its terminal in
+    /// this field's own elements, -∫ J·∇h over its domains (h one on the
+    /// terminal's nodes): their triangles straight, an arc's chords, where
+    /// that physics' are curved - its section smaller. NaN where the
+    /// terminal is on none of its domains.
+    double carriedCurrent(const Coil& c) const;
     void publishConductivity();
     bool solveHarmonic(const Options3& o, QString* error);
     void setHarmonicGlobals();
@@ -561,6 +572,21 @@ bool MagneticProblem3::buildSources(QString* error)
         if (!std::isfinite(through) || through == 0) {
             *error = tr("coil %1: its currents physics %2 has no terminal %3 carrying a current").arg(c.name, c.ec, c.terminal.isEmpty() ? tr("(any)") : c.terminal);
             return false;
+        }
+        // (Its current as this field's elements carry it: their straight
+        // section's, where the currents physics' own is curved - a round
+        // wire's 0.7 % less at 0.1 mm, its L 0.9 % low with the physics'
+        // own.)
+        const double carried = carriedCurrent(c);
+        if (std::isfinite(carried) && carried * through > 0) {
+            if (std::abs(carried / through - 1) > 1e-6)
+                a_s.log << tr("%1: coil %2's current, %3 A in %4, is %5 A through this field's elements (their triangles straight): N I0 "
+                              "over the latter")
+                               .arg(a_node->name(), c.name)
+                               .arg(through, 0, 'g', 6)
+                               .arg(c.ec)
+                               .arg(carried, 0, 'g', 6);
+            through = carried;
         }
         c.perAmp = n / through;
         c.scale = c.perAmp * i0;
@@ -1083,13 +1109,102 @@ bool complexReluctivity(const double mur[9], double murIm, std::complex<double> 
     return true;
 }
 
+std::vector<int> MagneticProblem3::heldFacesOf(const QString& tag, QStringList* names) const
+{
+    const Topology3& topo = a_s.topology();
+    const Model& model = a_s.model();
+    const std::size_t F = topo.faces.size();
+    std::vector<int> cond(F, -1);
+    names->clear();
+    const Node* en = model.find(tag);
+    if (!en) return cond;
+    for (const Node& feat : en->children) {
+        if (!feat.enabled) continue;
+        const NodeKind* k = feat.kind();
+        if (!k || k->selection != Level::Boundary) continue;
+        const QString t = feat.type;
+        const bool terminal = t.endsWith(QLatin1String("/terminal")) || t.endsWith(QLatin1String("/floating"));
+        const bool ground = t.endsWith(QLatin1String("/ground")) || t.endsWith(QLatin1String("/potential"));
+        const bool other = t.endsWith(QLatin1String("/insulation")) || t.endsWith(QLatin1String("/zerocharge"));
+        if (!terminal && !ground && !other) continue;
+        QString why;
+        const QVector<int> picked = resolveSelection3(topo, model, k->selection, feat.selection(), &why);
+        int v = -1;
+        if (ground) v = -2;
+        else if (terminal) {
+            *names << (t.endsWith(QLatin1String("/terminal")) ? feat.text(QStringLiteral("name")) : feat.name());
+            v = int(names->size()) - 1;
+        }
+        for (int b : picked)
+            if (b >= 0 && b < int(F)) cond[std::size_t(b)] = v;
+    }
+    return cond;
+}
+
+double MagneticProblem3::carriedCurrent(const Coil& c) const
+{
+    const Field3& f = a_s.fields()[std::size_t(a_fi)];
+    const EdgeSpace3& es = *f.edges;
+    const Space3& ns = *f.space;
+    const Mesh3& mesh = a_s.mesh();
+    QStringList names;
+    const std::vector<int> cond = heldFacesOf(c.ec, &names);
+    if (names.isEmpty()) return NaN;
+    const int mine = c.terminal.isEmpty() ? 0 : int(names.indexOf(c.terminal));
+    if (mine < 0) return NaN;
+    std::vector<char> terminal(std::size_t(ns.size()), 0);
+    for (int fi = 0; fi < int(mesh.faces.size()); ++fi)
+        if (cond[std::size_t(mesh.faces[std::size_t(fi)].face)] == mine)
+            for (int dof : ns.faceDofs(fi))
+                if (dof >= 0) terminal[std::size_t(dof)] = 1;
+    static const char* const axes[3] = {"x", "y", "z"};
+    Expression J[3];
+    for (int k = 0; k < 3; ++k) J[k] = Expression::compile(QStringLiteral("%1.J%2").arg(c.ec, QString::fromLatin1(axes[k])), a_s.pointScope());
+    if (!J[0].isValid() || !J[1].isValid() || !J[2].isValid()) return NaN;
+    const PrismRule& rule = es.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+    PointEvaluator3 ev(a_s);
+    double sum = 0;
+    bool any = false;
+    for (int e = 0; e < es.elements(); ++e) {
+        const int d = mesh.domain[std::size_t(e)];
+        if (d < 0 || !f.domains[std::size_t(d)] || !c.on[std::size_t(d)]) continue;
+        const int* nd = ns.dofs(e);
+        bool touches = false;
+        for (int k = 0; k < ns.perElement() && !touches; ++k) touches = terminal[std::size_t(nd[k])];
+        if (!touches) continue;
+        any = true;
+        const int t = mesh.prismTriangle[std::size_t(e)], layer = mesh.prismLayer[std::size_t(e)];
+        const AffineMap am = affineMap(es.planNodes(), t);
+        const double hz = es.z(layer + 1) - es.z(layer);
+        for (const auto& qp : rule.points) {
+            EdgeSpace3::Basis b;
+            es.basis(e, qp[0], qp[1], qp[2], b);
+            ev.at(e, qp[0], qp[1], qp[2], b.x);
+            PrismShape sh;
+            prismShapeAt(ns.order(), qp[0], qp[1], qp[2], sh);
+            double g[18][3];
+            nodalGradients(sh, am, hz, g);
+            double gh[3] = {0, 0, 0};
+            for (int k = 0; k < sh.count; ++k)
+                if (terminal[std::size_t(nd[k])])
+                    for (int m = 0; m < 3; ++m) gh[m] += g[k][m];
+            double jv[3];
+            for (int k = 0; k < 3; ++k) {
+                jv[k] = ev.eval(J[k]);
+                if (!std::isfinite(jv[k])) jv[k] = 0;
+            }
+            sum -= qp[3] * b.det * (jv[0] * gh[0] + jv[1] * gh[1] + jv[2] * gh[2]);
+        }
+    }
+    return any ? sum : NaN;
+}
+
 bool MagneticProblem3::buildConductors(Conductors& h, double omega, QString* error)
 {
     const Field3& f = a_s.fields()[std::size_t(a_fi)];
     const Space3& ns = *f.space;
     const Mesh3& mesh = a_s.mesh();
     const Topology3& topo = a_s.topology();
-    const Model& model = a_s.model();
     const std::size_t D = topo.domains.size(), F = topo.faces.size(), N = std::size_t(ns.size());
     // A single conductor's domains that have no conductivity of their own:
     // its currents physics' (the same metal).
@@ -1117,30 +1232,8 @@ bool MagneticProblem3::buildConductors(Conductors& h, double omega, QString* err
     for (const Coil& c : a_coils)
         if (c.single && !tags.contains(c.ec)) tags << c.ec;
     for (const QString& tag : tags) {
-        const Node* en = model.find(tag);
-        if (!en) continue;
-        std::vector<int> cond(F, -1);   // -1 none, -2 a ground, else the terminal's of names
         QStringList names;
-        for (const Node& feat : en->children) {
-            if (!feat.enabled) continue;
-            const NodeKind* k = feat.kind();
-            if (!k || k->selection != Level::Boundary) continue;
-            const QString t = feat.type;
-            const bool terminal = t.endsWith(QLatin1String("/terminal")) || t.endsWith(QLatin1String("/floating"));
-            const bool ground = t.endsWith(QLatin1String("/ground")) || t.endsWith(QLatin1String("/potential"));
-            const bool other = t.endsWith(QLatin1String("/insulation")) || t.endsWith(QLatin1String("/zerocharge"));
-            if (!terminal && !ground && !other) continue;
-            QString why;
-            const QVector<int> picked = resolveSelection3(topo, model, k->selection, feat.selection(), &why);
-            int v = -1;
-            if (ground) v = -2;
-            else if (terminal) {
-                names << (t.endsWith(QLatin1String("/terminal")) ? feat.text(QStringLiteral("name")) : feat.name());
-                v = int(names.size()) - 1;
-            }
-            for (int b : picked)
-                if (b >= 0 && b < int(F)) cond[std::size_t(b)] = v;
-        }
+        const std::vector<int> cond = heldFacesOf(tag, &names);
         for (std::size_t b = 0; b < F; ++b) {
             if (cond[b] == -1) continue;
             int role = -2;

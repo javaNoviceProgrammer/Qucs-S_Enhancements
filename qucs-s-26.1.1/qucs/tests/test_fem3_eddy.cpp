@@ -513,11 +513,11 @@ private slots:
         const double lExact = lext + Mu0 / (8 * M_PI) * len;
         info(QStringLiteral("L at 10 Hz %1 nH, at rest %2 nH, exact %3 nH").arg(l0 * 1e9).arg(Ldc * 1e9).arg(lExact * 1e9));
         QVERIFY2(std::abs(l0 - lExact) < 5e-3 * lExact, qPrintable(QStringLiteral("L at 10 Hz %1, exact %2").arg(l0).arg(lExact)));
-        // (At rest the coil carries its currents physics' J, whose current
-        // is its curved section's, the edge elements' straight: L a part in
-        // a hundred low.)
-        // (At 0.2 mm, a sanitized build's, some 3 % low.)
-        QVERIFY2(std::abs(l0 - Ldc) < (coarse() ? 5e-2 : 2e-2) * Ldc, qPrintable(QStringLiteral("L at 10 Hz %1, at rest %2").arg(l0).arg(Ldc)));
+        // (At rest the coil carries its currents physics' J scaled to N I0
+        // through this field's own elements - their triangles straight, that
+        // physics' curved: scaled to its own current, L was 0.9 % low here and
+        // 3 % at 0.2 mm. Now the same as at 10 Hz.)
+        QVERIFY2(std::abs(l0 - Ldc) < 1e-3 * Ldc, qPrintable(QStringLiteral("L at 10 Hz %1, at rest %2").arg(l0).arg(Ldc)));
     }
 
     // The coax of the DC inductance's test (core 0.5 mm, shell 1.5 to 1.8
