@@ -31,7 +31,9 @@
 #include "main.h"
 
 #include <QLocale>
+#include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QPainter>
 #include <QPainterPath>
 #include <QDebug>
@@ -285,6 +287,22 @@ void Marker::createText()
       Text += QString::fromUtf8("\nΔy: ") + numberText(shownValue() - ref->shownValue());
     }
     if (dx != 0.0) Text += QString::fromUtf8("\n1/Δx: ") + numberText(1.0 / dx);
+  }
+
+  // Put where the data does not reach now (a sweep ending before it):
+  // on the nearest sample, which its text says - it goes back to its
+  // place, and is saved there, with the data back.
+  {
+    QStringList beyond;
+    for (unsigned ii = 0; ii < a_wanted.size() && (pD = pGraph->axis(ii)); ++ii) {
+      if (pD->count < 1) continue;
+      const auto [lo, hi] = std::minmax_element(pD->Points, pD->Points + pD->count);
+      const double slack = 1e-9 * std::max(std::fabs(*hi - *lo), std::max(std::fabs(*lo), std::fabs(*hi)));
+      if (a_wanted[ii] < *lo - slack || a_wanted[ii] > *hi + slack)
+        beyond << pD->Var + " " + numberText(a_wanted[ii]);
+    }
+    if (!beyond.isEmpty())
+      Text += QObject::tr("\n(nearest: put at %1, beyond the data)").arg(beyond.join(QStringLiteral(", ")));
   }
 
   QUCS_ASSERT(diag());

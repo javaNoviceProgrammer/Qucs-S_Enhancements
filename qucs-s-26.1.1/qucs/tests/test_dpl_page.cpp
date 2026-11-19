@@ -138,6 +138,9 @@ private slots:
         QCOMPARE(my->varPos().front(), 1.0);
         QVERIFY2(my->Text.contains("1.000"), qPrintable(my->Text));
         QCOMPARE(mw->varPos().front(), 1.0);
+        // Its text says it is on the nearest sample, not where it was put.
+        QVERIFY2(my->Text.contains("(nearest: put at x 9.500, beyond the data)"), qPrintable(my->Text));
+        QVERIFY2(mw->Text.contains("(nearest: put at x 9.000, beyond the data)"), qPrintable(mw->Text));
         // Saved where it was put.
         QVERIFY2(my->save().startsWith("<Mkr 9.5 "), qPrintable(my->save()));
         // w gone for a while.
@@ -148,7 +151,8 @@ private slots:
         write("m.dat", dataset(41));
         reload->click();
         QCOMPARE(my->varPos().front(), 9.5);
-        QVERIFY2(my->Text.contains("9.500") && my->Text.contains("90.250"), qPrintable(my->Text));
+        QVERIFY2(my->Text.contains("9.500") && my->Text.contains("90.250") && !my->Text.contains("nearest"), qPrintable(my->Text));
+        QVERIFY2(!mw->Text.contains("nearest"), qPrintable(mw->Text));
         QCOMPARE(mw->varPos().front(), 9.0);
         QCOMPARE(mw->varPos().size(), size_t(2));
 
@@ -161,6 +165,12 @@ private slots:
         write("m.dat", dataset(41));
         reload->click();
         QCOMPARE(my->varPos().front(), 9.75);
+        // Given a place between two samples, inside the data: on the
+        // nearest, as ever, and not said to be beyond it.
+        my->setPos(9.3);
+        my->createText();
+        QCOMPARE(my->varPos().front(), 9.25);
+        QVERIFY2(!my->Text.contains("nearest"), qPrintable(my->Text));
         page->setChanged(false);
         call("close_document", {{"path", file}, {"unsaved", "discard"}});
     }
