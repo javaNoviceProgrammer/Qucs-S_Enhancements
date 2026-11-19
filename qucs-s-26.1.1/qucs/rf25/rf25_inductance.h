@@ -251,7 +251,8 @@ QLineF wholeSideOf(const QList<Conductor>& conductors, const QLineF& edge, const
 /*!
  * The cells a port at \a where (the layout's units) drives: those of \a reached
  * with a side on the outline edge of the conductor the point lies on -
- * the whole face - or the one nearest it where the point is on no face.
+ * the whole face - or the one nearest it where the point is on no face
+ * (portPlace(): within a thousandth of an edge's length of it).
  * \a onLine and \a alongLine, given, are a point of that edge and its
  * direction (nought where there is no face).
  *
@@ -262,6 +263,20 @@ QLineF wholeSideOf(const QList<Conductor>& conductors, const QLineF& edge, const
 QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const QList<int>& reached, QPointF where,
                      QPointF* onLine = nullptr, QPointF* alongLine = nullptr, const QString& layer = QString(),
                      QPointF facing = QPointF());
+
+/*!
+ * Where a port at \a where (the layout's units) stands against \a conductors
+ * on \a layer (any, where it is empty), facing \a facing (any way, where it
+ * is nought): on an edge facing that way - within a thousandth of the
+ * edge's length of it, the face faceCells() drives -; on an edge, but
+ * none facing that way; inside a shape, on none of its edges; or on no
+ * shape at all. The nearest edge was taken however far: a port 4 mm off a
+ * strip drove its face, one in the middle of a 1000 µm strip its whole
+ * long side, one facing the wrong way its other end, and nothing said
+ */
+enum class PortPlace { OnEdge, FacingOtherWay, Inside, Outside };
+PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QString& layer = QString(),
+                    QPointF facing = QPointF());
 
 /*!
  * The mesh of \a conductors on \a stack solved for the current that goes

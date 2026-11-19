@@ -25,6 +25,7 @@
 #include <Eigen/Sparse>
 
 #include <algorithm>
+#include <tuple>
 #include <chrono>
 #include <array>
 #include <atomic>
@@ -734,6 +735,33 @@ QLineF wholeSideOf(const QList<Conductor>& conductors, const QLineF& edge, const
     return edge;
 }
 
+namespace {
+
+/// Whether \a where is on \a edge: within a thousandth of its length (a
+/// micrometre at least) of it - a port the app places at an edge's middle,
+/// written to nine digits, is.
+bool onEdge(const QLineF& edge, QPointF where)
+{
+    const QPointF d = edge.p2() - edge.p1();
+    const double len2 = d.x() * d.x() + d.y() * d.y();
+    const double u = len2 > 0 ? std::clamp(QPointF::dotProduct(where - edge.p1(), d) / len2, 0.0, 1.0) : 0.0;
+    const QPointF nearest = edge.p1() + d * u;
+    return std::hypot(where.x() - nearest.x(), where.y() - nearest.y()) <= 1e-3 * std::max(1.0, std::sqrt(len2));
+}
+
+} // namespace
+
+PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QString& layer, QPointF facing)
+{
+    QLineF edge;
+    if (faceEdge(conductors, where, layer, facing, &edge) && onEdge(edge, where)) return PortPlace::OnEdge;
+    if (facing != QPointF(0, 0) && faceEdge(conductors, where, layer, QPointF(), &edge) && onEdge(edge, where))
+        return PortPlace::FacingOtherWay;
+    for (const Conductor& c : conductors)
+        if ((layer.isEmpty() || c.layer == layer) && c.outline.containsPoint(where, Qt::OddEvenFill)) return PortPlace::Inside;
+    return PortPlace::Outside;
+}
+
 QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const QList<int>& reached, QPointF where,
                      QPointF* onLine, QPointF* alongLine, const QString& layer, QPointF facing)
 {
@@ -771,6 +799,8 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
     QLineF edge;
     QString onLayer;
     faceEdge(conductors, where, layer, facing, &edge, nullptr, &onLayer);
+    // (On it, not merely nearest: portPlace().)
+    if (!onLayer.isEmpty() && !onEdge(edge, where)) onLayer.clear();
     if (!onLayer.isEmpty()) edge = wholeSideOf(conductors, edge, onLayer);
     const QPointF p = edge.p1(), q = edge.p2();
     if (onLayer.isEmpty()) {
@@ -1066,6 +1096,20 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     const auto faceAt = [&](QPointF where, QPointF* onLine, QPointF* alongLine, const QString& layer) {
         return faceCells(mesh, conductors, reached, where, onLine, alongLine, layer);
     };
+    // Each end on an edge, or inside a shape and said (portPlace()): taken
+    // however far it was, an end off the layout went in at the nearest face.
+    for (const auto& [end, at, layer] : {std::make_tuple(tr("The loop's start"), from, fromLayer), std::make_tuple(tr("Its end"), to, toLayer)}) {
+        const PortPlace place = portPlace(conductors, at, layer);
+        if (place == PortPlace::Outside) {
+            out.problems << tr("%1, at %2, %3 µm, is on no conductor: put it on the edge the current goes in or out at.")
+                                .arg(end).arg(at.x(), 0, 'g', 6).arg(at.y(), 0, 'g', 6);
+            return out;
+        }
+        if (place == PortPlace::Inside)
+            out.lines << tr("%1, at %2, %3 µm, is inside a conductor, on none of its edges: the current goes in at the one "
+                            "cell nearest.")
+                             .arg(end).arg(at.x(), 0, 'g', 6).arg(at.y(), 0, 'g', 6);
+    }
     QPointF sourceOn, sourceAlong, sinkOn, sinkAlong;
     const QList<int> sourceFace = faceAt(from, &sourceOn, &sourceAlong, fromLayer);
     const QList<int> sinkFace = faceAt(to, &sinkOn, &sinkAlong, toLayer);

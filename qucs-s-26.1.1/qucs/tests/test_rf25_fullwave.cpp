@@ -4361,11 +4361,13 @@ private slots:
         const rf::FullWave over = rf::fullWaveOf(squareMesh, square, stack, {edgePort(QPointF(0, 1000))}, {1e9}, 1e-6, &tight);
         QVERIFY(over.tooLarge);
         QVERIFY2(refused(over, "held compressed, would take some") && refused(over, "a solve may take here"), qPrintable(why(over)));
-        // A port off every edge drives the face nearest it, as the
-        // inductance's terminals do, and says which.
+        // A port inside a conductor, on none of its edges, drives the one
+        // cell nearest and says so, warned (anEdgePortStandsOnTheEdgeItDrives:
+        // it drove the face nearest it, however far, before a bug hunt).
         const rf::FullWave inside = rf::fullWaveOf(mesh, one, stack, {QPointF(200, 70)}, {1e9});
         QVERIFY2(inside.ok(), qPrintable(why(inside)));
-        QVERIFY2(says(inside.portsSaid, "along the face"), qPrintable(inside.portsSaid.join(" | ")));
+        QVERIFY2(says(inside.portsSaid, "is on no face, and drives the one cell nearest"), qPrintable(inside.portsSaid.join(" | ")));
+        QVERIFY2(says(inside.warnings, "is inside a conductor, on none of its edges"), qPrintable(inside.warnings.join(" | ")));
         // A via, whose current runs up and down.
         rf::Stack two;
         const auto layer = [](rf::Layer::Kind kind, const QString& name, double thickness, double er) {
@@ -5047,6 +5049,37 @@ private slots:
                 }
             }
         }
+    }
+
+    // An edge port stands on the edge it drives: the nearest edge was taken however far, so that a port 4
+    // mm off a strip drove its face, one in its middle its whole 1000 µm
+    // long side - faceWidths 1000 -, one facing the wrong way its other
+    // end, and nothing was said. Off every shape, or on an edge facing
+    // otherwise, it is refused; inside one, on none of its edges, it drives
+    // the one cell nearest, said; on an edge, a thousandth of its length
+    // off it, as before.
+    void anEdgePortStandsOnTheEdgeItDrives()
+    {
+        const rf::Stack st = grounded(9.8, 100e-6);
+        const QList<rf::Conductor> c{strip(0, 0, 1000, 50)};
+        const rf::Mesh mesh = meshed(c, 4, 50e-6);
+        const auto solve = [&](QPointF at, QPointF facing = QPointF()) {
+            return rf::fullWaveOf(mesh, c, st, {edgePort(at, QString(), facing), edgePort(QPointF(1000, 25))}, {1e9});
+        };
+        const rf::FullWave on = solve(QPointF(0, 25));
+        QVERIFY2(on.ok() && on.warnings.isEmpty(), qPrintable(why(on) + on.warnings.join(" | ")));
+        QCOMPARE(on.faceWidths.value(0), 50.0);
+        const rf::FullWave hair = solve(QPointF(0.01, 25));
+        QVERIFY2(hair.ok() && hair.warnings.isEmpty() && gapOf(hair.z, on.z) == 0, qPrintable(why(hair) + hair.warnings.join(" | ")));
+        const rf::FullWave off = solve(QPointF(-3000, 25));
+        QVERIFY2(!off.ok() && says(off.problems, "is on no conductor: put it on the edge it is to drive") && off.problems.join(' ').contains(QStringLiteral("P1, at -3000, 25 µm")),
+                 qPrintable(why(off)));
+        const rf::FullWave wrong = solve(QPointF(0, 25), QPointF(1, 0));
+        QVERIFY2(!wrong.ok() && says(wrong.problems, "is on an edge that does not face the way it is said to"), qPrintable(why(wrong)));
+        const rf::FullWave inside = solve(QPointF(500, 25));
+        QVERIFY2(inside.ok() && says(inside.warnings, "is inside a conductor, on none of its edges: it drives the one cell nearest"),
+                 qPrintable(why(inside) + inside.warnings.join(" | ")));
+        QVERIFY2(says(inside.portsSaid, "is on no face, and drives the one cell nearest"), qPrintable(inside.portsSaid.join(" | ")));
     }
 
 };
