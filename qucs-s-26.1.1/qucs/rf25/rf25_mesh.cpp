@@ -1302,6 +1302,11 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         int a, b;
         bool alongX;   // they meet along a line of constant y, so share their x lines
         double lo, hi;
+        /// Its ends that are a square corner of one piece's outline - its side
+        /// along the stretch ending there in one along the other axis - where
+        /// the other's side runs on: lines of both, as two rectangles' ends are
+        /// (shareLines()'s ends).
+        bool squareLo = false, squareHi = false;
     };
     QList<Meeting> meetings;
     {
@@ -1391,7 +1396,42 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                                                    alongX ? std::min(u.x(), w.x()) : std::min(u.y(), w.y()));
                         const double hi = std::min(alongX ? std::max(p.x(), q.x()) : std::max(p.y(), q.y()),
                                                    alongX ? std::max(u.x(), w.x()) : std::max(u.y(), w.y()));
-                        if (hi - lo > tol) meetings << Meeting{a, b, alongX, lo, hi};
+                        if (hi - lo <= tol) continue;
+                        // (A square corner at an end, where the other's side
+                        //  runs on: the piece whose side ends there turns onto
+                        //  the other axis, its cells' corner there, and the
+                        //  other's cells must break there too. Left out, a hexagon's cells beside
+                        //  a square hole's corners met no cell across x = 60
+                        //  for 17.5 µm: the pieces under and over the hole
+                        //  ended at its corners, and the piece beside them ran
+                        //  on - the review of 27cc932c. Where a slanted side
+                        //  meets the stretch it is no line of either: a taper
+                        //  beside a line put its corners into the line, which
+                        //  must be meshed as drawn alone.)
+                        const auto squareAt = [tol, alongX](const QPolygonF& poly, double t, double c) {
+                            const QPointF at = alongX ? QPointF(t, c) : QPointF(c, t);
+                            const int n = int(poly.size());
+                            for (int k = 0; k < n; ++k) {
+                                if (std::abs(poly.at(k).x() - at.x()) > tol || std::abs(poly.at(k).y() - at.y()) > tol) continue;
+                                for (const QPointF& next : {poly.at((k + n - 1) % n), poly.at((k + 1) % n)}) {
+                                    const double along = alongX ? std::abs(next.x() - at.x()) : std::abs(next.y() - at.y());
+                                    const double across = alongX ? std::abs(next.y() - at.y()) : std::abs(next.x() - at.x());
+                                    if (along <= tol && across > tol) return true;
+                                }
+                            }
+                            return false;
+                        };
+                        // (An end where one's side ends and the other's runs
+                        //  on past it: where both end, neither's cells go on.)
+                        const double c = alongX ? p.y() : p.x();
+                        const double aLo = alongX ? std::min(p.x(), q.x()) : std::min(p.y(), q.y());
+                        const double aHi = alongX ? std::max(p.x(), q.x()) : std::max(p.y(), q.y());
+                        const double bLo = alongX ? std::min(u.x(), w.x()) : std::min(u.y(), w.y());
+                        const double bHi = alongX ? std::max(u.x(), w.x()) : std::max(u.y(), w.y());
+                        Meeting met{a, b, alongX, lo, hi};
+                        met.squareLo = (aLo < lo - tol && squareAt(B, lo, c)) || (bLo < lo - tol && squareAt(A, lo, c));
+                        met.squareHi = (aHi > hi + tol && squareAt(B, hi, c)) || (bHi > hi + tol && squareAt(A, hi, c));
+                        meetings << met;
                     }
                 }
             }
@@ -1673,6 +1713,19 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     gained = (m.alongX ? shareLines(a.xs, b.xs, m.lo, m.hi, tol, rectangles, merge)
                                        : shareLines(a.ys, b.ys, m.lo, m.hi, tol, rectangles, merge))
                              || gained;
+                    // (Its square ends both's lines, where each reaches.)
+                    if (!rectangles)
+                        for (const auto& [square, end] : {std::pair{m.squareLo, m.lo}, std::pair{m.squareHi, m.hi}}) {
+                            if (!square) continue;
+                            for (QList<double>* lines : m.alongX ? std::array{&a.xs, &b.xs} : std::array{&a.ys, &b.ys}) {
+                                if (lines->size() < 2 || end <= lines->first() + tol || end >= lines->last() - tol) continue;
+                                bool known = false;
+                                for (const double x : std::as_const(*lines)) known = known || std::abs(x - end) <= tol;
+                                if (known) continue;
+                                lines->insert(std::lower_bound(lines->begin(), lines->end(), end), end);
+                                gained = true;
+                            }
+                        }
                 }
             }
         };

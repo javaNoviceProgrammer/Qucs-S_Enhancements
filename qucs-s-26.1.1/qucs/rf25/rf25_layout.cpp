@@ -806,9 +806,51 @@ QPolygonF ringOf(QPointF centre, double radius, double inner)
     return out;
 }
 
+namespace {
+
+/// \a p with each of its edges along x or y cut at the corners of \a p that
+/// lie on it: a keyhole's return that runs on along the hole's edge - in
+/// (0,30)-(30,30), back (70,30)-(0,30), as the processing writes a square
+/// hole - then has the way in run back along exactly, a pair loopsOf()
+/// finds (the review of 27cc932c).
+QPolygonF cutAtCorners(QPolygonF p, double tol)
+{
+    if (p.size() > 1 && p.first() == p.last()) p.removeLast();
+    QHash<qint64, QList<double>> byY, byX;   // the corners on each line, by their other coordinate
+    for (const QPointF& q : std::as_const(p)) {
+        byY[std::llround(q.y() / tol)] << q.x();
+        byX[std::llround(q.x() / tol)] << q.y();
+    }
+    QPolygonF out;
+    const int n = int(p.size());
+    for (int i = 0; i < n; ++i) {
+        const QPointF a = p.at(i), b = p.at((i + 1) % n);
+        out << a;
+        const bool alongX = std::abs(b.y() - a.y()) <= tol, alongY = std::abs(b.x() - a.x()) <= tol;
+        if (alongX == alongY) continue;
+        const double from = alongX ? a.x() : a.y(), to = alongX ? b.x() : b.y();
+        QList<double> on;
+        for (const double t : (alongX ? byY : byX).value(std::llround((alongX ? a.y() : a.x()) / tol)))
+            if (t > std::min(from, to) + tol && t < std::max(from, to) - tol) on << t;
+        std::sort(on.begin(), on.end());
+        if (to < from) std::reverse(on.begin(), on.end());
+        for (const double t : std::as_const(on)) {
+            const QPointF c = alongX ? QPointF(t, a.y()) : QPointF(a.x(), t);
+            if (out.last() != c) out << c;
+        }
+    }
+    return out;
+}
+
+} // namespace
+
 QList<QPolygonF> loopsOf(const QPolygonF& polygon)
 {
-    QList<QPolygonF> loops, open{polygon};
+    QList<QPolygonF> loops, open;
+    {
+        const QRectF bounds = polygon.boundingRect();
+        open << cutAtCorners(polygon, 1e-9 * std::max(1.0, std::max(bounds.width(), bounds.height())));
+    }
     while (!open.isEmpty()) {
         QPolygonF p = open.takeLast();
         if (p.size() > 1 && p.first() == p.last()) p.removeLast();

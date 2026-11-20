@@ -475,7 +475,16 @@ std::complex<double> Layers::Slab::permittivityAt(double frequency) const
 std::complex<double> Layers::Slab::permittivityZAt(double frequency) const
 {
     const std::complex<double> plane = permittivityAt(frequency);
-    return epsz > 0 && epsr > 0 ? plane * (epsz / epsr) : plane;
+    if (!(epsz > 0)) return plane;
+    // Its real part by its susceptibility, eps_z - 1, the same share of the
+    // plane's as Stack::atFrequency() takes for the quasi-static solve, and
+    // the plane's loss tangent: eps_z itself scaled with eps took one given at
+    // 1.01 on 4 to 0.96 at 40 GHz, under 1, and the two solvers 0.3 % apart
+    // (the review of 27cc932c). Not dispersive, it is eps_z (1 - j tan d), as
+    // it was.
+    if (!(epsr > 1) || !(plane.real() > 0)) return plane * (epsz / epsr);
+    const double real = 1 + (epsz - 1) * (plane.real() - 1) / (epsr - 1);
+    return plane * (real / plane.real());
 }
 
 QStringList valueProblemsOf(const Stack& stack)

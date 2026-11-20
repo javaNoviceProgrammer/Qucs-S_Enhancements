@@ -821,6 +821,81 @@ private slots:
         Q_UNUSED(problem);
     }
 
+    // A hole in a slanted outline, as the processing writes it: its cells
+    // meet edge to edge all round it, as the solve pairs them (by their
+    // sides' middles, to a nanometre) - a hexagon's beside its square hole's
+    // corners met no cell across x = 60 for 17.5 µm, the pieces under and
+    // over the hole ending at its corners and their ends not lines of the
+    // piece beside them (the review of 27cc932c). And the keyhole the
+    // processing writes for a square hole - its way back running on along
+    // the hole's edge, no exact pair - is two loops to loopsOf().
+    void aHoleInASlantedOutlineIsMeshedWhole()
+    {
+        const auto processedOf = [](const QPolygonF& shape) {
+            rf::Model m = stacked();
+            m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes")));
+            rf::Node n = m.make(QStringLiteral("rf_shape"));
+            QJsonArray rows;
+            for (const QPointF& p : shape) rows.append(QJsonArray{QString::number(p.x()) + "[um]", QString::number(p.y()) + "[um]"});
+            n.props = QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}};
+            m.add(m.layout().child(QStringLiteral("rf_shapes"))->tag, n);
+            m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"1", "0", "M1"});
+            qucs_s::layout::Layout empty;
+            qucs_s::layout::Cell top;
+            top.name = QStringLiteral("TOP");
+            empty.cells << top;
+            empty.byName.insert(top.name, 0);
+            return std::make_pair(rf::processRead(m, empty, QStringLiteral("none")), m.solveStack());
+        };
+        const QList<QPolygonF> shapes{
+            // A hexagon with a square hole x 20-60, y 20-40, by a keyhole.
+            QPolygonF({{0, 25}, {50, 0}, {100, 25}, {100, 75}, {50, 100}, {0, 75}, {0, 30}, {20, 30}, {20, 40}, {60, 40}, {60, 20}, {20, 20}, {20, 30}, {0, 30}}),
+            // A square frame.
+            QPolygonF({{0, 0}, {100, 0}, {100, 100}, {0, 100}, {0, 50}, {30, 50}, {30, 70}, {70, 70}, {70, 30}, {30, 30}, {30, 50}, {0, 50}})};
+        for (const QPolygonF& shape : shapes) {
+            const auto [processed, stack] = processedOf(shape);
+            QCOMPARE(int(processed.conductors.size()), 1);
+            const QPolygonF whole = processed.conductors.first().outline;
+            QCOMPARE(int(rf::loopsOf(whole).size()), 2);
+            rf::MeshSettings how;
+            how.maximum = 10e-6;
+            how.cellsAcross = 0;
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, how, stack, 1e9);
+            QVERIFY(!mesh.cells.isEmpty());
+            QHash<QString, int> sides;
+            QHash<QString, QLineF> lines;
+            for (const rf::MeshCell& c : mesh.cells)
+                for (int k = 0; k < c.outline.size(); ++k) {
+                    const QPointF a = c.outline.at(k), b = c.outline.at((k + 1) % c.outline.size());
+                    if (QLineF(a, b).length() < 1e-9) continue;
+                    const QString key = QStringLiteral("%1,%2").arg(std::llround((a.x() + b.x()) / 2 * 1e3)).arg(std::llround((a.y() + b.y()) / 2 * 1e3));
+                    sides[key] += 1;
+                    lines.insert(key, QLineF(a, b));
+                }
+            double lone = 0;
+            QString where;
+            for (auto it = sides.cbegin(); it != sides.cend(); ++it) {
+                if (it.value() != 1) continue;
+                const QLineF l = lines.value(it.key());
+                const QPointF mid = (l.p1() + l.p2()) / 2, d = l.p2() - l.p1();
+                const QPointF off = QPointF(-d.y(), d.x()) / l.length() * 1e-4;
+                if (whole.containsPoint(mid + off, Qt::OddEvenFill) && whole.containsPoint(mid - off, Qt::OddEvenFill)) {
+                    lone += l.length();
+                    where += QStringLiteral(" (%1, %2)-(%3, %4)").arg(l.p1().x()).arg(l.p1().y()).arg(l.p2().x()).arg(l.p2().y());
+                }
+            }
+            QVERIFY2(lone < 1e-9, qPrintable(QStringLiteral("%1 µm of cell sides inside the metal are no other cell's:%2").arg(lone).arg(where)));
+        }
+        // The keyhole of a square hole as the processing writes it: its way
+        // back runs on along the hole's edge.
+        const QPolygonF frame({{100, 0}, {100, 100}, {0, 100}, {0, 30}, {30, 30}, {30, 70}, {70, 70}, {70, 30}, {0, 30}, {0, 0}});
+        const QList<QPolygonF> loops = rf::loopsOf(frame);
+        QCOMPARE(int(loops.size()), 2);
+        QList<double> areas{std::abs(rf::areaOf(loops.at(0))), std::abs(rf::areaOf(loops.at(1)))};
+        std::sort(areas.begin(), areas.end());
+        QCOMPARE(areas, (QList<double>{1600.0, 10000.0}));
+    }
+
     // A circle and a ring of the model's own, by their centre and radii, each
     // an expression of the parameters: a circle's corners on it, its sides
     // within a nanometre, its area the circle's; a ring the keyhole a file
