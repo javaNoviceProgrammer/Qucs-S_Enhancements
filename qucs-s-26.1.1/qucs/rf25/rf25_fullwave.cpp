@@ -923,10 +923,10 @@ private:
  * formulation adds for a vertical current must be taken at one place for
  * the two to cancel as they do along a whole path. \a spans gets each of the
  * stack's vias the mesh has, from the lower metal's height to the upper's;
- * \a said what was left out.
+ * \a warned what was left out.
  */
 QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre, QList<ViaGreen::Span>* spans,
-                        QStringList* said)
+                        QStringList* warned)
 {
     // The cell of metal \a metal under via cell \a v: the one whose outline
     // holds its centre, else the nearest whose box, grown by the via cell's
@@ -1025,9 +1025,13 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
         v.cells = g.cells;
         out << v;
     }
-    if (stranded > 0)
-        said->append(QCoreApplication::translate("qucs_s::rf25", "%1 via cell(s) land on no metal they join, and are left out.")
-                         .arg(stranded));
+    // (Warned of, not a line of the notes alone: a ground via drawn off the
+    //  strip it was to short went with no word, the line read through, S21
+    //  0.998 where on it 0.021.)
+    if (stranded > 0 && warned != nullptr)
+        warned->append(QCoreApplication::translate("qucs_s::rf25", "%1 via cell(s) land on no metal they join, and are left out: a "
+                                                                   "via drawn off the pads of its two metals joins nothing.")
+                           .arg(stranded));
     return out;
 }
 
@@ -4880,8 +4884,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             c.inside[a] = facesInside(std::max(breadth, run.width), run.thickness);
         }
     }
-    QStringList viaSaid;
-    const QList<ViaRun> viaRuns = viaRunsOf(mesh, stack, micrometre, &c.spans, &viaSaid);
+    QStringList viaWarned;
+    const QList<ViaRun> viaRuns = viaRunsOf(mesh, stack, micrometre, &c.spans, &viaWarned);
     int grounded = 0;
     QSet<int> walled;   // (the runs that are a metal's walls, between its faces)
     for (const ViaRun& v : viaRuns) {
@@ -6117,7 +6121,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                         "ground or from the metal an internal port is driven from, with the field a via's current has: "
                         "part of each port's own discontinuity.")
                          .arg(c.paths.size());
-    out.lines << viaSaid;
+    out.lines << viaWarned;
+    out.warnings << viaWarned;
     // A metal lid: what it is, and what its guide does to the ports.
     if (c.layers.groundAbove) {
         double gap = 0;

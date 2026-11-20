@@ -4565,13 +4565,17 @@ private slots:
         const rf::FullWave joined = rf::fullWaveOf(meshed(stacked, 4, 50e-6), stacked, two, ports, {1e9});
         QVERIFY2(joined.ok(), qPrintable(why(joined)));
         QVERIFY2(says(joined.lines, "are vias"), qPrintable(joined.lines.join(" | ")));
-        // A via over no metal it joins is left out, and said.
+        // A via over no metal it joins is left out, and warned of - said in
+        // the notes alone, a ground via drawn off the strip it was to short
+        // went with no word -; one joined, not.
         rf::Conductor stray = strip(900, 0, 50, 50);
         stray.layer = QStringLiteral("V1");
         const QList<rf::Conductor> astray{strip(0, 0, 400, 100), upper, joint, stray};
         const rf::FullWave left = rf::fullWaveOf(meshed(astray, 4, 50e-6), astray, two, ports, {1e9});
         QVERIFY2(left.ok(), qPrintable(why(left)));
-        QVERIFY2(says(left.lines, "land on no metal"), qPrintable(left.lines.join(" | ")));
+        QVERIFY2(says(left.lines, "land on no metal") && says(left.warnings, "a via drawn off the pads of its two metals joins nothing"),
+                 qPrintable(left.warnings.join(" | ")));
+        QVERIFY2(!says(joined.warnings, "land on no metal"), qPrintable(joined.warnings.join(" | ")));
         // More than the dense limit holds, a dense solve asked (unasked, it
         // is held compressed).
         const QList<rf::Conductor> plate{strip(0, 0, 1000, 1000)};
