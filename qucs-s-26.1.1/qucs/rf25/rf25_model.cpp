@@ -12,6 +12,8 @@
 
 #include "rf25_model.h"
 #include "rf25_bondwire.h"
+#include "rf25_layout.h"
+#include "rf25_sparams.h"
 
 #include "multiphysics/fem_expr.h"
 #include "multiphysics/optimizer_core.h"
@@ -1748,6 +1750,21 @@ QStringList Model::problems() const
         }
     if (ports().children.empty())
         said << tr("The model has no port: there is nothing to drive it with.");
+    // What the solve refuses of the shapes and the study, said at the edit
+    // too: a strip "1/0" long, or a sweep of 200,001 points, went in with no
+    // problem said, where a substrate's eps_r of 1/0 was said here.
+    ownShapesOf(*this, &said);
+    if (const Node* study = root.child(QStringLiteral("rf_study"))) {
+        bool given = true;
+        const double points = numberOf(*study, QStringLiteral("points"), *this, 1, &given);
+        if (!given)
+            said << tr("Study: its points are not a number.");
+        else if (!(points < kMostSweepPoints + 0.5))
+            said << tr("A sweep of %1 points is past the %2 a solve takes: each frequency is a solve of its own, and keeps "
+                       "its answer.")
+                        .arg(points, 0, 'g', 6)
+                        .arg(kMostSweepPoints);
+    }
     return said;
 }
 

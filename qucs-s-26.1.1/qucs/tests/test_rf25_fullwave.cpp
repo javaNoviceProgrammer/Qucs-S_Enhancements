@@ -3038,6 +3038,23 @@ private slots:
             if (n.type == QStringLiteral("rf_study")) n.props.insert(QStringLiteral("to"), QStringLiteral("1/0"));
         QString problem;
         QVERIFY2(rf::studySweep(m, &problem).isEmpty() && problem.contains(QStringLiteral("no finite number")), qPrintable(problem));
+
+        // A shape "1/0" long, and a sweep past kMostSweepPoints: said by the
+        // model's problems, as its stack's 1/0 is, and not only by the solve -
+        // the shape's as no finite number, not "not a constant".
+        rf::Model own = rf::Model::blank();
+        QString metal;
+        for (const rf::Layer& l : own.stack().layers)
+            if (l.kind == rf::Layer::Metal && metal.isEmpty()) metal = l.name;
+        QVERIFY(!metal.isEmpty());
+        QVERIFY(own.add(own.layout().tag, own.make(QStringLiteral("rf_shapes"))) != nullptr);
+        rf::Node strip = own.make(QStringLiteral("rf_shape"));
+        strip.label = QStringLiteral("S1");
+        strip.props = QJsonObject{{"layer", metal}, {"x", "0"}, {"y", "0"}, {"width", "1/0"}, {"height", "50[um]"}};
+        QVERIFY(own.add(own.layout().child(QStringLiteral("rf_shapes"))->tag, strip) != nullptr);
+        QVERIFY2(says(own.problems(), "comes to inf, no finite number"), qPrintable(own.problems().join(" | ")));
+        own.root.child(QStringLiteral("rf_study"))->props.insert(QStringLiteral("points"), QStringLiteral("200001"));
+        QVERIFY2(says(own.problems(), "past the 100001"), qPrintable(own.problems().join(" | ")));
     }
 
     // Lumped elements: each solved as
