@@ -2985,6 +2985,33 @@ private slots:
     // for ever; a permittivity of "0/0" solved to answers said to be right;
     // a lumped element's R of "0/0" passed its check of nought or above as
     // NaN, its S NaN and said to be right.
+    // What a stack says that it was solved without (a bug hunt's second hour): a metal with a conductivity and no thickness,
+    // lossless in the full wave - a 1 mm line's series R 3.7e-8 Ohm at 1 GHz
+    // -, warned of; and a dielectric whose loss tangent is too high for
+    // Djordjevic-Sarkar - eps -0.33 at 300 GHz of 0.3 at 1 GHz, gain -,
+    // refused by the solvers too, not by the model's reader alone.
+    void whatAStackSolvedWithoutIsSaid()
+    {
+        const QList<rf::Conductor> line{strip(0, 0, 1000, 100)};
+        const QList<rf::FullWavePort> ends{edgePort(QPointF(0, 50)), edgePort(QPointF(1000, 50))};
+        const rf::FullWave thin = rf::fullWaveOf(meshed(line, 3, 100e-6), line, grounded(4, 100e-6, 0, 0, 5.8e7), ends, {1e9});
+        QVERIFY2(thin.ok() && says(thin.warnings, "M1 has a conductivity but no thickness"), qPrintable(why(thin) + thin.warnings.join(" | ")));
+        const rf::FullWave thick = rf::fullWaveOf(meshed(line, 3, 100e-6), line, grounded(4, 100e-6, 0, 2e-6, 5.8e7), ends, {1e9});
+        QVERIFY2(thick.ok() && !says(thick.warnings, "no thickness"), qPrintable(why(thick) + thick.warnings.join(" | ")));
+        rf::Stack lossy = grounded(4, 100e-6, 0.3);
+        lossy.layers[1].dispersion = QStringLiteral("djordjevic_sarkar");
+        lossy.layers[1].dispersionAt = 1e9;
+        QVERIFY2(says(rf::layersOf(lossy).problems, "too high for Djordjevic-Sarkar"), qPrintable(rf::layersOf(lossy).problems.join(" | ")));
+        lossy.layers[1].tand = 0.02;
+        QVERIFY(rf::layersOf(lossy).ok());
+        const rf::FullWave refused = rf::fullWaveOf(meshed(line, 3, 100e-6), line, [&] {
+            rf::Stack s = lossy;
+            s.layers[1].tand = 0.3;
+            return s;
+        }(), ends, {1e9});
+        QVERIFY2(!refused.ok() && says(refused.problems, "too high for Djordjevic-Sarkar"), qPrintable(why(refused)));
+    }
+
     void aNumberThatIsNotFiniteIsRefused()
     {
         for (const char* text : {"0/0", "1/0", "sqrt(-1)"}) {
@@ -5443,9 +5470,11 @@ private slots:
             if (!says(squeezed.lines, "loops and a tree") || says(squeezed.lines, "fell short"))
                 return QStringLiteral("%1: %2").arg(what, squeezed.lines.join(" | "));
             // (S at such frequencies said not to the digits, as of any line:
-            //  Z's terms against the ports' reference. Nothing else.)
+            //  Z's terms against the ports' reference; and a metal of no
+            //  thickness with a conductivity, lossless here. Nothing else.)
             for (const QString& x : squeezed.warnings)
-                if (!x.contains(QStringLiteral("S there is not to the digits"))) return QStringLiteral("%1: %2").arg(what, x);
+                if (!x.contains(QStringLiteral("S there is not to the digits")) && !x.contains(QStringLiteral("a conductivity but no thickness")))
+                    return QStringLiteral("%1: %2").arg(what, x);
             for (const rf::FullWave* w : {&dense, &squeezed})
                 if (says(w->warnings, "past its low-frequency limit") || says(w->warnings, "a coil may read as an open"))
                     return QStringLiteral("%1: %2").arg(what, w->warnings.join(" | "));

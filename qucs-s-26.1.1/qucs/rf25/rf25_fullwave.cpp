@@ -6245,6 +6245,26 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             out.warnings << w;
         }
     }
+    // (A metal with a conductivity and no thickness: a sheet of no
+    //  resistance, its sigma unused - a 1 mm line's series R 3.7e-8 Ohm at 1
+    //  GHz, said as a sheet "with the surface impedance of its thickness"; the
+    //  quasi-static solve said it - a bug hunt's second
+    //  hour.)
+    {
+        QStringList thin;
+        for (const Layer& l : stack.layers) {
+            if (l.kind != Layer::Metal || !(l.sigma > 0) || l.thickness > 0 || thin.contains(l.name)) continue;
+            for (const Conductor& conductor : conductors)
+                if (conductor.layer == l.name) {
+                    thin << l.name;
+                    break;
+                }
+        }
+        if (!thin.isEmpty())
+            out.warnings << tr("%1 %2 a conductivity but no thickness: the full wave takes a sheet of none as lossless, and "
+                               "its conductivity is not used. Give it its thickness for its loss.")
+                                .arg(thin.join(QStringLiteral(", ")), thin.size() == 1 ? tr("has") : tr("have"));
+    }
     int alongEdges = 0;
     for (const int free : std::as_const(c.freeSides)) alongEdges += free > 0 ? 1 : 0;
     const QString sheet = tr("a metal as a sheet with the surface impedance of its thickness, and more in the cells along "
