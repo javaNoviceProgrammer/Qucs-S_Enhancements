@@ -1409,6 +1409,19 @@ private slots:
                  qPrintable(asked->lines.join(" | ")));
         QVERIFY2(std::abs(asked->selfCapacitance(0) / plain - 1) < 1e-3,
                  qPrintable(QStringLiteral("%1 against %2").arg(asked->selfCapacitance(0)).arg(plain)));
+        // Its loss tangent too high for Djordjevic-Sarkar (0.3 of 11.9 at
+        // 1 GHz: eps at a high frequency under 1): refused, as the full wave
+        // refuses it - taken at the one frequency first, the layer had no
+        // dispersion left to check, and it was solved (P56 of the open items).
+        QVERIFY(doc->editNode(substrate, [](rf::Node& n) { n.props.insert(QStringLiteral("tand"), QStringLiteral("0.3")); },
+                              QStringLiteral("too lossy for its model")));
+        QVERIFY(doc->waitForPrepared(60000));
+        doc->solveWith(atOne);
+        QVERIFY(doc->waitForSolved(300000));
+        QVERIFY2(doc->solveProblem().contains(QStringLiteral("too high for Djordjevic-Sarkar")), qPrintable(doc->solveProblem()));
+        QVERIFY(doc->editNode(substrate, [](rf::Node& n) { n.props.insert(QStringLiteral("tand"), QStringLiteral("0.02")); },
+                              QStringLiteral("as it was")));
+        QVERIFY(doc->waitForPrepared(60000));
 
         // A substrate anisotropic in the plane: the layered solve takes the
         // geometric mean of its two, and says so beside its answer.
