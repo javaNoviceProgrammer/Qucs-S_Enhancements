@@ -178,6 +178,12 @@ private slots:
             QVERIFY2(std::abs(a.efficiency - 1) < 0.03, qPrintable(QString::number(a.efficiency)));
             QVERIFY(a.directivity > 2 && a.directivity < 12);
             QVERIFY(std::abs(a.gain / a.directivity - a.efficiency) < 1e-9);
+            // (Radiated past what it accepts, by the solve's error: held at
+            //  one, its gain its directivity, and said - it read 1.002 and
+            //  1.004, the gain over the directivity: a bug hunt's second hour.)
+            QVERIFY(a.efficiency <= 1);
+            if (a.radiated > a.accepted)
+                QVERIFY2(a.efficiency == 1 && a.notes.join(' ').contains(QStringLiteral("more than it takes")), qPrintable(a.notes.join(" | ")));
         }
         // Realized gain: over what the source offers, the port's mismatch in
         // it - the gain times 1 - |S11|^2, to 1e-9.

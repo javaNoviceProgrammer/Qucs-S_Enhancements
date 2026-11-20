@@ -78,7 +78,8 @@ QList<FarSource> farSourcesOf(const FullWave& wave, int k, int port, QStringList
  * take; the radiated power; directivity; gain (over accepted); realized
  * gain (over the power the source offers, |V_s|^2 / 8 Z_ref); and the
  * radiation efficiency, radiated over what the structure takes - accepted
- * less the loads'.
+ * less the loads' -, held at one where the solve's error puts it over (the
+ * gains with it, and said).
  */
 struct AntennaFigures {
     double accepted = 0, radiated = 0, loads = 0, incident = 0;

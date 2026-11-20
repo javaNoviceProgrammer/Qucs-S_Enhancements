@@ -683,6 +683,17 @@ private slots:
         QVERIFY2(away.ok(), qPrintable(away.problems.join(' ')));
         QCOMPARE(away.ports, 1);
         QVERIFY(away.notes.join(QLatin1Char(' ')).contains(QStringLiteral("P2 is not written")));
+        // One on the strip's end's corner, no facing given: not written, and
+        // said as the solve says it - give it its facing; it was said as no
+        // edge facing its way (a bug hunt's second hour).
+        const QString corner = QStringLiteral(
+            R"({"type": "rf_edge_port", "tag": "p1", "label": "P1", "properties": {"conductor": "M1", "x": "0", "y": "0", "facing": "-x"}},
+               {"type": "rf_edge_port", "tag": "p2", "label": "P2", "properties": {"conductor": "M1", "x": "%1[um]", "y": "%2[um]"}})")
+                                   .arg(kL).arg(kW / 2);
+        const PalaceExport atCorner = palaceExportOf(modelOf(microstrip(QStringLiteral(R"("thickness": "2[um]")")), corner), {strip}, options);
+        QCOMPARE(atCorner.ports, 1);
+        QVERIFY2(atCorner.notes.join(QLatin1Char(' ')).contains(QStringLiteral("P2 is not written: it is on a corner of a shape on M1")),
+                 qPrintable(atCorner.notes.join(" | ")));
     }
 
     // Runs: opt in with QUCS_RF25_PALACE_OUT=<folder>. The

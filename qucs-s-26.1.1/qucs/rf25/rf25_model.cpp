@@ -1275,8 +1275,13 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
     QJsonParseError parsed{};
     const QJsonDocument document = QJsonDocument::fromJson(json, &parsed);
     if (document.isNull() || !document.isObject()) {
+        // (Valid JSON that is no object - an array - was said as "does not
+        //  read as JSON: no error occurred"
+        //  second hour.)
         if (error != nullptr)
-            *error = tr("It does not read as JSON: %1").arg(parsed.errorString());
+            *error = document.isNull() ? tr("It does not read as JSON: %1").arg(parsed.errorString())
+                                       : tr("It is JSON, but not an object: an RF 2.5D model is one, beginning \"format\": \"%1\".")
+                                             .arg(formatName());
         return std::nullopt;
     }
     const QJsonObject o = document.object();

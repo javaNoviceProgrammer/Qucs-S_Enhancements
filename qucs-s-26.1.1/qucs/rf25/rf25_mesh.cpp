@@ -746,6 +746,18 @@ QStringList facesDecided(Stack* stack, const QList<Conductor>& conductors, const
     // November) -, else a sheet. Said either way, and decided before
     // anything else reads the stack.
     QStringList words;
+    // (Near a threshold the answer steps as a dimension crosses it - a gap
+    //  swept across forty times the thickness stepped C12 3.3 %, a width
+    //  across fifty times it stepped C 0.86 %
+    //  second hour -: said, with how to hold it steady.)
+    const auto nearThreshold = [](double ratio, const QString& metal) {
+        return ratio > 0.85 && ratio < 1.0 / 0.85
+                   ? QLatin1Char(' ') + tr("That is near the threshold: a sweep or an optimization across it steps the answer "
+                                           "by up to a few per cent where the choice turns; set %1's Solved as to Sheet or "
+                                           "Faces to hold it.")
+                                            .arg(metal)
+                   : QString();
+    };
     for (Layer& l : stack->layers) {
         if (l.kind != Layer::Metal || !l.automatic || l.face != Layer::Whole) continue;
         l.automatic = false;
@@ -754,12 +766,14 @@ QStringList facesDecided(Stack* stack, const QList<Conductor>& conductors, const
             l.twoSheets = true;
             words << tr("%1 is solved as its two faces (Automatic): %2 µm thick beside gaps as narrow as %3 µm, a fortieth "
                         "of them or more.")
-                         .arg(l.name).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3);
+                             .arg(l.name).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3)
+                         + nearThreshold(t / (kAutomaticFaces * gap), l.name);
         } else {
             l.twoSheets = false;
             words << (gap > 0 ? tr("%1 is solved as a sheet (Automatic): %2 µm thick, its narrowest gap %3 µm, over forty "
                                    "times as wide.")
-                                    .arg(l.name).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3)
+                                        .arg(l.name).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3)
+                                    + (t > 0 ? nearThreshold(t / (kAutomaticFaces * gap), l.name) : QString())
                               : tr("%1 is solved as a sheet (Automatic): no gap faces it.").arg(l.name));
         }
     }
@@ -786,10 +800,22 @@ QStringList facesDecided(Stack* stack, const QList<Conductor>& conductors, const
         if (narrowest > 0 && t < kFacesApart * narrowest) {
             words << tr("%1 is solved as a sheet, its thickness in its loss: %2 µm thick on conductors as narrow as %3 "
                         "µm, it is a film, its two faces as good as one.")
-                         .arg(metals.at(i)).arg(t, 0, 'g', 3).arg(narrowest, 0, 'g', 3);
+                             .arg(metals.at(i)).arg(t, 0, 'g', 3).arg(narrowest, 0, 'g', 3)
+                         + (t / (kFacesApart * narrowest) > 0.85
+                                ? QLatin1Char(' ') + tr("That is near the threshold, a fiftieth of the narrowest width: a sweep "
+                                                        "or an optimization across it steps the answer by up to a per cent "
+                                                        "where the choice turns; set %1's Solved as to Sheet to hold it.")
+                                                         .arg(metals.at(i))
+                                : QString());
             for (Layer& layer : stack->layers)
                 if (layer.name == metals.at(i)) layer.twoSheets = false;
             metals.removeAt(i);
+        } else if (narrowest > 0 && t < kFacesApart * narrowest / 0.85) {
+            words << tr("%1 is solved as its two faces, %2 µm thick on conductors as narrow as %3 µm: near the threshold of a "
+                        "film, a fiftieth of the narrowest width, below which it is a sheet - a sweep or an optimization "
+                        "across it steps the answer by up to a per cent where the choice turns; set its Solved as to "
+                        "Sheet to hold it.")
+                         .arg(metals.at(i)).arg(t, 0, 'g', 3).arg(narrowest, 0, 'g', 3);
         }
     }
     if (said != nullptr) *said << words;

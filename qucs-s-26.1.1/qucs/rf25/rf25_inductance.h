@@ -282,6 +282,12 @@ enum class PortPlace { OnEdge, FacingOtherWay, Inside, Outside, OnCorner };
 PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QString& layer = QString(),
                     QPointF facing = QPointF());
 
+/// Where an edge port at \a place on \a layer stands, as a clause for why
+/// it is not taken - "it is on a corner of a shape on M1, ..."; empty at
+/// PortPlace::OnEdge. (The exports said every place as no edge facing its
+/// way, a corner's too, where the solve said give it its facing - a bug /// hunt's second hour.)
+QString portPlaceSaid(PortPlace place, const QString& layer);
+
 /*!
  * The mesh of \a conductors on \a stack solved for the current that goes
  * in at \a from and out at \a to (both in the layout's own units), and

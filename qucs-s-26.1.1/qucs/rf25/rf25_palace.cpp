@@ -417,9 +417,12 @@ PalaceExport palaceExportOf(const Model& model, const QList<Conductor>& given, c
             // (On the edge, as the solve has it: portPlace(). The nearest
             //  edge however far was written.)
             const QPointF way = facingOf(textOf(p, QStringLiteral("facing")));
-            if (ml == nullptr || ml->kind != Layer::Metal || portPlace(outlines, at, metal, way) != PortPlace::OnEdge
+            const PortPlace place = portPlace(outlines, at, metal, way);
+            if (ml == nullptr || ml->kind != Layer::Metal || place != PortPlace::OnEdge
                 || !faceEdge(outlines, at, metal, way, &face, &outward, &onLayer)) {
-                out.notes << tr("%1 is not written: no edge of a shape on %2 near its point faces the way it says.").arg(own, metal);
+                out.notes << (ml != nullptr && ml->kind == Layer::Metal && place != PortPlace::OnEdge
+                                  ? tr("%1 is not written: %2.").arg(own, portPlaceSaid(place, metal))
+                                  : tr("%1 is not written: no edge of a shape on %2 near its point faces the way it says.").arg(own, metal));
                 continue;
             }
             // (Its conductor's whole side, as the solver's face is.)

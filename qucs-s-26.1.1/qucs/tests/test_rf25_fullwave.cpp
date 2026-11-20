@@ -3672,6 +3672,22 @@ private slots:
         QVERIFY2(ends.ok(), qPrintable(why(ends)));
         QCOMPARE(rf::portPlace(longLine, QPointF(0, 0)), rf::PortPlace::OnEdge);
         QCOMPARE(rf::portPlace(longLine, QPointF(0, -5)), rf::PortPlace::OnCorner);
+        // On a keyhole's slit - the cut of no width from the outline to the
+        // hole, metal on both its sides -: inside, not on a face, with a
+        // facing or without; it drove 12 cells along the slit as its face
+        // (a bug hunt's second hour). On the outline beside
+        // it, an edge.
+        {
+            rf::Conductor keyhole;
+            keyhole.layer = QStringLiteral("M1");
+            keyhole.outline = QPolygonF({QPointF(0, 0), QPointF(1000, 0), QPointF(1000, 1000), QPointF(0, 1000), QPointF(0, 500),
+                                         QPointF(400, 500), QPointF(400, 600), QPointF(600, 600), QPointF(600, 400), QPointF(400, 400),
+                                         QPointF(400, 500), QPointF(0, 500)});
+            QCOMPARE(rf::portPlace({keyhole}, QPointF(100, 500)), rf::PortPlace::Inside);
+            QCOMPARE(rf::portPlace({keyhole}, QPointF(100, 500), QString(), QPointF(0, 1)), rf::PortPlace::Inside);
+            QCOMPARE(rf::portPlace({keyhole}, QPointF(0, 250), QString(), QPointF(-1, 0)), rf::PortPlace::OnEdge);
+            QCOMPARE(rf::portPlace({keyhole}, QPointF(500, 600), QString(), QPointF(0, -1)), rf::PortPlace::OnEdge);
+        }
         const QList<rf::Conductor> halves{strip(0, -50, 2000, 50), strip(0, 0, 2000, 50)};
         const rf::Mesh two = rf::meshOf(halves, how, stack, 10e9);
         const rf::FullWave between = rf::fullWaveOf(two, halves, stack, {edgePort(QPointF(0, 0)), edgePort(QPointF(2000, 0))}, {1e9});

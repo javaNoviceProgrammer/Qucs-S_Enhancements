@@ -639,7 +639,13 @@ bool faceEdge(const QList<Conductor>& conductors, QPointF where, const QString& 
             const double len = std::sqrt(len2);
             QPointF normal(d.y() / len, -d.x() / len);
             const QPointF middle = (a + b) / 2;
-            if (c.outline.containsPoint(middle + normal * (1e-3 * len), Qt::OddEvenFill)) normal = -normal;
+            if (c.outline.containsPoint(middle + normal * (1e-3 * len), Qt::OddEvenFill)) {
+                // (Metal on both its sides - a keyhole's slit, the cut of no
+                //  width that joins a hole to its outline -: no face. A port
+                //  on it drove "the face" along the slit - a bug hunt's second hour.)
+                if (c.outline.containsPoint(middle - normal * (1e-3 * len), Qt::OddEvenFill)) continue;
+                normal = -normal;
+            }
             if (facingNorm > 0 && (normal.x() * facing.x() + normal.y() * facing.y()) / facingNorm < M_SQRT1_2) continue;
             double t = ((where.x() - a.x()) * d.x() + (where.y() - a.y()) * d.y()) / len2;
             t = std::clamp(t, 0.0, 1.0);
@@ -752,6 +758,24 @@ bool onEdge(const QLineF& edge, QPointF where)
 
 } // namespace
 
+QString portPlaceSaid(PortPlace place, const QString& layer)
+{
+    const QString on = layer.isEmpty() ? tr("a shape") : tr("a shape on %1").arg(layer);
+    switch (place) {
+    case PortPlace::OnEdge:
+        return {};
+    case PortPlace::OnCorner:
+        return tr("it is on a corner of %1, where two edges meet - give it the facing of the edge it is to drive").arg(on);
+    case PortPlace::FacingOtherWay:
+        return tr("it is on an edge of %1 that does not face the way it says").arg(on);
+    case PortPlace::Inside:
+        return tr("it is inside %1, on none of its edges").arg(on);
+    case PortPlace::Outside:
+        break;
+    }
+    return layer.isEmpty() ? tr("it is on no shape") : tr("it is on no shape on %1").arg(layer);
+}
+
 PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QString& layer, QPointF facing)
 {
     QLineF edge;
@@ -776,7 +800,8 @@ PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QSt
                 QPointF normal(d.y() / len, -d.x() / len);
                 if (c.outline.containsPoint(side.center() + normal * (1e-3 * len), Qt::OddEvenFill)) normal = -normal;
                 const QPointF beyond = side.center() + normal * (1e-3 * len);
-                bool covered = false;
+                // (Its own shape beyond it too: a keyhole's slit, no edge.)
+                bool covered = c.outline.containsPoint(beyond, Qt::OddEvenFill);
                 for (const Conductor& other : conductors)
                     if (&other != &c && (layer.isEmpty() || other.layer == layer) && other.outline.containsPoint(beyond, Qt::OddEvenFill)) {
                         covered = true;

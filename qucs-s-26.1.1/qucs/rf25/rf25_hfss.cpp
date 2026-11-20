@@ -1145,9 +1145,12 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& given, const
             QString onLayer;
             // (On the edge, as the solve has it: portPlace(). The nearest
             //  edge however far was written.)
-            if (portPlace(outlines, at, metal, way) != PortPlace::OnEdge || !faceEdge(outlines, at, metal, way, &face, &outward, &onLayer)
+            const PortPlace place = portPlace(outlines, at, metal, way);
+            if (place != PortPlace::OnEdge || !faceEdge(outlines, at, metal, way, &face, &outward, &onLayer)
                 || (main = edgeAlong(face)).polygon < 0) {
-                out.notes << tr("%1 is not written: no edge of a shape on %2 near its point faces the way it says.").arg(own, metal);
+                out.notes << (place != PortPlace::OnEdge
+                                  ? tr("%1 is not written: %2.").arg(own, portPlaceSaid(place, metal))
+                                  : tr("%1 is not written: no edge of a shape on %2 near its point faces the way it says.").arg(own, metal));
                 continue;
             }
             // (Its conductor's whole side, as the solver's face is: every edge
@@ -1839,10 +1842,23 @@ SCompared compareWithTouchstone(const FullWave& solved, const QString& path, con
     if (out.interpolated > 0)
         out.notes << tr("%1 frequencies are read between the file's points, in magnitude and angle.").arg(out.interpolated);
     for (const QString& note : solved.warnings) out.notes << tr("The solve says: %1").arg(note);
+    // (A term the file lacks: left out and said, not compared as nought -
+    //  a bug hunt's second hour.)
+    QStringList lacking;
+    for (int i = 0; i < np; ++i)
+        for (int j = 0; j < np; ++j)
+            if (!values.contains(QStringLiteral("%1,%2").arg(map.at(i)).arg(map.at(j)))) lacking << QStringLiteral("S%1,%2").arg(i + 1).arg(j + 1);
+    if (lacking.size() == np * np) {
+        out.problem = tr("%1 holds none of the solve's terms.").arg(QFileInfo(path).fileName());
+        return out;
+    }
+    if (!lacking.isEmpty())
+        out.notes << tr("%1 holds no %2: left out of the comparison.").arg(QFileInfo(path).fileName(), lacking.join(QStringLiteral(", ")));
 
     const auto db = [](const Complex& s) { return 20 * std::log10(std::max(std::abs(s), 1e-30)); };
     for (int i = 0; i < np; ++i)
         for (int j = 0; j < np; ++j) {
+            if (lacking.contains(QStringLiteral("S%1,%2").arg(i + 1).arg(j + 1))) continue;
             SCompared::Term t;
             t.i = i + 1;
             t.j = j + 1;
