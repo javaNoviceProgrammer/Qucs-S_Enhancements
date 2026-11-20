@@ -223,6 +223,17 @@ struct Cutout {
 /// \a problems and left out.
 Cutout cutoutOf(const Model& model, QStringList* problems);
 
+/// A circle of \a radius about \a centre (µm) as a polygon: its sides within
+/// a nanometre of the circle, 32 of them at least and 1024 at most. Empty
+/// where \a radius is not above nought.
+QPolygonF circleOf(QPointF centre, double radius);
+/// A ring between \a inner and \a radius about \a centre (µm), one polygon:
+/// the outer circle (circleOf()) and the inner one the other way round,
+/// joined by a slit of no width along +x - a keyhole, as a polygon with a
+/// hole is written to a file. Empty where \a inner is not between nought
+/// and \a radius.
+QPolygonF ringOf(QPointF centre, double radius, double inner);
+
 /// A shape of the model's own (Shapes, rf_shape) as its parameters make it:
 /// its outline, µm, on a layer of the stack.
 struct OwnShape {

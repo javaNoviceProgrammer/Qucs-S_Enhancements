@@ -467,15 +467,19 @@ QList<NodeKind> makeKinds()
                tr("A metal or a via of the stack, by name - or a dielectric or the substrate, where it is (a layer that "
                   "ends)")),
           choice(QStringLiteral("shape"), tr("Shape"),
-                 {QStringLiteral("rectangle"), QStringLiteral("polygon"), QStringLiteral("path"), QStringLiteral("via")},
-                 {tr("A rectangle"), tr("A polygon"), tr("A path"), tr("A via")}, QStringLiteral("rectangle")),
+                 {QStringLiteral("rectangle"), QStringLiteral("polygon"), QStringLiteral("path"), QStringLiteral("via"),
+                  QStringLiteral("circle"), QStringLiteral("ring")},
+                 {tr("A rectangle"), tr("A polygon"), tr("A path"), tr("A via"), tr("A circle"), tr("A ring")},
+                 QStringLiteral("rectangle")),
           shownIf(choice(QStringLiteral("anchor"), tr("Placed by"), {QStringLiteral("corner"), QStringLiteral("centre")},
                          {tr("Its lower left corner"), tr("Its centre")}, QStringLiteral("corner")),
                   "shape=rectangle"),
           shownIf(expr(QStringLiteral("x"), tr("x"), QStringLiteral("m"), QStringLiteral("0"),
-                       tr("Of the rectangle's lower left corner or centre, or the via's centre, in the layout's coordinates")),
-                  "shape=rectangle|shape=via"),
-          shownIf(expr(QStringLiteral("y"), tr("y"), QStringLiteral("m"), QStringLiteral("0")), "shape=rectangle|shape=via"),
+                       tr("Of the rectangle's lower left corner or centre, or the via's, circle's or ring's centre, in the "
+                          "layout's coordinates")),
+                  "shape=rectangle|shape=via|shape=circle|shape=ring"),
+          shownIf(expr(QStringLiteral("y"), tr("y"), QStringLiteral("m"), QStringLiteral("0")),
+                  "shape=rectangle|shape=via|shape=circle|shape=ring"),
           shownIf(expr(QStringLiteral("width"), tr("Width"), QStringLiteral("m"), QStringLiteral("100[um]"), tr("Along x")),
                   "shape=rectangle"),
           shownIf(expr(QStringLiteral("height"), tr("Height"), QStringLiteral("m"), QStringLiteral("10[um]"), tr("Along y")),
@@ -493,11 +497,18 @@ QList<NodeKind> makeKinds()
                          QStringLiteral("flush")),
                   "shape=path"),
           shownIf(expr(QStringLiteral("size"), tr("Side"), QStringLiteral("m"), QStringLiteral("1[um]"), tr("Of a square via")),
-                  "shape=via")},
+                  "shape=via"),
+          shownIf(expr(QStringLiteral("radius"), tr("Radius"), QStringLiteral("m"), QStringLiteral("50[um]"),
+                       tr("The circle's, or the ring's outer edge's")),
+                  "shape=circle|shape=ring"),
+          shownIf(expr(QStringLiteral("inner_radius"), tr("Inner radius"), QStringLiteral("m"), QStringLiteral("25[um]"),
+                       tr("The ring's inner edge's, under its radius")),
+                  "shape=ring")},
          {}, {}, false, false, QStringLiteral("shape"),
          tr("A shape of the model's own on a layer of the stack, its numbers expressions of the parameters: a "
             "rectangle by a corner or its centre and its width and height, a polygon by its corners, a path by its "
-            "points and width, a square via by its centre and side.")});
+            "points and width, a square via by its centre and side, a circle by its centre and radius, a ring by its "
+            "centre and its two radii (a circle's sides within a nanometre of it).")});
 
     // A parameter tied to the file's own shapes: the corners of a layer's
     // shapes inside a box moved by an expression - a line widened, a stub

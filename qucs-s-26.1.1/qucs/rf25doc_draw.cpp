@@ -124,6 +124,20 @@ QString boxSaid(const QRectF& r)
     return QStringLiteral("(%1, %2) to (%3, %4) µm").arg(um(r.left()), um(r.top()), um(r.right()), um(r.bottom()));
 }
 
+/// A circle's or a ring's centre, radius and inner radius (µm) of \a e - its
+/// 'at', 'radius' and, a ring's, 'inner_radius' -: nothing, or what is wrong.
+QString roundOf(const QJsonObject& e, bool ring, QPointF* at, double* radius, double* inner)
+{
+    const QString what = ring ? RF25Doc::tr("a ring") : RF25Doc::tr("a circle");
+    if (!pointOf(e.value(QLatin1String("at")), at)) return RF25Doc::tr("%1 is put 'at' its centre, [x, y] in µm").arg(what);
+    *radius = e.value(QLatin1String("radius")).toDouble(-1);
+    if (!(*radius > 0) || *radius > 1e6) return RF25Doc::tr("%1's 'radius' is in µm, more than 0").arg(what);
+    *inner = ring ? e.value(QLatin1String("inner_radius")).toDouble(-1) : 0;
+    if (ring && !(*inner > 0 && *inner < *radius))
+        return RF25Doc::tr("a ring's 'inner_radius' is in µm, more than 0 and less than its 'radius'");
+    return QString();
+}
+
 } // namespace
 
 // ------------------------------------------------------------- The tools
@@ -561,7 +575,7 @@ bool RF25Doc::drawOwnShapes(const QJsonArray& edits, QStringList* done, QString*
         const auto bad = [&](const QString& text) { return fail(tr("Shape %1: %2. Nothing was drawn.").arg(i + 1).arg(text)); };
         static const QSet<QString> known{QStringLiteral("add"),  QStringLiteral("layer"), QStringLiteral("box"),  QStringLiteral("points"),
                                          QStringLiteral("width"), QStringLiteral("ends"), QStringLiteral("at"),   QStringLiteral("size"),
-                                         QStringLiteral("parametric")};
+                                         QStringLiteral("radius"), QStringLiteral("inner_radius"), QStringLiteral("parametric")};
         for (auto it = e.begin(); it != e.end(); ++it)
             if (!known.contains(it.key()))
                 return bad(it.key() == QLatin1String("delete")
@@ -569,8 +583,9 @@ bool RF25Doc::drawOwnShapes(const QJsonArray& edits, QStringList* done, QString*
                                : tr("'%1' is not a key of a shape drawn").arg(it.key()));
         const QString add = e.value(QLatin1String("add")).toString();
         const bool via = add == QLatin1String("via");
-        if (add != QLatin1String("rectangle") && add != QLatin1String("polygon") && add != QLatin1String("path") && !via)
-            return bad(tr("a shape of the model's own is a rectangle, a polygon, a path or a via"));
+        const bool round = add == QLatin1String("circle") || add == QLatin1String("ring");
+        if (add != QLatin1String("rectangle") && add != QLatin1String("polygon") && add != QLatin1String("path") && !via && !round)
+            return bad(tr("a shape of the model's own is a rectangle, a polygon, a path, a via, a circle or a ring"));
         QString name = e.value(QLatin1String("layer")).toString().trimmed();
         if (name.isEmpty() && via)
             for (const Layer& l : stack.layers)
@@ -607,6 +622,17 @@ bool RF25Doc::drawOwnShapes(const QJsonArray& edits, QStringList* done, QString*
             n.props.insert(QStringLiteral("y"), len(at.y()));
             n.props.insert(QStringLiteral("size"), len(side));
             said = tr("a via of %1 at (%2, %3) µm, %4 µm square").arg(layer->name, um(at.x()), um(at.y()), um(side));
+        } else if (round) {
+            QPointF at;
+            double radius = 0, inner = 0;
+            const bool ring = add == QLatin1String("ring");
+            if (const QString wrong = roundOf(e, ring, &at, &radius, &inner); !wrong.isEmpty()) return bad(wrong);
+            n.props.insert(QStringLiteral("x"), len(at.x()));
+            n.props.insert(QStringLiteral("y"), len(at.y()));
+            n.props.insert(QStringLiteral("radius"), len(radius));
+            if (ring) n.props.insert(QStringLiteral("inner_radius"), len(inner));
+            said = ring ? tr("a ring of %1 about (%2, %3) µm, from %4 to %5 µm").arg(layer->name, um(at.x()), um(at.y()), um(inner), um(radius))
+                        : tr("a circle of %1 about (%2, %3) µm, %4 µm in radius").arg(layer->name, um(at.x()), um(at.y()), um(radius));
         } else {
             QJsonArray rows;
             const QJsonArray points = e.value(QLatin1String("points")).toArray();
@@ -768,12 +794,13 @@ bool RF25Doc::drawShapes(const QJsonArray& edits, QStringList* done, QString* er
         static const QSet<QString> known{QStringLiteral("add"),   QStringLiteral("delete"), QStringLiteral("layer"),
                                          QStringLiteral("box"),   QStringLiteral("points"), QStringLiteral("width"),
                                          QStringLiteral("ends"),  QStringLiteral("at"),     QStringLiteral("size"),
-                                         QStringLiteral("box_is"), QStringLiteral("parametric")};
+                                         QStringLiteral("box_is"), QStringLiteral("radius"), QStringLiteral("inner_radius"),
+                                         QStringLiteral("parametric")};
         for (auto it = e.begin(); it != e.end(); ++it)
             if (!known.contains(it.key())) return bad(tr("'%1' is not a key of a shape drawn").arg(it.key()));
         const QString add = e.value(QLatin1String("add")).toString(), remove = e.value(QLatin1String("delete")).toString();
         if (add.isEmpty() == remove.isEmpty())
-            return bad(tr("each is {\"add\": rectangle, polygon, path or via, ...} or {\"delete\": \"shape\", ...}"));
+            return bad(tr("each is {\"add\": rectangle, polygon, path, via, circle or ring, ...} or {\"delete\": \"shape\", ...}"));
         if (!remove.isEmpty()) {
             if (remove != QLatin1String("shape")) return bad(tr("what is deleted is a \"shape\""));
             const Layer* layer = layerNamed(e, false, &why);
@@ -871,8 +898,19 @@ bool RF25Doc::drawShapes(const QJsonArray& edits, QStringList* done, QString* er
             if (e.contains(QLatin1String("ends"))) out.insert(QStringLiteral("ends"), e.value(QLatin1String("ends")));
             gds.append(out);
             what << tr("a path of %1, %2 µm wide").arg(layer->name, um(e.value(QLatin1String("width")).toDouble()));
+        } else if (add == QLatin1String("circle") || add == QLatin1String("ring")) {
+            // (A polygon of the file: a circle's sides within a nanometre of it,
+            //  a ring the keyhole a file writes a hole as.)
+            QPointF at;
+            double radius = 0, inner = 0;
+            const bool ring = add == QLatin1String("ring");
+            if (const QString wrong = roundOf(e, ring, &at, &radius, &inner); !wrong.isEmpty()) return bad(wrong);
+            gds.append(QJsonObject{{QStringLiteral("add"), QStringLiteral("polygon")}, {QStringLiteral("layer"), gdsLayerOf(*layer)},
+                                   {QStringLiteral("points"), pointsJson(ring ? ringOf(at, radius, inner) : circleOf(at, radius))}});
+            what << (ring ? tr("a ring of %1 about (%2, %3) µm, from %4 to %5 µm").arg(layer->name, um(at.x()), um(at.y()), um(inner), um(radius))
+                          : tr("a circle of %1 about (%2, %3) µm, %4 µm in radius").arg(layer->name, um(at.x()), um(at.y()), um(radius)));
         } else {
-            return bad(tr("what is added is a rectangle, a polygon, a path or a via"));
+            return bad(tr("what is added is a rectangle, a polygon, a path, a via, a circle or a ring"));
         }
     }
     mapNode.props.insert(QStringLiteral("rows"), rows);
