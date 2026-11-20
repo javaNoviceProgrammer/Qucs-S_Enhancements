@@ -3293,6 +3293,115 @@ private slots:
         QCOMPARE_LE(markersOnIt, 5);
     }
 
+    void aDashDotWithDotsTwiceItsWidth()
+    {
+        // Another paper's figure: a blue dash-dot curve in a coarse picture,
+        // its dots, blurred, twice as wide as its line; a red solid curve
+        // beside it. The dots, wider than the 1.8 lines' widths a dash-dot's
+        // dots were allowed, set the markers' size, and its dashes were found
+        // as rows of discs touching: 62 markers, no line (the recheck of
+        // 27.1.4, Zhang p5/2's blue). A colour drawn in dashes as well is a
+        // dash-dot: a line, and its dots no markers. (Dots of 2.0 widths are
+        // measured 1.6 lines wide, which lost the line too, as markers; of
+        // 3.2, 2.2, as Zhang's are 2.0.)
+        for (const double dotWidths : {2.0, 3.2}) {
+        Axes a;
+        a.frame = QRectF(120, 200, 380, 220);
+        a.labels = false;
+        const auto curve = [](double x) { return 0.6 * std::sin(0.5 * x) - 0.1; };
+        const auto other = [](double x) { return -0.5 + 0.08 * x; };
+        const QColor blue(69, 76, 193), red(208, 48, 64);
+        const double dpi = 150, k = dpi / 72, width = 0.9;
+        QImage image(int(kPageW * k), int(kPageH * k), QImage::Format_RGB32);
+        image.fill(Qt::white);
+        {
+            QPainter p(&image);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.scale(k, k);
+            drawAxes(p, a, 8.0);
+            p.setPen(QPen(red, 1.2));
+            QPolygonF solid;
+            for (int i = 0; i <= 300; ++i) {
+                const double x = a.xMin + (a.xMax - a.xMin) * i / 300;
+                solid << a.at(x, other(x));
+            }
+            p.drawPolyline(solid);
+            // Along the curve by its length: a dash of 7 widths, a gap of 3,
+            // a dot of twice the width, a gap of 3.
+            QPolygonF line;
+            for (int i = 0; i <= 2000; ++i) {
+                const double x = a.xMin + (a.xMax - a.xMin) * i / 2000;
+                line << a.at(x, curve(x));
+            }
+            const double dash = 7 * width, gap = 3 * width, period = dash + 2 * gap + dotWidths * width;
+            double along = 0;
+            QPolygonF run;
+            bool dotDone = false;
+            for (int i = 0; i + 1 < line.size(); ++i) {
+                const double phase = std::fmod(along, period);
+                if (phase < dash) {
+                    run << line.at(i);
+                    dotDone = false;
+                } else {
+                    if (run.size() >= 2) {
+                        p.setPen(QPen(blue, width, Qt::SolidLine, Qt::FlatCap));
+                        p.drawPolyline(run);
+                    }
+                    run.clear();
+                    if (!dotDone && phase >= dash + gap + dotWidths * width / 2) {
+                        p.setPen(Qt::NoPen);
+                        p.setBrush(blue);
+                        p.drawEllipse(line.at(i), dotWidths * width / 2, dotWidths * width / 2);
+                        p.setBrush(Qt::NoBrush);
+                        dotDone = true;
+                    }
+                }
+                along += QLineF(line.at(i), line.at(i + 1)).length();
+            }
+        }
+        const QString file = path(QStringLiteral("dashdot_dots_%1.pdf").arg(dotWidths));
+        QVERIFY(writeScan(file, image));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        Plot plot = plotInRegion(source, 0, a.frame.adjusted(-70, -10, 10, 30));
+        Reference low, high;
+        low.at = a.frame.bottomLeft();
+        low.hasX = low.hasY = true;
+        low.x = a.xMin;
+        low.y = a.yMin;
+        high.at = a.frame.topRight();
+        high.hasX = high.hasY = true;
+        high.x = a.xMax;
+        high.y = a.yMax;
+        plot.calibration.references = {low, high};
+        QString why;
+        QVERIFY2(plot.calibration.fit(&why), qPrintable(why));
+        Options o;
+        o.route = Options::Route::Raster;
+        o.colours = {blue, red};
+        QVERIFY2(extract(source, plot, o, &why), qPrintable(why));
+        double covered = 0;
+        int markers = 0;
+        for (const Series& s : std::as_const(plot.series)) {
+            const QList<QPointF> v = values(plot, s);
+            int on = 0;
+            double lo = 1e9, hi = -1e9;
+            for (const QPointF& q : v)
+                if (std::abs(q.y() - curve(q.x())) < 0.04) {
+                    ++on;
+                    lo = std::min(lo, q.x());
+                    hi = std::max(hi, q.x());
+                }
+            qInfo("dots %.1f widths: %s %s %s: %lld points, %d on the dash-dot, x %.2f to %.2f", dotWidths, qPrintable(s.name), qPrintable(s.colour.name()), s.shape == Series::Shape::Line ? "line" : "markers", qlonglong(v.size()), on, lo, hi);
+            if (s.shape == Series::Shape::Line && on >= 0.8 * v.size()) covered = std::max(covered, hi - lo);
+            if (s.shape == Series::Shape::Markers) markers += on;
+        }
+        QCOMPARE_GE(covered, 0.9 * (a.xMax - a.xMin));
+        QCOMPARE_LE(markers, 3);
+        }
+    }
+
     void aHeavyPageIsReadInTime()
     {
         // A scatter of 120,000 markers about a plot (a million points of

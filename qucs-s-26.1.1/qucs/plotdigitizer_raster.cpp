@@ -1217,6 +1217,7 @@ struct Marks {
     int fromChains = 0;         // found where markers touch
     int glyphs = 0;
     double thickness = 1;       // of its lines, pixels
+    int lineDots = 0;           // a dash-dot's dots, lifted out but no markers
 };
 
 // A family's markers and glyphs, found and lifted out of it - left covered,
@@ -1528,7 +1529,56 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
             lineThickness = std::clamp(double(thin[thin.size() / 2]), 1.0, 12 * scale);
         }
     }
-    const bool dots = !rings && !loneKept.isEmpty() && typical > 0 && typical <= 1.8 * lineThickness;
+    // And dots up to two and a half times as wide where the colour is drawn
+    // in dashes too - short thin pieces, as many as the dots - and is no black
+    // or grey, whose ticks and letters are short thin pieces as well: another
+    // paper's dash-dot, its dots twice its line's width in a coarse picture,
+    // its dashes then found as rows of discs, came back as 62 markers (the
+    // recheck of 27.1.4, Zhang p5/2's blue).
+    // And where nearly all those dots lie each between two dashes, end to
+    // end, they are the line's, no markers: lifted out as markers are, for
+    // the line to be followed through them (left in, they led the follower
+    // from a dash-dot to a solid curve of its colour it crosses), but no
+    // series of them made and the dashes not dropped as what is left of
+    // markers (a dash-dot in a clean picture, its dots apart from its dashes:
+    // all its dots markers, the line gone). A scatter of discs as wide beside
+    // a solid line of its colour, cut into short pieces by what crosses it,
+    // is not flanked so: its markers stay.
+    int dashes = 0, flanked = 0;
+    const QColor colour = t.families.at(family - 1).colour;
+    const bool chromatic = std::max({colour.red(), colour.green(), colour.blue()}) - std::min({colour.red(), colour.green(), colour.blue()}) >= 40;
+    if (chromatic && !rings && !loneKept.isEmpty() && typical > 0 && typical <= 2.5 * lineThickness) {
+        QList<QPointF> ends;   // each dash's two ends, along its main axis
+        for (size_t id = 1; id < pieces.size(); ++id) {
+            const Piece& q = pieces[id];
+            const double a = q.x1 - q.x0 + 1, b = q.y1 - q.y0 + 1;
+            if (q.holes != 0 || elongation(q) <= 4 || std::max(a, b) > 2 * markerMost || q.area > 1.6 * lineThickness * std::hypot(a, b)) continue;
+            ++dashes;
+            const double mx = q.sx / q.area, my = q.sy / q.area;
+            const double xx = q.sxx / q.area - mx * mx, yy = q.syy / q.area - my * my, xy = q.sxy / q.area - mx * my;
+            const double along = (xx + yy + std::sqrt(std::max(0.0, (xx - yy) * (xx - yy) + 4 * xy * xy))) / 2;
+            const double angle = 0.5 * std::atan2(2 * xy, xx - yy), half = std::sqrt(3 * std::max(0.0, along));
+            const QPointF d(std::cos(angle) * half, std::sin(angle) * half);
+            ends << QPointF(mx, my) + d << QPointF(mx, my) - d;
+        }
+        const double reach = typical / 2 + std::max(1.5 * typical, 4 * lineThickness);
+        for (const int id : std::as_const(loneKept)) {
+            const Piece& q = pieces[size_t(id)];
+            const QPointF c(q.sx / q.area, q.sy / q.area);
+            QList<QPointF> near;
+            for (const QPointF& e : std::as_const(ends))
+                if (QLineF(c, e).length() <= reach) near << e - c;
+            bool both = false;
+            for (int i = 0; i < near.size() && !both; ++i)
+                for (int j = i + 1; j < near.size() && !both; ++j)
+                    both = QPointF::dotProduct(near.at(i), near.at(j)) < -0.5 * std::hypot(near.at(i).x(), near.at(i).y()) * std::hypot(near.at(j).x(), near.at(j).y());
+            flanked += both;
+        }
+    }
+    const bool dashed = dashes >= std::max<qsizetype>(6, loneKept.size());
+    const bool dashDot = dashed && flanked >= 0.6 * loneKept.size();
+    const bool dots = !rings && !loneKept.isEmpty() && typical > 0 && (typical <= 1.8 * lineThickness || dashed);
+
     if (typical > 0 && (rings || !loneKept.isEmpty()) && !dots) {
         // Markers touching each other so closely that their holes are gone,
         // or filled ones, or on a line: the peaks of how far
@@ -1760,6 +1810,10 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
             }
     }
     out.centres = centres;
+    if (dashDot) {
+        out.lineDots = int(centres.size());
+        out.centres.clear();
+    }
 
     // Glyphs: a circled label, a letter with a hole - compact, larger than a
     // marker, smaller than a word, with a hole; and what sits in the hole.
@@ -2531,6 +2585,24 @@ static int bridgeBreaks(QList<Series>& pieces, double reach)
 int dropShortBits(Series& s, double least)
 {
     if (s.shape != Series::Shape::Line) return 0;
+    // A line most of whose stretches are as short is dashed: its ends are
+    // dashes like the rest, not bits beside it. (Peeled from both ends, a
+    // dash-dot of short dashes went whole.)
+    {
+        QList<int> starts{0};
+        for (const int b : std::as_const(s.breaks))
+            if (b > 0 && b < s.points.size()) starts << b;
+        std::sort(starts.begin(), starts.end());
+        starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
+        starts << int(s.points.size());
+        int shorter = 0;
+        for (int k = 0; k + 1 < starts.size(); ++k) {
+            double l = 0;
+            for (int i = starts.at(k); i + 1 < starts.at(k + 1); ++i) l += QLineF(s.points.at(i), s.points.at(i + 1)).length();
+            shorter += l < least;
+        }
+        if (starts.size() - 1 >= 6 && shorter * 2 > starts.size() - 1) return 0;
+    }
     int dropped = 0;
     for (bool again = true; again && s.points.size() >= 2;) {
         again = false;
@@ -2759,11 +2831,12 @@ bool extractRaster(Source& source, Plot& plot, const Options& options, QStringLi
     runsOf(t, hrun, vrun);
     const int families = int(t.families.size());
     const QList<Marks> marks = allMarks(t, hrun, vrun);
-    int fromChains = 0, glyphs = 0;
+    int fromChains = 0, glyphs = 0, lineDots = 0;
     for (int f = 0; f < marks.size(); ++f) {
         if (t.families.at(f).hidden) continue;
         fromChains += marks.at(f).fromChains;
         glyphs += marks.at(f).glyphs;
+        lineDots += marks.at(f).lineDots;
     }
 
     QList<Series> found;
@@ -2922,6 +2995,7 @@ bool extractRaster(Source& source, Plot& plot, const Options& options, QStringLi
         }
     }
     if (fromChains > 0) notes->append(tr("%1 markers were found where they touch others (by the holes of rings, or the middles of discs).").arg(fromChains));
+    if (lineDots > 0) notes->append(tr("%1 dots of dash-dot lines (a colour drawn in dashes too) were taken for the lines' own, not markers, and the lines followed through them.").arg(lineDots));
     if (glyphs > 0) notes->append(tr("%1 glyphs drawn in the picture (a circled label, a letter) were left out, and lines followed through them.").arg(glyphs));
     if (alongMarkers > 0) notes->append(tr("%1 lines, or stretches of lines between gaps, running along rows of markers of their own colour were taken for what is left of the markers, and left out.").arg(alongMarkers));
     if (mostlyGaps > 0) notes->append(tr("%1 lines more gaps than line (a gap every ten points or less) were taken for scraps of their colour put in a row, and left out.").arg(mostlyGaps));
