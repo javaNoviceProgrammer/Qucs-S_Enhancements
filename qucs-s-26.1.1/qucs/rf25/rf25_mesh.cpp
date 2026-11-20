@@ -1522,6 +1522,10 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         narrowest = finest = 0;
         strips = 0;
         facing = 0;
+        // (Over every piece too, not each alone: 2,000 pads of 20 µm at a
+        //  largest cell of 0.1 µm, each under the bound, were cut into
+        //  8e7 cells, 29 GB and 18 s before the whole was found too many.)
+        double total = 0;
         for (Piece& piece : pieces) {
             const Conductor& conductor = conductors.at(piece.conductor);
             const QRectF bounds = piece.box;
@@ -1549,8 +1553,9 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             // (Counted before the lines are made: a fine grid over a large
             // layout would be millions of them.)
             const double squares = std::ceil(bounds.width() / stepX) * std::ceil(bounds.height() / stepY);
-            if (squares > 4.0 * pieceMost) {
-                *many = squares;
+            total += squares;
+            if (squares > 4.0 * pieceMost || total > 4.0 * pieceMost) {
+                *many = squares > 4.0 * pieceMost ? squares : total;
                 return false;
             }
             static const double none[4] = {0, 0, 0, 0};
@@ -1672,14 +1677,17 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             }
         }
         shareAll(false);
+        // (The squares of every piece counted before any is made.)
+        double squaresAll = 0;
+        for (const Piece& piece : std::as_const(pieces)) squaresAll += double(piece.xs.size() - 1) * double(piece.ys.size() - 1);
+        if (squaresAll > 4.0 * pieceMost) {
+            *many = squaresAll;
+            return false;
+        }
         for (const Piece& piece : std::as_const(pieces)) {
             const Conductor& conductor = conductors.at(piece.conductor);
             const QList<double>& xs = piece.xs;
             const QList<double>& ys = piece.ys;
-            if (double(xs.size() - 1) * double(ys.size() - 1) > 4.0 * pieceMost) {
-                *many = double(xs.size() - 1) * double(ys.size() - 1);
-                return false;
-            }
             for (int i = 0; i + 1 < xs.size(); ++i)
                 for (int j = 0; j + 1 < ys.size(); ++j) {
                     const QRectF square(QPointF(xs.at(i), ys.at(j)), QPointF(xs.at(i + 1), ys.at(j + 1)));
@@ -1717,8 +1725,8 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             bool strip = false;
             const QList<MeshCell> cells =
                 stripCells(conductors.at(c), quadsOf.at(c), size, perFeature, how.stretch, how.edges, &across, &strip);
-            if (double(cells.size()) > 4.0 * pieceMost) {
-                *many = double(cells.size());
+            if (double(mesh.cells.size() + cells.size()) > 4.0 * pieceMost) {
+                *many = double(mesh.cells.size() + cells.size());
                 return false;
             }
             for (const MeshCell& cell : cells) {

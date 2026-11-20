@@ -572,6 +572,33 @@ private slots:
         QCOMPARE(rf::extract(two, line, faced.stack()).unknowns, two.charges);
     }
 
+    // Many shapes past the cell limit are refused before they are cut, not
+    // after: 2,000 pads of 20 µm at a largest
+    // cell of 0.1 µm, each under the bound alone, were cut into 8e7 cells -
+    // 29 GB and 18 s - before the whole was found too many, where one plane
+    // of the same cells is refused at once. Now refused as quickly, and
+    // the same pads at 5 µm meshed as before.
+    void manyShapesPastTheLimitAreRefusedBeforeTheyAreCut()
+    {
+        rf::Model m = stacked();
+        QList<rf::Conductor> pads;
+        for (int i = 0; i < 2000; ++i) pads << on(QStringLiteral("M1"), (i % 50) * 30, (i / 50) * 30, 20, 20);
+        rf::MeshSettings how;
+        how.maximum = 0.1e-6;
+        QElapsedTimer clock;
+        clock.start();
+        const rf::Mesh fine = rf::meshOf(pads, how, m.stack(), 0);
+        const qint64 ms = clock.elapsed();
+        QVERIFY2(!fine.ok() && fine.cells.isEmpty() && says(fine.problems, "even at one across a conductor"), qPrintable(fine.problems.join(" | ")));
+        QVERIFY2(ms < 3000, qPrintable(QStringLiteral("%1 ms").arg(ms)));
+        how.maximum = 5e-6;
+        const rf::Mesh coarse = rf::meshOf(pads, how, m.stack(), 0);
+        QVERIFY2(!coarse.cells.isEmpty(), qPrintable(coarse.problems.join(" | ")));
+        double area = 0;
+        for (const rf::MeshCell& cell : coarse.cells) area += cell.area;
+        QVERIFY2(std::abs(area - 2000 * 400.0) < 1e-6 * area, qPrintable(QString::number(area)));
+    }
+
     // Cells across a conductor: at least so many across its narrowest
     // part, whatever the wavelength - the phase B check found a 100 µm
     // strip one cell wide at the default, its Z0 12 % high - and a straight
