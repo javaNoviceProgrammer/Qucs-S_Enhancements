@@ -317,6 +317,15 @@ AntennaFigures antennaFiguresOf(const FullWave& wave, const Stack& stack, int k,
         out.problems << tr("No such port or frequency of the solve.");
         return out;
     }
+    if (wave.currents.at(k).isEmpty()) {
+        const int near = wave.nearestKept(k);
+        out.problems << (near < 0 ? tr("The solve kept no currents, which the far field is of.")
+                                  : tr("The solve's currents were not kept at %1 GHz - a long sweep keeps them at some of its "
+                                       "frequencies alone -: the nearest it kept them at is %2 GHz.")
+                                        .arg(wave.frequencies.at(k) / 1e9, 0, 'g', 6)
+                                        .arg(wave.frequencies.at(near) / 1e9, 0, 'g', 6));
+        return out;
+    }
     // The ports' currents: the port's alone with the others open, or driven
     // through its reference, the others ended by theirs - (Z + Z_ref) I =
     // V_s e_p, V_s a volt.

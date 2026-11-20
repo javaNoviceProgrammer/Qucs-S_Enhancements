@@ -145,6 +145,7 @@
 #include <QStringList>
 
 #include <atomic>
+#include <cstdlib>
 #include <functional>
 
 namespace qucs_s::rf25 {
@@ -486,8 +487,20 @@ struct FullWave {
     QList<double> references;        ///< Ohm, each port's
     int runs = 0, cells = 0;         ///< the unknowns: currents, and the charges they leave
     /// At each frequency, each port driven by an ampere in turn, the
-    /// others open: each run's current, A - [f][port][run].
+    /// others open: each run's current, A - [f][port][run]. Empty at a
+    /// frequency whose currents were not kept (keptCurrentsOf()): a sweep
+    /// whose currents would hold more than kKeptCurrentsBytes keeps them at
+    /// evenly spread frequencies alone.
     QList<QList<QList<Complex>>> currents;
+    /// The frequency nearest \a k whose currents were kept; -1 where none
+    /// were.
+    int nearestKept(int k) const
+    {
+        int best = -1;
+        for (int i = 0; i < currents.size(); ++i)
+            if (!currents.at(i).isEmpty() && (best < 0 || std::abs(i - k) < std::abs(best - k))) best = i;
+        return best;
+    }
     /// Each edge port's face: how wide it is, the layout's units, and the
     /// metal it is on; nought and empty for an internal port or one on no
     /// face.
@@ -662,6 +675,17 @@ QList<QList<Complex>> scatteringOf(const QList<QList<Complex>>& z, const QList<d
 /// more. Empty where none has more than one.
 QStringList returnSharesOf(const FullWave& solved);
 
+/// The most a sweep's currents hold, bytes, before they are kept at some
+/// of its frequencies alone: a 10,001-point sweep of a four-port of 30,000
+/// runs held 19 GB of them, and wrote them all to its .solution file (a bug hunt's second hour).
+constexpr double kKeptCurrentsBytes = 256.0 * 1024 * 1024;
+
+/// Which of \a count frequencies keep their currents, \a perFrequency
+/// bytes each: every one where they fit in kKeptCurrentsBytes, else as many
+/// as fit, evenly spread over the sweep, its ends and \a top (the highest
+/// frequency's, which the current view opens on) among them.
+QList<bool> keptCurrentsOf(int count, double perFrequency, int top);
+
 /// The surface current density on each cell of the mesh, A/m (its size;
 /// the cells by their index in the mesh), at frequency \a k with port
 /// \a port driven: by an ampere, the other ports open; or, \a terminated,
@@ -669,7 +693,7 @@ QStringList returnSharesOf(const FullWave& solved);
 /// the other ports ended in theirs - what a circuit does to it. The runs
 /// on either side of a cell averaged along each of the two directions; a
 /// via's own cells, its current round its sides per metre of them. Empty
-/// where there is no such solve.
+/// where there is no such solve, or its currents at \a k were not kept.
 QHash<int, double> currentDensity(const FullWave& solved, int k, int port, bool terminated = false);
 
 /// \a solved's ports as a Touchstone 1.1 file (.sNp), every port into

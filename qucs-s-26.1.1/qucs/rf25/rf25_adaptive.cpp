@@ -430,8 +430,17 @@ Adapted adaptiveSweep(const QList<double>& sweep, const std::function<FullWave(c
     wave.s.clear();
     wave.currents.clear();
     const int np = int(base.portNames.size());
+    // (The fitted frequencies' currents kept where they fit, as a sweep's
+    //  are - keptCurrentsOf(): carried to every one of 10,001 points they
+    //  are as many as solving each.)
+    int top = 0;
+    for (int i = 1; i < n; ++i)
+        if (sweep.at(i) > sweep.at(top)) top = i;
+    const QList<bool> keep = keptCurrentsOf(n, 16.0 * np * std::max(1, base.runs), top);
+    int keptCount = 0;
     for (int i = 0; i < n; ++i) {
         if (zAt.contains(i)) {
+            keptCount += currentsAt.value(i).isEmpty() ? 0 : 1;
             wave.z << zAt.value(i);
             wave.s << sAt.value(i);
             wave.currents << currentsAt.value(i);
@@ -442,7 +451,8 @@ Adapted adaptiveSweep(const QList<double>& sweep, const std::function<FullWave(c
         wave.z << z;
         wave.s << scatteringOf(z, base.references);
         QList<QList<C>> perPort;
-        const QList<QList<C>> first = currentsAt.value(solved.first());
+        const QList<QList<C>> first = keep.at(i) ? currentsAt.value(solved.first()) : QList<QList<C>>();
+        keptCount += first.isEmpty() ? 0 : 1;
         for (int p = 0; p < first.size(); ++p) {
             QList<C> column(first.at(p).size(), C(0, 0));
             for (int j = 0; j < fit.first.support.size(); ++j) {
@@ -478,6 +488,10 @@ Adapted adaptiveSweep(const QList<double>& sweep, const std::function<FullWave(c
     if (endChecks > 0)
         out.lines << tr("At an end of the band where the gap was wider than the median, its middle was solved and held to "
                         "the fit before stopping: %n frequency(ies).", nullptr, endChecks);
+    if (keptCount < n)
+        out.lines << tr("Each run's current kept at %1 of the %2 frequencies, evenly spread, the highest among them: the "
+                        "drawn currents and the far field are of those.")
+                         .arg(keptCount).arg(n);
     out.lines << tr("Solved at %1 GHz.").arg(at.join(QStringLiteral(", ")));
     wave.lines = out.lines + wave.lines;
     out.wave = wave;

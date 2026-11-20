@@ -4370,9 +4370,10 @@ FullWave foldLumped(const FullWave& wave, const QList<FullWavePort>& ports, cons
         out.s << scatteringOf(z, out.references);
         if (k < wave.currents.size()) {
             // Each measuring port's runs: its own, and each element's as much
-            // as its ampere drives through it.
+            // as its ampere drives through it. (None where they were not
+            // kept.)
             QList<QList<Complex>> perPort;
-            for (int i = 0; i < np; ++i) {
+            for (int i = 0; i < np && !wave.currents.at(k).isEmpty(); ++i) {
                 QList<Complex> column = wave.currents.at(k).at(keep.at(i));
                 for (int e = 0; e < nl; ++e)
                     for (int r = 0; r < column.size(); ++r) column[r] += wave.currents.at(k).at(lumped.at(e)).at(r) * il(e, i);
@@ -6221,8 +6222,15 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (columnReturn.at(k) >= 0)
                 out.returnsOf[c.portOf.at(k)][columnReturn.at(k)].share = intoColumns(k, c.portOf.at(k));
     };
+    // (Each frequency's currents kept where they fit, else at some of them
+    //  alone - keptCurrentsOf(). And each frequency's own answer moved out of
+    //  the sweep's, not copied: two copies of the currents for every
+    //  frequency.)
+    const QList<bool> keepCurrents = keptCurrentsOf(nf, 16.0 * np * nr, topAt);
+    const int keptCount = int(std::count(keepCurrents.begin(), keepCurrents.end(), true));
     for (int k = 0; k < nf; ++k) {
-        AtFrequency a = solved[std::size_t(k)];
+        AtFrequency a = std::move(solved[std::size_t(k)]);
+        if (!keepCurrents.at(k)) a.current.resize(0, 0);
         if (c.basis.size() > 0) {
             // In the columns solved for (Context::basis): each port's first,
             // then the differences, which carry no port's current. Tied, the
@@ -6253,7 +6261,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             into.topRows(np) = MatrixC::Identity(np, np);
             into.bottomRows(nw) = -w;
             if (k == topAt) shareOut(c.basis * into);
-            a.current = a.current * into;
+            if (a.current.size() > 0) a.current = a.current * into;
             a.z = z;
         } else if (c.np != np) {
             MatrixC x = Eigen::PartialPivLU<MatrixC>(a.z).solve(ofPort);
@@ -6278,7 +6286,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 return out;
             }
             if (k == topAt) shareOut(x * z);
-            a.current = a.current * (x * z);
+            if (a.current.size() > 0) a.current = a.current * (x * z);
             a.z = z;
         } else if (k == topAt) {
             shareOut(ofPort);
@@ -6316,7 +6324,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             }
         }
         QList<QList<Complex>> perPort;
-        for (int q = 0; q < np; ++q) {
+        for (int q = 0; q < np && a.current.size() > 0; ++q) {
             QList<Complex> column;
             column.reserve(nr);
             for (int r = 0; r < nr; ++r) column << a.current(r, q);
@@ -6386,6 +6394,10 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                             "be rounding.")
                              .arg(frequencies.at(k) / 1e9, 0, 'g', 4).arg(a.rcond, 0, 'g', 2);
     }
+    if (keptCount < nf)
+        out.lines << tr("Each run's current kept at %1 of the %2 frequencies, evenly spread, the highest among them: at "
+                        "every one they would hold %3 GB. The drawn currents and the far field are of those.")
+                         .arg(keptCount).arg(nf).arg(16.0 * np * nr * nf / 1e9, 0, 'f', 1);
     out.solvedAsymmetry = out.asymmetry;
     out.solvedGain = out.gain;
     out.solvedGainAt = out.gainAt;
@@ -6492,6 +6504,23 @@ QStringList returnSharesOf(const FullWave& solved)
         }
         out << tr("At %1 GHz %2's current comes back %3.").arg(top / 1e9, 0, 'g', 4).arg(solved.portNames.at(p), each.join(QStringLiteral(", ")));
     }
+    return out;
+}
+
+QList<bool> keptCurrentsOf(int count, double perFrequency, int top)
+{
+    QList<bool> out(std::max(0, count), true);
+    if (count <= 1 || !(perFrequency > 0)) return out;
+    const double fit = std::floor(kKeptCurrentsBytes / perFrequency);
+    if (fit >= count) return out;
+    out.fill(false);
+    const int many = int(std::max(1.0, fit));
+    if (many == 1) {
+        out[std::clamp(top, 0, count - 1)] = true;
+        return out;
+    }
+    for (int j = 0; j < many; ++j) out[int(std::lround(double(j) * (count - 1) / (many - 1)))] = true;
+    if (top >= 0 && top < count) out[top] = true;
     return out;
 }
 

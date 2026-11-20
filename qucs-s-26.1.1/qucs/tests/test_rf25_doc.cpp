@@ -3091,6 +3091,20 @@ private slots:
             QVERIFY2(m.wave->warnings.filter(QStringLiteral("across instead")).size() == 1,
                      qPrintable(m.wave->warnings.join(" | ") + QStringLiteral(" || ") + m.mesh->lines.join(" | ")));
         }
+        // A sweep from nought, linear to 5 GHz in three points: its nought
+        // left out and said, solved at 2.5 and 5 GHz - it was refused as
+        // asking for no frequencies (a bug hunt's second
+        // hour).
+        {
+            rf::Model zero = doc->model();
+            zero.root.child(QStringLiteral("rf_study"))->props.insert(QStringLiteral("from"), QStringLiteral("0"));
+            for (rf::Node& port : zero.ports().children) port.props.insert(QStringLiteral("calibrate"), false);
+            rf::SolveJob job;
+            const rf::ModelSolution m = rf::solveModel(job, zero, *read, QStringLiteral("strip.gds"), folder, wave);
+            QVERIFY2(m.ok() && m.wave != nullptr, qPrintable(m.problem));
+            QCOMPARE(m.wave->frequencies, (QList<double>{2.5e9, 5e9}));
+            QVERIFY2(m.notes.join(' ').contains(QStringLiteral("nought, is left out")), qPrintable(m.notes.join(" | ")));
+        }
         RF25Doc::SolveRequest quasi;
         quasi.solver = QStringLiteral("quasi_static");
         doc->solveWith(quasi);

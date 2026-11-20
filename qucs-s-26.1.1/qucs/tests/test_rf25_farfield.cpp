@@ -14,6 +14,7 @@
 #include "rf25/rf25_kept.h"
 #include "rf25/rf25_mesh.h"
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 
@@ -198,6 +199,17 @@ private slots:
         QCOMPARE(back->fullWave->portPaths.size(), wave.portPaths.size());
         const rf::AntennaFigures again = rf::antennaFiguresOf(*back->fullWave, stack, 0, 0);
         QVERIFY(again.ok() && again.radiated == rf::antennaFiguresOf(wave, stack, 0, 0).radiated);
+        // A frequency whose currents were not kept (keptCurrentsOf(): a long
+        // sweep keeps them at some alone): refused, the nearest kept said.
+        {
+            rf::FullWave thinned = wave;
+            thinned.currents[1].clear();
+            QCOMPARE(thinned.nearestKept(1), 0);
+            const rf::AntennaFigures none = rf::antennaFiguresOf(thinned, stack, 1, 0);
+            QVERIFY2(!none.ok() && none.problems.join(' ').contains(QStringLiteral("nearest it kept them at is 12 GHz")),
+                     qPrintable(none.problems.join(" | ")));
+            QVERIFY(rf::currentDensity(thinned, 1, 0).isEmpty() && !rf::currentDensity(thinned, 0, 0).isEmpty());
+        }
         // Under a lid, or with no ground: no far field of its own, said.
         rf::Stack open = stack;
         open.layers.removeFirst();
@@ -266,6 +278,37 @@ private slots:
         const double want = 4 * M_PI * most / fine.power;
         qWarning("sixteen dipoles: directivity %.5g, the fine search's %.5g", r.directivity(), want);
         QVERIFY2(std::abs(r.directivity() / want - 1) < 0.002, qPrintable(QStringLiteral("%1 against %2").arg(r.directivity()).arg(want)));
+    }
+
+    // Which frequencies keep their currents: every one within
+    // kKeptCurrentsBytes; past it as many as fit, evenly spread, the ends
+    // and the highest among them. A 10,001-point sweep of a four-port of
+    // 30,000 runs, 1.9 MB a frequency, keeps 139 (a bug hunt's second hour: 19 GB, all of it written to the .solution file).
+    void aLongSweepKeepsSomeCurrents()
+    {
+        const QList<bool> all = rf::keptCurrentsOf(51, 58e3, 50);
+        QCOMPARE(int(std::count(all.begin(), all.end(), true)), 51);
+        const double each = 16.0 * 4 * 30000;
+        const QList<bool> some = rf::keptCurrentsOf(10001, each, 10000);
+        const int kept = int(std::count(some.begin(), some.end(), true));
+        QCOMPARE(kept, int(std::floor(rf::kKeptCurrentsBytes / each)));
+        QVERIFY(some.first() && some.last());
+        QVERIFY(kept * each <= rf::kKeptCurrentsBytes);
+        // (Evenly: no gap between kept ones past twice the mean.)
+        int last = 0, widest = 0;
+        for (int i = 1; i < some.size(); ++i)
+            if (some.at(i)) {
+                widest = std::max(widest, i - last);
+                last = i;
+            }
+        QVERIFY2(widest <= 2 * 10000 / (kept - 1) + 1, qPrintable(QString::number(widest)));
+        // The highest where it is not at an end, and one alone where only one
+        // fits.
+        const QList<bool> mid = rf::keptCurrentsOf(10001, each, 5003);
+        QVERIFY(mid.at(5003));
+        const QList<bool> one = rf::keptCurrentsOf(100, rf::kKeptCurrentsBytes, 37);
+        QCOMPARE(int(std::count(one.begin(), one.end(), true)), 1);
+        QVERIFY(one.at(37));
     }
 };
 

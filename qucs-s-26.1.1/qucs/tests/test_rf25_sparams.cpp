@@ -371,6 +371,18 @@ private slots:
         QVERIFY2(!why.isEmpty(), "a log sweep cannot start at nothing");
         QVERIFY(rf::sweepFrequencies(-1e9, 1e10, 5, false, &why).isEmpty());
         QVERIFY(!why.isEmpty());
+        // Past kMostSweepPoints, refused: a study of ten million points made
+        // ten million frequencies, each solved and kept (a bug hunt's second hour). At it, made.
+        QVERIFY(rf::sweepFrequencies(1e9, 4e9, rf::kMostSweepPoints + 1, false, &why).isEmpty());
+        QVERIFY2(why.contains(QStringLiteral("past the 100001")), qPrintable(why));
+        QCOMPARE(rf::sweepFrequencies(1e9, 4e9, rf::kMostSweepPoints, false, &why).size(), rf::kMostSweepPoints);
+        {
+            rf::Model m = rf::Model::blank();
+            for (rf::Node& n : m.root.children)
+                if (n.type == QStringLiteral("rf_study")) n.props.insert(QStringLiteral("points"), QStringLiteral("1e12"));
+            QVERIFY(rf::studySweep(m, &why).isEmpty());
+            QVERIFY2(why.contains(QStringLiteral("past the 100001")), qPrintable(why));
+        }
 
         // And the sweep itself: C does not move with frequency and R
         // rises as its root, which is what makes one solve enough.

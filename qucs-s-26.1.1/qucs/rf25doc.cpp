@@ -2004,7 +2004,16 @@ void RF25Doc::showOverlays()
     a_currentsSaid.clear();
     if (a_showCurrents && a_fullWave && a_fullWave->ok() && a_mesh) {
         const int nf = int(a_fullWave->frequencies.size()), np = int(a_fullWave->portNames.size());
-        const int k = a_currentsFrequency < 0 || a_currentsFrequency >= nf ? nf - 1 : a_currentsFrequency;
+        const int asked = a_currentsFrequency < 0 || a_currentsFrequency >= nf ? nf - 1 : a_currentsFrequency;
+        // (The nearest frequency whose currents were kept: a long sweep keeps
+        //  them at some alone - keptCurrentsOf().)
+        const int k = a_fullWave->nearestKept(asked);
+        QString notKept;
+        if (k >= 0 && k != asked)
+            notKept = tr("The currents were not kept at %1 GHz - a long sweep keeps them at some of its frequencies "
+                         "alone -: drawn at %2 GHz, the nearest kept.")
+                          .arg(a_fullWave->frequencies.at(asked) / 1e9, 0, 'g', 6)
+                          .arg(a_fullWave->frequencies.at(k) / 1e9, 0, 'g', 6);
         const int port = std::clamp(a_currentsPort, 0, np - 1);
         // (Driven as a circuit drives it: a source of the port's own
         //  reference, the other ports ended in theirs. Driven by an ampere
@@ -2052,6 +2061,7 @@ void RF25Doc::showOverlays()
             if (!a_fullWave->viaCells.isEmpty())
                 a_currentsSaid += QLatin1Char(' ') + tr("A via is drawn by its current round its sides, per metre of them.");
         }
+        if (!notKept.isEmpty()) a_currentsSaid = a_currentsSaid.isEmpty() ? notKept : notKept + QLatin1Char(' ') + a_currentsSaid;
     }
     // The ports, by their names, over everything: an edge port's face - the
     // whole edge it drives, as the solve finds it - and an arrow out of it,

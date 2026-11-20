@@ -478,8 +478,19 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
         job.frequencies = !request.frequencies.isEmpty() ? request.frequencies
                            : job.levels.isEmpty()        ? studySweep(model, &why)
                                                           : QList<double>{topFrequency(model)};
+        // (A sweep from nought - linear, 0 to 10 GHz -: its nought left out
+        //  and said, as the full wave solves above it; it was refused as asking
+        //  for no frequencies - a bug hunt's second hour.)
+        if (job.frequencies.size() > 1 && job.frequencies.first() == 0 && job.frequencies.at(1) > 0) {
+            job.frequencies.removeFirst();
+            job.notes << tr("The sweep's first frequency, nought, is left out: the full wave solves above it, here from %1 GHz.")
+                             .arg(job.frequencies.first() / 1e9, 0, 'g', 4);
+        }
         if (job.frequencies.isEmpty() || !(job.frequencies.first() > 0))
-            return said(why.isEmpty() ? tr("The study asks for no frequencies to solve at.") : why);
+            return said(why.isEmpty() ? (job.frequencies.isEmpty() ? tr("The study asks for no frequencies to solve at.")
+                                                                   : tr("The full wave solves above nought, and the study asks "
+                                                                        "for nought alone."))
+                                      : why);
         job.matrix = request.matrix.isEmpty() ? studyMatrix(model)
                       : request.matrix == QLatin1String("dense")    ? FullWaveControl::Matrix::Dense
                       : request.matrix == QLatin1String("compressed") ? FullWaveControl::Matrix::Compressed

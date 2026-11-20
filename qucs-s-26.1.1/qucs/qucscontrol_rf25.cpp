@@ -2160,11 +2160,16 @@ QJsonObject QucsControl::rf25FarField(const QJsonObject& args)
         port = int(wave->portNames.indexOf(named));
         if (port < 0) return errorResult(tr("It has no port %1: its ports are %2.").arg(named, wave->portNames.join(QStringLiteral(", "))));
     }
-    int k = 0;
+    // (The nearest frequency whose currents were kept: a long sweep keeps
+    //  them at some alone - keptCurrentsOf().)
+    int k = wave->nearestKept(0);
     const double asked = args.value(QLatin1String("frequency")).toDouble(0);
     if (asked > 0)
-        for (int i = 1; i < wave->frequencies.size(); ++i)
-            if (std::abs(wave->frequencies.at(i) - asked) < std::abs(wave->frequencies.at(k) - asked)) k = i;
+        for (int i = 0; i < wave->frequencies.size(); ++i)
+            if (i < wave->currents.size() && !wave->currents.at(i).isEmpty()
+                && (k < 0 || std::abs(wave->frequencies.at(i) - asked) < std::abs(wave->frequencies.at(k) - asked)))
+                k = i;
+    if (k < 0) return errorResult(tr("Its solve kept no currents, which the far field is of."));
     const Stack stack = model->model().solveStack();
     const QString others = args.value(QLatin1String("others")).toString().trimmed();
     if (!others.isEmpty() && others != QLatin1String("ended") && others != QLatin1String("open"))
