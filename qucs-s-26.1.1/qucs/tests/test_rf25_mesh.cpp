@@ -9,6 +9,7 @@
 
 #include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_mesh.h"
+#include "rf25/rf25_static.h"
 #include "rf25/rf25_inductance.h"
 
 #include <QSet>
@@ -292,7 +293,8 @@ private slots:
     // A metal thick against its own width says the full wave's inductance
     // at a low frequency reads high - as a sheet, and as its two faces - and
     // that the loop inductance takes it as the bar it is (a square wire as thick as it is wide, 38 % high as a
-    // sheet). A metal thin against its width says nothing of it.
+    // sheet). A metal thin against its width says nothing of it. An
+    // Automatic one as the solvers take it.
     void aMetalThickAgainstItsWidthSaysItsInductanceReadsHigh()
     {
         rf::Model m = stacked();
@@ -323,6 +325,21 @@ private slots:
         QVERIFY2(says(sheet.warnings, "as narrow as 10 "), qPrintable(sheet.warnings.join(" | ")));
         const rf::Mesh pad = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 40, 40)}, how, m.stack(), 1e9);
         QVERIFY2(!says(pad.warnings, "inductance at a low frequency reads high"), qPrintable(pad.warnings.join(" | ")));
+        // (Automatic, as the solvers decide it: the lone wire, no gap beside
+        //  it, a sheet - said, where Automatic was taken for faces and
+        //  nothing said, its L 27 % high on a lone 10 µm wire of 8 µm metal,
+        //  a bug hunt -; beside a 4 µm gap, as its faces,
+        //  not.)
+        for (rf::Layer& l : stack.layers)
+            if (l.name == QLatin1String("M1")) {
+                l.twoSheets = false;
+                l.automatic = true;
+            }
+        const rf::Mesh lone = rf::meshOf(wire, how, stack, 1e9);
+        QVERIFY2(says(lone.warnings, "as a sheet its field is of no thickness") && says(lone.warnings, "Its Solved as is Automatic"),
+                 qPrintable(lone.warnings.join(" | ")));
+        const rf::Mesh beside = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 500, 10), on(QStringLiteral("M1"), 0, 14, 500, 10)}, how, stack, 1e9);
+        QVERIFY2(!says(beside.warnings, "inductance at a low frequency reads high"), qPrintable(beside.warnings.join(" | ")));
     }
 
     void theMeshSettingsAreReadAndChecked()
@@ -555,9 +572,69 @@ private slots:
         QCOMPARE(mesh.charges, int(mesh.cells.size()));
         rf::Model faced = stacked();
         faced.stackNode().children.back().props.insert(QStringLiteral("model"), QStringLiteral("faces"));
+        faced.stackNode().children.back().props.insert(QStringLiteral("thickness"), QStringLiteral("3[um]"));
         const rf::Mesh two = rf::meshOf(line, how, faced.stack(), 0);
         QVERIFY2(faced.stack().layers.last().twoSheets, "the metal is not solved as its faces");
         QCOMPARE(two.charges, 2 * int(two.cells.size()));
+        // Each as many as the charge solve has: and a film asked to be its
+        // faces - 0.6 µm on strips some 48 µm wide, under a fiftieth - is
+        // one sheet to the solvers, its cells once. It was counted twice:
+        // 19,048 "past the dense limit" where the solve took 9,524.
+        faced.stackNode().children.back().props.insert(QStringLiteral("thickness"), QStringLiteral("0.6[um]"));
+        const rf::Mesh film = rf::meshOf(line, how, faced.stack(), 0);
+        QCOMPARE(film.charges, int(film.cells.size()));
+        QCOMPARE(rf::extract(film, line, faced.stack()).unknowns, film.charges);
+        faced.stackNode().children.back().props.insert(QStringLiteral("thickness"), QStringLiteral("3[um]"));
+        QCOMPARE(rf::extract(two, line, faced.stack()).unknowns, two.charges);
+    }
+
+    // Many shapes past the cell limit are refused before they are cut, not
+    // after: 2,000 pads of 20 µm at a largest
+    // cell of 0.1 µm, each under the bound alone, were cut into 8e7 cells -
+    // 29 GB and 18 s - before the whole was found too many, where one plane
+    // of the same cells is refused at once. Now refused as quickly, and
+    // the same pads at 5 µm meshed as before.
+    void manyShapesPastTheLimitAreRefusedBeforeTheyAreCut()
+    {
+        rf::Model m = stacked();
+        QList<rf::Conductor> pads;
+        for (int i = 0; i < 2000; ++i) pads << on(QStringLiteral("M1"), (i % 50) * 30, (i / 50) * 30, 20, 20);
+        rf::MeshSettings how;
+        how.maximum = 0.1e-6;
+        QElapsedTimer clock;
+        clock.start();
+        const rf::Mesh fine = rf::meshOf(pads, how, m.stack(), 0);
+        const qint64 ms = clock.elapsed();
+        QVERIFY2(!fine.ok() && fine.cells.isEmpty() && says(fine.problems, "even at one across a conductor"), qPrintable(fine.problems.join(" | ")));
+        QVERIFY2(ms < 3000, qPrintable(QStringLiteral("%1 ms").arg(ms)));
+        // (The layout's count, every pad's: not the sum where it crossed the
+        //  bound, 2.8e+05 for 8.16e+07 - the review of 639258e6.)
+        const QRegularExpressionMatch count = QRegularExpression(QStringLiteral("would take ([0-9.e+]+) cells")).match(fine.problems.join(' '));
+        QVERIFY2(count.hasMatch() && count.captured(1).toDouble() >= 8e7, qPrintable(fine.problems.join(" | ")));
+        how.maximum = 5e-6;
+        const rf::Mesh coarse = rf::meshOf(pads, how, m.stack(), 0);
+        QVERIFY2(!coarse.cells.isEmpty(), qPrintable(coarse.problems.join(" | ")));
+        double area = 0;
+        for (const rf::MeshCell& cell : coarse.cells) area += cell.area;
+        QVERIFY2(std::abs(area - 2000 * 400.0) < 1e-6 * area, qPrintable(QString::number(area)));
+    }
+
+    // A mesh that fewer cells across cannot bring within the limit says what
+    // sets its cells' size: a wedge 0.5 µm at
+    // its base, cells as narrow at one across whatever the largest cell,
+    // was told to ask for a larger largest cell - 9,992 cells at 20 µm and
+    // at 1000 alike.
+    void whatSetsTheCellsSizeIsSaid()
+    {
+        rf::Model m = stacked();
+        rf::Conductor wedge;
+        wedge.layer = QStringLiteral("M1");
+        wedge.outline = QPolygonF(QList<QPointF>{{0, 0}, {1000, 0}, {1000, 0.5}});
+        rf::MeshSettings how;
+        how.maximum = 20e-6;
+        const rf::Mesh mesh = rf::meshOf({wedge}, how, m.stack(), 0);
+        QVERIFY2(says(mesh.warnings, "whatever the largest cell") && !says(mesh.warnings, "ask for a larger largest cell"),
+                 qPrintable(mesh.warnings.join(" | ")));
     }
 
     // Cells across a conductor: at least so many across its narrowest

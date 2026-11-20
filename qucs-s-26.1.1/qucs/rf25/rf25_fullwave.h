@@ -433,6 +433,11 @@ struct FullWaveControl {
     /// frequency as it goes, none kept from one to the next (as before
     /// they were kept): the same to the last digit either way.
     bool staticCache = true;
+    /// Tests: false factorizes the near field's blocks at every frequency
+    /// with the charges as unknowns of their own, none kept from a higher
+    /// frequency of its thread (rf25_fullwave.cpp's NearBlocks): the same to
+    /// GMRES's residual either way.
+    bool reuseNear = true;
     /// Tests: a dense solve's systems factorized as L D L^T where
     /// Accelerate's LAPACK factorizes them (1) or never (0); below nought,
     /// where the machine solves many frequencies at once (rf25_dense.h).

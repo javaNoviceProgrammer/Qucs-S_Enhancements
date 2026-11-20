@@ -61,7 +61,10 @@ std::optional<double> positiveNumber(const QString& text, const RF25Doc& model)
         if (p.isValid() && p.isConstant()) scope.setConstant(param.name, p.constant(), p.dim());
     }
     const fem::Expression given = fem::Expression::compile(text, scope);
-    if (!given.isValid() || !given.isConstant() || !(given.constant() > 0)) return std::nullopt;
+    // (Finite too: "1/0" passed as above nought - the model's own readers
+    //  refused it, this one, the tools' frequencies, lengths and impedances,
+    //  did not; the review of 2ab0fd68.)
+    if (!given.isValid() || !given.isConstant() || !(given.constant() > 0) || !std::isfinite(given.constant())) return std::nullopt;
     return given.constant();
 }
 
@@ -1314,6 +1317,10 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
     out.insert(QStringLiteral("cells"), ind->nodes);
     QJsonArray said;
     for (const QString& line : model->preparedLines()) said.append(line);
+    // (Which ends it took, where the ports leave it to be said: of one port
+    //  returning through a terminal, beside a second port disabled, it said
+    //  only where the current went in and out.)
+    if (!model->loopPortsSaid().isEmpty()) said.append(model->loopPortsSaid());
     // (Its Q line the frequency asked for's, as "Q" is: it said Q at the
     //  study's top beside a "Q" of the one asked for - 6.91e+03 at 0.1 GHz
     //  beside 690.7 at 10 MHz, a smaller point of a review.)

@@ -14,6 +14,7 @@
 #include "rf25_dense.h"
 #include "rf25_edge.h"
 #include "rf25_fast.h"
+#include "rf25_layout.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -1799,9 +1800,48 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             pm.maxwell0.clear();
             pm.dielectricLoss.clear();
             pm.crowding.clear();
-            pm.said = tr("Not a uniform line - a net does not run its whole length, or is not the same along all of "
-                         "it - so there are no values per metre: its capacitance stands whole, and its ports' S are "
-                         "the full-wave solve's.");
+            // (A straight line drawn at an angle, every conductor a rectangle
+            //  along one way that is no axis, is uniform but not taken so -
+            //  its cross-section is cut along x or y -: said so, where it was
+            //  "not the same along all of it", its length the x projection's. Each within the grid the corners
+            //  are on, a GDS file's and the booleans' - kBooleanGrid -: to
+            //  1e-6 of its sides' lengths, a rectangle of 2000 by 100 µm at
+            //  30 degrees, its corners on a nanometre, was no rectangle, the
+            //  review of e63dc3e4.)
+            double angle = std::nan("");
+            bool slanted = !conductors.isEmpty();
+            for (const Conductor& c : conductors) {
+                QPolygonF o = c.outline;
+                if (o.size() > 1 && o.first() == o.last()) o.removeLast();
+                if (o.size() != 4) {
+                    slanted = false;
+                    break;
+                }
+                const QPointF u = o.at(1) - o.at(0), v = o.at(2) - o.at(1);
+                const double lu = std::hypot(u.x(), u.y()), lv = std::hypot(v.x(), v.y());
+                // (A corner up to half the grid off on each axis: a side's
+                //  direction off by up to the grid over its length.)
+                const double turn = 2 * kBooleanGrid / std::max(1e-300, std::min(lu, lv));
+                if (!(lu > 0) || !(lv > 0) || std::abs(QPointF::dotProduct(u, v)) > turn * lu * lv) {
+                    slanted = false;
+                    break;
+                }
+                const QPointF longer = lu >= lv ? u : v;
+                double a = std::fmod(std::atan2(longer.y(), longer.x()) + 2 * M_PI, M_PI);
+                if (std::isnan(angle)) angle = a;
+                const double offAxis = std::abs(std::remainder(a, M_PI / 2));
+                if (offAxis < turn || std::abs(std::remainder(a - angle, M_PI)) > turn) {
+                    slanted = false;
+                    break;
+                }
+            }
+            pm.said = slanted ? tr("A straight line drawn at %1 degrees: its values per metre are of a line along x or y, whose "
+                                   "middle cross-section is cut across it - turn it onto an axis for them. Its capacitance "
+                                   "stands whole, and its ports' S are the full-wave solve's.")
+                                    .arg(angle * 180 / M_PI, 0, 'g', 4)
+                              : tr("Not a uniform line - a net does not run its whole length, or is not the same along all of "
+                                   "it - so there are no values per metre: its capacitance stands whole, and its ports' S are "
+                                   "the full-wave solve's.");
         }
         out.lines << pm.said;
     }
@@ -1877,10 +1917,17 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     // (The charge's own count, as the mesh's line gives it - "unknowns"
     // there are a full-wave solve's edges, a second number the phase B
     // check found beside this one under the same word.)
+    // (Held compressed, it said so in its own line, and this one still gave
+    //  the dense matrix it would have taken as the one solved - 692 MB
+    //  beside "held in 129.0 MB".)
     const double megabytes = 8.0 * double(n) * double(n) / (1024 * 1024);
-    out.lines << tr("%1 cell(s) on %2 net(s) over %3: a charge on each, a dense matrix of %4 to solve.")
-                     .arg(mesh.cells.size()).arg(nets.size()).arg(layers.join(QStringLiteral(", ")))
-                     .arg(megabytes >= 1024 ? tr("%1 GB").arg(megabytes / 1024, 0, 'f', 1) : tr("%1 MB").arg(megabytes, 0, 'f', 1));
+    if (compressedSolve)
+        out.lines << tr("%1 cell(s) on %2 net(s) over %3: a charge on each, held compressed.")
+                         .arg(mesh.cells.size()).arg(nets.size()).arg(layers.join(QStringLiteral(", ")));
+    else
+        out.lines << tr("%1 cell(s) on %2 net(s) over %3: a charge on each, a dense matrix of %4 to solve.")
+                         .arg(mesh.cells.size()).arg(nets.size()).arg(layers.join(QStringLiteral(", ")))
+                         .arg(megabytes >= 1024 ? tr("%1 GB").arg(megabytes / 1024, 0, 'f', 1) : tr("%1 MB").arg(megabytes, 0, 'f', 1));
     out.lines << (lossy && out.perMetre.fromMiddle
                       ? tr("Solved %1 time(s): with the stack and in vacuum; each lossy layer's share on the line's middle "
                            "cross-section alone.").arg(out.solves)

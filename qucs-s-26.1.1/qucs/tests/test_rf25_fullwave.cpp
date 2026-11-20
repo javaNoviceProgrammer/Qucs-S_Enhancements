@@ -24,6 +24,8 @@
 #include "rf25/rf25_dense.h"
 #include "rf25/rf25_fast.h"
 #include "rf25/rf25_fullwave.h"
+#include "rf25/rf25_inductance.h"
+#include "rf25/rf25_sparams.h"
 #include "rf25/rf25_edge.h"
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_static.h"
@@ -1041,13 +1043,62 @@ private slots:
                  nh.at(0), nh.at(1), skin.at(0), skin.at(1));
         QVERIFY2(nh.at(1) > nh.at(0) && nh.at(1) < 24.17 * 1.005 && nh.at(1) > 24.17 * 0.95,
                  qPrintable(QStringLiteral("%1 %2").arg(nh.at(0)).arg(nh.at(1))));
-        // (At 100 MHz, the skin a seventh of its thickness, the faces' skins'
-        //  reactance as it was: 22.367 and 22.424 nH before the inside was
-        //  held to the section's, 22.366 and 22.423 now. Its share faded as
-        //  the slab's own reactance falls left 22.315 and 22.376, as its
-        //  square, and 22.231 and 22.297, as itself.)
-        QVERIFY2(std::abs(skin.at(0) - 22.367) < 0.001 * 22.367 && std::abs(skin.at(1) - 22.424) < 0.001 * 22.424,
-                 qPrintable(QStringLiteral("%1 %2").arg(skin.at(0)).arg(skin.at(1))));
+        // (At 100 MHz, the skin a seventh of its thickness, the loop's L at
+        //  4 across a share of its L at 100 kHz that the 2D eddy solve of
+        //  its section has as 0.9488 - the wire's L' 760.164 nH/m at a low
+        //  frequency and 729.228 at that thickness against its skin, over
+        //  the loop's 40 mm -: 0.9470 now; 0.9565 with the share faded as
+        //  1/(1 + (t/2 delta)^4).)
+        QVERIFY2(std::abs(skin.at(1) / nh.at(1) / 0.9488 - 1) < 0.005, qPrintable(QStringLiteral("%1 %2").arg(skin.at(1)).arg(nh.at(1))));
+    }
+
+    // A thick loop's L falls as its frequency rises, as every conductor's
+    // does - its current redistributing toward less magnetic energy -, as
+    // its two faces too: the square
+    // copper loop, 0.5 by 0.5 mm, read 23.44 nH at 1 kHz and 24.37 at 74
+    // kHz on 4 cells across, 25.43 at 100 kHz on 10, the section's own
+    // inside, held at its share of the slab's at a low frequency, faded
+    // out faster than the slab's own fell. Each L now no more than the
+    // one before it, and its fall from 1 kHz the 2D eddy solve's of the
+    // wire's section over the loop's 40 mm within 0.6 nH, 0.47 at most
+    // (the wire 5 mm
+    // over a perfect ground, its image the return).
+    void aThickLoopsInductanceFallsWithFrequency()
+    {
+        rf::Stack st = grounded(1, 5e-3, 0, 0.5e-3, 6e7);
+        st.layers[0].variant = QStringLiteral("open");
+        st.layers[2].twoSheets = true;
+        rf::Conductor loop;
+        loop.layer = QStringLiteral("M1");
+        loop.outline = QPolygonF(QList<QPointF>{{-5250, -100}, {-5250, -5250}, {5250, -5250}, {5250, 5250}, {-5250, 5250}, {-5250, 100},
+                                                {-4750, 100}, {-4750, 4750}, {4750, 4750}, {4750, -4750}, {-4750, -4750}, {-4750, -100}});
+        rf::FullWavePort p = edgePort(QPointF(-5000, -100), QString(), QPointF(0, 1));
+        p.terminals = true;
+        rf::PortTerminal t;
+        t.name = QStringLiteral("T1");
+        t.at = QPointF(-5000, 100);
+        t.face = true;
+        t.facing = QPointF(0, -1);
+        p.returns = {t};
+        rf::MeshSettings how;
+        how.cellsAcross = 4;
+        const rf::Mesh mesh = rf::meshOf({loop}, how, st, 1e8);
+        // (t/delta 0.24 to 77; the wire's L' by the eddy solve, nH/m.)
+        const QList<double> fs{1e3, 1e4, 3.8e4, 7.4e4, 1e5, 1.41e5, 2.71e5, 5.21e5, 1e6, 1e7, 1e8};
+        const QList<double> wire{760.1636, 760.1410, 759.8375, 758.9626, 758.0387, 756.2039, 749.1613, 738.4818, 729.2277, 712.4585, 707.0195};
+        const rf::FullWave w = rf::fullWaveOf(mesh, {loop}, st, {p}, fs);
+        QVERIFY2(w.ok(), qPrintable(why(w)));
+        QList<double> nh;
+        QStringList said;
+        for (int k = 0; k < fs.size(); ++k) {
+            nh << w.z.at(k).at(0).at(0).imag() / (2 * M_PI * fs.at(k)) * 1e9;
+            said << QStringLiteral("%1 kHz %2 nH (eddy %3)").arg(fs.at(k) / 1e3).arg(nh.last(), 0, 'f', 3).arg(nh.first() + 0.04 * (wire.at(k) - wire.first()), 0, 'f', 3);
+        }
+        qInfo("%s", qPrintable(said.join(QStringLiteral("; "))));
+        for (int k = 1; k < fs.size(); ++k) {
+            QVERIFY2(nh.at(k) <= nh.at(k - 1) * (1 + 1e-5), qPrintable(said.join(QStringLiteral("; "))));
+            QVERIFY2(std::abs(nh.at(k) - nh.first() - 0.04 * (wire.at(k) - wire.first())) < 0.6, qPrintable(said.join(QStringLiteral("; "))));
+        }
     }
 
     // At a low frequency the dense solve keeps the cells' charges as unknowns
@@ -2913,6 +2964,40 @@ private slots:
         }
     }
 
+    // A number an expression comes to that is not finite is refused, where
+    // it was taken: a substrate "1/0" thick
+    // read as infinity, no problem said, and the charge solve was at work
+    // for ever; a permittivity of "0/0" solved to answers said to be right;
+    // a lumped element's R of "0/0" passed its check of nought or above as
+    // NaN, its S NaN and said to be right.
+    void aNumberThatIsNotFiniteIsRefused()
+    {
+        for (const char* text : {"0/0", "1/0", "sqrt(-1)"}) {
+            rf::Model m = rf::Model::blank();
+            rf::Node e = m.make(QStringLiteral("rf_internal_port"));
+            e.label = QStringLiteral("R9");
+            e.props.insert(QStringLiteral("element"), QStringLiteral("lumped"));
+            e.props.insert(QStringLiteral("r"), QString::fromLatin1(text));
+            for (rf::Node& n : m.root.children)
+                if (n.type == QStringLiteral("rf_ports")) n.children.push_back(e);
+            QString problem;
+            QVERIFY2(rf::portsOf(m, &problem).isEmpty() && problem.contains(QStringLiteral("R9")), qPrintable(QString::fromLatin1(text) + ": " + problem));
+        }
+        for (const QString key : {QStringLiteral("thickness"), QStringLiteral("epsr")})
+            for (const char* text : {"0/0", "1/0"}) {
+                rf::Model m = rf::Model::blank();
+                for (rf::Node& n : m.stackNode().children)
+                    if (n.type == QStringLiteral("rf_substrate")) n.props.insert(key, QString::fromLatin1(text));
+                const rf::Stack st = m.stack();
+                QVERIFY2(says(st.problems, "no finite number"), qPrintable(key + " " + QString::fromLatin1(text) + ": " + st.problems.join(" | ")));
+            }
+        rf::Model m = rf::Model::blank();
+        for (rf::Node& n : m.root.children)
+            if (n.type == QStringLiteral("rf_study")) n.props.insert(QStringLiteral("to"), QStringLiteral("1/0"));
+        QString problem;
+        QVERIFY2(rf::studySweep(m, &problem).isEmpty() && problem.contains(QStringLiteral("no finite number")), qPrintable(problem));
+    }
+
     // Lumped elements: each solved as
     // a port, then folded in by its own impedance at each frequency. On a
     // line of 100 µm on 100 µm of eps_r 9.8 (some 49 Ohm), 1 mm, edge ports:
@@ -3433,6 +3518,122 @@ private slots:
             QVERIFY(!hfss.script.contains(QStringLiteral("W7_")) && !hfss.control.contains(QStringLiteral("W7_")));
             QVERIFY2(hfss.notes.join(QLatin1Char(' ')).contains(QStringLiteral("The bond wire W7 is not in")), qPrintable(hfss.notes.join(" | ")));
         }
+    }
+
+    // An edge port on a slanted face drives the whole face: its cells' corners, cut by the layout's booleans, lie up
+    // to 0.7 nm off the face's line, where they were looked for within 1e-6
+    // of its length - none of a 100 µm face's at 30 degrees, and the port
+    // drove the one cell nearest, a 2 mm line's S21 -55.6 degrees at 10
+    // GHz against -50.1 along x, |S11| 0.532 against 0.466. Now its 19
+    // cells, S21 within 1.6 % of the line's along x - the slanted mesh's
+    // own, 0.7 % at twelve cells across.
+    void anEdgePortOnASlantedFaceDrivesTheWholeFace()
+    {
+        const rf::Stack stack = grounded(4, 200e-6, 0, 0, 5.8e7);
+        QList<Complex> s21;
+        for (const double deg : {0.0, 30.0}) {
+            const double a = deg * M_PI / 180, ca = std::cos(a), sa = std::sin(a);
+            const auto rot = [&](double x, double y) { return QPointF(x * ca - y * sa, x * sa + y * ca); };
+            rf::Conductor c;
+            c.layer = QStringLiteral("M1");
+            c.outline = QPolygonF(QList<QPointF>{rot(0, -50), rot(2000, -50), rot(2000, 50), rot(0, 50)});
+            rf::MeshSettings how;
+            how.maximum = 100e-6;
+            how.cellsAcross = 6;
+            const rf::Mesh mesh = rf::meshOf({c}, how, stack, 10e9);
+            const rf::FullWave w = rf::fullWaveOf(mesh, {c}, stack, {edgePort(rot(0, 0)), edgePort(rot(2000, 0))}, {10e9});
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            for (const QString& said : w.portsSaid)
+                QVERIFY2(!said.contains(QStringLiteral("drives the 1 cell(s)")), qPrintable(w.portsSaid.join(" | ")));
+            s21 << w.s.at(0).at(1).at(0);
+        }
+        const double phase = std::arg(s21.at(1)) / std::arg(s21.at(0)) - 1;
+        qWarning("a line at 30 degrees: S21 %.5f at %.3f degrees, along x %.5f at %.3f (%+.2f %%)", std::abs(s21.at(1)), std::arg(s21.at(1)) * 180 / M_PI,
+                 std::abs(s21.at(0)), std::arg(s21.at(0)) * 180 / M_PI, 100 * phase);
+        QVERIFY2(std::abs(phase) < 0.025 && std::abs(std::abs(s21.at(1)) - std::abs(s21.at(0))) < 0.005, qPrintable(QString::number(phase)));
+    }
+
+    // A plane of symmetry's half solves a metal as its faces as the whole
+    // does: the film rule and a run's breadth
+    // across its conductor were of the half, a strip the plane halves along
+    // its length half as wide - a 1.5 µm metal on a 100 µm stepped line a
+    // film whole and two faces in the half, Z21 0.85 % apart and twice the
+    // charges; a 50 µm one's series reactance 0.75 % under the whole's, its
+    // section's share of a slab's inside taken of half its breadth, and 8e-4
+    // with that mended, walls stood along the cut. Now the whole's to 1e-8.
+    void aSymmetryPlanesHalfSolvesItsFacesAsTheWholeDoes()
+    {
+        for (const double thickness : {1.5e-6, 50e-6}) {
+            rf::Stack stack = grounded(4, 200e-6, 0, thickness, 5.8e7);
+            stack.layers[2].twoSheets = true;
+            const QList<rf::Conductor> whole{strip(0, -50, 1000, 100), strip(1000, -150, 1000, 300), strip(2000, -50, 1000, 100)};
+            QList<rf::Conductor> half;
+            for (const rf::Conductor& c : whole) {
+                const QRectF box = c.outline.boundingRect();
+                half << strip(box.left(), 0, box.width(), box.bottom());
+            }
+            rf::MeshSettings how;
+            how.maximum = 100e-6;
+            how.cellsAcross = 4;
+            how.gaps = true;
+            const rf::Mesh a = rf::meshOf(whole, how, stack, 6e9);
+            how.symmetryAxis = 2;
+            how.symmetryAt = 0;
+            const rf::Mesh b = rf::meshOf(half, how, stack, 6e9);
+            QCOMPARE(b.charges * 2, a.charges);
+            const QList<rf::FullWavePort> ports{edgePort(QPointF(0, 0)), edgePort(QPointF(3000, 0))};
+            rf::FullWaveControl control;
+            control.symmetry.axis = 2;
+            control.symmetry.at = 0;
+            control.symmetry.magnetic = true;
+            const rf::FullWave wa = rf::fullWaveOf(a, whole, stack, ports, {1e8, 6e9}, 1e-6, nullptr);
+            const rf::FullWave wb = rf::fullWaveOf(b, half, stack, ports, {1e8, 6e9}, 1e-6, &control);
+            QVERIFY2(wa.ok() && wb.ok(), qPrintable(why(wa) + why(wb)));
+            QCOMPARE(says(wb.lines, "it is a film"), says(wa.lines, "it is a film"));
+            for (int k = 0; k < 2; ++k) {
+                const auto series = [k](const rf::FullWave& w) { return w.z.at(k).at(0).at(0) - w.z.at(k).at(1).at(0); };
+                const double z21 = std::abs(wa.z.at(k).at(1).at(0) - wb.z.at(k).at(1).at(0)) / std::abs(wa.z.at(k).at(1).at(0));
+                const double se = std::abs(series(wa) - series(wb)) / std::abs(series(wa));
+                qWarning("%g µm at %g Hz: the half's Z21 %.2e and series %.2e of the whole's", thickness * 1e6, wa.frequencies.at(k), z21, se);
+                QVERIFY2(z21 < 1e-10 && se < 1e-7, qPrintable(QStringLiteral("%1 %2").arg(z21).arg(se)));
+            }
+        }
+    }
+
+    // An edge port on a corner, no facing given, is asked for one: of the two edges it is on, it took one as found
+    // - a port at a line's end's corner drove its 2000 µm side, 32 cells,
+    // and nothing said. Given its facing, the end. Where two shapes meet
+    // along the line's axis, their edges between them are no corner.
+    void anEdgePortOnACornerIsAskedItsFacing()
+    {
+        const rf::Stack stack = grounded(4, 200e-6, 0, 0, 5.8e7);
+        rf::MeshSettings how;
+        how.maximum = 100e-6;
+        how.cellsAcross = 6;
+        const QList<rf::Conductor> line{strip(0, -50, 2000, 100)};
+        const rf::Mesh mesh = rf::meshOf(line, how, stack, 10e9);
+        const rf::FullWave corner = rf::fullWaveOf(mesh, line, stack, {edgePort(QPointF(0, -50)), edgePort(QPointF(2000, 0))}, {1e9});
+        QVERIFY2(!corner.ok() && corner.problems.join(' ').contains(QStringLiteral("is on a corner")), qPrintable(why(corner)));
+        const rf::FullWave facing =
+            rf::fullWaveOf(mesh, line, stack, {edgePort(QPointF(0, -50), QString(), QPointF(-1, 0)), edgePort(QPointF(2000, 0))}, {1e9});
+        QVERIFY2(facing.ok() && facing.portsSaid.first().contains(QStringLiteral("8 cell(s)")), qPrintable(why(facing) + facing.portsSaid.join(" | ")));
+        // (A port at the middle of a line's end, the line more than 500 times
+        //  as long as it is wide: on its long sides too by their thousandth,
+        //  and taken for a corner, a 6000 by 10 µm line refused - the review
+        //  of ff1233ad. A corner is where the two edges meet.)
+        const QList<rf::Conductor> longLine{strip(0, -5, 6000, 10)};
+        rf::MeshSettings along = how;
+        along.maximum = 500e-6;
+        along.cellsAcross = 2;
+        const rf::Mesh thin = rf::meshOf(longLine, along, stack, 1e9);
+        const rf::FullWave ends = rf::fullWaveOf(thin, longLine, stack, {edgePort(QPointF(0, 0)), edgePort(QPointF(6000, 0))}, {1e9});
+        QVERIFY2(ends.ok(), qPrintable(why(ends)));
+        QCOMPARE(rf::portPlace(longLine, QPointF(0, 0)), rf::PortPlace::OnEdge);
+        QCOMPARE(rf::portPlace(longLine, QPointF(0, -5)), rf::PortPlace::OnCorner);
+        const QList<rf::Conductor> halves{strip(0, -50, 2000, 50), strip(0, 0, 2000, 50)};
+        const rf::Mesh two = rf::meshOf(halves, how, stack, 10e9);
+        const rf::FullWave between = rf::fullWaveOf(two, halves, stack, {edgePort(QPointF(0, 0)), edgePort(QPointF(2000, 0))}, {1e9});
+        QVERIFY2(between.ok(), qPrintable(why(between)));
     }
 
     // A plane of symmetry: the half beyond it, every charge's, run's, via's
@@ -4401,13 +4602,17 @@ private slots:
         const rf::FullWave joined = rf::fullWaveOf(meshed(stacked, 4, 50e-6), stacked, two, ports, {1e9});
         QVERIFY2(joined.ok(), qPrintable(why(joined)));
         QVERIFY2(says(joined.lines, "are vias"), qPrintable(joined.lines.join(" | ")));
-        // A via over no metal it joins is left out, and said.
+        // A via over no metal it joins is left out, and warned of - said in
+        // the notes alone, a ground via drawn off the strip it was to short
+        // went with no word -; one joined, not.
         rf::Conductor stray = strip(900, 0, 50, 50);
         stray.layer = QStringLiteral("V1");
         const QList<rf::Conductor> astray{strip(0, 0, 400, 100), upper, joint, stray};
         const rf::FullWave left = rf::fullWaveOf(meshed(astray, 4, 50e-6), astray, two, ports, {1e9});
         QVERIFY2(left.ok(), qPrintable(why(left)));
-        QVERIFY2(says(left.lines, "land on no metal"), qPrintable(left.lines.join(" | ")));
+        QVERIFY2(says(left.lines, "land on no metal") && says(left.warnings, "a via drawn off the pads of its two metals joins nothing"),
+                 qPrintable(left.warnings.join(" | ")));
+        QVERIFY2(!says(joined.warnings, "land on no metal"), qPrintable(joined.warnings.join(" | ")));
         // More than the dense limit holds, a dense solve asked (unasked, it
         // is held compressed).
         const QList<rf::Conductor> plate{strip(0, 0, 1000, 1000)};
@@ -5249,6 +5454,191 @@ private slots:
                 qWarning("MIM at %g Hz: compressed %.6f fF, dense %.6f fF (%.2e)", fs.at(k), squeezed * 1e15, dense * 1e15, squeezed / dense - 1);
                 QVERIFY2(std::abs(squeezed / dense - 1) < 1e-4, qPrintable(QStringLiteral("%1 Hz: %2 against %3").arg(fs.at(k)).arg(squeezed).arg(dense)));
             }
+        }
+    }
+
+    // A sweep's near-field blocks kept from one frequency to the next on a
+    // thread (rf25_fullwave.cpp's NearBlocks, the floating structures of 19
+    // November): made to scale with the frequency by themselves, a lower
+    // frequency takes a higher one's as they are. The floating line over a
+    // decade and a half on one thread, from 1 kHz down to 1 Hz: factorized
+    // at the first frequency alone, the rest on its blocks, in as many
+    // iterations; its Z the same as factorized at every frequency, to
+    // GMRES's residual; and on three threads, twice, the same to the bit.
+    void aSweepKeepsItsNearFieldsBlocks()
+    {
+        rf::Stack st = grounded(9.8, 200e-6, 0, 0, 5.8e7);
+        st.layers.removeFirst();
+        const double l = 1000;
+        const QList<rf::Conductor> c = gssg(l);
+        const rf::Mesh mesh = meshed(c, 3, 100e-6);
+        const QList<double> fs{1e3, 300, 100, 30, 10, 3, 1};
+        QList<rf::FullWave> ways;
+        for (const bool reuse : {true, false}) {
+            rf::FullWaveControl control;
+            control.matrix = rf::FullWaveControl::Matrix::Compressed;
+            control.threads = 1;
+            control.reuseNear = reuse;
+            ways << rf::fullWaveOf(mesh, c, st, gssgPorts(l, false), fs, 1e-6, &control);
+            QVERIFY2(ways.last().ok(), qPrintable(why(ways.last())));
+            qWarning("%s: at most %d iterations", reuse ? "kept" : "made at each", ways.last().iterations);
+            QVERIFY2(ways.last().iterations < 60, qPrintable(QString::number(ways.last().iterations)));
+        }
+        QVERIFY2(says(ways.at(0).lines, "Of the 7 frequencies solved with the charges as unknowns of their own, 6 were preconditioned")
+                     && says(ways.at(0).lines, "1 factorized their own"),
+                 qPrintable(ways.at(0).lines.join(" | ")));
+        QVERIFY2(!says(ways.at(1).lines, "were preconditioned by the near field's blocks as a higher"), qPrintable(ways.at(1).lines.join(" | ")));
+        for (int k = 0; k < fs.size(); ++k) {
+            double most = 0, apart = 0;
+            for (int i = 0; i < 4; ++i)
+                for (int j = 0; j < 4; ++j) {
+                    most = std::max(most, std::abs(ways.at(1).z[k][i][j]));
+                    apart = std::max(apart, std::abs(ways.at(0).z[k][i][j] - ways.at(1).z[k][i][j]));
+                }
+            qWarning("%g Hz: kept within %.2e of made", fs.at(k), apart / most);
+            QVERIFY2(apart < 1e-8 * most, qPrintable(QStringLiteral("%1 Hz: %2").arg(fs.at(k)).arg(apart / most)));
+        }
+        // The same sweep on three threads, twice: each thread's frequencies
+        // dealt to it in turn (the highest to the first, and round), and the
+        // blocks outgrown on iterations alone - which blocks each frequency
+        // is solved on the sweep's and its threads', and Z the same to the
+        // bit from one run to the next, whatever else the machine is doing.
+        {
+            QList<rf::FullWave> runs;
+            for (int run = 0; run < 2; ++run) {
+                rf::FullWaveControl control;
+                control.matrix = rf::FullWaveControl::Matrix::Compressed;
+                control.threads = 3;
+                runs << rf::fullWaveOf(mesh, c, st, gssgPorts(l, false), fs, 1e-6, &control);
+                QVERIFY2(runs.last().ok(), qPrintable(why(runs.last())));
+                // (Three threads: three frequencies, two and two; four on
+                //  a higher one's blocks.)
+                QVERIFY2(says(runs.last().lines, "3 at a time") && says(runs.last().lines, "of their own, 4 were preconditioned"),
+                         qPrintable(runs.last().lines.join(" | ")));
+            }
+            for (int k = 0; k < fs.size(); ++k)
+                for (int i = 0; i < 4; ++i)
+                    for (int j = 0; j < 4; ++j)
+                        QVERIFY2(runs.at(0).z[k][i][j] == runs.at(1).z[k][i][j],
+                                 qPrintable(QStringLiteral("%1 Hz, Z%2%3 apart from one run to the next").arg(fs.at(k)).arg(i + 1).arg(j + 1)));
+        }
+        // A line of 20 µm of copper, its loss and its jw L changing places
+        // across the sweep: 10 MHz's blocks take 3 MHz 20 iterations where
+        // its own take 13, each frequency's own 11 to 14. Given 16, 3 MHz on
+        // 10 MHz's falls short, factorizes its own and is solved again - not
+        // with its charges eliminated -, its Z the same as made at every
+        // frequency.
+        {
+            const rf::Stack thick = grounded(9.8, 100e-6, 0, 20e-6, 5.8e7);
+            const QList<rf::Conductor> line{strip(0, 0, 2000, 100)};
+            const QList<double> down{1e7, 3e6, 1e6, 3e5, 1e5, 3e4, 1e4};
+            QList<rf::FullWave> both;
+            for (const bool reuse : {true, false}) {
+                rf::FullWaveControl control;
+                control.matrix = rf::FullWaveControl::Matrix::Compressed;
+                control.threads = 1;
+                control.reuseNear = reuse;
+                control.augmentedMost = 16;
+                both << rf::fullWaveOf(meshed(line, 4, 25e-6, 4), line, thick, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))}, down,
+                                       1e-6, &control);
+                QVERIFY2(both.last().ok(), qPrintable(why(both.last())));
+                QVERIFY2(!says(both.last().lines, "fell short"), qPrintable(both.last().lines.join(" | ")));
+                QVERIFY2(both.last().lines.filter(QStringLiteral("loops and a tree")).size() == down.size(),
+                         qPrintable(both.last().lines.join(" | ")));
+            }
+            // (And with no limit on its iterations, 10 MHz's blocks outgrown
+            //  at 3 MHz - 6 iterations past their 14, past kReuseShare -, a
+            //  later frequency factorizing its own.)
+            rf::FullWaveControl free;
+            free.matrix = rf::FullWaveControl::Matrix::Compressed;
+            free.threads = 1;
+            const rf::FullWave outgrown = rf::fullWaveOf(meshed(line, 4, 25e-6, 4), line, thick, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))},
+                                                         down, 1e-6, &free);
+            const QStringList said = outgrown.lines.filter(QStringLiteral("were preconditioned by the near field's blocks"));
+            qWarning("%s", qPrintable(said.join(' ')));
+            QVERIFY2(outgrown.ok() && said.size() == 1 && !said.first().contains(QStringLiteral("; 1 factorized their own")),
+                     qPrintable(outgrown.lines.join(" | ")));
+            for (int k = 0; k < down.size(); ++k) {
+                const Matrix2 kept = zOf(both.at(0), k), made = zOf(both.at(1), k);
+                QVERIFY2((kept - made).cwiseAbs().maxCoeff() < 1e-8 * made.cwiseAbs().maxCoeff(),
+                         qPrintable(QStringLiteral("%1 Hz: %2").arg(down.at(k)).arg((kept - made).cwiseAbs().maxCoeff() / made.cwiseAbs().maxCoeff())));
+            }
+        }
+    }
+
+
+    // A threaded sweep whose frequencies fall short with the charges as
+    // unknowns of their own, the same to the bit from one run to the next.
+    // Each thread skips them below a ratio of the charges' term it fell short
+    // at itself (solveCompressed()), not one another thread has got to -
+    // which, read from the sweep's record, made whether a frequency was
+    // tried the threads' race. The open line of
+    // aSolvePastItsLowFrequencyLimitSaysSo forced short (two iterations) on
+    // three threads, its frequencies dealt in turn from the highest: 1 MHz
+    // and 10 Hz on the first, 10 kHz and 1 Hz on the second, 1 kHz on the
+    // third - three fall short, the two below them on their threads not
+    // tried, and Z and every note the same twice over, and again with its
+    // frequencies let begin one at a time.
+    void aThreadedSweepThatFallsShortIsTheSameRunToRun()
+    {
+        const rf::Stack st = grounded(9.8, 100e-6, 0, 3e-6, 5.8e7);
+        const QList<rf::Conductor> cs{strip(0, 0, 2000, 100)};
+        const QList<double> fs{1, 10, 1e3, 1e4, 1e6};
+        QList<rf::FullWave> runs;
+        for (int run = 0; run < 2; ++run) {
+            rf::FullWaveControl control;
+            control.matrix = rf::FullWaveControl::Matrix::Compressed;
+            control.threads = 3;
+            control.augmentedMost = 2;
+            runs << rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, st, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))}, fs, 1e-6,
+                                   &control);
+            const rf::FullWave& w = runs.last();
+            QVERIFY2(w.ok() && says(w.lines, "3 at a time"), qPrintable(why(w) + w.lines.join(" | ")));
+            const QStringList fell = w.lines.filter(QStringLiteral("so solved with them eliminated"));
+            const QStringList skipped = w.lines.filter(QStringLiteral("fell short at a higher frequency of this sweep"));
+            QVERIFY2(fell.size() == 3 && skipped.size() == 2, qPrintable(w.lines.join(" | ")));
+            for (const char* f : {"At 1e+06 Hz", "At 1e+04 Hz", "At 1000 Hz"})
+                QVERIFY2(fell.join(' ').contains(QLatin1String(f)), qPrintable(fell.join(" | ")));
+            for (const char* f : {"At 10 Hz", "At 1 Hz"})
+                QVERIFY2(skipped.join(' ').contains(QLatin1String(f)), qPrintable(skipped.join(" | ")));
+        }
+        // And a third, its frequencies let begin one at a time, each after
+        // the last has ended, in whichever order the threads take them: the
+        // same again - whether a frequency is tried is its own thread's, not
+        // which of the others went first. (Read from one record for the
+        // sweep, five orders in six of the first three left fewer short.)
+        {
+            std::atomic_int tokens{0}, done{0};
+            rf::FullWaveControl control;
+            control.matrix = rf::FullWaveControl::Matrix::Compressed;
+            control.threads = 3;
+            control.augmentedMost = 2;
+            control.allowed = &tokens;
+            control.done = &done;
+            rf::FullWave gated;
+            std::thread solving([&] {
+                gated = rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, st, {edgePort(QPointF(0, 50)), edgePort(QPointF(2000, 50))}, fs, 1e-6,
+                                       &control);
+            });
+            QElapsedTimer clock;
+            clock.start();
+            for (int k = 0; k < fs.size() && clock.elapsed() < 120000; ++k) {
+                tokens = 1;
+                while (done.load() <= k && clock.elapsed() < 120000) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            tokens = -1;
+            solving.join();
+            QVERIFY2(gated.ok(), qPrintable(why(gated)));
+            runs << gated;
+        }
+        for (int r = 1; r < runs.size(); ++r) {
+            QCOMPARE(runs.at(r).lines, runs.at(0).lines);
+            QCOMPARE(runs.at(r).warnings, runs.at(0).warnings);
+            for (int k = 0; k < fs.size(); ++k)
+                for (int i = 0; i < 2; ++i)
+                    for (int j = 0; j < 2; ++j)
+                        QVERIFY2(runs.at(0).z[k][i][j] == runs.at(r).z[k][i][j],
+                                 qPrintable(QStringLiteral("run %4: %1 Hz, Z%2%3 apart from the first").arg(fs.at(k)).arg(i + 1).arg(j + 1).arg(r + 1)));
         }
     }
 };

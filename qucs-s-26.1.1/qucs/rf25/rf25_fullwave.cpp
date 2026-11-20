@@ -113,6 +113,14 @@ constexpr double kAugmentedFrom = 1e10;
 /// not converge below (step 5's follow-ups) - which this stands guard
 /// against.
 constexpr int kAugmentedMost = 300;
+/// A higher frequency's near-field blocks precondition a lower one's
+/// (NearBlocks) till a frequency on them takes more iterations past theirs
+/// there than kReuseSlack - GMRES's own scatter from one frequency to the
+/// next, fresh blocks or kept - and than kReuseShare of theirs: then the
+/// next factorizes its own. Of iterations alone, never of a clock, so that
+/// a sweep is the same to the bit from one run to the next.
+constexpr double kReuseShare = 0.15;
+constexpr int kReuseSlack = 2;
 /// An ended layer's correction to P (rf25_dielectric.h) held dense up to
 /// this many cells, as its factors past them.
 constexpr int kMostDenseCorrection = 5000;
@@ -303,7 +311,9 @@ QList<double> sharesOf(const Mesh& mesh, const QList<int>& cells, QPointF on, QP
         const QPointF unit = along / n, normal(-unit.y(), unit.x());
         for (int k = 0; k < cells.size(); ++k) {
             const QPolygonF& outline = mesh.cells.at(cells.at(k)).outline;
-            const double tol = 1e-6 * std::max(1.0, std::max(outline.boundingRect().width(), outline.boundingRect().height()));
+            // (Within the cuts' grid too, as faceCells() takes the cells.)
+            const double tol =
+                std::max(1e-6 * std::max(1.0, std::max(outline.boundingRect().width(), outline.boundingRect().height())), kBooleanGrid);
             for (int i = 0, m = int(outline.size()); i < m; ++i) {
                 const QPointF a = outline.at(i), b = outline.at((i + 1) % m);
                 const double offA = (a.x() - on.x()) * normal.x() + (a.y() - on.y()) * normal.y();
@@ -359,7 +369,7 @@ Beside besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>
     const QString layer = mesh.cells.at(face.first()).layer;
     QRectF all;
     for (const int c : reached) all = all.united(mesh.cells.at(c).outline.boundingRect());
-    const double tol = 1e-6 * std::max(1.0, std::max(all.width(), all.height()));
+    const double tol = std::max(1e-6 * std::max(1.0, std::max(all.width(), all.height())), kBooleanGrid);   // (faceCells()'s)
     // A cell's side along the line, as from and to along it.
     const auto sideOn = [&mesh, on, unit, normal, tol](int c, double* t0, double* t1) {
         const QPolygonF& outline = mesh.cells.at(c).outline;
@@ -913,10 +923,10 @@ private:
  * formulation adds for a vertical current must be taken at one place for
  * the two to cancel as they do along a whole path. \a spans gets each of the
  * stack's vias the mesh has, from the lower metal's height to the upper's;
- * \a said what was left out.
+ * \a warned what was left out.
  */
 QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre, QList<ViaGreen::Span>* spans,
-                        QStringList* said)
+                        QStringList* warned)
 {
     // The cell of metal \a metal under via cell \a v: the one whose outline
     // holds its centre, else the nearest whose box, grown by the via cell's
@@ -1015,9 +1025,13 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
         v.cells = g.cells;
         out << v;
     }
-    if (stranded > 0)
-        said->append(QCoreApplication::translate("qucs_s::rf25", "%1 via cell(s) land on no metal they join, and are left out.")
-                         .arg(stranded));
+    // (Warned of, not a line of the notes alone: a ground via drawn off the
+    //  strip it was to short went with no word, the line read through, S21
+    //  0.998 where on it 0.021.)
+    if (stranded > 0 && warned != nullptr)
+        warned->append(QCoreApplication::translate("qucs_s::rf25", "%1 via cell(s) land on no metal they join, and are left out: a "
+                                                                   "via drawn off the pads of its two metals joins nothing.")
+                           .arg(stranded));
     return out;
 }
 
@@ -1443,6 +1457,10 @@ struct AtFrequency {
     /// Compressed, so solved: the currents its loops' and its tree's, the
     /// ports' voltages along the tree (LoopTree).
     bool loopTree = false;
+    /// So solved, preconditioned by the near field's blocks as a higher
+    /// frequency of its thread factorized them (NearBlocks): the iterations
+    /// they took there.
+    int reusedFrom = 0;
     /// Dense: the seconds its fill took (the Green's functions, the system
     /// and P, up to its LU) and its LU (the factors, the solve, rcond: not
     /// its wait for OpenBLAS's thread), and whether Accelerate's LAPACK or
@@ -2084,23 +2102,27 @@ template <typename Add> void ownImpedances(const Context& c, double f, Add rawAd
         Complex own, across;
         faceImpedances(run.sigma, run.thickness, f, &own, &across);
         // The faces' even current's inside, the slab's, held to its
-        // section's (Context::inside): at a low frequency by its share k,
-        // and less and less of it once the two faces' skins part, at a skin
-        // depth half the thickness - X' = X (1 - (1 - k)/(1 + (t/2 delta)^4)),
-        // X the even mode's reactance -, until the current is on the faces'
-        // skins, whose reactance is a narrow conductor's as it is a wide
-        // one's. A square loop of wire took a wide slab's inside, six times
-        // its own beyond its faces' field, and read the more the finer its
-        // cells across. (Faded as the
-        // slab's own reactance falls, (X/X0)^2, it still took 40 % at four
-        // skin depths, and a 20 µm line of 3 µm gold read L 0.5 % lower at
-        // 10 GHz than its 2D eddy solve allows.)
+        // section's (Context::inside): never more than its share k of the
+        // slab's at a low frequency, X0 = omega mu0 t/6 a square for the two
+        // faces' even mode, nor than the slab's own at the frequency,
+        // X' = min(X, k X0). The slab's falls once its skins part, and
+        // where it falls under k X0 - some 3/k skin depths thick - the
+        // current is on the faces' skins, whose reactance is a narrow
+        // conductor's as it is a wide one's. A square loop of wire took a
+        // wide slab's inside, six times its own beyond its faces' field, and
+        // read the more the finer its cells across. Both non-increasing in X/omega, so is their least:
+        // the share faded as 1/(1 + (t/2 delta)^4), from whole to nought
+        // between one skin depth and three, went faster than the slab's own
+        // reactance fell, and gave back what it took - the loop's L rose 6 %
+        // over its value at direct current between 40 and 300 kHz, which no
+        // conductor's can.
         if (const double k = c.inside.value(a, 1.0); k < 1 && run.sigma > 0) {
-            const double halfDepths = run.thickness / 2 * std::sqrt(M_PI * f * kMu0 * run.sigma);
-            const double fade = 1 / (1 + std::pow(halfDepths, 4));
-            const Complex shift(0, -(1 - k) * fade * 0.5 * (own + across).imag());
-            own += shift;
-            across += shift;
+            const double even = (own + across).imag(), held = k * 2 * M_PI * f * kMu0 * run.thickness / 6;
+            if (even > held) {
+                const Complex shift(0, -0.5 * (even - held));
+                own += shift;
+                across += shift;
+            }
         }
         const QList<Context::Part>& parts = c.parts.value(a);
         if (!parts.isEmpty()) {
@@ -3539,6 +3561,38 @@ Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, c
 }
 
 /*!
+ * The near field's blocks with the charges as unknowns of their own
+ * (solveCompressed()), factorized at one frequency and kept for the next
+ * on its thread. They precondition alone, and are made so that they scale
+ * with the frequency by themselves: the tree runs' block as jw times its
+ * own, jw N_tt + A_t^T P A_t, its N_tt under 10^-10 of the rest wherever
+ * the charges are unknowns of their own and P all but static there - its
+ * right-hand side times the frequency's own jw -; the loops' with N over
+ * its mean diagonal, each frequency's own mean dividing what it is given.
+ * So a lower frequency takes a higher one's as they are, its own near
+ * field made and multiplied fresh. Where its metals' loss and their jw L
+ * change places across the sweep the loops' block moves with them, and the
+ * iterations grow - on the thick comb of 1 µm fingers, 100 at 1 GHz where
+ * they were made, then 103, 131 and 199 a frequency at a time down to 30
+ * MHz, where each made fresh took 70 to 86. So they are outgrown once a
+ * frequency on them takes more iterations past theirs than kReuseSlack and
+ * than kReuseShare of theirs: there factorizing cost some 30 iterations,
+ * 2.6 s at 0.085 s each - 0.3 of the blocks' 100 -, and the excess grew
+ * threefold a step, so that past half of that the next frequency's is like
+ * to cost the whole. A frequency short on them factorizes its own and is
+ * solved again before its charges are eliminated. One a thread: a sweep's
+ * frequencies side by side never share one, and some LUs' solves are not
+ * to be called from two threads at once; and each thread's frequencies
+ * dealt to it in turn, not as it comes free (fullWaveOf()), so that which
+ * blocks a frequency is solved on is the sweep's and its threads' alone.
+ */
+struct NearBlocks {
+    fem::SparseLu<Complex> tree, loops;
+    bool held = false;   ///< factorized, and not yet outgrown
+    int iterations = 0;  ///< the most a port took at the frequency that factorized them
+};
+
+/*!
  * One frequency solved compressed: the matrices filled block by block,
  * each low rank where it can be; the near field's LU; each port's column
  * by GMRES, preconditioned by it; and the ports' Z from the currents
@@ -3553,7 +3607,7 @@ Eigen::SparseMatrix<Complex> nearField(const Context& c, const Compression& z, c
  * square of I's - symmetric, where M is.
  */
 AtFrequency solveCompressed(const Context& c, const Compression& z, double f, int threads, const FullWaveControl* control,
-                            std::atomic<double>* shortAt = nullptr)
+                            double* shortAt = nullptr, NearBlocks* kept = nullptr)
 {
     const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
     const int most = control != nullptr && control->mostIterations > 0 ? control->mostIterations : kMostIterations;
@@ -3638,10 +3692,15 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
     //  term in this sweep, a higher frequency: the ratio only grows as the
     //  frequency falls, and an open line's sweep spent kAugmentedMost
     //  iterations a frequency on it - the review of
-    //  0a6ae44e.)
-    if (augmented && shortAt != nullptr && out.chargeOverSeries >= shortAt->load()) {
+    //  0a6ae44e. Of the higher frequencies its own thread has solved, as
+    //  each thread's are dealt to it in turn, not of what the others have
+    //  got to: whether it is tried the sweep's and its threads' alone, the
+    //  same to the bit from one run to the next. Each thread falls short
+    //  once at most before it skips - as the threads under way did when the
+    //  record was the sweep's -, and none waits on another's.)
+    if (augmented && shortAt != nullptr && out.chargeOverSeries >= *shortAt) {
         augmented = false;
-        out.augmentedShortAt = shortAt->load();
+        out.augmentedShortAt = *shortAt;
     }
     System system{c, z, kx, ky, p, phi, g, d, jw, !augmented};
     fem::SparseLu<Complex> lu;
@@ -3733,7 +3792,13 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
     // iterations for 45, the rest as many: left out, the preconditioner one
     // linear operator, as GMRES wants it.
     Eigen::SparseMatrix<Complex> nearRuns, nearP;
-    fem::SparseLu<Complex> treeLu, loopLu;
+    // (Kept from a higher frequency on this thread where it may be:
+    //  NearBlocks.)
+    NearBlocks alone;
+    NearBlocks& blocks = kept != nullptr && (control == nullptr || control->reuseNear) ? *kept : alone;
+    fem::SparseLu<Complex>& treeLu = blocks.tree;
+    fem::SparseLu<Complex>& loopLu = blocks.loops;
+    bool reused = false;
     std::vector<int> treeRuns;
     for (int a = 0; a < nr; ++a)
         if (loops.tree(a)) treeRuns.push_back(a);
@@ -3744,7 +3809,7 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
         const VectorC v = nearP * (x.tail(nc) / jw);
         VectorC rt(nt);
         for (int j = 0; j < nt; ++j) rt[j] = rr[treeRuns[std::size_t(j)]] + dropOf(v, treeRuns[std::size_t(j)]);
-        const VectorC t = nt > 0 ? VectorC(treeLu.solve(rt)) : VectorC();
+        const VectorC t = nt > 0 ? VectorC(treeLu.solve(jw * rt)) : VectorC();
         VectorC along = VectorC::Zero(nr);
         for (int j = 0; j < nt; ++j) along[treeRuns[std::size_t(j)]] = t[j];
         VectorC b = VectorC::Zero(na);
@@ -3773,7 +3838,15 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
                                                   : std::abs(diagonal[a]);
                 scale[a] = size > 0 ? 1 / size : 1.0;
             }
-            // (The blocks, of the near field's parts: above.)
+            // (The blocks, of the near field's parts: above - kept from a
+            //  higher frequency where they hold, NearBlocks.)
+            double sum = 0;
+            for (int a = 0; a < nr; ++a) sum += std::abs(diagonal[a]);
+            loopScale = sum > 0 ? sum / nr : 1.0;
+            reused = blocks.held;
+        }
+        if (augmented && !reused) {
+            blocks.held = false;
             std::vector<Eigen::Triplet<Complex>> terms;
             for (int a = 0; a < nr; ++a) {
                 if (c.tail.at(a) >= 0) terms.emplace_back(c.tail.at(a), a, Complex(1, 0));
@@ -3786,16 +3859,13 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
             pick.setFromTriplets(terms.begin(), terms.end());
             const Eigen::SparseMatrix<Complex> onTree = incidence * pick;
             Eigen::SparseMatrix<Complex> tree = Eigen::SparseMatrix<Complex>(pick.transpose()) * nearRuns * pick;
-            Eigen::SparseMatrix<Complex> charged = Eigen::SparseMatrix<Complex>(onTree.transpose()) * (nearP * onTree);
-            charged /= jw;
+            tree *= jw;
+            const Eigen::SparseMatrix<Complex> charged = Eigen::SparseMatrix<Complex>(onTree.transpose()) * (nearP * onTree);
             tree += charged;
             tree.makeCompressed();
             if (nt > 0) treeLu.compute(tree);
             // (The loops' rows scaled to the runs' own sizes, so that psi is
-            //  of A's.)
-            double sum = 0;
-            for (int a = 0; a < nr; ++a) sum += std::abs(diagonal[a]);
-            loopScale = sum > 0 ? sum / nr : 1.0;
+            //  of A's: loopScale, above.)
             std::vector<char> pinned(std::size_t(nc), 0);
             for (int m = 0; m < loops.components(); ++m)
                 if (loops.rootCell(m) >= 0) pinned[std::size_t(loops.rootCell(m))] = 1;
@@ -3816,7 +3886,9 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
             held.makeCompressed();
             loopLu.compute(held);
             failed = nt > 0 && treeLu.info() != Eigen::Success ? &treeLu : loopLu.info() != Eigen::Success ? &loopLu : nullptr;
-        } else {
+            blocks.held = failed == nullptr;
+            blocks.iterations = 0;
+        } else if (!augmented) {
             lu.compute(nearField(c, z, k, own));
             failed = lu.info() != Eigen::Success ? &lu : nullptr;
         }
@@ -3860,13 +3932,17 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
             out.iterations = std::max(out.iterations, solved.iterations);
             out.residual = std::max(out.residual, solved.residual);
             if (augmented) {
+                // (Short on a higher frequency's blocks: its own made, and
+                //  tried again, before the charges are eliminated.)
+                if (!solved.converged && reused) {
+                    blocks.held = false;
+                    again = true;
+                    break;
+                }
                 if (!solved.converged) {
+                    blocks.held = false;
                     out.augmentedTried = out.iterations;
-                    if (shortAt != nullptr) {
-                        double was = shortAt->load();
-                        while (out.chargeOverSeries < was && !shortAt->compare_exchange_weak(was, out.chargeOverSeries)) {
-                        }
-                    }
+                    if (shortAt != nullptr) *shortAt = std::min(*shortAt, out.chargeOverSeries);
                     augmented = false;
                     again = true;
                     break;
@@ -3878,6 +3954,18 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
             current.col(q) = x;
             system(x, mx);
             applied.col(q) = mx;
+        }
+    }
+    // (The blocks' own iterations where they were made; outgrown where a
+    //  frequency on them takes past those more than kReuseSlack and
+    //  kReuseShare of them.)
+    if (augmented) {
+        if (!reused)
+            blocks.iterations = out.iterations;
+        else {
+            out.reusedFrom = std::max(1, blocks.iterations);
+            const int past = out.iterations - blocks.iterations;
+            if (past > kReuseSlack && past > kReuseShare * blocks.iterations) blocks.held = false;
         }
     }
     // Short of its residual: where what it left is small - the ports' Z is
@@ -4375,8 +4463,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     out.warnings << given.warnings;
     // A metal solved as its two faces is two sheets and the walls that join
     // them, which is what the rest solves (thickened()); what is handed
-    // back is of the mesh as given.
-    const Thickened thick = thickened(givenStack, givenConductors, given);
+    // back is of the mesh as given. Which metals are films, of the
+    // conductors whole on a plane of symmetry, as the mesh has them.
+    const bool halved = control != nullptr && control->symmetry.axis != 0;
+    const QList<Conductor> wholeGiven =
+        halved ? withMirrors(givenConductors, control->symmetry.axis, control->symmetry.at / micrometre) : QList<Conductor>();
+    const Thickened thick = thickened(givenStack, givenConductors, given, halved ? &wholeGiven : nullptr);
     const Mesh& mesh = thick.mesh;
     const QList<Conductor>& conductors = thick.conductors;
     const Stack& stack = thick.stack;
@@ -4768,6 +4860,15 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // and how much of a wide slab's inside its faces hold there
     // (Context::inside).
     if (thick.any) {
+        // (Beyond a magnetic wall the conductor's mirror is there, its
+        //  current even across the plane: its breadth the whole's. Of the
+        //  half's, a strip the plane halves along its length was half as
+        //  broad, its share of a slab's inside the less, and a 100 by 50 µm
+        //  line's series reactance 0.75 % under the whole's.)
+        const QList<Conductor> mirrored = c.symAxis != 0 && c.symCharge > 0
+                                              ? withMirrors(conductors, c.symAxis, c.symAt / micrometre) : conductors;
+        QHash<QString, QList<int>> mirroredOn;
+        for (int s = 0; s < mirrored.size(); ++s) mirroredOn[mirrored.at(s).layer] << s;
         c.inside = QList<double>(c.planar, 1.0);
         for (int a = 0; a < c.planar; ++a) {
             const Filament& run = c.runs.at(a);
@@ -4777,14 +4878,14 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (!(length > 0)) continue;
             const QPointF normal(-d.y() / length, d.x() / length), middle = (run.from + run.to) / (2 * micrometre);
             QList<QPolygonF> outlines;
-            for (const int s : shapesOn.value(mesh.cells.at(ends.at(a).first).layer)) outlines << conductors.at(s).outline;
+            for (const int s : mirroredOn.value(mesh.cells.at(ends.at(a).first).layer)) outlines << mirrored.at(s).outline;
             const double across = breadthAcross(outlines, middle, normal, 100 * run.thickness / micrometre);
             const double breadth = across > 0 ? across * micrometre : run.width;
             c.inside[a] = facesInside(std::max(breadth, run.width), run.thickness);
         }
     }
-    QStringList viaSaid;
-    const QList<ViaRun> viaRuns = viaRunsOf(mesh, stack, micrometre, &c.spans, &viaSaid);
+    QStringList viaWarned;
+    const QList<ViaRun> viaRuns = viaRunsOf(mesh, stack, micrometre, &c.spans, &viaWarned);
     int grounded = 0;
     QSet<int> walled;   // (the runs that are a metal's walls, between its faces)
     for (const ViaRun& v : viaRuns) {
@@ -4935,6 +5036,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     QList<int> columnReturn;
     QList<int> naming;
     QStringList drivesSaid = QStringList(QList<QString>(np));
+    QList<Conductor> placedOn;   // (the conductors whole, on a plane of symmetry: portPlace())
     for (int p = 0; p < np; ++p) {
         const FullWavePort& port = ports.at(p);
         const QString& name = out.portNames.at(p);
@@ -5018,9 +5120,18 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         // On the edge it drives (portPlace()): taken however far it was, a
         // port off the layout drove the nearest face, one inside a strip its
         // long side, one facing the wrong way its far end, nothing said.
-        switch (portPlace(conductors, port.at, port.metal, port.facing)) {
+        // (Of the conductors whole on a plane of symmetry, their mirrors
+        //  joined to them: the cut along the plane is no edge, and a port
+        //  moved a hair off the plane is not on a corner of it.)
+        if (c.symAxis != 0 && placedOn.isEmpty()) placedOn = withMirrors(conductors, c.symAxis, c.symAt / micrometre);
+        switch (portPlace(c.symAxis != 0 ? placedOn : conductors, port.at, port.metal, port.facing)) {
         case PortPlace::OnEdge:
             break;
+        case PortPlace::OnCorner:
+            out.problems << tr("%1, at %2, %3 µm, is on a corner, where two edges meet: give it the facing of the edge it is to "
+                               "drive, or move it along that edge.")
+                                .arg(name, x, y);
+            return out;
         case PortPlace::FacingOtherWay:
             out.problems << tr("%1, at %2, %3 µm, is on an edge that does not face the way it is said to: turn its facing "
                                "to the edge's outward side, or leave it to the edge.")
@@ -5871,20 +5982,33 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     std::iota(order.begin(), order.end(), 0);
     if (compress)
         std::stable_sort(order.begin(), order.end(), [&frequencies](int a, int b) { return frequencies.at(a) > frequencies.at(b); });
-    std::atomic<double> shortAt{std::numeric_limits<double>::infinity()};
-    const auto work = [&c, &z, &frequencies, &solved, &next, &failed, &order, &shortAt, control, nf, compress, inner, symmetricLu] {
+    // (Each thread's own, kept from one of its frequencies to its next,
+    //  lower one: the near field's blocks, NearBlocks; and the least ratio of
+    //  the charges' term it fell short at, solveCompressed().)
+    std::vector<NearBlocks> kept(static_cast<std::size_t>(side));
+    std::vector<double> shortAt(static_cast<std::size_t>(side), std::numeric_limits<double>::infinity());
+    const auto work = [&c, &z, &frequencies, &solved, &next, &failed, &order, &shortAt, &kept, control, nf, compress, inner,
+                       side, symmetricLu](int thread) {
         const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
-        for (int n = next++; n < nf; n = next++) {
+        // (Compressed, each thread's frequencies dealt to it in turn - the
+        //  highest to the first, the next to the second, and round -, not
+        //  as it comes free: which kept blocks a frequency is solved on
+        //  (NearBlocks) the sweep's and its count of threads' alone, the
+        //  same to the bit from one run to the next. The frequencies cost
+        //  much alike, and dealt in the descending order each thread's share
+        //  spans the sweep.)
+        for (int n = compress ? thread : next++; n < nf; n = compress ? n + side : next++) {
             const int k = order[std::size_t(n)];
             if (failed || (stop != nullptr && stop->load())) return;
             if (!allowedOne(control)) return;
-            solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, control, &shortAt)
+            solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, control, &shortAt[std::size_t(thread)], &kept[std::size_t(thread)])
                                                 : solveAt(c, frequencies.at(k), inner, symmetricLu, control != nullptr ? control->augmentedFrom : 0.0);
             if (!solved[std::size_t(k)].problems.isEmpty()) failed = true;
             if (control != nullptr && control->done != nullptr) ++*control->done;
         }
     };
-    onThreads(side, [&work](int) { work(); });
+    onThreads(side, [&work](int thread) { work(thread); });
+    kept.clear();
     if (control != nullptr && control->stop != nullptr && control->stop->load()) {
         int done = 0;
         for (const AtFrequency& a : std::as_const(solved)) done += a.z.size() > 0 ? 1 : 0;
@@ -5927,6 +6051,18 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                          .arg(nr + nc).arg(most).arg(1.0 / z.tolerance, 0, 'g', 3).arg(out.largestRank)
                          .arg(size(out.memory), size(out.denseMemory)).arg(inner).arg(out.iterations)
                          .arg(out.residual, 0, 'g', 2);
+        // (The near field's blocks kept from one frequency to the next on a
+        //  thread: NearBlocks.)
+        int looped = 0, reused = 0;
+        for (const AtFrequency& a : std::as_const(solved)) {
+            looped += a.loopTree ? 1 : 0;
+            reused += a.loopTree && a.reusedFrom > 0 ? 1 : 0;
+        }
+        if (reused > 0)
+            out.lines << tr("Of the %1 frequencies solved with the charges as unknowns of their own, %2 were preconditioned "
+                            "by the near field's blocks as a higher frequency of their thread factorized them, scaled by "
+                            "their own jw; %3 factorized their own.")
+                             .arg(looped).arg(reused).arg(looped - reused);
         // (Each frequency's GMRES short of its residual, or near its limit.)
         for (const AtFrequency& a : std::as_const(solved))
             for (const QString& w : a.warnings) {
@@ -5995,7 +6131,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                         "ground or from the metal an internal port is driven from, with the field a via's current has: "
                         "part of each port's own discontinuity.")
                          .arg(c.paths.size());
-    out.lines << viaSaid;
+    out.lines << viaWarned;
+    out.warnings << viaWarned;
     // A metal lid: what it is, and what its guide does to the ports.
     if (c.layers.groundAbove) {
         double gap = 0;
