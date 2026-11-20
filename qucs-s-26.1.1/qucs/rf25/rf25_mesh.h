@@ -266,7 +266,13 @@ struct Thickened {
     /// what the solvers made and the caller did not.
     bool made(const QString& layer) const;
 };
-Thickened thickened(const Stack& stack, const QList<Conductor>& conductors, const Mesh& mesh);
+/// \a whole, given, the conductors whole where \a conductors are a plane
+/// of symmetry's half (withMirrors()): the film rule - a metal thin beside
+/// its narrowest conductor one sheet - is of the whole's widths, which the
+/// half's halved where the plane cuts a strip along its length; and the
+/// cut along the plane is no edge, to stand walls along.
+Thickened thickened(const Stack& stack, const QList<Conductor>& conductors, const Mesh& mesh,
+                    const QList<Conductor>* whole = nullptr);
 
 /*!
  * The charge on the side walls of a metal solved as its two faces, which

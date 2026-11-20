@@ -72,10 +72,13 @@ double numberIn(const Node& node, const QString& key, const fem::Scope& scope, d
     const QString text = textOf(node, key);
     if (text.trimmed().isEmpty()) return fallback;
     const fem::Expression e = fem::Expression::compile(text, scope);
-    if (!e.isValid() || !e.isConstant()) {
+    if (!e.isValid() || !e.isConstant() || !std::isfinite(e.constant())) {
         if (problems != nullptr)
             *problems << tr("%1: %2 is not a number (%3).")
-                             .arg(where, key, e.isValid() ? tr("it is not a constant") : e.error());
+                             .arg(where, key,
+                                  !e.isValid()      ? e.error()
+                                  : !e.isConstant() ? tr("it is not a constant")
+                                                    : tr("it comes to %1, no finite number").arg(e.constant()));
         return fallback;
     }
     return e.constant();
@@ -1522,6 +1525,10 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         narrowest = finest = 0;
         strips = 0;
         facing = 0;
+        // (Over every piece too, not each alone: 2,000 pads of 20 µm at a
+        //  largest cell of 0.1 µm, each under the bound, were cut into
+        //  8e7 cells, 29 GB and 18 s before the whole was found too many.)
+        double total = 0;
         for (Piece& piece : pieces) {
             const Conductor& conductor = conductors.at(piece.conductor);
             const QRectF bounds = piece.box;
@@ -1549,10 +1556,15 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             // (Counted before the lines are made: a fine grid over a large
             // layout would be millions of them.)
             const double squares = std::ceil(bounds.width() / stepX) * std::ceil(bounds.height() / stepY);
+            total += squares;
             if (squares > 4.0 * pieceMost) {
                 *many = squares;
                 return false;
             }
+            // (Past the bound, the rest counted, no lines made: the layout's
+            //  number said, not where the sum crossed it - 2.8e+05 for the
+            //  pads' 8.16e+07, the review of 639258e6.)
+            if (total > 4.0 * pieceMost) continue;
             static const double none[4] = {0, 0, 0, 0};
             const double* gap = round ? none : piece.gap;
             const bool edges = how.edges && !round;
@@ -1571,6 +1583,10 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             if (narrowest <= 0 || feature < narrowest) narrowest = feature;
             if (finest <= 0 || across < finest) finest = across;
             if (strip) ++strips;
+        }
+        if (total > 4.0 * pieceMost) {
+            *many = total;
+            return false;
         }
         // Each meeting's lines made both pieces', until none gains any: a
         // line one takes may lie where it meets a third.
@@ -1672,14 +1688,17 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             }
         }
         shareAll(false);
+        // (The squares of every piece counted before any is made.)
+        double squaresAll = 0;
+        for (const Piece& piece : std::as_const(pieces)) squaresAll += double(piece.xs.size() - 1) * double(piece.ys.size() - 1);
+        if (squaresAll > 4.0 * pieceMost) {
+            *many = squaresAll;
+            return false;
+        }
         for (const Piece& piece : std::as_const(pieces)) {
             const Conductor& conductor = conductors.at(piece.conductor);
             const QList<double>& xs = piece.xs;
             const QList<double>& ys = piece.ys;
-            if (double(xs.size() - 1) * double(ys.size() - 1) > 4.0 * pieceMost) {
-                *many = double(xs.size() - 1) * double(ys.size() - 1);
-                return false;
-            }
             for (int i = 0; i + 1 < xs.size(); ++i)
                 for (int j = 0; j + 1 < ys.size(); ++j) {
                     const QRectF square(QPointF(xs.at(i), ys.at(j)), QPointF(xs.at(i + 1), ys.at(j + 1)));
@@ -1717,8 +1736,8 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             bool strip = false;
             const QList<MeshCell> cells =
                 stripCells(conductors.at(c), quadsOf.at(c), size, perFeature, how.stretch, how.edges, &across, &strip);
-            if (double(cells.size()) > 4.0 * pieceMost) {
-                *many = double(cells.size());
+            if (double(mesh.cells.size() + cells.size()) > 4.0 * pieceMost) {
+                *many = double(mesh.cells.size() + cells.size());
                 return false;
             }
             for (const MeshCell& cell : cells) {
@@ -1774,9 +1793,19 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         mesh.lines << w;
         mesh.warnings << w;
     } else if (perFeature < how.cellsAcross) {
-        const QString w = tr("Fewer cells across a conductor do not bring the mesh within the %1 this build solves: the "
-                             "largest cell, or the wavelength, sets the size there - ask for a larger largest cell.")
-                              .arg(most);
+        // (Which sets the size: at one across, a conductor narrower than the
+        //  largest cell has cells as narrow as it, whatever the largest cell
+        //  - a wedge 0.5 µm at its base was told to ask for a larger one, and
+        //  a largest cell of 1000 µm made the same 9,992 cells as one of 20.)
+        const QString w = finest > 0 && finest < size * (1 - 1e-9)
+                              ? tr("Fewer cells across a conductor do not bring the mesh within the %1 this build solves: at one "
+                                   "cell across, its narrowest conductor, %2 µm across, has cells of %3 µm, whatever the largest "
+                                   "cell - widen or drop what is that narrow (a sliver, a wedge's point), or raise Most cells on "
+                                   "the Mesh node.")
+                                    .arg(most).arg(narrowest, 0, 'g', 3).arg(finest, 0, 'g', 3)
+                              : tr("Fewer cells across a conductor do not bring the mesh within the %1 this build solves: the "
+                                   "largest cell, or the wavelength, sets the size there - ask for a larger largest cell.")
+                                    .arg(most);
         mesh.lines << w;
         mesh.warnings << w;
     }
@@ -1964,6 +1993,13 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // than about twice as tall as it is wide, whose faces' field alone holds
     // more than its section's. The loop inductance (rf25_inductance) takes
     // each run as the bar it is.
+    //
+    // (Which metals are their faces as the solvers decide it, thickened()'s
+    // facesDecided(), not the stack's flags: an Automatic metal with no gap
+    // beside it is a sheet, which this took for faces and said nothing of -
+    // a lone wire 10 µm wide of 8 µm metal read L 27 % high. Of the conductors whole, their mirrors with them.)
+    Stack decided = stack;
+    const QStringList facedMetals = facesDecided(&decided, conductors, mesh.gapByLayer, nullptr);
     {
         // (Each conductor's width conductorWidthOf()'s: a square pad's its
         //  side, where twice its area over its perimeter, half that, warned
@@ -1979,7 +2015,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             if (metal == nullptr || metal->kind != Layer::Metal || !(metal->thickness > 0)) continue;
             const double t = metal->thickness / perUnit, w = it.value();
             if (t < kThickForInductance * w) continue;
-            const bool faces = metal->twoSheets || metal->automatic;
+            const bool faces = facedMetals.contains(it.key());
             if (faces && facesInside(w, t) > 0) continue;
             const QString said = faces
                                      ? tr("%1 is %2 µm thick on conductors as narrow as %3 µm: solved as its two faces, a "
@@ -1992,7 +2028,10 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                                           "wave's inductance at a low frequency reads high - some 40 % on a wire as thick as it "
                                           "is wide, by about (mu0/2pi) ln((w + t)/w) a metre and the inside's mu0 t/12 a square. "
                                           "Solved as faces (the metal's Solved as) it is nearer; rf25_inductance takes it as the bar it is.")
-                                           .arg(it.key()).arg(t, 0, 'g', 3).arg(w, 0, 'g', 3);
+                                           .arg(it.key()).arg(t, 0, 'g', 3).arg(w, 0, 'g', 3)
+                                         + (metal->automatic ? tr(" (Its Solved as is Automatic, which takes a metal for a sheet where "
+                                                                  "no gap narrow beside its thickness faces it.)")
+                                                             : QString());
             mesh.warnings << said;
             mesh.lines << said;
         }
@@ -2177,8 +2216,8 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // and a wall up from each cell along its conductor's edge (thickened()):
     // the metals the solvers take so (facesDecided()) - a film a sheet, an
     // Automatic metal its faces where it is thick beside its gaps.
-    Stack decided = stack;
-    const QStringList facedMetals = facesDecided(&decided, given, mesh.gapByLayer, nullptr);
+    // (facedMetals above: of the conductors whole, their mirrors with them,
+    //  as thickened() is given them on a plane of symmetry.)
     const auto twoFaces = [&facedMetals](const QString& layer) { return facedMetals.contains(layer); };
     int unknowns = 0, charges = int(mesh.cells.size());
     for (auto it = shared.constBegin(); it != shared.constEnd(); ++it)
@@ -2229,13 +2268,15 @@ bool Thickened::made(const QString& layer) const
     return l != nullptr && (l->face == Layer::Top || l->face == Layer::Walls);
 }
 
-Thickened thickened(const Stack& given, const QList<Conductor>& conductors, const Mesh& mesh)
+Thickened thickened(const Stack& given, const QList<Conductor>& conductors, const Mesh& mesh, const QList<Conductor>* whole)
 {
     Thickened out;
     // (Which metals are their two faces: facesDecided(), as the mesh counts
-    //  its charges by.)
+    //  its charges by - of the whole on a plane of symmetry: a 1.5 µm metal
+    //  on a 100 µm line was a film whole and two faces in its half, Z21 0.85
+    //  % apart and twice the charges.)
     Stack stack = given;
-    const QStringList metals = facesDecided(&stack, conductors, mesh.gapByLayer, &out.said);
+    const QStringList metals = facesDecided(&stack, whole != nullptr ? *whole : conductors, mesh.gapByLayer, &out.said);
     out.stack = stack;
     out.conductors = conductors;
     out.mesh = mesh;
@@ -2363,8 +2404,11 @@ Thickened thickened(const Stack& given, const QList<Conductor>& conductors, cons
             const QPointF middle = (a + b) / 2;
             if (outline.containsPoint(middle + outward * (1e-3 * length), Qt::OddEvenFill)) outward = -outward;
             const QPointF probe = middle + outward * (1e-4 * size);
+            // (Of the conductors whole on a plane of symmetry: the cut along
+            //  it is no edge, and walls stood along it - a 50 µm metal's
+            //  half 8e-4 off the whole in its series reactance.)
             bool covered = false;
-            for (const Conductor& shape : conductors)
+            for (const Conductor& shape : whole != nullptr ? *whole : conductors)
                 if (shape.layer == cell.layer && shape.outline.boundingRect().contains(probe)
                     && shape.outline.containsPoint(probe, Qt::OddEvenFill)) {
                     covered = true;

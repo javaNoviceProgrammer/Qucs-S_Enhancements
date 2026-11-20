@@ -37,6 +37,14 @@ struct Layout;
 
 namespace qucs_s::rf25 {
 
+/// The grid the layout's boolean operations round to (merging, clipping,
+/// offsets: gdstk's, at its inverse), in the layout's units - micrometres:
+/// a nanometre, finer than any layout's database unit. A corner they make,
+/// a cell's where a slanted side cuts it among them, is up to half of it
+/// off on each axis, so that a side a cut leaves along a slanted edge lies
+/// up to 0.7 nm off that edge's line.
+inline constexpr double kBooleanGrid = 1e-3;
+
 /// \a polygon's area, positive whichever way it is wound.
 double areaOf(const QPolygonF& polygon);
 /// The length of \a polygon's boundary.

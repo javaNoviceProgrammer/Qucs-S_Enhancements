@@ -468,6 +468,25 @@ private slots:
             QVERIFY2(std::abs(l.at(k) / eddy[k] - 1) < 0.04, qPrintable(said.join(QStringLiteral("; "))));
             if (k > 0) QVERIFY2(l.at(k) <= l.at(k - 1) * (1 + 1e-4), qPrintable(said.join(QStringLiteral("; "))));
         }
+        // Deeper in its skin, 12 and 24 skin depths at 40 GHz (sigma
+        // scaled), past the 17 where the slab's own reactance falls under
+        // the section's share of it at a low frequency and the faces' own
+        // is taken whole: L' -0.81 and +0.94 % from the eddy solve's, and
+        // falling. (Held at the share there too, it read +1.36 % at 24.)
+        QList<double> deep;
+        const double eddyDeep[] = {334.616, 326.017};
+        for (const double depths : {12.0, 24.0}) {
+            const double s = depths * depths / (M_PI * 40e9 * 4e-7 * M_PI * t * t * 1e-12);
+            const rf::Stack in = stackOf(QStringLiteral("perfect"), 10e-6, 1.0, t * 1e-6, s, true);
+            const rf::Calibration at = rf::calibrate(in, how, 0, feedOf(10, 0, 0), {40e9});
+            QVERIFY2(at.ok(), qPrintable(at.problems.join(" | ")));
+            deep << rlOf(at, 0).second * 1e9;
+        }
+        qInfo("12 and 24 skin depths: %.3f and %.3f nH/m (%+.2f and %+.2f %%)", deep.at(0), deep.at(1), 100 * (deep.at(0) / eddyDeep[0] - 1),
+              100 * (deep.at(1) / eddyDeep[1] - 1));
+        QVERIFY2(deep.at(1) < deep.at(0) && deep.at(0) < l.last(), qPrintable(QStringLiteral("%1 %2").arg(deep.at(0)).arg(deep.at(1))));
+        for (int k = 0; k < 2; ++k)
+            QVERIFY2(std::abs(deep.at(k) / eddyDeep[k] - 1) < 0.012, qPrintable(QStringLiteral("%1 against %2").arg(deep.at(k)).arg(eddyDeep[k])));
     }
 
     // The five reference lines, full wave as the tab meshes them, each

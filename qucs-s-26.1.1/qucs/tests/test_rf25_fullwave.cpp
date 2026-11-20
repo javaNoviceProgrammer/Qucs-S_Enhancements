@@ -24,6 +24,8 @@
 #include "rf25/rf25_dense.h"
 #include "rf25/rf25_fast.h"
 #include "rf25/rf25_fullwave.h"
+#include "rf25/rf25_inductance.h"
+#include "rf25/rf25_sparams.h"
 #include "rf25/rf25_edge.h"
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_static.h"
@@ -2962,6 +2964,40 @@ private slots:
         }
     }
 
+    // A number an expression comes to that is not finite is refused, where
+    // it was taken: a substrate "1/0" thick
+    // read as infinity, no problem said, and the charge solve was at work
+    // for ever; a permittivity of "0/0" solved to answers said to be right;
+    // a lumped element's R of "0/0" passed its check of nought or above as
+    // NaN, its S NaN and said to be right.
+    void aNumberThatIsNotFiniteIsRefused()
+    {
+        for (const char* text : {"0/0", "1/0", "sqrt(-1)"}) {
+            rf::Model m = rf::Model::blank();
+            rf::Node e = m.make(QStringLiteral("rf_internal_port"));
+            e.label = QStringLiteral("R9");
+            e.props.insert(QStringLiteral("element"), QStringLiteral("lumped"));
+            e.props.insert(QStringLiteral("r"), QString::fromLatin1(text));
+            for (rf::Node& n : m.root.children)
+                if (n.type == QStringLiteral("rf_ports")) n.children.push_back(e);
+            QString problem;
+            QVERIFY2(rf::portsOf(m, &problem).isEmpty() && problem.contains(QStringLiteral("R9")), qPrintable(QString::fromLatin1(text) + ": " + problem));
+        }
+        for (const QString key : {QStringLiteral("thickness"), QStringLiteral("epsr")})
+            for (const char* text : {"0/0", "1/0"}) {
+                rf::Model m = rf::Model::blank();
+                for (rf::Node& n : m.stackNode().children)
+                    if (n.type == QStringLiteral("rf_substrate")) n.props.insert(key, QString::fromLatin1(text));
+                const rf::Stack st = m.stack();
+                QVERIFY2(says(st.problems, "no finite number"), qPrintable(key + " " + QString::fromLatin1(text) + ": " + st.problems.join(" | ")));
+            }
+        rf::Model m = rf::Model::blank();
+        for (rf::Node& n : m.root.children)
+            if (n.type == QStringLiteral("rf_study")) n.props.insert(QStringLiteral("to"), QStringLiteral("1/0"));
+        QString problem;
+        QVERIFY2(rf::studySweep(m, &problem).isEmpty() && problem.contains(QStringLiteral("no finite number")), qPrintable(problem));
+    }
+
     // Lumped elements: each solved as
     // a port, then folded in by its own impedance at each frequency. On a
     // line of 100 µm on 100 µm of eps_r 9.8 (some 49 Ohm), 1 mm, edge ports:
@@ -3482,6 +3518,122 @@ private slots:
             QVERIFY(!hfss.script.contains(QStringLiteral("W7_")) && !hfss.control.contains(QStringLiteral("W7_")));
             QVERIFY2(hfss.notes.join(QLatin1Char(' ')).contains(QStringLiteral("The bond wire W7 is not in")), qPrintable(hfss.notes.join(" | ")));
         }
+    }
+
+    // An edge port on a slanted face drives the whole face: its cells' corners, cut by the layout's booleans, lie up
+    // to 0.7 nm off the face's line, where they were looked for within 1e-6
+    // of its length - none of a 100 µm face's at 30 degrees, and the port
+    // drove the one cell nearest, a 2 mm line's S21 -55.6 degrees at 10
+    // GHz against -50.1 along x, |S11| 0.532 against 0.466. Now its 19
+    // cells, S21 within 1.6 % of the line's along x - the slanted mesh's
+    // own, 0.7 % at twelve cells across.
+    void anEdgePortOnASlantedFaceDrivesTheWholeFace()
+    {
+        const rf::Stack stack = grounded(4, 200e-6, 0, 0, 5.8e7);
+        QList<Complex> s21;
+        for (const double deg : {0.0, 30.0}) {
+            const double a = deg * M_PI / 180, ca = std::cos(a), sa = std::sin(a);
+            const auto rot = [&](double x, double y) { return QPointF(x * ca - y * sa, x * sa + y * ca); };
+            rf::Conductor c;
+            c.layer = QStringLiteral("M1");
+            c.outline = QPolygonF(QList<QPointF>{rot(0, -50), rot(2000, -50), rot(2000, 50), rot(0, 50)});
+            rf::MeshSettings how;
+            how.maximum = 100e-6;
+            how.cellsAcross = 6;
+            const rf::Mesh mesh = rf::meshOf({c}, how, stack, 10e9);
+            const rf::FullWave w = rf::fullWaveOf(mesh, {c}, stack, {edgePort(rot(0, 0)), edgePort(rot(2000, 0))}, {10e9});
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            for (const QString& said : w.portsSaid)
+                QVERIFY2(!said.contains(QStringLiteral("drives the 1 cell(s)")), qPrintable(w.portsSaid.join(" | ")));
+            s21 << w.s.at(0).at(1).at(0);
+        }
+        const double phase = std::arg(s21.at(1)) / std::arg(s21.at(0)) - 1;
+        qWarning("a line at 30 degrees: S21 %.5f at %.3f degrees, along x %.5f at %.3f (%+.2f %%)", std::abs(s21.at(1)), std::arg(s21.at(1)) * 180 / M_PI,
+                 std::abs(s21.at(0)), std::arg(s21.at(0)) * 180 / M_PI, 100 * phase);
+        QVERIFY2(std::abs(phase) < 0.025 && std::abs(std::abs(s21.at(1)) - std::abs(s21.at(0))) < 0.005, qPrintable(QString::number(phase)));
+    }
+
+    // A plane of symmetry's half solves a metal as its faces as the whole
+    // does: the film rule and a run's breadth
+    // across its conductor were of the half, a strip the plane halves along
+    // its length half as wide - a 1.5 µm metal on a 100 µm stepped line a
+    // film whole and two faces in the half, Z21 0.85 % apart and twice the
+    // charges; a 50 µm one's series reactance 0.75 % under the whole's, its
+    // section's share of a slab's inside taken of half its breadth, and 8e-4
+    // with that mended, walls stood along the cut. Now the whole's to 1e-8.
+    void aSymmetryPlanesHalfSolvesItsFacesAsTheWholeDoes()
+    {
+        for (const double thickness : {1.5e-6, 50e-6}) {
+            rf::Stack stack = grounded(4, 200e-6, 0, thickness, 5.8e7);
+            stack.layers[2].twoSheets = true;
+            const QList<rf::Conductor> whole{strip(0, -50, 1000, 100), strip(1000, -150, 1000, 300), strip(2000, -50, 1000, 100)};
+            QList<rf::Conductor> half;
+            for (const rf::Conductor& c : whole) {
+                const QRectF box = c.outline.boundingRect();
+                half << strip(box.left(), 0, box.width(), box.bottom());
+            }
+            rf::MeshSettings how;
+            how.maximum = 100e-6;
+            how.cellsAcross = 4;
+            how.gaps = true;
+            const rf::Mesh a = rf::meshOf(whole, how, stack, 6e9);
+            how.symmetryAxis = 2;
+            how.symmetryAt = 0;
+            const rf::Mesh b = rf::meshOf(half, how, stack, 6e9);
+            QCOMPARE(b.charges * 2, a.charges);
+            const QList<rf::FullWavePort> ports{edgePort(QPointF(0, 0)), edgePort(QPointF(3000, 0))};
+            rf::FullWaveControl control;
+            control.symmetry.axis = 2;
+            control.symmetry.at = 0;
+            control.symmetry.magnetic = true;
+            const rf::FullWave wa = rf::fullWaveOf(a, whole, stack, ports, {1e8, 6e9}, 1e-6, nullptr);
+            const rf::FullWave wb = rf::fullWaveOf(b, half, stack, ports, {1e8, 6e9}, 1e-6, &control);
+            QVERIFY2(wa.ok() && wb.ok(), qPrintable(why(wa) + why(wb)));
+            QCOMPARE(says(wb.lines, "it is a film"), says(wa.lines, "it is a film"));
+            for (int k = 0; k < 2; ++k) {
+                const auto series = [k](const rf::FullWave& w) { return w.z.at(k).at(0).at(0) - w.z.at(k).at(1).at(0); };
+                const double z21 = std::abs(wa.z.at(k).at(1).at(0) - wb.z.at(k).at(1).at(0)) / std::abs(wa.z.at(k).at(1).at(0));
+                const double se = std::abs(series(wa) - series(wb)) / std::abs(series(wa));
+                qWarning("%g µm at %g Hz: the half's Z21 %.2e and series %.2e of the whole's", thickness * 1e6, wa.frequencies.at(k), z21, se);
+                QVERIFY2(z21 < 1e-10 && se < 1e-7, qPrintable(QStringLiteral("%1 %2").arg(z21).arg(se)));
+            }
+        }
+    }
+
+    // An edge port on a corner, no facing given, is asked for one: of the two edges it is on, it took one as found
+    // - a port at a line's end's corner drove its 2000 µm side, 32 cells,
+    // and nothing said. Given its facing, the end. Where two shapes meet
+    // along the line's axis, their edges between them are no corner.
+    void anEdgePortOnACornerIsAskedItsFacing()
+    {
+        const rf::Stack stack = grounded(4, 200e-6, 0, 0, 5.8e7);
+        rf::MeshSettings how;
+        how.maximum = 100e-6;
+        how.cellsAcross = 6;
+        const QList<rf::Conductor> line{strip(0, -50, 2000, 100)};
+        const rf::Mesh mesh = rf::meshOf(line, how, stack, 10e9);
+        const rf::FullWave corner = rf::fullWaveOf(mesh, line, stack, {edgePort(QPointF(0, -50)), edgePort(QPointF(2000, 0))}, {1e9});
+        QVERIFY2(!corner.ok() && corner.problems.join(' ').contains(QStringLiteral("is on a corner")), qPrintable(why(corner)));
+        const rf::FullWave facing =
+            rf::fullWaveOf(mesh, line, stack, {edgePort(QPointF(0, -50), QString(), QPointF(-1, 0)), edgePort(QPointF(2000, 0))}, {1e9});
+        QVERIFY2(facing.ok() && facing.portsSaid.first().contains(QStringLiteral("8 cell(s)")), qPrintable(why(facing) + facing.portsSaid.join(" | ")));
+        // (A port at the middle of a line's end, the line more than 500 times
+        //  as long as it is wide: on its long sides too by their thousandth,
+        //  and taken for a corner, a 6000 by 10 µm line refused - the review
+        //  of ff1233ad. A corner is where the two edges meet.)
+        const QList<rf::Conductor> longLine{strip(0, -5, 6000, 10)};
+        rf::MeshSettings along = how;
+        along.maximum = 500e-6;
+        along.cellsAcross = 2;
+        const rf::Mesh thin = rf::meshOf(longLine, along, stack, 1e9);
+        const rf::FullWave ends = rf::fullWaveOf(thin, longLine, stack, {edgePort(QPointF(0, 0)), edgePort(QPointF(6000, 0))}, {1e9});
+        QVERIFY2(ends.ok(), qPrintable(why(ends)));
+        QCOMPARE(rf::portPlace(longLine, QPointF(0, 0)), rf::PortPlace::OnEdge);
+        QCOMPARE(rf::portPlace(longLine, QPointF(0, -5)), rf::PortPlace::OnCorner);
+        const QList<rf::Conductor> halves{strip(0, -50, 2000, 50), strip(0, 0, 2000, 50)};
+        const rf::Mesh two = rf::meshOf(halves, how, stack, 10e9);
+        const rf::FullWave between = rf::fullWaveOf(two, halves, stack, {edgePort(QPointF(0, 0)), edgePort(QPointF(2000, 0))}, {1e9});
+        QVERIFY2(between.ok(), qPrintable(why(between)));
     }
 
     // A plane of symmetry: the half beyond it, every charge's, run's, via's
@@ -4450,13 +4602,17 @@ private slots:
         const rf::FullWave joined = rf::fullWaveOf(meshed(stacked, 4, 50e-6), stacked, two, ports, {1e9});
         QVERIFY2(joined.ok(), qPrintable(why(joined)));
         QVERIFY2(says(joined.lines, "are vias"), qPrintable(joined.lines.join(" | ")));
-        // A via over no metal it joins is left out, and said.
+        // A via over no metal it joins is left out, and warned of - said in
+        // the notes alone, a ground via drawn off the strip it was to short
+        // went with no word -; one joined, not.
         rf::Conductor stray = strip(900, 0, 50, 50);
         stray.layer = QStringLiteral("V1");
         const QList<rf::Conductor> astray{strip(0, 0, 400, 100), upper, joint, stray};
         const rf::FullWave left = rf::fullWaveOf(meshed(astray, 4, 50e-6), astray, two, ports, {1e9});
         QVERIFY2(left.ok(), qPrintable(why(left)));
-        QVERIFY2(says(left.lines, "land on no metal"), qPrintable(left.lines.join(" | ")));
+        QVERIFY2(says(left.lines, "land on no metal") && says(left.warnings, "a via drawn off the pads of its two metals joins nothing"),
+                 qPrintable(left.warnings.join(" | ")));
+        QVERIFY2(!says(joined.warnings, "land on no metal"), qPrintable(joined.warnings.join(" | ")));
         // More than the dense limit holds, a dense solve asked (unasked, it
         // is held compressed).
         const QList<rf::Conductor> plate{strip(0, 0, 1000, 1000)};

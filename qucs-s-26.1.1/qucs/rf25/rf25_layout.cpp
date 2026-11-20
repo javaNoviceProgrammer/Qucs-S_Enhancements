@@ -40,8 +40,9 @@ QString tr(const char* text, const char* disambiguation = nullptr, int n = -1)
 }
 
 /// The integer grid the boolean operations work on: the coordinates are
-/// micrometres, and a nanometre is finer than any layout's database unit.
-constexpr double kScaling = 1000.0;
+/// micrometres, and a nanometre is finer than any layout's database unit
+/// (kBooleanGrid).
+constexpr double kScaling = 1 / kBooleanGrid;
 
 /// The smaller side of a polygon's bounding box - how a sliver is told
 /// from a shape, which is exact for a rectangle and an over-estimate for
@@ -62,9 +63,12 @@ double numberIn(const Node& node, const QString& key, const fem::Scope& scope, d
     const QString text = v.isString() ? v.toString() : v.isDouble() ? QString::number(v.toDouble()) : QString();
     if (text.trimmed().isEmpty()) return fallback;
     const fem::Expression e = fem::Expression::compile(text, scope);
-    if (!e.isValid() || !e.isConstant()) {
+    if (!e.isValid() || !e.isConstant() || !std::isfinite(e.constant())) {
         if (problems != nullptr)
-            *problems << tr("Processing: %1 is not a number (%2).").arg(key, e.isValid() ? tr("it is not a constant") : e.error());
+            *problems << tr("Processing: %1 is not a number (%2).")
+                             .arg(key, !e.isValid()      ? e.error()
+                                       : !e.isConstant() ? tr("it is not a constant")
+                                                         : tr("it comes to %1, no finite number").arg(e.constant()));
         return fallback;
     }
     return e.constant();
@@ -791,10 +795,13 @@ Cutout cutoutOf(const Model& model, QStringList* problems)
         const auto length = [&](const QJsonValue& v, const QString& what) {
             const QString text = v.isDouble() ? QString::number(v.toDouble(), 'g', 17) : v.toString();
             const fem::Expression e = fem::Expression::compile(text.trimmed().isEmpty() ? QStringLiteral("0") : text, scope);
-            if (!e.isValid() || !e.isConstant()) {
+            if (!e.isValid() || !e.isConstant() || !std::isfinite(e.constant())) {
                 if (readable)
                     say(tr("Cutout: %1's %2 is not a number (%3).")
-                            .arg(name, what, e.isValid() ? tr("it is not a constant") : e.error()));
+                            .arg(name, what,
+                                 !e.isValid()      ? e.error()
+                                 : !e.isConstant() ? tr("it is not a constant")
+                                                   : tr("it comes to %1, no finite number").arg(e.constant())));
                 readable = false;
                 return 0.0;
             }

@@ -946,6 +946,13 @@ std::optional<double> numberIn(const QString& text, const fem::Scope& scope, QSt
         if (why != nullptr) *why = tr("it is not a constant here");
         return std::nullopt;
     }
+    // (A finite one: "1/0" read as infinity, a substrate of it no problem
+    //  said and the charge solve at work for ever, "0/0" as NaN, a
+    //  permittivity of it solved to answers said to be right.)
+    if (!std::isfinite(e.constant())) {
+        if (why != nullptr) *why = tr("it comes to %1, no finite number").arg(e.constant());
+        return std::nullopt;
+    }
     return e.constant();
 }
 

@@ -311,7 +311,9 @@ QList<double> sharesOf(const Mesh& mesh, const QList<int>& cells, QPointF on, QP
         const QPointF unit = along / n, normal(-unit.y(), unit.x());
         for (int k = 0; k < cells.size(); ++k) {
             const QPolygonF& outline = mesh.cells.at(cells.at(k)).outline;
-            const double tol = 1e-6 * std::max(1.0, std::max(outline.boundingRect().width(), outline.boundingRect().height()));
+            // (Within the cuts' grid too, as faceCells() takes the cells.)
+            const double tol =
+                std::max(1e-6 * std::max(1.0, std::max(outline.boundingRect().width(), outline.boundingRect().height())), kBooleanGrid);
             for (int i = 0, m = int(outline.size()); i < m; ++i) {
                 const QPointF a = outline.at(i), b = outline.at((i + 1) % m);
                 const double offA = (a.x() - on.x()) * normal.x() + (a.y() - on.y()) * normal.y();
@@ -367,7 +369,7 @@ Beside besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>
     const QString layer = mesh.cells.at(face.first()).layer;
     QRectF all;
     for (const int c : reached) all = all.united(mesh.cells.at(c).outline.boundingRect());
-    const double tol = 1e-6 * std::max(1.0, std::max(all.width(), all.height()));
+    const double tol = std::max(1e-6 * std::max(1.0, std::max(all.width(), all.height())), kBooleanGrid);   // (faceCells()'s)
     // A cell's side along the line, as from and to along it.
     const auto sideOn = [&mesh, on, unit, normal, tol](int c, double* t0, double* t1) {
         const QPolygonF& outline = mesh.cells.at(c).outline;
@@ -921,10 +923,10 @@ private:
  * formulation adds for a vertical current must be taken at one place for
  * the two to cancel as they do along a whole path. \a spans gets each of the
  * stack's vias the mesh has, from the lower metal's height to the upper's;
- * \a said what was left out.
+ * \a warned what was left out.
  */
 QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre, QList<ViaGreen::Span>* spans,
-                        QStringList* said)
+                        QStringList* warned)
 {
     // The cell of metal \a metal under via cell \a v: the one whose outline
     // holds its centre, else the nearest whose box, grown by the via cell's
@@ -1023,9 +1025,13 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
         v.cells = g.cells;
         out << v;
     }
-    if (stranded > 0)
-        said->append(QCoreApplication::translate("qucs_s::rf25", "%1 via cell(s) land on no metal they join, and are left out.")
-                         .arg(stranded));
+    // (Warned of, not a line of the notes alone: a ground via drawn off the
+    //  strip it was to short went with no word, the line read through, S21
+    //  0.998 where on it 0.021.)
+    if (stranded > 0 && warned != nullptr)
+        warned->append(QCoreApplication::translate("qucs_s::rf25", "%1 via cell(s) land on no metal they join, and are left out: a "
+                                                                   "via drawn off the pads of its two metals joins nothing.")
+                           .arg(stranded));
     return out;
 }
 
@@ -4457,8 +4463,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     out.warnings << given.warnings;
     // A metal solved as its two faces is two sheets and the walls that join
     // them, which is what the rest solves (thickened()); what is handed
-    // back is of the mesh as given.
-    const Thickened thick = thickened(givenStack, givenConductors, given);
+    // back is of the mesh as given. Which metals are films, of the
+    // conductors whole on a plane of symmetry, as the mesh has them.
+    const bool halved = control != nullptr && control->symmetry.axis != 0;
+    const QList<Conductor> wholeGiven =
+        halved ? withMirrors(givenConductors, control->symmetry.axis, control->symmetry.at / micrometre) : QList<Conductor>();
+    const Thickened thick = thickened(givenStack, givenConductors, given, halved ? &wholeGiven : nullptr);
     const Mesh& mesh = thick.mesh;
     const QList<Conductor>& conductors = thick.conductors;
     const Stack& stack = thick.stack;
@@ -4850,6 +4860,15 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // and how much of a wide slab's inside its faces hold there
     // (Context::inside).
     if (thick.any) {
+        // (Beyond a magnetic wall the conductor's mirror is there, its
+        //  current even across the plane: its breadth the whole's. Of the
+        //  half's, a strip the plane halves along its length was half as
+        //  broad, its share of a slab's inside the less, and a 100 by 50 µm
+        //  line's series reactance 0.75 % under the whole's.)
+        const QList<Conductor> mirrored = c.symAxis != 0 && c.symCharge > 0
+                                              ? withMirrors(conductors, c.symAxis, c.symAt / micrometre) : conductors;
+        QHash<QString, QList<int>> mirroredOn;
+        for (int s = 0; s < mirrored.size(); ++s) mirroredOn[mirrored.at(s).layer] << s;
         c.inside = QList<double>(c.planar, 1.0);
         for (int a = 0; a < c.planar; ++a) {
             const Filament& run = c.runs.at(a);
@@ -4859,14 +4878,14 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (!(length > 0)) continue;
             const QPointF normal(-d.y() / length, d.x() / length), middle = (run.from + run.to) / (2 * micrometre);
             QList<QPolygonF> outlines;
-            for (const int s : shapesOn.value(mesh.cells.at(ends.at(a).first).layer)) outlines << conductors.at(s).outline;
+            for (const int s : mirroredOn.value(mesh.cells.at(ends.at(a).first).layer)) outlines << mirrored.at(s).outline;
             const double across = breadthAcross(outlines, middle, normal, 100 * run.thickness / micrometre);
             const double breadth = across > 0 ? across * micrometre : run.width;
             c.inside[a] = facesInside(std::max(breadth, run.width), run.thickness);
         }
     }
-    QStringList viaSaid;
-    const QList<ViaRun> viaRuns = viaRunsOf(mesh, stack, micrometre, &c.spans, &viaSaid);
+    QStringList viaWarned;
+    const QList<ViaRun> viaRuns = viaRunsOf(mesh, stack, micrometre, &c.spans, &viaWarned);
     int grounded = 0;
     QSet<int> walled;   // (the runs that are a metal's walls, between its faces)
     for (const ViaRun& v : viaRuns) {
@@ -5017,6 +5036,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     QList<int> columnReturn;
     QList<int> naming;
     QStringList drivesSaid = QStringList(QList<QString>(np));
+    QList<Conductor> placedOn;   // (the conductors whole, on a plane of symmetry: portPlace())
     for (int p = 0; p < np; ++p) {
         const FullWavePort& port = ports.at(p);
         const QString& name = out.portNames.at(p);
@@ -5100,9 +5120,18 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         // On the edge it drives (portPlace()): taken however far it was, a
         // port off the layout drove the nearest face, one inside a strip its
         // long side, one facing the wrong way its far end, nothing said.
-        switch (portPlace(conductors, port.at, port.metal, port.facing)) {
+        // (Of the conductors whole on a plane of symmetry, their mirrors
+        //  joined to them: the cut along the plane is no edge, and a port
+        //  moved a hair off the plane is not on a corner of it.)
+        if (c.symAxis != 0 && placedOn.isEmpty()) placedOn = withMirrors(conductors, c.symAxis, c.symAt / micrometre);
+        switch (portPlace(c.symAxis != 0 ? placedOn : conductors, port.at, port.metal, port.facing)) {
         case PortPlace::OnEdge:
             break;
+        case PortPlace::OnCorner:
+            out.problems << tr("%1, at %2, %3 µm, is on a corner, where two edges meet: give it the facing of the edge it is to "
+                               "drive, or move it along that edge.")
+                                .arg(name, x, y);
+            return out;
         case PortPlace::FacingOtherWay:
             out.problems << tr("%1, at %2, %3 µm, is on an edge that does not face the way it is said to: turn its facing "
                                "to the edge's outward side, or leave it to the edge.")
@@ -6102,7 +6131,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                         "ground or from the metal an internal port is driven from, with the field a via's current has: "
                         "part of each port's own discontinuity.")
                          .arg(c.paths.size());
-    out.lines << viaSaid;
+    out.lines << viaWarned;
+    out.warnings << viaWarned;
     // A metal lid: what it is, and what its guide does to the ports.
     if (c.layers.groundAbove) {
         double gap = 0;

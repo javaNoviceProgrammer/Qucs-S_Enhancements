@@ -14,6 +14,7 @@
 #include "multiphysics/fem_sparse.h"
 #include "rf25_fast.h"
 #include "rf25_fullwave.h"
+#include "rf25_layout.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -754,6 +755,51 @@ bool onEdge(const QLineF& edge, QPointF where)
 PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QString& layer, QPointF facing)
 {
     QLineF edge;
+    if (facing == QPointF(0, 0)) {
+        // The ways the edges it is on face, outward, of those whose outside
+        // is no other shape of the layer, and their ends: a corner is two of
+        // them facing apart that meet where the point is - within the
+        // shorter's thousandth of the vertex they share. (Two edges it is
+        // merely on: a port at the middle of a line's end, w/2 from each
+        // long side's end, was on those sides by their thousandth once the
+        // line was 500 times as long as wide, and taken for a corner - a
+        // 6000 by 10 µm line refused, the review of ff1233ad.)
+        QList<QPointF> ways;
+        QList<QLineF> sides;
+        for (const Conductor& c : conductors) {
+            if (!layer.isEmpty() && c.layer != layer) continue;
+            for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
+                const QLineF side(c.outline.at(i), c.outline.at((i + 1) % n));
+                const double len = side.length();
+                if (!(len > 0) || !onEdge(side, where)) continue;
+                const QPointF d = side.p2() - side.p1();
+                QPointF normal(d.y() / len, -d.x() / len);
+                if (c.outline.containsPoint(side.center() + normal * (1e-3 * len), Qt::OddEvenFill)) normal = -normal;
+                const QPointF beyond = side.center() + normal * (1e-3 * len);
+                bool covered = false;
+                for (const Conductor& other : conductors)
+                    if (&other != &c && (layer.isEmpty() || other.layer == layer) && other.outline.containsPoint(beyond, Qt::OddEvenFill)) {
+                        covered = true;
+                        break;
+                    }
+                if (!covered) {
+                    ways << normal;
+                    sides << side;
+                }
+            }
+        }
+        const auto atVertex = [where](const QLineF& a, const QLineF& b) {
+            const double tol = 1e-3 * std::max(1.0, std::min(a.length(), b.length()));
+            for (const QPointF& p : {a.p1(), a.p2()})
+                for (const QPointF& q : {b.p1(), b.p2()})
+                    if (QLineF(p, q).length() <= tol && QLineF(p, where).length() <= tol) return true;
+            return false;
+        };
+        for (int i = 0; i < ways.size(); ++i)
+            for (int j = i + 1; j < ways.size(); ++j)
+                if (QPointF::dotProduct(ways.at(i), ways.at(j)) < M_SQRT1_2 && atVertex(sides.at(i), sides.at(j)))
+                    return PortPlace::OnCorner;
+    }
     if (faceEdge(conductors, where, layer, facing, &edge) && onEdge(edge, where)) return PortPlace::OnEdge;
     if (facing != QPointF(0, 0) && faceEdge(conductors, where, layer, QPointF(), &edge) && onEdge(edge, where))
         return PortPlace::FacingOtherWay;
@@ -817,8 +863,13 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
     if (onLine != nullptr) *onLine = p;
     if (alongLine != nullptr) *alongLine = unit;
     // A cell is on that face where one of its own sides lies along the
-    // same line and within the edge's own extent.
-    const double tol = 1e-6 * std::max(1.0, len);
+    // same line and within the edge's own extent - within the grid the cuts
+    // round to: a slanted face's cells' corners up to 0.7 nm off its line,
+    // where this took them within 1e-6 of its length, none of a 100 µm
+    // face's 19 at 30 degrees, and a port or a loop's end drove the one
+    // cell nearest - S21's phase 11 % off at 10 GHz on a 2 mm line, a
+    // loop's R 11 to 15 % high.
+    const double tol = std::max(1e-6 * std::max(1.0, len), kBooleanGrid);
     for (const int c : reached) {
         const MeshCell& cell = mesh.cells.at(c);
         if (cell.layer != onLayer) continue;
@@ -1109,6 +1160,18 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
             out.lines << tr("%1, at %2, %3 µm, is inside a conductor, on none of its edges: the current goes in at the one "
                             "cell nearest.")
                              .arg(end).arg(at.x(), 0, 'g', 6).arg(at.y(), 0, 'g', 6);
+        // (On a corner, of two edges, which one a loop's end, given no way to
+        //  face, takes: said.)
+        if (place == PortPlace::OnCorner) {
+            QLineF taken;
+            faceEdge(conductors, at, layer, QPointF(), &taken);
+            const QString w = tr("%1, at %2, %3 µm, is on a corner, where two edges meet: the current goes in along the edge from "
+                                 "%4, %5 to %6, %7 µm. Move it along the edge it is to go in at to be sure of it.")
+                                  .arg(end).arg(at.x(), 0, 'g', 6).arg(at.y(), 0, 'g', 6)
+                                  .arg(taken.p1().x(), 0, 'g', 6).arg(taken.p1().y(), 0, 'g', 6)
+                                  .arg(taken.p2().x(), 0, 'g', 6).arg(taken.p2().y(), 0, 'g', 6);
+            out.lines << w;
+        }
     }
     QPointF sourceOn, sourceAlong, sinkOn, sinkAlong;
     const QList<int> sourceFace = faceAt(from, &sourceOn, &sourceAlong, fromLayer);
