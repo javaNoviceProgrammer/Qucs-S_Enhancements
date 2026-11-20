@@ -1385,6 +1385,15 @@ private slots:
                  qPrintable(corner.lines.join(" | ")));
         const rf::Inductance middle = rf::inductanceOf(mesh, line, stack, QPointF(0, 0), QPointF(2000, 0), 1e-6, 1e9);
         QVERIFY2(middle.ok() && !middle.lines.join(' ').contains(QStringLiteral("on a corner")), qPrintable(middle.lines.join(" | ")));
+        // (The middle of the end of a line more than 500 times as long as it
+        //  is wide: on its long sides too by their thousandth, and said to be
+        //  on a corner - the review of ff1233ad.)
+        const QList<rf::Conductor> thin{strip(0, -5, 6000, 10)};
+        rf::MeshSettings along = how;
+        along.maximum = 500e-6;
+        along.cellsAcross = 2;
+        const rf::Inductance far = rf::inductanceOf(rf::meshOf(thin, along, stack, 1e9), thin, stack, QPointF(0, 0), QPointF(6000, 0), 1e-6, 1e9);
+        QVERIFY2(far.ok() && !far.lines.join(' ').contains(QStringLiteral("on a corner")), qPrintable(far.lines.join(" | ")));
     }
 
     // A compressed loop past what a solve may take is refused before it is

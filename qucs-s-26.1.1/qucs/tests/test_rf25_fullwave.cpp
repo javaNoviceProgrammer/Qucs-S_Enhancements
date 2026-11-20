@@ -24,6 +24,7 @@
 #include "rf25/rf25_dense.h"
 #include "rf25/rf25_fast.h"
 #include "rf25/rf25_fullwave.h"
+#include "rf25/rf25_inductance.h"
 #include "rf25/rf25_sparams.h"
 #include "rf25/rf25_edge.h"
 #include "rf25/rf25_layout.h"
@@ -3616,6 +3617,19 @@ private slots:
         const rf::FullWave facing =
             rf::fullWaveOf(mesh, line, stack, {edgePort(QPointF(0, -50), QString(), QPointF(-1, 0)), edgePort(QPointF(2000, 0))}, {1e9});
         QVERIFY2(facing.ok() && facing.portsSaid.first().contains(QStringLiteral("8 cell(s)")), qPrintable(why(facing) + facing.portsSaid.join(" | ")));
+        // (A port at the middle of a line's end, the line more than 500 times
+        //  as long as it is wide: on its long sides too by their thousandth,
+        //  and taken for a corner, a 6000 by 10 µm line refused - the review
+        //  of ff1233ad. A corner is where the two edges meet.)
+        const QList<rf::Conductor> longLine{strip(0, -5, 6000, 10)};
+        rf::MeshSettings along = how;
+        along.maximum = 500e-6;
+        along.cellsAcross = 2;
+        const rf::Mesh thin = rf::meshOf(longLine, along, stack, 1e9);
+        const rf::FullWave ends = rf::fullWaveOf(thin, longLine, stack, {edgePort(QPointF(0, 0)), edgePort(QPointF(6000, 0))}, {1e9});
+        QVERIFY2(ends.ok(), qPrintable(why(ends)));
+        QCOMPARE(rf::portPlace(longLine, QPointF(0, 0)), rf::PortPlace::OnEdge);
+        QCOMPARE(rf::portPlace(longLine, QPointF(0, -5)), rf::PortPlace::OnCorner);
         const QList<rf::Conductor> halves{strip(0, -50, 2000, 50), strip(0, 0, 2000, 50)};
         const rf::Mesh two = rf::meshOf(halves, how, stack, 10e9);
         const rf::FullWave between = rf::fullWaveOf(two, halves, stack, {edgePort(QPointF(0, 0)), edgePort(QPointF(2000, 0))}, {1e9});

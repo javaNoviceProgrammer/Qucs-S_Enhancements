@@ -2671,8 +2671,10 @@ private slots:
             // Asking does not leave a step of Undo behind it.
             QVERIFY2(!failed(call("rf25_inductance", {{"path", ws + "/rf/wire.qrf25"}, {"frequency", "2[GHz]"}}, 300000)),
                      "a second ask was refused");
-            // A frequency that is none.
+            // A frequency that is none, and one that is no finite number (the
+            // review of 2ab0fd68: "1/0" passed as above nought).
             QVERIFY(failed(call("rf25_inductance", {{"path", ws + "/rf/wire.qrf25"}, {"frequency", "0"}}, 60000)));
+            QVERIFY(failed(call("rf25_inductance", {{"path", ws + "/rf/wire.qrf25"}, {"frequency", "1/0"}}, 60000)));
             // Two ports in the same place: the solve has a loop asked of
             // it and finds there is none, and the tool passes on what it
             // said rather than answering a loop of nothing.

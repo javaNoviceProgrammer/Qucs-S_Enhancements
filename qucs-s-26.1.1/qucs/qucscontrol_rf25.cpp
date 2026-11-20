@@ -61,7 +61,10 @@ std::optional<double> positiveNumber(const QString& text, const RF25Doc& model)
         if (p.isValid() && p.isConstant()) scope.setConstant(param.name, p.constant(), p.dim());
     }
     const fem::Expression given = fem::Expression::compile(text, scope);
-    if (!given.isValid() || !given.isConstant() || !(given.constant() > 0)) return std::nullopt;
+    // (Finite too: "1/0" passed as above nought - the model's own readers
+    //  refused it, this one, the tools' frequencies, lengths and impedances,
+    //  did not; the review of 2ab0fd68.)
+    if (!given.isValid() || !given.isConstant() || !(given.constant() > 0) || !std::isfinite(given.constant())) return std::nullopt;
     return given.constant();
 }
 

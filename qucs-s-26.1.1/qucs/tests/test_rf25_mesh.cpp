@@ -607,6 +607,10 @@ private slots:
         const qint64 ms = clock.elapsed();
         QVERIFY2(!fine.ok() && fine.cells.isEmpty() && says(fine.problems, "even at one across a conductor"), qPrintable(fine.problems.join(" | ")));
         QVERIFY2(ms < 3000, qPrintable(QStringLiteral("%1 ms").arg(ms)));
+        // (The layout's count, every pad's: not the sum where it crossed the
+        //  bound, 2.8e+05 for 8.16e+07 - the review of 639258e6.)
+        const QRegularExpressionMatch count = QRegularExpression(QStringLiteral("would take ([0-9.e+]+) cells")).match(fine.problems.join(' '));
+        QVERIFY2(count.hasMatch() && count.captured(1).toDouble() >= 8e7, qPrintable(fine.problems.join(" | ")));
         how.maximum = 5e-6;
         const rf::Mesh coarse = rf::meshOf(pads, how, m.stack(), 0);
         QVERIFY2(!coarse.cells.isEmpty(), qPrintable(coarse.problems.join(" | ")));

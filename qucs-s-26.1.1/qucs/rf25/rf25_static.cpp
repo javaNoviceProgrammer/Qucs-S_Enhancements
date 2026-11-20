@@ -14,6 +14,7 @@
 #include "rf25_dense.h"
 #include "rf25_edge.h"
 #include "rf25_fast.h"
+#include "rf25_layout.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -1802,7 +1803,11 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             // (A straight line drawn at an angle, every conductor a rectangle
             //  along one way that is no axis, is uniform but not taken so -
             //  its cross-section is cut along x or y -: said so, where it was
-            //  "not the same along all of it", its length the x projection's.)
+            //  "not the same along all of it", its length the x projection's. Each within the grid the corners
+            //  are on, a GDS file's and the booleans' - kBooleanGrid -: to
+            //  1e-6 of its sides' lengths, a rectangle of 2000 by 100 µm at
+            //  30 degrees, its corners on a nanometre, was no rectangle, the
+            //  review of e63dc3e4.)
             double angle = std::nan("");
             bool slanted = !conductors.isEmpty();
             for (const Conductor& c : conductors) {
@@ -1814,7 +1819,10 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                 }
                 const QPointF u = o.at(1) - o.at(0), v = o.at(2) - o.at(1);
                 const double lu = std::hypot(u.x(), u.y()), lv = std::hypot(v.x(), v.y());
-                if (!(lu > 0) || !(lv > 0) || std::abs(QPointF::dotProduct(u, v)) > 1e-6 * lu * lv) {
+                // (A corner up to half the grid off on each axis: a side's
+                //  direction off by up to the grid over its length.)
+                const double turn = 2 * kBooleanGrid / std::max(1e-300, std::min(lu, lv));
+                if (!(lu > 0) || !(lv > 0) || std::abs(QPointF::dotProduct(u, v)) > turn * lu * lv) {
                     slanted = false;
                     break;
                 }
@@ -1822,7 +1830,7 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                 double a = std::fmod(std::atan2(longer.y(), longer.x()) + 2 * M_PI, M_PI);
                 if (std::isnan(angle)) angle = a;
                 const double offAxis = std::abs(std::remainder(a, M_PI / 2));
-                if (offAxis < 1e-6 || std::abs(std::remainder(a - angle, M_PI)) > 1e-6) {
+                if (offAxis < turn || std::abs(std::remainder(a - angle, M_PI)) > turn) {
                     slanted = false;
                     break;
                 }

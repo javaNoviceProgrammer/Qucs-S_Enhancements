@@ -757,8 +757,15 @@ PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QSt
     QLineF edge;
     if (facing == QPointF(0, 0)) {
         // The ways the edges it is on face, outward, of those whose outside
-        // is no other shape of the layer.
+        // is no other shape of the layer, and their ends: a corner is two of
+        // them facing apart that meet where the point is - within the
+        // shorter's thousandth of the vertex they share. (Two edges it is
+        // merely on: a port at the middle of a line's end, w/2 from each
+        // long side's end, was on those sides by their thousandth once the
+        // line was 500 times as long as wide, and taken for a corner - a
+        // 6000 by 10 µm line refused, the review of ff1233ad.)
         QList<QPointF> ways;
+        QList<QLineF> sides;
         for (const Conductor& c : conductors) {
             if (!layer.isEmpty() && c.layer != layer) continue;
             for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
@@ -775,12 +782,23 @@ PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QSt
                         covered = true;
                         break;
                     }
-                if (!covered) ways << normal;
+                if (!covered) {
+                    ways << normal;
+                    sides << side;
+                }
             }
         }
+        const auto atVertex = [where](const QLineF& a, const QLineF& b) {
+            const double tol = 1e-3 * std::max(1.0, std::min(a.length(), b.length()));
+            for (const QPointF& p : {a.p1(), a.p2()})
+                for (const QPointF& q : {b.p1(), b.p2()})
+                    if (QLineF(p, q).length() <= tol && QLineF(p, where).length() <= tol) return true;
+            return false;
+        };
         for (int i = 0; i < ways.size(); ++i)
             for (int j = i + 1; j < ways.size(); ++j)
-                if (QPointF::dotProduct(ways.at(i), ways.at(j)) < M_SQRT1_2) return PortPlace::OnCorner;
+                if (QPointF::dotProduct(ways.at(i), ways.at(j)) < M_SQRT1_2 && atVertex(sides.at(i), sides.at(j)))
+                    return PortPlace::OnCorner;
     }
     if (faceEdge(conductors, where, layer, facing, &edge) && onEdge(edge, where)) return PortPlace::OnEdge;
     if (facing != QPointF(0, 0) && faceEdge(conductors, where, layer, QPointF(), &edge) && onEdge(edge, where))

@@ -1557,10 +1557,14 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             // layout would be millions of them.)
             const double squares = std::ceil(bounds.width() / stepX) * std::ceil(bounds.height() / stepY);
             total += squares;
-            if (squares > 4.0 * pieceMost || total > 4.0 * pieceMost) {
-                *many = squares > 4.0 * pieceMost ? squares : total;
+            if (squares > 4.0 * pieceMost) {
+                *many = squares;
                 return false;
             }
+            // (Past the bound, the rest counted, no lines made: the layout's
+            //  number said, not where the sum crossed it - 2.8e+05 for the
+            //  pads' 8.16e+07, the review of 639258e6.)
+            if (total > 4.0 * pieceMost) continue;
             static const double none[4] = {0, 0, 0, 0};
             const double* gap = round ? none : piece.gap;
             const bool edges = how.edges && !round;
@@ -1579,6 +1583,10 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             if (narrowest <= 0 || feature < narrowest) narrowest = feature;
             if (finest <= 0 || across < finest) finest = across;
             if (strip) ++strips;
+        }
+        if (total > 4.0 * pieceMost) {
+            *many = total;
+            return false;
         }
         // Each meeting's lines made both pieces', until none gains any: a
         // line one takes may lie where it meets a third.

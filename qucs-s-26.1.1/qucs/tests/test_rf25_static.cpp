@@ -443,6 +443,10 @@ private slots:
             rf::Conductor c;
             c.layer = QStringLiteral("M1");
             c.outline = QPolygonF(QList<QPointF>{rot(0, -50), rot(2000, -50), rot(2000, 50), rot(0, 50)});
+            // (Its corners on a nanometre, as a GDS file's and the booleans'
+            //  are: taken within 1e-6 of its sides' lengths, it was no
+            //  rectangle - the review of e63dc3e4.)
+            for (QPointF& p : c.outline) p = QPointF(std::round(p.x() * 1e3) / 1e3, std::round(p.y() * 1e3) / 1e3);
             rf::MeshSettings how;
             how.maximum = 100e-6;
             how.cellsAcross = 4;
