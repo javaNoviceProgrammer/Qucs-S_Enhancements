@@ -48,11 +48,11 @@ std::vector<DomainShell> domainShells(const Topology3& topology, const std::vect
 /// The shells as an STL: ASCII, a solid each, or (\a binary) one solid of
 /// them all, coordinates in millimetres (\a mm, else the geometry's unit).
 QByteArray stlOf(const std::vector<DomainShell>& shells, double unitScale, bool binary, bool mm = true);
-/// As a Wavefront OBJ: an object each, their points shared, in the
-/// geometry's unit (a comment says which).
+/// As a Wavefront OBJ: an object each, of its own points (shared by its
+/// triangles), in the geometry's unit (a comment says which).
 QByteArray objOf(const std::vector<DomainShell>& shells, const Topology3& topology);
-/// As a STEP AP214 file (ISO 10303-21): a manifold solid B-rep each, named,
-/// of planar faces - a planar face of the geometry one, bounded by its
+/// As a STEP AP214 file (ISO 10303-21): a manifold solid B-rep each, named
+/// (one round a cavity a B-rep with its voids), of planar faces - a planar face of the geometry one, bounded by its
 /// outlines and holes; a curved wall's triangles each one - their edges
 /// lines shared by the faces on them, in millimetres; \a name the
 /// product's.
@@ -81,6 +81,7 @@ struct TriangleSoup {
     QStringList names;        ///< by group
     QString error;
 };
+/// A coordinate not finite (nan, inf) refused.
 TriangleSoup readTriangles(const QByteArray& data, const QString& fileName = {});
 
 /// A solid read cut into slabs: each slab from \a z0 to \a z1 its section's

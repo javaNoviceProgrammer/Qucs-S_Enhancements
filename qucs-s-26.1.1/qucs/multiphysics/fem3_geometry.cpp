@@ -503,8 +503,12 @@ private:
         const double k = metres / a_scale;
         for (auto& t : tris)
             for (Vec3& p : t) p = p * k + move;
+        // (Each slice a pass over every triangle and a slab of the geometry:
+        // a thousand at most.)
+        const int slices = f.integer(QStringLiteral("slices"));
+        if (slices > 1000) return fail(tr("its slices, %1: a thousand at most (each a slab of the geometry, its mesh's layers)").arg(slices));
         QStringList warnings;
-        const std::vector<SlabbedSolid> bodies = slabSolids(tris, std::max(1, f.integer(QStringLiteral("slices"))), &warnings, soup.group);
+        const std::vector<SlabbedSolid> bodies = slabSolids(tris, std::max(1, slices), &warnings, soup.group);
         for (const QString& w : warnings) warn(w);
         if (bodies.empty()) return fail(tr("%1 holds no solid with a height").arg(given));
         const QString name = f.label.isEmpty() ? f.tag : f.label;
