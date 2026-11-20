@@ -912,7 +912,9 @@ QList<OwnShape> ownShapesOf(const Model& model, QStringList* problems)
             if (!e.isValid() || !e.isConstant() || !std::isfinite(e.constant())) {
                 if (readable)
                     say(tr("Shapes: %1's %2 is not a number (%3).")
-                            .arg(name, what, !e.isValid() ? e.error() : tr("it is not a constant")));
+                            .arg(name, what, !e.isValid()      ? e.error()
+                                             : !e.isConstant() ? tr("it is not a constant")
+                                                               : tr("it comes to %1, no finite number").arg(e.constant())));
                 readable = false;
                 return 0.0;
             }
@@ -1054,7 +1056,10 @@ QList<Dimension> dimensionsOf(const Model& model, QStringList* problems)
             const fem::Expression e = fem::Expression::compile(text.trimmed().isEmpty() ? QStringLiteral("0") : text, scope);
             if (!e.isValid() || !e.isConstant() || !std::isfinite(e.constant())) {
                 if (readable)
-                    say(tr("Dimensions: %1's %2 is not a number (%3).").arg(d.name, what, !e.isValid() ? e.error() : tr("it is not a constant")));
+                    say(tr("Dimensions: %1's %2 is not a number (%3).")
+                            .arg(d.name, what, !e.isValid()      ? e.error()
+                                               : !e.isConstant() ? tr("it is not a constant")
+                                                                 : tr("it comes to %1, no finite number").arg(e.constant())));
                 readable = false;
                 return 0.0;
             }
