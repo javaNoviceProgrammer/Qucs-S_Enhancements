@@ -642,6 +642,109 @@ private slots:
         QCOMPARE_LE(t.totalPoints, 0.1);
     }
 
+    void aCurveWrittenInClippedPiecesIsWhole()
+    {
+        // As a paper's office-suite figures write a curve (the SOI MMI
+        // benchmark's E2): in pieces, each clipped to a box just round it,
+        // the right half before the left, and all of it twice. Each piece
+        // was cut to the first one's clip - two curves of 3 points of a
+        // dozen, trusted "high" -, the halves came back as two curves, and
+        // the second drawing as a third.
+        const QString file = path(QStringLiteral("clipped_pieces.pdf"));
+        Axes a;
+        QPolygonF line;
+        for (int i = 0; i <= 200; ++i) {
+            const double x = a.xMin + (a.xMax - a.xMin) * i / 200;
+            line << a.at(x, sine(x));
+        }
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            drawAxes(p, a, u);
+            p.setPen(QPen(Qt::blue, 1.2));
+            p.setBrush(Qt::NoBrush);
+            for (int twice = 0; twice < 2; ++twice)
+                for (const int k : {4, 5, 6, 7, 0, 1, 2, 3}) {
+                    const QPolygonF piece = line.mid(k * 25, 26);
+                    p.save();
+                    p.setClipRect(piece.boundingRect().adjusted(-1, -1, 1, 1));
+                    p.drawPolyline(piece);
+                    p.restore();
+                }
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        QVERIFY2(source.hasVectors(), qPrintable(source.vectorProblem()));
+        const QList<Plot> plots = findPlots(source, 0);
+        QCOMPARE(plots.size(), 1);
+        Plot plot = plots.first();
+        QVERIFY(plot.calibration.valid());
+        QVERIFY(extract(source, plot, Options{}));
+        QCOMPARE(plot.route, QStringLiteral("vector"));
+        QCOMPARE(plot.series.size(), 1);
+        const Series& s = plot.series.first();
+        const Errors e = errorsOf(plot, s, sine, 2);
+        report("vector, in clipped pieces", e);
+        qInfo("  %lld points, ink of its colour along it %.3f; notes: %s", qlonglong(s.points.size()), s.inkCovered, qPrintable(plot.notes.join(QStringLiteral(" | "))));
+        QCOMPARE_GE(s.points.size(), 199);
+        QCOMPARE_LE(e.worst, 0.0005);
+        QVERIFY(s.breaks.isEmpty());
+        const QRectF box = QPolygonF(s.points).boundingRect();
+        QCOMPARE_GE(box.width(), 0.99 * a.frame.width());
+        QCOMPARE_GE(s.inkCovered, 0.95);
+        QCOMPARE(assess(plot).level, QStringLiteral("high"));
+    }
+
+    void inkOfACurvesColourNotReadLowersTrust()
+    {
+        // The file's vertices are exact where they are, which says nothing of
+        // a curve, or part of one, not read. Here a red curve is drawn as a
+        // filled outline, left out by the vector route, beside a red one
+        // stroked: the page has ink in red that no series lies along.
+        const QString file = path(QStringLiteral("unread_ink.pdf"));
+        Axes a;
+        const auto curve = [&](double (*f)(double)) {
+            QPainterPath path;
+            for (int i = 0; i <= 200; ++i) {
+                const double x = a.xMin + (a.xMax - a.xMin) * i / 200;
+                if (i == 0) path.moveTo(a.at(x, f(x)));
+                else path.lineTo(a.at(x, f(x)));
+            }
+            return path;
+        };
+        QVERIFY(writeVector(file, [&](QPainter& p, double u) {
+            drawAxes(p, a, u);
+            p.setPen(QPen(Qt::red, 1.2));
+            p.setBrush(Qt::NoBrush);
+            p.drawPath(curve(sine));
+            QPainterPathStroker stroker;
+            stroker.setWidth(1.2);
+            p.setPen(Qt::NoPen);
+            p.setBrush(Qt::red);
+            p.drawPath(stroker.createStroke(curve(cosine)));
+        }));
+        QPdfDocument pdf;
+        QCOMPARE(pdf.load(file), QPdfDocument::Error::None);
+        Source source(&pdf, file);
+        const QList<Plot> plots = findPlots(source, 0);
+        QCOMPARE(plots.size(), 1);
+        Plot plot = plots.first();
+        QVERIFY(extract(source, plot, Options{}));
+        QCOMPARE(plot.route, QStringLiteral("vector"));
+        QCOMPARE(plot.series.size(), 1);
+        const Series& s = plot.series.first();
+        const Trust t = assess(plot);
+        qInfo("  ink of its colour along the stroked curve: %.3f; trust %s: %s", s.inkCovered, qPrintable(t.level), qPrintable(t.reasons.join(QStringLiteral(" | "))));
+        QCOMPARE_LE(s.inkCovered, 0.7);
+        QCOMPARE_GE(s.inkCovered, 0.3);
+        QVERIFY(t.level == QStringLiteral("low") || t.level == QStringLiteral("medium"));
+        QVERIFY(t.reasons.join(QLatin1Char(' ')).contains(QStringLiteral("#ff0000 inside the frame")));
+        // Kept with the plot, and so said again when it is read back.
+        Plot again;
+        QVERIFY(fromJson(toJson(plot), &again));
+        QCOMPARE(again.series.size(), 1);
+        QCOMPARE(again.series.first().inkCovered, s.inkCovered);
+    }
+
     void vectorLogAxes()
     {
         const QString file = path(QStringLiteral("log.pdf"));

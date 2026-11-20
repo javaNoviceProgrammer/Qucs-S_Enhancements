@@ -172,6 +172,7 @@ QJsonObject seriesJson(const dg::Plot& plot, const dg::Series& s, int most)
     if (s.dashed) o.insert(QStringLiteral("dashed"), true);
     if (s.bridged > 0) o.insert(QStringLiteral("gaps_crossed"), s.bridged);
     if (dg::inkSaysSomething(s)) o.insert(QStringLiteral("ink_under_points"), rounded(s.agreement, 3));
+    if (s.inkCovered >= 0 && s.inkCovered < 0.9) o.insert(QStringLiteral("ink_of_its_colour_along"), rounded(s.inkCovered, 3));
     const QList<int> kept = dg::thinned(s.points, most);
     const bool calibrated = plot.calibration.valid();
     QJsonArray xs, ys;
