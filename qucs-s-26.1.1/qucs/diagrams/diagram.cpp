@@ -1342,10 +1342,17 @@ struct Graph::TextFile {
             if (content.size() != size) return false;
             begin = content.data();
         }
-        end = begin + size;
-        char *const last = end - 1;
-        if (*last > ' ' && *last != '>') return false;
+        // Its last byte made the NUL - unless it is in the middle of a line
+        // (a dataset being written, caught cut mid-number): that line left
+        // out, from the line break before it, the blocks above it read
+        // (they were not read at all, where one cut at a line break was).
+        char *last = begin + size - 1;
+        if (*last > ' ' && *last != '>') {
+            while (last > begin && *last != '\n') --last;
+            if (*last != '\n') return false;   // one line, cut
+        }
         *last = 0;
+        end = last + 1;
         stop = begin + strlen(begin);
         // Each '<' that begins "dep " or "indep ", its name up to the space
         // after it (a block over nothing, "<dep x>", the search passed by).

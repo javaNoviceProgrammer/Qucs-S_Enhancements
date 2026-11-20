@@ -227,7 +227,15 @@ bool Dataset::readFile(const QString& path, const QSet<QString>* only, QString* 
         all = file.readAll();
         p = all.constData();
     }
-    const char* const end = p + (all.isNull() ? size : all.size());
+    const char* end = p + (all.isNull() ? size : all.size());
+    // Its last line cut (a dataset being written, caught mid-number: 1.25
+    // of 1.25e-3) left out, not read as a value it is not - as the
+    // diagrams read it (Graph::TextFile).
+    if (end > p && !isSpace(end[-1]) && end[-1] != '>') {
+        const char* cut = end - 1;
+        while (cut > p && *cut != '\n') --cut;
+        end = *cut == '\n' ? cut + 1 : p;
+    }
     {
         const char* q = p;
         while (q < end && isSpace(*q)) ++q;
