@@ -405,6 +405,13 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
     job.mesh = mesh;
     job.conductors = processed.conductors;
     job.stack = model.solveStack();
+    // Its values checked as given, for every solver, before a quasi-static
+    // solve takes its dielectrics at one frequency: taken, a layer has no
+    // dispersion left to check, and Djordjevic-Sarkar past its loss tangent -
+    // which the full wave refuses - was solved (eps_r 1.5, tan d 0.3 gave
+    // eps_eff 0.884: P56 of the open items). The loop's solve reads no
+    // layersOf(), and took a metal's roughness below nought as smooth.
+    if (const QStringList wrong = valueProblemsOf(job.stack); !wrong.isEmpty()) return said(wrong.join(QLatin1Char(' ')));
     // (The Cutout's, as processing kept them: matched by their text, they
     //  held only while nothing was translated - the review of 26ff2805.)
     job.processWarnings << processed.cutoutProblems;
@@ -685,18 +692,10 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
     // own. (They were taken at the study's highest whatever was asked, so
     // that R and G at 1 GHz came with eps at 20: P33 of the open items.)
     if (!job.fullWave && job.stack.dispersive()) {
-        // Its dielectrics checked as they were, before they are taken at the
-        // one frequency: taken, a layer has no dispersion left for layersOf()
-        // to check, and Djordjevic-Sarkar past its loss tangent - which the
-        // full wave refuses - was solved (eps_r 1.5, tan d 0.3 gave eps_eff
-        // 0.884: P56 of the open items).
         QStringList taken;
         const bool asked = !request.frequencies.isEmpty() && request.frequencies.first() > 0;
         const double f = asked ? request.frequencies.first() : job.top;
         const Stack at = job.stack.atFrequency(f);
-        QStringList hidden = layersOf(job.stack).problems;
-        for (const QString& p : layersOf(at).problems) hidden.removeAll(p);
-        if (!hidden.isEmpty()) return said(hidden.join(QLatin1Char(' ')));
         for (int i = 0; i < job.stack.layers.size(); ++i)
             if (!job.stack.layers.at(i).dispersion.isEmpty())
                 taken << tr("%1 eps_r %2, tan d %3").arg(at.layers.at(i).name).arg(at.layers.at(i).epsr, 0, 'g', 4)

@@ -858,11 +858,37 @@ private slots:
         QVERIFY2(std::abs(std::abs(rf::areaOf(disc)) / (M_PI * 2500) - 1) < 1e-4, qPrintable(QString::number(rf::areaOf(disc))));
         QVERIFY2(std::abs(std::abs(rf::areaOf(of(ring).outline)) / (M_PI * (3600 - 1600)) - 1) < 1e-4,
                  qPrintable(QString::number(rf::areaOf(of(ring).outline))));
+        // Its loops, its slit taken out, for drawing its edges: the outer
+        // circle and the hole, each once; a circle's its own.
+        {
+            const QList<QPolygonF> loops = rf::loopsOf(of(ring).outline);
+            QCOMPARE(int(loops.size()), 2);
+            QList<double> areas{std::abs(rf::areaOf(loops.at(0))), std::abs(rf::areaOf(loops.at(1)))};
+            std::sort(areas.begin(), areas.end());
+            QVERIFY2(std::abs(areas.at(0) / (M_PI * 1600) - 1) < 1e-4 && std::abs(areas.at(1) / (M_PI * 3600) - 1) < 1e-4,
+                     qPrintable(QStringLiteral("%1, %2").arg(areas.at(0)).arg(areas.at(1))));
+            QList<int> corners{int(loops.at(0).size()), int(loops.at(1).size())};
+            std::sort(corners.begin(), corners.end());
+            QCOMPARE(corners, (QList<int>{int(rf::circleOf(QPointF(400, 0), 40).size()), int(rf::circleOf(QPointF(400, 0), 60).size())}));
+            QCOMPARE(int(rf::loopsOf(disc).size()), 1);
+            QCOMPARE(rf::loopsOf(disc).first(), disc);
+        }
         const QRectF ringBox = of(ring).outline.boundingRect();
         QVERIFY2(std::abs(ringBox.left() - 340) < 1e-3 && std::abs(ringBox.right() - 460) < 1e-9 && std::abs(ringBox.height() - 120) < 1e-3,
                  qPrintable(QStringLiteral("%1 %2 %3").arg(ringBox.left()).arg(ringBox.right()).arg(ringBox.height())));
         // The cutout's circle is the same.
         QCOMPARE(rf::circleOf(QPointF(100, 0), 50), disc);
+        // Large ones capped at 1024 sides, 4.7 nm in at 1 mm; one past an int's
+        // worth of sides capped as well, not overflowed (the review of
+        // 747a2cfd).
+        {
+            const QPolygonF mm = rf::circleOf(QPointF(), 1000);
+            QCOMPARE(int(mm.size()), 1024);
+            const double in = 1000 * (1 - std::cos(M_PI / 1024));
+            QVERIFY2(in > 4.6e-3 && in < 4.8e-3, qPrintable(QString::number(in)));
+            QCOMPARE(int(rf::circleOf(QPointF(), 1e16).size()), 1024);
+            QCOMPARE(int(rf::circleOf(QPointF(), 1e-6).size()), 32);
+        }
         // A parameter changed: the circle with it.
         m.root.child(QStringLiteral("rf_parameters"))->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"R", "80[um]"});
         own = rf::ownShapesOf(m);
@@ -897,6 +923,33 @@ private slots:
             }
         }
         QVERIFY2(std::abs(ringArea / (M_PI * 2000) - 1) < 0.005, qPrintable(QString::number(ringArea)));
+        // Its cells meet edge to edge all round, across the keyhole's slit too:
+        // every side of a cell inside the metal is another cell's, paired as
+        // the solve pairs them - by its middle, to a nanometre. (The slit cut
+        // each slab it crossed in two, meshed on their own, and they met
+        // along a third of it - the review of 747a2cfd.)
+        {
+            QHash<QString, int> sides;
+            QHash<QString, QPointF> middles;
+            QHash<QString, double> lengths;
+            for (const rf::MeshCell& c : mesh.cells)
+                for (int k = 0; k < c.outline.size(); ++k) {
+                    const QPointF p = c.outline.at(k), q = c.outline.at((k + 1) % c.outline.size());
+                    if (QLineF(p, q).length() < 1e-9) continue;
+                    const QPointF mid = (p + q) / 2;
+                    const QString key = QStringLiteral("%1,%2").arg(std::llround(mid.x() * 1e3)).arg(std::llround(mid.y() * 1e3));
+                    sides[key] += 1;
+                    middles.insert(key, mid);
+                    lengths.insert(key, QLineF(p, q).length());
+                }
+            double lone = 0;
+            for (auto it = sides.cbegin(); it != sides.cend(); ++it) {
+                const QPointF mid = middles.value(it.key());
+                const double r = std::hypot(mid.x() - 400, mid.y());
+                if (it.value() == 1 && mid.x() > 300 && r > 41 && r < 59) lone += lengths.value(it.key());
+            }
+            QVERIFY2(lone < 1e-9, qPrintable(QStringLiteral("%1 µm of cell sides inside the ring are no other cell's").arg(lone)));
+        }
         QVERIFY2(std::abs(discArea / (M_PI * 6400) - 1) < 0.005, qPrintable(QString::number(discArea)));
 
         // What cannot be read: left out, and said.

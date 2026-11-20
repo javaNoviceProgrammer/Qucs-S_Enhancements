@@ -261,6 +261,20 @@ private slots:
         QCOMPARE(at.layers.at(0).epsr, e.real());
         QCOMPARE(at.layers.at(0).tand, -e.imag() / e.real());
         QCOMPARE(at.layers.at(1).epsr, s.layers.at(1).epsr);   // (not dispersive: as it was)
+        // A uniaxial layer's eps_z taken by its susceptibility, the plane's
+        // share: one given at 1.01 stays over 1 (it was scaled with eps itself,
+        // to 0.96 at 40 GHz, which the solve then refused - the review of
+        // 3f31f0c4); one the same as the plane's is the plane's.
+        {
+            rf::Stack u = s;
+            u.layers[0].epsz = 1.01;
+            const rf::Stack at40 = u.atFrequency(40e9);
+            const double e40 = rf::djordjevicSarkar(11.9, 0.02, 2e9, 40e9).real();
+            QVERIFY2(at40.layers.at(0).epsz > 1, qPrintable(QString::number(at40.layers.at(0).epsz)));
+            QVERIFY(std::abs(at40.layers.at(0).epsz - (1 + 0.01 * (e40 - 1) / 10.9)) < 1e-12);
+            u.layers[0].epsz = 11.9;
+            QVERIFY(std::abs(u.atFrequency(40e9).layers.at(0).epsz - e40) < 1e-12);
+        }
         // Written and read back.
         const std::optional<rf::Model> back = rf::Model::fromJson(m.toJson());
         QVERIFY(back.has_value());

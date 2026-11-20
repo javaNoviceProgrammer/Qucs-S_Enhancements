@@ -1944,10 +1944,17 @@ void RF25Doc::showOverlays()
             QColor fill = colourOf(it.key());
             fill.setAlpha(150);
             if (!framedLayer(it.key())) overlay.fill = fill;
-            overlay.line = outlineColor(colourOf(it.key()));
-            overlay.width = 1.0;
             overlay.name = tr("%1, the model's own shapes").arg(it.key());
-            overlays << overlay;
+            // Their edges drawn apart, each loop its own - a ring's outline
+            // and its hole -, not along the keyhole's slit: stroked as it is,
+            // a ring showed a line across itself, as if cut (the review of
+            // 747a2cfd).
+            LayoutView::Overlay edges;
+            for (const QPolygonF& shape : it.value()) edges.shapes += loopsOf(shape);
+            edges.line = outlineColor(colourOf(it.key()));
+            edges.width = 1.0;
+            edges.name = overlay.name;
+            overlays << overlay << edges;
         }
     }
     // The Dimensions: each box, an arrow the way it moves, its By by it.

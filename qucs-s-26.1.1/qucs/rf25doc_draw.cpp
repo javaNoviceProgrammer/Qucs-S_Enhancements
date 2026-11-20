@@ -899,8 +899,8 @@ bool RF25Doc::drawShapes(const QJsonArray& edits, QStringList* done, QString* er
             gds.append(out);
             what << tr("a path of %1, %2 µm wide").arg(layer->name, um(e.value(QLatin1String("width")).toDouble()));
         } else if (add == QLatin1String("circle") || add == QLatin1String("ring")) {
-            // (A polygon of the file: a circle's sides within a nanometre of it,
-            //  a ring the keyhole a file writes a hole as.)
+            // (A polygon of the file: a circle as circleOf() makes it, a ring
+            //  the keyhole a file writes a hole as.)
             QPointF at;
             double radius = 0, inner = 0;
             const bool ring = add == QLatin1String("ring");

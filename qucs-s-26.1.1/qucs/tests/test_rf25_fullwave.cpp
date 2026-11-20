@@ -21,9 +21,6 @@
 #include <QRegularExpression>
 #include <QScopeGuard>
 
-#include <functional>
-#include <tuple>
-
 #include "rf25/rf25_dense.h"
 #include "rf25/rf25_fast.h"
 #include "rf25/rf25_fullwave.h"
@@ -3018,21 +3015,50 @@ private slots:
         // as something else - a loss tangent below nought was solved as nought,
         // a permeability of nought or less as 1, an eps_z under 1 as none (the
         // review of 1213eeef). A thickness of nothing is not among them: a sheet.
-        const QList<std::tuple<std::function<void(rf::Layer&)>, const char*>> wrong{
-            {[](rf::Layer& l) { l.epsr = 0.5; }, "relative permittivity below 1 (0.5)"},
-            {[](rf::Layer& l) { l.tand = -0.02; }, "loss tangent below zero"},
-            {[](rf::Layer& l) { l.sigma = -1; }, "conductivity below zero"},
-            {[](rf::Layer& l) { l.mur = 0; }, "permeability of no more than nought"},
-            {[](rf::Layer& l) { l.mtand = -0.1; }, "magnetic loss tangent below zero"},
-            {[](rf::Layer& l) { l.epsz = 0.5; }, "permittivity along z below 1 (0.5)"}};
+        // And the reader's others, which were solved smooth, isotropic or not
+        // dispersive (the review of 3f31f0c4): an eps_y under 1, a dispersion
+        // given at 0 Hz or past 1 THz, a metal's roughness below nought,
+        // Huray nodules of no radius, a surface ratio below nought.
+        const QList<std::tuple<std::function<void(rf::Stack&)>, const char*>> wrong{
+            {[](rf::Stack& s) { s.layers[1].epsr = 0.5; }, "relative permittivity below 1 (0.5)"},
+            {[](rf::Stack& s) { s.layers[1].tand = -0.02; }, "loss tangent below zero"},
+            {[](rf::Stack& s) { s.layers[1].sigma = -1; }, "conductivity below zero"},
+            {[](rf::Stack& s) { s.layers[1].mur = 0; }, "permeability of no more than nought"},
+            {[](rf::Stack& s) { s.layers[1].mtand = -0.1; }, "magnetic loss tangent below zero"},
+            {[](rf::Stack& s) { s.layers[1].epsz = 0.5; }, "permittivity along z below 1 (0.5)"},
+            {[](rf::Stack& s) { s.layers[1].epsy = 0.5; }, "permittivity along x or y below 1"},
+            {[](rf::Stack& s) {
+                 s.layers[1].dispersion = QStringLiteral("djordjevic_sarkar");
+                 s.layers[1].dispersionAt = 0;
+             },
+             "outside Djordjevic-Sarkar's poles"},
+            {[](rf::Stack& s) {
+                 s.layers[1].dispersion = QStringLiteral("djordjevic_sarkar");
+                 s.layers[1].dispersionAt = 1e13;
+             },
+             "outside Djordjevic-Sarkar's poles"},
+            {[](rf::Stack& s) { s.layers[2].roughness = -1e-6; }, "M1 has a roughness below zero"},
+            {[](rf::Stack& s) {
+                 s.layers[2].huray = true;
+                 s.layers[2].surfaceRatio = 2;
+             },
+             "M1's nodules have no radius"},
+            {[](rf::Stack& s) {
+                 s.layers[2].huray = true;
+                 s.layers[2].nodule = 0.5e-6;
+                 s.layers[2].surfaceRatio = -1;
+             },
+             "M1's surface ratio is below nought"}};
         for (const auto& [make, words] : wrong) {
-            rf::Stack s = grounded(4, 100e-6);
-            make(s.layers[1]);
+            rf::Stack s = grounded(4, 100e-6, 0, 2e-6, 5.8e7);
+            make(s);
+            QVERIFY2(says(rf::valueProblemsOf(s), words), qPrintable(QString::fromLatin1(words) + ": " + rf::valueProblemsOf(s).join(" | ")));
             const rf::FullWave w = rf::fullWaveOf(meshed(line, 3, 100e-6), line, s, ends, {1e9});
             QVERIFY2(!w.ok() && says(w.problems, words), qPrintable(QString::fromLatin1(words) + ": " + why(w)));
             const rf::Extraction e = rf::extract(meshed(line, 3, 100e-6), line, s);
             QVERIFY2(!e.ok() && says(e.problems, words), qPrintable(QString::fromLatin1(words) + ": " + e.problems.join(" | ")));
         }
+        QVERIFY(rf::valueProblemsOf(grounded(4, 100e-6, 0, 2e-6, 5.8e7)).isEmpty());
         QVERIFY(rf::layersOf(grounded(4, 100e-6)).ok());
     }
 

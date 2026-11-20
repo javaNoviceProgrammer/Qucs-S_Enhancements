@@ -3395,6 +3395,18 @@ private slots:
             for (const rf::OwnShape& s : own->ownShapes())
                 if (s.outline.boundingRect().top() > 250) area += std::abs(rf::areaOf(s.outline));
             QVERIFY2(std::abs(area / (M_PI * (900 + 900 - 400)) - 1) < 1e-4, qPrintable(QString::number(area)));
+            // Drawn filled as it is, its edges each loop on its own: the ring's
+            // outline and its hole stroked, not its slit (the review of
+            // 747a2cfd - a line across the ring, as if cut).
+            int strokedRings = 0;
+            for (const LayoutView::Overlay& o : own->view()->overlays()) {
+                if (o.name != QStringLiteral("M1, the model's own shapes")) continue;
+                if (o.fill.isValid()) QVERIFY(!o.line.isValid());
+                if (!o.line.isValid()) continue;
+                for (const QPolygonF& loop : o.shapes)
+                    if (loop.boundingRect().center().y() > 250 && loop.boundingRect().center().x() > 100) ++strokedRings;
+            }
+            QCOMPARE(strokedRings, 2);
         }
         QVERIFY(!own->drawShapes(QJsonArray{QJsonObject{{"add", "circle"}, {"layer", "M1"}, {"parametric", true}, {"at", QJsonArray{0, 0}}}},
                                  &done, &why));
