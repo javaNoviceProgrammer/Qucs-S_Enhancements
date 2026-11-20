@@ -5,6 +5,8 @@
  * flat profile; a transmission's step its delay; and a full-wave line's
  * profile its impedance.
  */
+#include <QElapsedTimer>
+#include <QRegularExpression>
 #include <QtTest>
 
 #include "rf25/rf25_tdr.h"
@@ -249,6 +251,118 @@ private slots:
         mid /= n;
         qWarning("a full-wave line's profile halfway: %.4g Ohm, its quasi-static Z0 %.4g", mid, lp.z0);
         QVERIFY2(std::abs(mid / lp.z0 - 1) < 0.02, qPrintable(QStringLiteral("%1 Ohm against %2").arg(mid).arg(lp.z0)));
+    }
+
+    // A 50 Ohm line into 75 Ohm a nanosecond's round trip away, S11 = 0.2
+    // exp(-j w 1 ns), swept every 50 MHz to 10 GHz from 25 MHz, 0.3, 1, 2 and
+    // 5 GHz: S at nought 0.2 throughout, and the profile 50 Ohm before the
+    // nanosecond and 75 after it. From 1 GHz the lowest three's quadratic gave
+    // -3.56, from 5 GHz -97, and Z(t) nought throughout, said as fine (a bug hunt's second hour). And a sweep whose phase carried
+    // to nought lands off the real axis: said.
+    void aSweepFromHighHasItsLevel()
+    {
+        for (const double start : {25e6, 0.3e9, 1e9, 2e9, 5e9}) {
+            QList<double> fs;
+            QList<Complex> s11;
+            for (double f = start; f <= 10e9 + 1; f += 50e6) {
+                fs << f;
+                s11 << 0.2 * std::exp(-kJ * (2 * M_PI * f * 1e-9));
+            }
+            const rf::TimeDomain r = rf::timeDomainOf(fs, s11, true, 50, 6, 1000);
+            QVERIFY2(r.ok(), qPrintable(r.problems.join(" | ")));
+            double before = 0, after = 0;
+            int nb = 0, na = 0;
+            for (int i = 0; i < r.t.size(); ++i) {
+                if (r.t.at(i) > 0.3e-9 && r.t.at(i) < 0.7e-9) {
+                    before += r.impedance.at(i);
+                    ++nb;
+                }
+                if (r.t.at(i) > 1.3e-9 && r.t.at(i) < 1.7e-9) {
+                    after += r.impedance.at(i);
+                    ++na;
+                }
+            }
+            before /= nb;
+            after /= na;
+            qWarning("swept from %.3g GHz: the profile %.4g Ohm before the step, %.4g after", start / 1e9, before, after);
+            QVERIFY2(std::abs(before / 50 - 1) < 0.01 && std::abs(after / 75 - 1) < 0.01,
+                     qPrintable(QStringLiteral("from %1 GHz: %2, %3 | %4").arg(start / 1e9).arg(before).arg(after).arg(r.lines.join(" | "))));
+            QVERIFY2(r.lines.join(' ').contains(QRegularExpression(QStringLiteral("S at nought 0\\.(2|200\\d|199\\d),"))),
+                     qPrintable(r.lines.join(" | ")));
+        }
+        // The phase carried to nought 90 degrees off the real axis: S11 =
+        // 0.2 j exp(-j w 1 ns), which no port's S is. Said, the sign a guess.
+        QList<double> fs;
+        QList<Complex> odd;
+        for (double f = 1e9; f <= 10e9 + 1; f += 50e6) {
+            fs << f;
+            odd << 0.2 * kJ * std::exp(-kJ * (2 * M_PI * f * 1e-9));
+        }
+        const rf::TimeDomain r = rf::timeDomainOf(fs, odd, true, 50, 6, 1000);
+        QVERIFY2(r.lines.join(' ').contains(QStringLiteral("is a guess")), qPrintable(r.lines.join(" | ")));
+    }
+
+    // The FFT against the plain sum it replaces, on a grid of 1000 points
+    // (2000 a transform: Bluestein's) and of 1024 (radix two): the same
+    // impulse to 1e-9 of its peak. And 2^20 points to 10 GHz in a quarter of a
+    // second, where the sum's 16,000 took 3.5 s; past 2^20, refused.
+    void theTransformIsTheSum()
+    {
+        QList<double> fs;
+        QList<Complex> s21;
+        for (int k = 1; k <= 200; ++k) {
+            fs << k * 50e6;
+            s21 << std::exp(-kJ * (2 * M_PI * k * 50e6 * 0.7e-9)) * (1.0 - 0.02 * k / 200.0);
+        }
+        for (const int m : {1000, 1024}) {
+            const rf::TimeDomain t = rf::timeDomainOf(fs, s21, false, 50, 6, m);
+            QVERIFY2(t.ok(), qPrintable(t.problems.join(" | ")));
+            // (The grid's S as the transform takes it: the same function's, at
+            //  points m - its S at nought the quadratic's, its window
+            //  Kaiser's.)
+            const double df = t.df, dt = t.t.at(1) - t.t.at(0);
+            QCOMPARE(t.t.size(), m);
+            double peak = 0, worst = 0;
+            for (const double h : t.impulse) peak = std::max(peak, std::abs(h));
+            // The sum at a few of the times, S on the grid from the sweep's
+            // own points (every 50 MHz, each a grid point where df divides it),
+            // the window Kaiser's of beta 6.
+            const auto i0 = [](double x) {
+                double sum = 1, term = 1;
+                for (int k = 1; k < 200; ++k) {
+                    term *= (x / (2 * k)) * (x / (2 * k));
+                    sum += term;
+                }
+                return sum;
+            };
+            // (S at nought the lowest three's quadratic in their real parts:
+            //  the phase turns 12.6 degrees below the first point.)
+            const double q = s21.at(0).real() * 3 - s21.at(1).real() * 3 + s21.at(2).real();
+            const auto sOn = [&](double f) -> Complex {
+                if (f < 50e6 - 1) return Complex(q, 0) + (s21.at(0) - Complex(q, 0)) * (f / 50e6);
+                const int hi = std::min(int(std::ceil(f / 50e6 - 1e-9)), 200) - 1;
+                if (hi <= 0) return s21.at(0);
+                const double u = (f - fs.at(hi - 1)) / 50e6;
+                const Complex lo = s21.at(hi - 1), up = s21.at(hi);
+                return std::polar(std::abs(lo) * (1 - u) + std::abs(up) * u, std::arg(lo) + std::arg(up / lo) * u);
+            };
+            for (const int i : {0, 7, 13, m / 3, m / 2, m - 1}) {
+                Complex sum = sOn(0);
+                for (int k = 1; k <= m; ++k) {
+                    const double x = double(k) / m;
+                    const double w = i0(6 * std::sqrt(std::max(0.0, 1 - x * x))) / i0(6);
+                    sum += 2.0 * sOn(k * df) * w * std::exp(Complex(0, 2 * M_PI * k * df * i * dt));
+                }
+                worst = std::max(worst, std::abs(df * sum.real() - t.impulse.at(i)));
+            }
+            QVERIFY2(worst < 1e-9 * peak, qPrintable(QStringLiteral("%1 points: %2 of the peak").arg(m).arg(worst / peak)));
+        }
+        QElapsedTimer clock;
+        clock.start();
+        const rf::TimeDomain big = rf::timeDomainOf(fs, s21, false, 50, 6, 1 << 20);
+        QVERIFY2(big.ok() && big.t.size() == (1 << 20), qPrintable(big.problems.join(" | ")));
+        qWarning("2^20 points: %lld ms", qint64(clock.elapsed()));
+        QVERIFY(!rf::timeDomainOf(fs, s21, false, 50, 6, (1 << 20) + 1).ok());
     }
 
     // What it refuses: too few points, frequencies not ascending, a sweep
