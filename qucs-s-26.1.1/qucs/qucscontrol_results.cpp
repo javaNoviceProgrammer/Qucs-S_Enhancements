@@ -2093,9 +2093,9 @@ QString traceVariable(Schematic* sch, const Diagram* d, const QString& wanted, Q
         if (!plainDataset(folder, bare.section(QLatin1Char(':'), 0, 0)).isEmpty()) return bare;
         return named(bare);
     }
-    const QString file = defaultDataFile(sch);
-    ds::Dataset data;
-    if (!sch->getDocName().isEmpty() && QFileInfo::exists(file) && data.read(file)) {
+    // The dependent variables of \a data that \a bare names - of an AC
+    // analysis where a Smith or polar chart shows one and more fit.
+    const auto namesIn = [&](const ds::Dataset& data) {
         QStringList names = data.resolve(bare);
         names.erase(std::remove_if(names.begin(), names.end(), [&data](const QString& n) {
                         const ds::Variable* v = data.find(n);
@@ -2103,7 +2103,6 @@ QString traceVariable(Schematic* sch, const Diagram* d, const QString& wanted, Q
                     }),
                     names.end());
         if (names.size() > 1) {
-            // A Smith or polar chart shows an AC analysis's.
             const bool ac = d->Name.contains(QLatin1String("Smith")) || d->Name == QLatin1String("Polar")
                             || d->Name == QLatin1String("PS") || d->Name == QLatin1String("SP");
             if (ac) {
@@ -2113,21 +2112,42 @@ QString traceVariable(Schematic* sch, const Diagram* d, const QString& wanted, Q
                 if (acNames.size() == 1) names = acNames;
             }
         }
-        if (names.size() == 1) {
-            // (Its simulation's name before it - two of a kind ran:
-            // tr1.tran.v(out) - left off: the dataset readers find it so, and
-            // the trace shows on when one of them runs alone again.)
-            const QString& n = names.first();
-            static const QRegularExpression simulation(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
-            if (!ds::analysisOf(bare).isEmpty() && n.size() > bare.size() + 1 && n.endsWith(QLatin1Char('.') + bare)
-                && simulation.match(n.left(n.size() - bare.size() - 1)).hasMatch())
-                return named(bare);
-            return named(n);
-        }
+        return names;
+    };
+    // The trace of the one of \a names, as \a as names it; empty with
+    // \a error when they are several.
+    const auto traceOf = [&](const QStringList& names, const auto& as) -> QString {
         if (names.size() > 1) {
             *error = tr("%1 may be any of %2: say which.").arg(w, names.join(QStringLiteral(", ")));
             return QString();
         }
+        // (Its simulation's name before it - two of a kind ran:
+        // tr1.tran.v(out) - left off: the dataset readers find it so, and
+        // the trace shows on when one of them runs alone again.)
+        const QString& n = names.first();
+        static const QRegularExpression simulation(QStringLiteral("^[A-Za-z_][A-Za-z0-9_]*$"));
+        if (!ds::analysisOf(bare).isEmpty() && n.size() > bare.size() + 1 && n.endsWith(QLatin1Char('.') + bare)
+            && simulation.match(n.left(n.size() - bare.size() - 1)).hasMatch())
+            return as(bare);
+        return as(n);
+    };
+    const QString file = defaultDataFile(sch);
+    ds::Dataset data;
+    const bool read = !sch->getDocName().isEmpty() && QFileInfo::exists(file) && data.read(file);
+    if (read)
+        if (const QStringList names = namesIn(data); !names.isEmpty()) return traceOf(names, named);
+    // The page's dataset of no simulator (name.dat: qucsator's, or one
+    // written so) that has it, where the simulator's has not: read there,
+    // without a prefix - ngspice/v(y) looked in a name.dat.ngspice that
+    // has no y, or is not there.
+    if (!prefix.isEmpty() && !sch->getDocName().isEmpty()) {
+        const QString plain = QFileInfo(sch->getDocName()).absolutePath() + QLatin1Char('/') + sch->getDataSet();
+        ds::Dataset own;
+        if (QFileInfo::exists(plain) && own.read(plain))
+            if (const QStringList names = namesIn(own); !names.isEmpty())
+                return traceOf(names, [](const QString& n) { return n; });
+    }
+    if (read) {
         *note = tr("%1 has no variable %2: the trace shows nothing until a simulation writes it.").arg(QFileInfo(file).fileName(), bare);
     } else {
         *note = tr("There is no dataset yet (%1): the trace shows data after a simulation.").arg(QFileInfo(file).fileName());

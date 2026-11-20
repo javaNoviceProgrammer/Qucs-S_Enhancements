@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QScopeGuard>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -12,6 +13,7 @@
 
 #include "config.h"
 #include "datadisplay.h"
+#include "dataset.h"
 #include "diagrams/diagram.h"
 #include "diagrams/graph.h"
 #include "diagrams/marker.h"
@@ -275,6 +277,74 @@ private slots:
         QVERIFY2(x.size() == 2 && x.at(1).toDouble() == 0.0 && y.size() == 2 && y.at(1).toDouble() == 0.0, qPrintable(QJsonDocument(in).toJson()));
         page->setPenActive(false);
         page->setChanged(false);
+        call("close_document", {{"path", file}, {"unsaved", "discard"}});
+    }
+
+    // A dataset caught half written, cut in the middle of a number: the
+    // blocks above the cut line read, by the diagram and the tools - it
+    // was not read at all (one cut at a line break was), and the tools
+    // read the cut number as a value (1.2 of 1.25).
+    void aDatasetCutMidNumberReadsItsBlocks()
+    {
+        // x and y whole, z cut in its fourth value (-7.5 as "-7.").
+        QByteArray text = dataset(41, false);
+        text.truncate(text.indexOf("<dep z x>\n") + int(strlen("<dep z x>\n0\n-2.5\n-5\n-7.")));
+        QVERIFY(text.endsWith("-5\n-7."));
+        write("cut.dat", text);
+        QByteArray page = emptyPage("cut.dat");
+        page.replace("<Diagrams>\n", "<Diagrams>\n  <Rect 100 400 300 200 3 #c0c0c0 1 00 1 0 1 1 1 0 1 1 1 0 1 1 315 0 225 1 0 0 0 -1 \"\" \"\" \"\">\n"
+                                     "    <\"y\" #0000ff 2 3 0 0 0>\n    <\"z\" #ff0000 2 3 0 0 0>\n  </Rect>\n");
+        const QString file = write("cut.dpl", page);
+        QVERIFY(app->gotoPage(file, false, false));
+        Schematic* s = app->currentSchematic();
+        QVERIFY(s != nullptr && s->a_DocDiags.size() == 1);
+        const Graph* y = s->a_DocDiags.front()->Graphs.at(0);
+        QVERIFY(y->cPointsY != nullptr && y->axis(0) != nullptr);
+        QCOMPARE(int(y->axis(0)->count), 41);
+        // The tools: z's three whole values, not -7 read from "-7.".
+        qucs_s::dataset::Dataset data;
+        QVERIFY(data.read(dir.filePath("workspace/cut.dat")));
+        const qucs_s::dataset::Variable* z = data.find("z");
+        QVERIFY(z != nullptr);
+        QCOMPARE(z->re, (QVector<double>{0, -2.5, -5}));
+        QCOMPARE(data.find("y")->re.size(), qsizetype(41));
+        // Cut in its one line: not read.
+        write("cut.dat", "<Qucs Dataset " PACKAGE_VERSION);
+        QVERIFY(!data.read(dir.filePath("workspace/cut.dat")));
+        s->setChanged(false);
+        call("close_document", {{"path", file}, {"unsaved", "discard"}});
+    }
+
+    // A trace added by the tools with ngspice the default simulator, of a
+    // variable the page's own name.dat has (qucsator's, or written so) and
+    // name.dat.ngspice has not: named so, it shows - it was named
+    // ngspice/v(y), read from a name.dat.ngspice that is not there.
+    void aTraceOfThePagesPlainDatasetIsNamedSo()
+    {
+        QucsSettings.DefaultSimulator = spicecompat::simNgspice;
+        const auto restore = qScopeGuard([] { QucsSettings.DefaultSimulator = spicecompat::simQucsator; });
+        write("q.dat", dataset(41, false));
+        const QString file = write("q.dpl", emptyPage("q.dat"));
+        QVERIFY(app->gotoPage(file, false, false));
+        QVERIFY(!call("add_diagram", {{"path", file}, {"traces", QJsonArray{"y"}}}).value("isError").toBool());
+        Schematic* s = app->currentSchematic();
+        QVERIFY(s != nullptr && s->a_DocDiags.size() == 1);
+        const Graph* g = s->a_DocDiags.front()->Graphs.at(0);
+        QCOMPARE(g->Var, QStringLiteral("y"));
+        QVERIFY(g->cPointsY != nullptr && g->axis(0) != nullptr);
+        QCOMPARE(int(g->axis(0)->count), 41);
+        // With ngspice's dataset beside it that has it: ngspice's.
+        QByteArray spice = dataset(41, false);
+        spice.replace("<dep y x>", "<dep tran.v(y) x>");
+        write("q.dat.ngspice", spice);
+        const QJsonObject r = call("add_trace", {{"path", file}, {"diagram", 1}, {"variable", "y"}});
+        QVERIFY2(!r.value("isError").toBool(), qPrintable(QJsonDocument(r).toJson()));
+        QCOMPARE(s->a_DocDiags.front()->Graphs.size(), 2);
+        QCOMPARE(s->a_DocDiags.front()->Graphs.at(1)->Var, QStringLiteral("ngspice/tran.v(y)"));
+        // A variable neither has: as before, the simulator's name for it.
+        QVERIFY(!call("add_trace", {{"path", file}, {"diagram", 1}, {"variable", "out"}}).value("isError").toBool());
+        QVERIFY2(s->a_DocDiags.front()->Graphs.at(2)->Var.startsWith("ngspice/"), qPrintable(s->a_DocDiags.front()->Graphs.at(2)->Var));
+        s->setChanged(false);
         call("close_document", {{"path", file}, {"unsaved", "discard"}});
     }
 };
