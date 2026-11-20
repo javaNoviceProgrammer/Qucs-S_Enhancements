@@ -14,6 +14,7 @@
 #include "rf25/rf25_kept.h"
 #include "rf25/rf25_mesh.h"
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 
@@ -177,6 +178,12 @@ private slots:
             QVERIFY2(std::abs(a.efficiency - 1) < 0.03, qPrintable(QString::number(a.efficiency)));
             QVERIFY(a.directivity > 2 && a.directivity < 12);
             QVERIFY(std::abs(a.gain / a.directivity - a.efficiency) < 1e-9);
+            // (Radiated past what it accepts, by the solve's error: held at
+            //  one, its gain its directivity, and said - it read 1.002 and
+            //  1.004, the gain over the directivity: a bug hunt's second hour.)
+            QVERIFY(a.efficiency <= 1);
+            if (a.radiated > a.accepted)
+                QVERIFY2(a.efficiency == 1 && a.notes.join(' ').contains(QStringLiteral("more than it takes")), qPrintable(a.notes.join(" | ")));
         }
         // Realized gain: over what the source offers, the port's mismatch in
         // it - the gain times 1 - |S11|^2, to 1e-9.
@@ -198,6 +205,17 @@ private slots:
         QCOMPARE(back->fullWave->portPaths.size(), wave.portPaths.size());
         const rf::AntennaFigures again = rf::antennaFiguresOf(*back->fullWave, stack, 0, 0);
         QVERIFY(again.ok() && again.radiated == rf::antennaFiguresOf(wave, stack, 0, 0).radiated);
+        // A frequency whose currents were not kept (keptCurrentsOf(): a long
+        // sweep keeps them at some alone): refused, the nearest kept said.
+        {
+            rf::FullWave thinned = wave;
+            thinned.currents[1].clear();
+            QCOMPARE(thinned.nearestKept(1), 0);
+            const rf::AntennaFigures none = rf::antennaFiguresOf(thinned, stack, 1, 0);
+            QVERIFY2(!none.ok() && none.problems.join(' ').contains(QStringLiteral("nearest it kept them at is 12 GHz")),
+                     qPrintable(none.problems.join(" | ")));
+            QVERIFY(rf::currentDensity(thinned, 1, 0).isEmpty() && !rf::currentDensity(thinned, 0, 0).isEmpty());
+        }
         // Under a lid, or with no ground: no far field of its own, said.
         rf::Stack open = stack;
         open.layers.removeFirst();
@@ -266,6 +284,69 @@ private slots:
         const double want = 4 * M_PI * most / fine.power;
         qWarning("sixteen dipoles: directivity %.5g, the fine search's %.5g", r.directivity(), want);
         QVERIFY2(std::abs(r.directivity() / want - 1) < 0.002, qPrintable(QStringLiteral("%1 against %2").arg(r.directivity()).arg(want)));
+    }
+
+    // Which frequencies keep their currents: every one within
+    // kKeptCurrentsBytes; past it as many as fit, evenly spread, the ends
+    // and the highest among them. A 10,001-point sweep of a four-port of
+    // 30,000 runs, 1.9 MB a frequency, keeps 139 (a bug hunt's second hour: 19 GB, all of it written to the .solution file).
+    void aLongSweepKeepsSomeCurrents()
+    {
+        const QList<bool> all = rf::keptCurrentsOf(51, 58e3, 50);
+        QCOMPARE(int(std::count(all.begin(), all.end(), true)), 51);
+        const double each = 16.0 * 4 * 30000;
+        const QList<bool> some = rf::keptCurrentsOf(10001, each, 10000);
+        const int kept = int(std::count(some.begin(), some.end(), true));
+        QCOMPARE(kept, int(std::floor(rf::kKeptCurrentsBytes / each)));
+        QVERIFY(some.first() && some.last());
+        QVERIFY(kept * each <= rf::kKeptCurrentsBytes);
+        // (Evenly: no gap between kept ones past twice the mean.)
+        int last = 0, widest = 0;
+        for (int i = 1; i < some.size(); ++i)
+            if (some.at(i)) {
+                widest = std::max(widest, i - last);
+                last = i;
+            }
+        QVERIFY2(widest <= 2 * 10000 / (kept - 1) + 1, qPrintable(QString::number(widest)));
+        // The highest where it is not at an end, and one alone where only one
+        // fits.
+        const QList<bool> mid = rf::keptCurrentsOf(10001, each, 5003);
+        QVERIFY(mid.at(5003));
+        // (In place of the spread's nearest, not beside them: it kept 140 of
+        //  139 - the review of f2e35fa9.)
+        QCOMPARE(int(std::count(mid.begin(), mid.end(), true)), kept);
+        const QList<bool> one = rf::keptCurrentsOf(100, rf::kKeptCurrentsBytes, 37);
+        QCOMPARE(int(std::count(one.begin(), one.end(), true)), 1);
+        QVERIFY(one.at(37));
+        // A solve's, its budget lowered to three frequencies' worth: the
+        // others' currents dropped - in the sweep's worker, as each is solved
+        // (thinned after the sweep, the solve still held them all as it ended:
+        // the review of f2e35fa9) -, the far field refusing them, and said.
+        rf::Conductor patch;
+        patch.layer = QStringLiteral("M1");
+        patch.outline = QPolygonF(QRectF(0, 0, 4000, 3000));
+        rf::MeshSettings how;
+        how.maximum = 1e-3;
+        how.cellsAcross = 4;
+        const rf::Mesh mesh = rf::meshOf({patch}, how, rf::Stack(), 0);
+        rf::FullWavePort port;
+        port.at = QPointF(0, 1500);
+        port.metal = QStringLiteral("M1");
+        port.facing = QPointF(-1, 0);
+        const QList<double> fs{8e9, 9e9, 10e9, 11e9, 12e9, 13e9, 14e9};
+        const rf::FullWave whole = rf::fullWaveOf(mesh, {patch}, stackOf(1, 1e-3), {port}, fs);
+        QVERIFY2(whole.ok(), qPrintable(whole.problems.join(" | ")));
+        rf::FullWaveControl small;
+        small.keptCurrentsBytes = 3.5 * 16.0 * whole.runs;
+        const rf::FullWave few = rf::fullWaveOf(mesh, {patch}, stackOf(1, 1e-3), {port}, fs, 1e-6, &small);
+        QVERIFY2(few.ok(), qPrintable(few.problems.join(" | ")));
+        int keptAt = 0;
+        for (const auto& at : few.currents) keptAt += at.isEmpty() ? 0 : 1;
+        QCOMPARE(keptAt, 3);
+        QVERIFY(!few.currents.first().isEmpty() && !few.currents.last().isEmpty());
+        QVERIFY2(few.lines.join(' ').contains(QStringLiteral("kept at 3 of the 7 frequencies")), qPrintable(few.lines.join(" | ")));
+        for (int k = 0; k < fs.size(); ++k)
+            if (!few.currents.at(k).isEmpty()) QCOMPARE(few.currents.at(k), whole.currents.at(k));
     }
 };
 

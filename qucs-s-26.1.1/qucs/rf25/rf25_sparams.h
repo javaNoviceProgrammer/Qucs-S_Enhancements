@@ -79,12 +79,16 @@ fem::LineRLGC asLine(const Extraction& extraction, int index, double length, dou
  */
 fem::CoupledLines asCoupledLines(const Extraction& extraction, double length, double frequency = 0);
 
+/// The most points a sweep takes: past it a sweep is refused.
+constexpr int kMostSweepPoints = 100001;
+
 /*!
  * The frequencies a study asks for: \a points of them from \a from to
  * \a to (Hz), spaced logarithmically where \a logarithmic.
  *
- * Empty and why in \a problem where they are no sweep - no points, a
- * negative frequency, a logarithmic sweep from nothing.
+ * Empty and why in \a problem where they are no sweep - no points, more
+ * than kMostSweepPoints, a negative frequency, a logarithmic sweep from
+ * nothing.
  */
 QList<double> sweepFrequencies(double from, double to, int points, bool logarithmic, QString* problem = nullptr);
 

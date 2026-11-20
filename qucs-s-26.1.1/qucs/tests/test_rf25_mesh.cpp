@@ -928,9 +928,15 @@ private slots:
         QVERIFY(tenth.stack.named(QStringLiteral("M1"))->twoSheets);
         QVERIFY2(tenth.said.join(" | ").contains(QStringLiteral("M1 is solved as its two faces (Automatic): 2 µm thick beside gaps as narrow as 20 µm")),
                  qPrintable(tenth.said.join(" | ")));
-        // At a fortieth, its two faces; under it a sheet.
-        QVERIFY(decided(1, 40).any);
-        QVERIFY(!decided(1, 41).any);
+        // At a fortieth, its two faces; under it a sheet. Each near the
+        // threshold, which a sweep across steps the answer at, said so with
+        // how to hold it (a bug hunt's second hour: C12
+        // stepped 3.3 % there); a tenth not.
+        const rf::Thickened at = decided(1, 40), past = decided(1, 41);
+        QVERIFY(at.any);
+        QVERIFY(!past.any);
+        QVERIFY2(says(at.said, "near the threshold") && says(past.said, "near the threshold"), qPrintable(at.said.join(" | ") + " || " + past.said.join(" | ")));
+        QVERIFY(!says(tenth.said, "near the threshold"));
         // 0.5 µm in 50 µm gaps, a hundredth: a sheet, and said.
         const rf::Thickened hundredth = decided(0.5, 50);
         QVERIFY(!hundredth.any && !hundredth.stack.named(QStringLiteral("M1"))->twoSheets);

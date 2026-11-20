@@ -2898,6 +2898,21 @@ private slots:
             // A port off the walls: refused.
             const rf::FullWave off = solve(boxed(er, b, QRectF(QPointF(-100e-6, -2e-3), QPointF(1000e-6, 2.1e-3))), 1000, 100, {fl});
             QVERIFY2(!off.ok() && says(off.problems, "In a box a port stands at a wall"), qPrintable(why(off)));
+            // A shape past the walls, or wholly outside the box: refused by
+            // name - each came to "nothing finite" (a bug hunt's second hour).
+            {
+                const QList<rf::Conductor> cs{strip(0, 0, 1000, 100), strip(0, 2500, 1000, 100)};
+                const rf::FullWave outside = rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, stack(1000),
+                                                            {edgePort(QPointF(0, 50), QStringLiteral("M1"), QPointF(-1, 0)),
+                                                             edgePort(QPointF(1000, 50), QStringLiteral("M1"), QPointF(1, 0))},
+                                                            {fl});
+                QVERIFY2(!outside.ok() && says(outside.problems, "In a box every shape is inside its walls"), qPrintable(why(outside)));
+                // (Asked compressed, a box is held dense, and said.)
+                rf::FullWaveControl compressed;
+                compressed.matrix = rf::FullWaveControl::Matrix::Compressed;
+                const rf::FullWave asked = solve(stack(1000), 1000, 100, {fl}, &compressed);
+                QVERIFY2(asked.ok() && says(asked.lines, "a solve in a box is held dense"), qPrintable(why(asked)));
+            }
         }
         // In a channel, in vacuum; and the split moved.
         {
@@ -2970,6 +2985,33 @@ private slots:
     // for ever; a permittivity of "0/0" solved to answers said to be right;
     // a lumped element's R of "0/0" passed its check of nought or above as
     // NaN, its S NaN and said to be right.
+    // What a stack says that it was solved without (a bug hunt's second hour): a metal with a conductivity and no thickness,
+    // lossless in the full wave - a 1 mm line's series R 3.7e-8 Ohm at 1 GHz
+    // -, warned of; and a dielectric whose loss tangent is too high for
+    // Djordjevic-Sarkar - eps -0.33 at 300 GHz of 0.3 at 1 GHz, gain -,
+    // refused by the solvers too, not by the model's reader alone.
+    void whatAStackSolvedWithoutIsSaid()
+    {
+        const QList<rf::Conductor> line{strip(0, 0, 1000, 100)};
+        const QList<rf::FullWavePort> ends{edgePort(QPointF(0, 50)), edgePort(QPointF(1000, 50))};
+        const rf::FullWave thin = rf::fullWaveOf(meshed(line, 3, 100e-6), line, grounded(4, 100e-6, 0, 0, 5.8e7), ends, {1e9});
+        QVERIFY2(thin.ok() && says(thin.warnings, "M1 has a conductivity but no thickness"), qPrintable(why(thin) + thin.warnings.join(" | ")));
+        const rf::FullWave thick = rf::fullWaveOf(meshed(line, 3, 100e-6), line, grounded(4, 100e-6, 0, 2e-6, 5.8e7), ends, {1e9});
+        QVERIFY2(thick.ok() && !says(thick.warnings, "no thickness"), qPrintable(why(thick) + thick.warnings.join(" | ")));
+        rf::Stack lossy = grounded(4, 100e-6, 0.3);
+        lossy.layers[1].dispersion = QStringLiteral("djordjevic_sarkar");
+        lossy.layers[1].dispersionAt = 1e9;
+        QVERIFY2(says(rf::layersOf(lossy).problems, "too high for Djordjevic-Sarkar"), qPrintable(rf::layersOf(lossy).problems.join(" | ")));
+        lossy.layers[1].tand = 0.02;
+        QVERIFY(rf::layersOf(lossy).ok());
+        const rf::FullWave refused = rf::fullWaveOf(meshed(line, 3, 100e-6), line, [&] {
+            rf::Stack s = lossy;
+            s.layers[1].tand = 0.3;
+            return s;
+        }(), ends, {1e9});
+        QVERIFY2(!refused.ok() && says(refused.problems, "too high for Djordjevic-Sarkar"), qPrintable(why(refused)));
+    }
+
     void aNumberThatIsNotFiniteIsRefused()
     {
         for (const char* text : {"0/0", "1/0", "sqrt(-1)"}) {
@@ -3630,6 +3672,22 @@ private slots:
         QVERIFY2(ends.ok(), qPrintable(why(ends)));
         QCOMPARE(rf::portPlace(longLine, QPointF(0, 0)), rf::PortPlace::OnEdge);
         QCOMPARE(rf::portPlace(longLine, QPointF(0, -5)), rf::PortPlace::OnCorner);
+        // On a keyhole's slit - the cut of no width from the outline to the
+        // hole, metal on both its sides -: inside, not on a face, with a
+        // facing or without; it drove 12 cells along the slit as its face
+        // (a bug hunt's second hour). On the outline beside
+        // it, an edge.
+        {
+            rf::Conductor keyhole;
+            keyhole.layer = QStringLiteral("M1");
+            keyhole.outline = QPolygonF({QPointF(0, 0), QPointF(1000, 0), QPointF(1000, 1000), QPointF(0, 1000), QPointF(0, 500),
+                                         QPointF(400, 500), QPointF(400, 600), QPointF(600, 600), QPointF(600, 400), QPointF(400, 400),
+                                         QPointF(400, 500), QPointF(0, 500)});
+            QCOMPARE(rf::portPlace({keyhole}, QPointF(100, 500)), rf::PortPlace::Inside);
+            QCOMPARE(rf::portPlace({keyhole}, QPointF(100, 500), QString(), QPointF(0, 1)), rf::PortPlace::Inside);
+            QCOMPARE(rf::portPlace({keyhole}, QPointF(0, 250), QString(), QPointF(-1, 0)), rf::PortPlace::OnEdge);
+            QCOMPARE(rf::portPlace({keyhole}, QPointF(500, 600), QString(), QPointF(0, -1)), rf::PortPlace::OnEdge);
+        }
         const QList<rf::Conductor> halves{strip(0, -50, 2000, 50), strip(0, 0, 2000, 50)};
         const rf::Mesh two = rf::meshOf(halves, how, stack, 10e9);
         const rf::FullWave between = rf::fullWaveOf(two, halves, stack, {edgePort(QPointF(0, 0)), edgePort(QPointF(2000, 0))}, {1e9});
@@ -4157,6 +4215,35 @@ private slots:
         QVERIFY(!none.ok());
         QVERIFY2(none.problems.join(' ').contains(QStringLiteral("rectangle at 1000, 400 µm is over no cell of M1")),
                  qPrintable(why(none)));
+        // A point off the metal: refused, as the rectangle is - it drove the
+        // nearest cell and named its own point as the cell's (a bug hunt's second hour). On the strip's edge, taken.
+        const rf::FullWave offPoint = rf::fullWaveOf(mesh, line, stack, {internalPort(QPointF(1000, 120), QStringLiteral("M1"))}, fs);
+        QVERIFY2(!offPoint.ok() && says(offPoint.problems, "is over no cell of M1 that a current reaches"), qPrintable(why(offPoint)));
+        const rf::FullWave onEdge = rf::fullWaveOf(mesh, line, stack, {internalPort(QPointF(1000, 100), QStringLiteral("M1"))}, fs);
+        QVERIFY2(onEdge.ok(), qPrintable(why(onEdge)));
+        // Driven from a metal with nothing under its point - M1 ending 400 µm
+        // short of it -: refused; it took the nearest cell 400 µm off as "the
+        // cell under it".
+        {
+            rf::Conductor up = strip(0, 0, 1000, 100);
+            up.layer = QStringLiteral("M2");
+            const QList<rf::Conductor> both{strip(0, 0, 400, 100), up};
+            const rf::FullWave unheld =
+                rf::fullWaveOf(meshed(both, 3, 100e-6), both, twoMetals(), {internalPort(QPointF(800, 50), QStringLiteral("M2"), QStringLiteral("M1"))}, fs);
+            QVERIFY2(!unheld.ok() && says(unheld.problems, "has no cell of M1 under it to drive against"), qPrintable(why(unheld)));
+        }
+        // A rectangle over two strips not otherwise joined ties them through
+        // the port: warned of (|S21| 0.17 where over one strip 0.9998, nothing
+        // said); over one strip, not.
+        {
+            const QList<rf::Conductor> pair{strip(0, 0, 2000, 100), strip(0, 200, 2000, 100)};
+            const rf::Mesh two = meshed(pair, 3, 100e-6);
+            rf::FullWavePort across = internalPort(QPointF(25, 150), QStringLiteral("M1"));
+            across.size = QSizeF(20, 400);
+            const rf::FullWave tied = rf::fullWaveOf(two, pair, stack, {across, edgePort(QPointF(2000, 50))}, fs);
+            QVERIFY2(tied.ok() && says(tied.warnings, "lies over 2 pieces of metal not otherwise joined"), qPrintable(why(tied) + tied.warnings.join(" | ")));
+            QVERIFY2(!says(boxes.warnings, "pieces of metal"), qPrintable(boxes.warnings.join(" | ")));
+        }
     }
 
     // A GSSG on 150 µm of InP with nothing under it. A port on each signal returns through the two
@@ -4613,6 +4700,32 @@ private slots:
         QVERIFY2(says(left.lines, "land on no metal") && says(left.warnings, "a via drawn off the pads of its two metals joins nothing"),
                  qPrintable(left.warnings.join(" | ")));
         QVERIFY2(!says(joined.warnings, "land on no metal"), qPrintable(joined.warnings.join(" | ")));
+        // A via from M1 to M3 through a shape of M2 between them, which it
+        // does not join: warned of - as made it shorts to it, and a 3D
+        // solver's export does; it was solved apart with no word (a bug // hunt's second hour). Clear of M2, not.
+        {
+            rf::Stack three = two;
+            three.layers.removeIf([](const rf::Layer& l) { return l.kind == rf::Layer::Via; });
+            three.layers << layer(rf::Layer::Dielectric, QStringLiteral("ILD2"), 10e-6, 4) << layer(rf::Layer::Metal, QStringLiteral("M3"), 0, 1);
+            rf::Layer v13 = layer(rf::Layer::Via, QStringLiteral("V13"), 0, 1);
+            v13.from = QStringLiteral("M1");
+            v13.to = QStringLiteral("M3");
+            three.layers << v13;
+            rf::Conductor top = strip(300, 0, 400, 100), through = strip(300, 0, 100, 100), middle = strip(250, -50, 200, 200),
+                          aside = strip(250, 300, 200, 200);
+            top.layer = QStringLiteral("M3");
+            through.layer = QStringLiteral("V13");
+            middle.layer = aside.layer = QStringLiteral("M2");
+            const QList<rf::FullWavePort> ends{edgePort(QPointF(0, 50), QStringLiteral("M1"), QPointF(-1, 0)),
+                                               edgePort(QPointF(700, 50), QStringLiteral("M3"), QPointF(1, 0))};
+            const QList<rf::Conductor> shorted{strip(0, 0, 400, 100), top, through, middle};
+            const rf::FullWave past = rf::fullWaveOf(meshed(shorted, 4, 50e-6), shorted, three, ends, {1e9});
+            QVERIFY2(past.ok(), qPrintable(why(past)));
+            QVERIFY2(says(past.warnings, "of V13 pass through a shape of M2, a metal between the two it joins"), qPrintable(past.warnings.join(" | ")));
+            const QList<rf::Conductor> clear{strip(0, 0, 400, 100), top, through, aside};
+            const rf::FullWave apart = rf::fullWaveOf(meshed(clear, 4, 50e-6), clear, three, ends, {1e9});
+            QVERIFY2(apart.ok() && !says(apart.warnings, "pass through a shape"), qPrintable(why(apart) + apart.warnings.join(" | ")));
+        }
         // More than the dense limit holds, a dense solve asked (unasked, it
         // is held compressed).
         const QList<rf::Conductor> plate{strip(0, 0, 1000, 1000)};
@@ -5373,9 +5486,11 @@ private slots:
             if (!says(squeezed.lines, "loops and a tree") || says(squeezed.lines, "fell short"))
                 return QStringLiteral("%1: %2").arg(what, squeezed.lines.join(" | "));
             // (S at such frequencies said not to the digits, as of any line:
-            //  Z's terms against the ports' reference. Nothing else.)
+            //  Z's terms against the ports' reference; and a metal of no
+            //  thickness with a conductivity, lossless here. Nothing else.)
             for (const QString& x : squeezed.warnings)
-                if (!x.contains(QStringLiteral("S there is not to the digits"))) return QStringLiteral("%1: %2").arg(what, x);
+                if (!x.contains(QStringLiteral("S there is not to the digits")) && !x.contains(QStringLiteral("a conductivity but no thickness")))
+                    return QStringLiteral("%1: %2").arg(what, x);
             for (const rf::FullWave* w : {&dense, &squeezed})
                 if (says(w->warnings, "past its low-frequency limit") || says(w->warnings, "a coil may read as an open"))
                     return QStringLiteral("%1: %2").arg(what, w->warnings.join(" | "));

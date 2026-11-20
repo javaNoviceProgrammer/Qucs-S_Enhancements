@@ -317,6 +317,15 @@ AntennaFigures antennaFiguresOf(const FullWave& wave, const Stack& stack, int k,
         out.problems << tr("No such port or frequency of the solve.");
         return out;
     }
+    if (wave.currents.at(k).isEmpty()) {
+        const int near = wave.nearestKept(k);
+        out.problems << (near < 0 ? tr("The solve kept no currents, which the far field is of.")
+                                  : tr("The solve's currents were not kept at %1 GHz - a long sweep keeps them at some of its "
+                                       "frequencies alone -: the nearest it kept them at is %2 GHz.")
+                                        .arg(wave.frequencies.at(k) / 1e9, 0, 'g', 6)
+                                        .arg(wave.frequencies.at(near) / 1e9, 0, 'g', 6));
+        return out;
+    }
     // The ports' currents: the port's alone with the others open, or driven
     // through its reference, the others ended by theirs - (Z + Z_ref) I =
     // V_s e_p, V_s a volt.
@@ -364,6 +373,18 @@ AntennaFigures antennaFiguresOf(const FullWave& wave, const Stack& stack, int k,
     out.realizedGain = out.incident > 0 ? 4 * M_PI * r.most / out.incident : 0;
     const double taken = out.accepted - out.loads;
     out.efficiency = taken > 0 ? r.power / taken : 0;
+    // (Radiated past what the structure takes - a patch over vacuum 1.002 to
+    //  1.005, its gain over its directivity, the solve's error in the two
+    //  powers' difference - a bug hunt's second hour: held
+    //  at one, the gains with it, and said.)
+    if (out.efficiency > 1) {
+        out.notes << tr("It radiates %1 % more than it takes, which is the solve's error in the two: its efficiency is taken "
+                        "as one, and its gains as its directivity's.")
+                         .arg(100 * (out.efficiency - 1), 0, 'g', 2);
+        out.gain /= out.efficiency;
+        out.realizedGain /= out.efficiency;
+        out.efficiency = 1;
+    }
     out.thetaMost = r.thetaMost;
     out.phiMost = r.phiMost;
     return out;

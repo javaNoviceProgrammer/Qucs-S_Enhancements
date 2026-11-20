@@ -1464,6 +1464,16 @@ private slots:
         const HfssExport away = hfssExportOf(past, coplanar(100));
         QCOMPARE(away.ports, 1);
         QVERIFY(away.notes.join(QLatin1Char('\n')).contains(QLatin1String("P2 is not written")));
+        // One on the line's end's corner, no facing given: said as the solve
+        // says it (a bug hunt's second hour).
+        const Model cornered = modelOf(microstripStack() + QLatin1Char(',')
+                                       + portsOf(QStringLiteral(R"({"type": "rf_edge_port", "tag": "p1", "label": "P1", "properties": {"conductor": "M1", "x": "0", "y": "0", "facing": "-x"}},
+                                                                  {"type": "rf_edge_port", "tag": "p2", "label": "P2", "properties": {"conductor": "M1", "x": "100[um]", "y": "31[um]"}})"))
+                                       + QLatin1Char(',') + QLatin1String(kStudy));
+        const HfssExport atCorner = hfssExportOf(cornered, coplanar(100));
+        QCOMPARE(atCorner.ports, 1);
+        QVERIFY2(atCorner.notes.join(QLatin1Char('\n')).contains(QLatin1String("P2 is not written: it is on a corner of a shape on M1")),
+                 qPrintable(atCorner.notes.join(" | ")));
         // A return with no edge to stand for it: said, of an edge port and of an
         // internal one, which are written all the same.
         const Model noReturn = modelOf(microstripStack() + QLatin1Char(',')

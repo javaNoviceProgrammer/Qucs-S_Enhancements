@@ -711,23 +711,39 @@ std::atomic<double> sweepMemorySet{0};
 
 /// The cell of \a reached under \a where on \a layer (any, where it is
 /// empty): the one whose outline holds the point, else the one whose
-/// centre is nearest it. -1 where there is none on that layer.
+/// outline is nearest it, within the booleans' grid (kBooleanGrid) - a
+/// point on the line between two cells, which neither outline may hold. -1
+/// where there is none on that layer, or none so near: the nearest cell
+/// however far, as it was, took an internal port between two strips onto
+/// the nearer, and one whose other metal ended 400 µm short onto that end,
+/// said as "the cell under it" (a bug hunt's second hour).
 int cellUnder(const Mesh& mesh, const QList<int>& reached, QPointF where, const QString& layer)
 {
+    const auto distance = [&where](const QPolygonF& outline) {
+        double least = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < outline.size(); ++i) {
+            const QPointF a = outline.at(i), b = outline.at((i + 1) % outline.size());
+            const QPointF ab = b - a, aw = where - a;
+            const double along = QPointF::dotProduct(ab, ab);
+            const double t = along > 0 ? std::clamp(QPointF::dotProduct(aw, ab) / along, 0.0, 1.0) : 0.0;
+            const QPointF d = aw - t * ab;
+            least = std::min(least, std::hypot(d.x(), d.y()));
+        }
+        return least;
+    };
     int best = -1;
     double closest = 0;
     for (const int c : reached) {
         const MeshCell& cell = mesh.cells.at(c);
         if (!layer.isEmpty() && cell.layer != layer) continue;
         if (cell.outline.containsPoint(where, Qt::OddEvenFill)) return c;
-        const QPointF d = cell.centre - where;
-        const double far = d.x() * d.x() + d.y() * d.y();
+        const double far = distance(cell.outline);
         if (best < 0 || far < closest) {
             best = c;
             closest = far;
         }
     }
-    return best;
+    return best >= 0 && closest <= 2 * kBooleanGrid ? best : -1;
 }
 
 /// The cells of \a reached on \a layer (any, where it is empty) that
@@ -966,6 +982,11 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
     QMap<QString, Group> groups;
     QStringList keys;    // (the groups in the order they were met)
     int stranded = 0;
+    // (A via's cells through a shape of a metal between its two, which it
+    //  does not join: as made it would short to it, and a 3D export does -
+    //  a via from M1 to M3 through an M2 strip left it a net of its own, |S31|
+    //  0.021 where joined it reads some 0.5, nothing said: a bug hunt's second hour. Of each via and metal, how many.)
+    QMap<QPair<QString, QString>, int> through;
     for (int index = 0; index < mesh.cells.size(); ++index) {
         const MeshCell& cell = mesh.cells.at(index);
         const Layer* via = stack.named(cell.layer);
@@ -974,6 +995,17 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
         if (!(za >= 0) || !(zb >= 0) || za == zb) {
             ++stranded;
             continue;
+        }
+        for (const Layer& between : stack.layers) {
+            if (between.kind != Layer::Metal || between.face == Layer::Top || between.name == via->from || between.name == via->to)
+                continue;
+            const double z = metalHeight(stack, between.name);
+            if (!(z > std::min(za, zb) && z < std::max(za, zb))) continue;
+            for (const int c : bins.near(between.name, cell.centre, 0))
+                if (mesh.cells.at(c).outline.containsPoint(cell.centre, Qt::OddEvenFill)) {
+                    ++through[qMakePair(cell.layer, between.name)];
+                    break;
+                }
         }
         const QString lower = za < zb ? via->from : via->to, upper = za < zb ? via->to : via->from;
         const bool grounded = stack.isGround(lower);
@@ -1032,6 +1064,13 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
         warned->append(QCoreApplication::translate("qucs_s::rf25", "%1 via cell(s) land on no metal they join, and are left out: a "
                                                                    "via drawn off the pads of its two metals joins nothing.")
                            .arg(stranded));
+    for (auto it = through.cbegin(); it != through.cend() && warned != nullptr; ++it)
+        warned->append(QCoreApplication::translate("qucs_s::rf25", "%1 cell(s) of %2 pass through a shape of %3, a metal between "
+                                                                   "the two it joins, without joining it: here %3 stays apart, "
+                                                                   "but as made the via would short to it, as a 3D solver's "
+                                                                   "export of it does. Move the via, or cut %3 round it.")
+                           .arg(it.value())
+                           .arg(it.key().first, it.key().second));
     return out;
 }
 
@@ -4370,9 +4409,10 @@ FullWave foldLumped(const FullWave& wave, const QList<FullWavePort>& ports, cons
         out.s << scatteringOf(z, out.references);
         if (k < wave.currents.size()) {
             // Each measuring port's runs: its own, and each element's as much
-            // as its ampere drives through it.
+            // as its ampere drives through it. (None where they were not
+            // kept.)
             QList<QList<Complex>> perPort;
-            for (int i = 0; i < np; ++i) {
+            for (int i = 0; i < np && !wave.currents.at(k).isEmpty(); ++i) {
                 QList<Complex> column = wave.currents.at(k).at(keep.at(i));
                 for (int e = 0; e < nl; ++e)
                     for (int r = 0; r < column.size(); ++r) column[r] += wave.currents.at(k).at(lumped.at(e)).at(r) * il(e, i);
@@ -4549,6 +4589,23 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 out.problems << tr("In a box a port stands at a wall: an edge port on the face of a conductor that meets it, the wall "
                                    "its reference (%1 does not).")
                                     .arg(port.name.isEmpty() ? tr("a port") : port.name);
+                return out;
+            }
+        }
+        // (Every shape inside the walls: a strip run past them, or one wholly
+        //  outside, came to "nothing finite" at every frequency - a bug hunt's second hour.)
+        for (const Conductor& conductor : conductors) {
+            const QRectF bounds = conductor.outline.boundingRect();
+            const QRectF at(bounds.topLeft() * micrometre, bounds.bottomRight() * micrometre);
+            if (at.left() < box.left() - hair || at.right() > box.right() + hair || at.top() < box.top() - hair
+                || at.bottom() > box.bottom() + hair) {
+                out.problems << tr("In a box every shape is inside its walls, from %1 to %2 µm in x and %3 to %4 µm in y: a shape on "
+                                   "%5 spans %6 to %7 µm in x and %8 to %9 µm in y. Cut it at the walls, or make the box larger.")
+                                    .arg(box.left() * 1e6, 0, 'g', 6).arg(box.right() * 1e6, 0, 'g', 6)
+                                    .arg(box.top() * 1e6, 0, 'g', 6).arg(box.bottom() * 1e6, 0, 'g', 6)
+                                    .arg(conductor.layer)
+                                    .arg(at.left() * 1e6, 0, 'g', 6).arg(at.right() * 1e6, 0, 'g', 6)
+                                    .arg(at.top() * 1e6, 0, 'g', 6).arg(at.bottom() * 1e6, 0, 'g', 6);
                 return out;
             }
         }
@@ -4943,15 +5000,27 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // (A box dense: its kernel is no function of distance alone.)
     const bool compress = !c.boxed && c.symAxis == 0
                           && (asked == FullWaveControl::Matrix::Compressed || (asked == FullWaveControl::Matrix::Automatic && nr + nc > most));
+    // (A box or a plane of symmetry is held dense alone: told to hold it
+    //  compressed, which it cannot, and asked to, solved dense with no word -
+    //  a bug hunt's second hour.)
+    const bool denseAlone = c.boxed || c.symAxis != 0;
+    const QString why = c.boxed ? tr("a box") : tr("a plane of symmetry");
     if (!compress && nr + nc > most) {
         out.tooLarge = true;
-        out.problems << tr("%1 runs of current over %2 cells is more than a dense complex matrix is set up for (%3 in "
-                           "all). Mesh the layout more coarsely: fewer cells across a conductor, or a larger largest "
-                           "cell - or hold it compressed (the study's Matrix), or raise the limit (RF 2.5D > "
-                           "Settings…).")
-                            .arg(nr).arg(nc).arg(most);
+        out.problems << (denseAlone ? tr("%1 runs of current over %2 cells is more than a dense complex matrix is set up for (%3 in "
+                                         "all), and a solve in %4 is held dense alone. Mesh the layout more coarsely: fewer "
+                                         "cells across a conductor, or a larger largest cell - or raise the limit (RF 2.5D > "
+                                         "Settings…).")
+                                          .arg(nr).arg(nc).arg(most).arg(why)
+                                    : tr("%1 runs of current over %2 cells is more than a dense complex matrix is set up for (%3 in "
+                                         "all). Mesh the layout more coarsely: fewer cells across a conductor, or a larger largest "
+                                         "cell - or hold it compressed (the study's Matrix), or raise the limit (RF 2.5D > "
+                                         "Settings…).")
+                                          .arg(nr).arg(nc).arg(most));
         return out;
     }
+    if (denseAlone && asked == FullWaveControl::Matrix::Compressed)
+        out.lines << tr("Asked to hold its matrix compressed, a solve in %1 is held dense: compressed it is not solved yet.").arg(why);
     if (nr + nc > kMostCompressed) {
         out.tooLarge = true;
         out.problems << tr("%1 runs of current over %2 cells is more than this build sets up even compressed (%3 in "
@@ -5077,6 +5146,25 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 shape.insert(nodeOf.value(cell), boxOf(over ? box.intersected(rect) : box));
             }
             ownNet[p] = netOf.value(to.first().first, -1);
+            // (A rectangle over pieces of metal not otherwise joined ties them
+            //  through the port, which no probe does: two strips under one
+            //  read |S21| 0.17 where one alone reads 0.9998, nothing said - a bug hunt's second hour. An element across a gap
+            //  is a port over one pad returning through a terminal over the
+            //  other.)
+            {
+                QSet<int> under;
+                for (const auto& [cell, share] : to) under.insert(netOf.value(cell, -1));
+                if (under.size() > 1) {
+                    const QString w2 = tr("%1's %2 by %3 µm rectangle at %4, %5 µm lies over %6 pieces of metal not otherwise "
+                                          "joined, and ties them together through the port, as no probe would. To drive "
+                                          "across a gap, put the port over one side and a terminal over the other among its "
+                                          "returns.")
+                                           .arg(name, w, h, x, y)
+                                           .arg(under.size());
+                    out.warnings << w2;
+                    out.lines << w2;
+                }
+            }
             owns[p] = column;
             ownCount[p] = int(to.size());
             if (port.terminals) {
@@ -5973,6 +6061,13 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // (A vector, not a QList: the threads write to it side by side, and a
     //  QList's implicit sharing is no place for that.)
     std::vector<AtFrequency> solved(static_cast<std::size_t>(nf));
+    // (Each frequency's currents kept where they fit, else at some of them
+    //  alone - keptCurrentsOf() -, and one not kept dropped as soon as it is
+    //  solved: thinned after the sweep, a 10,001-point four-port of 30,000
+    //  runs still held its 19 GB as the sweep ended - the review of f2e35fa9.)
+    const QList<bool> keepCurrents =
+        keptCurrentsOf(nf, 16.0 * np * nr, int(std::max_element(frequencies.begin(), frequencies.end()) - frequencies.begin()),
+                       control != nullptr && control->keptCurrentsBytes > 0 ? control->keptCurrentsBytes : kKeptCurrentsBytes);
     std::atomic_int next{0};
     std::atomic_bool failed{false};
     // (Compressed, the highest frequency first: where the charges as
@@ -5987,8 +6082,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     //  the charges' term it fell short at, solveCompressed().)
     std::vector<NearBlocks> kept(static_cast<std::size_t>(side));
     std::vector<double> shortAt(static_cast<std::size_t>(side), std::numeric_limits<double>::infinity());
-    const auto work = [&c, &z, &frequencies, &solved, &next, &failed, &order, &shortAt, &kept, control, nf, compress, inner,
-                       side, symmetricLu](int thread) {
+    const auto work = [&c, &z, &frequencies, &solved, &next, &failed, &order, &shortAt, &kept, &keepCurrents, control, nf, compress,
+                       inner, side, symmetricLu](int thread) {
         const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
         // (Compressed, each thread's frequencies dealt to it in turn - the
         //  highest to the first, the next to the second, and round -, not
@@ -6003,6 +6098,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (!allowedOne(control)) return;
             solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, control, &shortAt[std::size_t(thread)], &kept[std::size_t(thread)])
                                                 : solveAt(c, frequencies.at(k), inner, symmetricLu, control != nullptr ? control->augmentedFrom : 0.0);
+            if (!keepCurrents.at(k)) solved[std::size_t(k)].current.resize(0, 0);
             if (!solved[std::size_t(k)].problems.isEmpty()) failed = true;
             if (control != nullptr && control->done != nullptr) ++*control->done;
         }
@@ -6157,6 +6253,26 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             out.warnings << w;
         }
     }
+    // (A metal with a conductivity and no thickness: a sheet of no
+    //  resistance, its sigma unused - a 1 mm line's series R 3.7e-8 Ohm at 1
+    //  GHz, said as a sheet "with the surface impedance of its thickness"; the
+    //  quasi-static solve said it - a bug hunt's second
+    //  hour.)
+    {
+        QStringList thin;
+        for (const Layer& l : stack.layers) {
+            if (l.kind != Layer::Metal || !(l.sigma > 0) || l.thickness > 0 || thin.contains(l.name)) continue;
+            for (const Conductor& conductor : conductors)
+                if (conductor.layer == l.name) {
+                    thin << l.name;
+                    break;
+                }
+        }
+        if (!thin.isEmpty())
+            out.warnings << tr("%1 %2 a conductivity but no thickness: the full wave takes a sheet of none as lossless, and "
+                               "its conductivity is not used. Give it its thickness for its loss.")
+                                .arg(thin.join(QStringLiteral(", ")), thin.size() == 1 ? tr("has") : tr("have"));
+    }
     int alongEdges = 0;
     for (const int free : std::as_const(c.freeSides)) alongEdges += free > 0 ? 1 : 0;
     const QString sheet = tr("a metal as a sheet with the surface impedance of its thickness, and more in the cells along "
@@ -6221,8 +6337,11 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (columnReturn.at(k) >= 0)
                 out.returnsOf[c.portOf.at(k)][columnReturn.at(k)].share = intoColumns(k, c.portOf.at(k));
     };
+    // (Each frequency's own answer moved out of the sweep's, not copied: two
+    //  copies of the currents kept. Those not kept were dropped as solved.)
+    const int keptCount = int(std::count(keepCurrents.begin(), keepCurrents.end(), true));
     for (int k = 0; k < nf; ++k) {
-        AtFrequency a = solved[std::size_t(k)];
+        AtFrequency a = std::move(solved[std::size_t(k)]);
         if (c.basis.size() > 0) {
             // In the columns solved for (Context::basis): each port's first,
             // then the differences, which carry no port's current. Tied, the
@@ -6253,7 +6372,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             into.topRows(np) = MatrixC::Identity(np, np);
             into.bottomRows(nw) = -w;
             if (k == topAt) shareOut(c.basis * into);
-            a.current = a.current * into;
+            if (a.current.size() > 0) a.current = a.current * into;
             a.z = z;
         } else if (c.np != np) {
             MatrixC x = Eigen::PartialPivLU<MatrixC>(a.z).solve(ofPort);
@@ -6278,7 +6397,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 return out;
             }
             if (k == topAt) shareOut(x * z);
-            a.current = a.current * (x * z);
+            if (a.current.size() > 0) a.current = a.current * (x * z);
             a.z = z;
         } else if (k == topAt) {
             shareOut(ofPort);
@@ -6316,7 +6435,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             }
         }
         QList<QList<Complex>> perPort;
-        for (int q = 0; q < np; ++q) {
+        for (int q = 0; q < np && a.current.size() > 0; ++q) {
             QList<Complex> column;
             column.reserve(nr);
             for (int r = 0; r < nr; ++r) column << a.current(r, q);
@@ -6386,6 +6505,10 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                             "be rounding.")
                              .arg(frequencies.at(k) / 1e9, 0, 'g', 4).arg(a.rcond, 0, 'g', 2);
     }
+    if (keptCount < nf)
+        out.lines << tr("Each run's current kept at %1 of the %2 frequencies, evenly spread, the highest among them: at "
+                        "every one they would hold %3 GB. The drawn currents and the far field are of those.")
+                         .arg(keptCount).arg(nf).arg(16.0 * np * nr * nf / 1e9, 0, 'f', 1);
     out.solvedAsymmetry = out.asymmetry;
     out.solvedGain = out.gain;
     out.solvedGainAt = out.gainAt;
@@ -6491,6 +6614,31 @@ QStringList returnSharesOf(const FullWave& solved)
                                                : tr("%1 % through %2").arg(100 * std::abs(r.share), 0, 'f', 1).arg(r.name));
         }
         out << tr("At %1 GHz %2's current comes back %3.").arg(top / 1e9, 0, 'g', 4).arg(solved.portNames.at(p), each.join(QStringLiteral(", ")));
+    }
+    return out;
+}
+
+QList<bool> keptCurrentsOf(int count, double perFrequency, int top, double budget)
+{
+    QList<bool> out(std::max(0, count), true);
+    if (count <= 1 || !(perFrequency > 0)) return out;
+    const double fit = std::floor(budget / perFrequency);
+    if (fit >= count) return out;
+    out.fill(false);
+    const int many = int(std::max(1.0, fit));
+    if (many == 1) {
+        out[std::clamp(top, 0, count - 1)] = true;
+        return out;
+    }
+    for (int j = 0; j < many; ++j) out[int(std::lround(double(j) * (count - 1) / (many - 1)))] = true;
+    // (The highest in place of the spread's nearest to it, not beside them:
+    //  one more than fits - 140 of 139, the review of f2e35fa9.)
+    if (top >= 0 && top < count && !out.at(top)) {
+        int nearest = -1;
+        for (int i = 0; i < count; ++i)
+            if (out.at(i) && (nearest < 0 || std::abs(i - top) < std::abs(nearest - top))) nearest = i;
+        if (nearest >= 0) out[nearest] = false;
+        out[top] = true;
     }
     return out;
 }

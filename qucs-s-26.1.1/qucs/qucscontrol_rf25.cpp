@@ -2160,11 +2160,16 @@ QJsonObject QucsControl::rf25FarField(const QJsonObject& args)
         port = int(wave->portNames.indexOf(named));
         if (port < 0) return errorResult(tr("It has no port %1: its ports are %2.").arg(named, wave->portNames.join(QStringLiteral(", "))));
     }
-    int k = 0;
+    // (The nearest frequency whose currents were kept: a long sweep keeps
+    //  them at some alone - keptCurrentsOf().)
+    int k = wave->nearestKept(0);
     const double asked = args.value(QLatin1String("frequency")).toDouble(0);
     if (asked > 0)
-        for (int i = 1; i < wave->frequencies.size(); ++i)
-            if (std::abs(wave->frequencies.at(i) - asked) < std::abs(wave->frequencies.at(k) - asked)) k = i;
+        for (int i = 0; i < wave->frequencies.size(); ++i)
+            if (i < wave->currents.size() && !wave->currents.at(i).isEmpty()
+                && (k < 0 || std::abs(wave->frequencies.at(i) - asked) < std::abs(wave->frequencies.at(k) - asked)))
+                k = i;
+    if (k < 0) return errorResult(tr("Its solve kept no currents, which the far field is of."));
     const Stack stack = model->model().solveStack();
     const QString others = args.value(QLatin1String("others")).toString().trimmed();
     if (!others.isEmpty() && others != QLatin1String("ended") && others != QLatin1String("open"))
@@ -2243,8 +2248,28 @@ QJsonObject QucsControl::rf25Tdr(const QJsonObject& args)
     for (const auto& sk : wave->s) s << sk.at(to).at(port);
     const bool reflection = to == port;
     const double reference = port < wave->references.size() ? wave->references.at(port) : 50;
-    const TimeDomain td = timeDomainOf(wave->frequencies, s, reflection, reference, args.value(QLatin1String("beta")).toDouble(6),
-                                       args.value(QLatin1String("points")).toInt(0));
+    // (Its points a whole number in range: toInt() took 3e9 or 4.5 as nought,
+    //  the sweep's own count, without a word - the review of 5d395cad. And
+    //  at most kToolPoints, as every point comes back in the answer.)
+    constexpr int kToolPoints = 65536;
+    int points = 0;
+    if (const QJsonValue given = args.value(QLatin1String("points")); !given.isUndefined() && !given.isNull()) {
+        const double p = given.toDouble(-1);
+        if (!given.isDouble() || p != std::floor(p) || p < 4 || p > kToolPoints)
+            return errorResult(tr("'points' is a whole number from 4 to %1 (every point comes back), not %2.")
+                                   .arg(kToolPoints)
+                                   .arg(given.isDouble() ? QString::number(p, 'g', 10) : given.toVariant().toString()));
+        points = int(p);
+    } else if (wave->frequencies.size() > kToolPoints) {
+        // (Not given, the sweep's own count - which may be 100,001 -, at most
+        //  the tool's: the review of f2e35fa9.)
+        points = kToolPoints;
+    }
+    const QJsonValue betaGiven = args.value(QLatin1String("beta"));
+    if (!betaGiven.isUndefined() && !betaGiven.isNull()
+        && (!betaGiven.isDouble() || !(betaGiven.toDouble() >= 0) || !(betaGiven.toDouble() <= kMostBeta)))
+        return errorResult(tr("'beta' is a number from nought to %1, Kaiser's window's: 6 when not given, nought none.").arg(kMostBeta));
+    const TimeDomain td = timeDomainOf(wave->frequencies, s, reflection, reference, betaGiven.toDouble(6), points);
     if (!td.ok()) return errorResult(td.problems.join(QLatin1Char(' ')));
     QJsonArray t, values;
     for (int i = 0; i < td.t.size(); ++i) {

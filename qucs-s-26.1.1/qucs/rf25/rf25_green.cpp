@@ -541,6 +541,21 @@ Layers layersOf(const Stack& stack)
                 s.mur = l.mur > 0 ? l.mur : 1;
                 s.mtand = std::max(0.0, l.mtand);
                 s.epsz = l.epsz >= 1 ? l.epsz : 0;
+                // (Its permittivity at a high frequency under 1: a loss tangent
+                //  too high for the model - 0.3 at 1 GHz of eps_r 4 gives eps
+                //  -0.33 at 300 GHz and a loss tangent of -3, gain. The model's
+                //  reader refuses it; a stack made otherwise was solved, nothing
+                //  said - a bug hunt's second hour.)
+                if (s.dispersive) {
+                    const double high = djordjevicSarkar(s.epsr, s.tand, s.dispersionAt, 1e30).real();
+                    if (high < 1)
+                        out.problems << tr("%1's loss tangent of %2 is too high for Djordjevic-Sarkar's model at %3 GHz: its "
+                                           "permittivity at a high frequency would come out at %4, under 1.")
+                                            .arg(l.name)
+                                            .arg(s.tand, 0, 'g', 3)
+                                            .arg(s.dispersionAt / 1e9, 0, 'g', 4)
+                                            .arg(high, 0, 'g', 3);
+                }
                 out.slabs << s;
                 z = s.z1;
             }

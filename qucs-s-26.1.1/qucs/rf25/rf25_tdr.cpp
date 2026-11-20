@@ -32,6 +32,54 @@ double besselI0(double x)
     return sum;
 }
 
+/// The discrete Fourier transform of \a x in place, its exponent's sign
+/// \a sign: X_k = sum_n x_n exp(sign j 2 pi k n / N). Radix two where N is a
+/// power of two, else Bluestein's chirp through one - N log N either way, where
+/// the plain sum took 3.5 s for 16,000 points and would have taken hours for a
+/// million (a bug hunt's second hour).
+void transform(std::vector<Complex>& x, int sign)
+{
+    const std::size_t n = x.size();
+    if (n <= 1) return;
+    if ((n & (n - 1)) == 0) {
+        for (std::size_t i = 1, j = 0; i < n; ++i) {
+            std::size_t bit = n >> 1;
+            for (; j & bit; bit >>= 1) j ^= bit;
+            j ^= bit;
+            if (i < j) std::swap(x[i], x[j]);
+        }
+        for (std::size_t len = 2; len <= n; len <<= 1) {
+            const double angle = sign * 2 * M_PI / double(len);
+            for (std::size_t i = 0; i < n; i += len)
+                for (std::size_t k = 0; k < len / 2; ++k) {
+                    // (Each twiddle of its own, not a running product, whose
+                    //  rounding grows with the length.)
+                    const Complex w = std::polar(1.0, angle * double(k));
+                    const Complex u = x[i + k], v = x[i + k + len / 2] * w;
+                    x[i + k] = u + v;
+                    x[i + k + len / 2] = u - v;
+                }
+        }
+        return;
+    }
+    std::size_t big = 1;
+    while (big < 2 * n - 1) big <<= 1;
+    std::vector<Complex> chirp(n), a(big), b(big);
+    for (std::size_t k = 0; k < n; ++k) {
+        // (k^2 mod 2N, so that the angle stays small for large k.)
+        const std::size_t kk = (k * k) % (2 * n);
+        chirp[k] = std::polar(1.0, sign * M_PI * double(kk) / double(n));
+    }
+    for (std::size_t k = 0; k < n; ++k) a[k] = x[k] * chirp[k];
+    b[0] = std::conj(chirp[0]);
+    for (std::size_t k = 1; k < n; ++k) b[k] = b[big - k] = std::conj(chirp[k]);
+    transform(a, -1);
+    transform(b, -1);
+    for (std::size_t k = 0; k < big; ++k) a[k] *= b[k];
+    transform(a, 1);
+    for (std::size_t k = 0; k < n; ++k) x[k] = a[k] * chirp[k] / double(big);
+}
+
 } // namespace
 
 TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& s, bool reflection, double reference, double beta, int points)
@@ -51,20 +99,82 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
         out.problems << tr("The sweep starts at nought: a low-pass response takes S at nought from the sweep's lowest points.");
         return out;
     }
-    // The low-pass grid: k df up to the sweep's top.
+    for (const Complex& v : s)
+        if (!std::isfinite(v.real()) || !std::isfinite(v.imag())) {
+            out.problems << tr("The sweep's S is not finite at every frequency.");
+            return out;
+        }
+    // The low-pass grid: k df up to the sweep's top. (Its points capped: a
+    // transform of more would be gigabytes, and its time nanoseconds past
+    // anything a layout's lengths give.)
+    constexpr int kMostPoints = 1 << 20;
+    if (points > kMostPoints) {
+        out.problems << tr("A low-pass response of %1 points is past the %2 it takes.").arg(points).arg(kMostPoints);
+        return out;
+    }
+    // (Kaiser's beta bounded: past some 710 Bessel's I0 overflows, and beta
+    //  1000 made every point NaN, said as fine - the review of 5d395cad.)
+    if (!(beta <= kMostBeta)) {
+        out.problems << tr("Kaiser's window's beta of %1 is past the %2 it takes (some 6 to 12 is usual; nought, none).")
+                            .arg(beta, 0, 'g', 4).arg(kMostBeta, 0, 'g', 3);
+        return out;
+    }
     const int m = points > 0 ? points : n;
     const double top = frequencies.last(), df = top / m;
     out.df = df;
-    // S on it: between the sweep's points, real and imaginary parts each;
+    // S on it: between the sweep's points, along its magnitude and phase;
     // below its first point, from S at nought to it.
-    // (S at nought: the real part of the lowest three's quadratic through
-    //  them, at nought - real at direct current.)
+    // S at nought, real at direct current: where the phase turns little below
+    // the sweep's first point, the real part of the lowest three's quadratic
+    // through them, at nought. Where it turns more, that quadratic is wild - a
+    // phase turning between the three sends it far off: S11 = 0.2 exp(-j w 1
+    // ns) swept every 50 MHz from 1 GHz came to -3.51, from 5 GHz to -92.9,
+    // and Z(t) to nought throughout, said as fine (a bug hunt's second hour) -, so the lowest point carried down to nought along the lowest
+    // three's slope of phase, and its real part taken: |S(f0)| cos(phase at
+    // nought). (Its magnitude with the sign of that cosine, as it first was,
+    // took a pad's or a bond wire's S, rising as j w from nought, at +-|S(f0)|
+    // with the sign a third-order term's: a 0.2 pF pad on a matched line read
+    // as a step down to 37 Ohm from 5 GHz, a 1 nH wire as one up to 93 - the
+    // review of 5d395cad. The real part is continuous through 90 degrees.)
     const double f0 = frequencies.at(0), f1 = frequencies.at(1), f2 = frequencies.at(2);
     const double r0 = s.at(0).real(), r1 = s.at(1).real(), r2 = s.at(2).real();
-    const double atZero = r0 * (f1 * f2) / ((f0 - f1) * (f0 - f2)) + r1 * (f0 * f2) / ((f1 - f0) * (f1 - f2)) + r2 * (f0 * f1) / ((f2 - f0) * (f2 - f1));
+    const double quadratic = r0 * (f1 * f2) / ((f0 - f1) * (f0 - f2)) + r1 * (f0 * f2) / ((f1 - f0) * (f1 - f2)) + r2 * (f0 * f1) / ((f2 - f0) * (f2 - f1));
+    // (The phase's slope from the lowest three, unwrapped between them; where
+    //  S is nothing there, no slope.)
+    double slope = 0;
+    if (std::abs(s.at(0)) > 0 && std::abs(s.at(1)) > 0 && std::abs(s.at(2)) > 0)
+        slope = (std::arg(s.at(1) / s.at(0)) + std::arg(s.at(2) / s.at(1))) / (f2 - f0);
+    const double turnBelow = std::abs(slope) * f0;
+    double atZero = quadratic, offReal = 0, turnUp = 0;
+    const bool carried = turnBelow > 20 * M_PI / 180;
+    if (carried) {
+        const double phase = std::arg(s.at(0)) - slope * f0;
+        const double c = std::cos(phase);
+        atZero = std::abs(s.at(0)) * c;
+        // (How far the carried phase lands from nought or 180 degrees - the
+        //  level a guess past 45.)
+        offReal = std::acos(std::min(1.0, std::abs(c)));
+        // (And the phase's whole turn from nought up to the first point, the
+        //  whole turns nearest the slope's: below it S is taken along that
+        //  turn, as a delay's is, not a chord through the circle.)
+        const double from = c < 0 ? M_PI : 0;
+        turnUp = std::arg(s.at(0)) - from;
+        turnUp += 2 * M_PI * std::round((slope * f0 - turnUp) / (2 * M_PI));
+    }
+    if (std::abs(atZero) > 1.05) {
+        out.problems << tr("S at nought comes to %1 from the sweep's lowest points (%2 GHz on): past what a passive port "
+                           "gives, so the step's level would rest on nothing - start the sweep lower, nearer its top over its "
+                           "points' count (%3 MHz here).")
+                            .arg(atZero, 0, 'g', 4).arg(f0 / 1e9, 0, 'g', 4).arg(top / n / 1e6, 0, 'g', 4);
+        return out;
+    }
     const auto sAt = [&](double f) -> Complex {
         if (f <= 0) return atZero;
-        if (f <= f0) return Complex(atZero, 0) + (s.at(0) - Complex(atZero, 0)) * (f / f0);
+        if (f <= f0) {
+            if (!carried) return Complex(atZero, 0) + (s.at(0) - Complex(atZero, 0)) * (f / f0);
+            const double u = f / f0;
+            return std::polar(std::abs(atZero) * (1 - u) + std::abs(s.at(0)) * u, (atZero < 0 ? M_PI : 0.0) + turnUp * u);
+        }
         const int hi = int(std::lower_bound(frequencies.begin(), frequencies.end(), f) - frequencies.begin());
         if (hi >= n) return s.last();
         const double u = (f - frequencies.at(hi - 1)) / (frequencies.at(hi) - frequencies.at(hi - 1));
@@ -101,19 +211,21 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
         const double x = double(k) / m;
         return besselI0(beta * std::sqrt(std::max(0.0, 1 - x * x))) / besselI0(beta);
     };
-    std::vector<Complex> grid(std::size_t(m + 1));
-    for (int k = 0; k <= m; ++k) grid[std::size_t(k)] = sAt(k * df) * window(k);
     // The impulse response at t = i dt, dt = 1/(2 m df), over a period of
     // 1/df from -1/(2 df): the step its running sum from there, so that the
     // pulse at t nought - the port's own reflection, half of it before nought
     // - is whole in it. Kept from nought, to half the period.
+    // (h_i = df Re[S_0 W_0 + 2 sum_k S_k W_k exp(j 2 pi k i / 2m)]: a
+    //  transform of 2m, S_k W_k doubled at k from 1 to m and nothing above;
+    //  i from -m, at 2m - m.)
+    std::vector<Complex> grid(std::size_t(2 * m));
+    for (int k = 0; k <= m; ++k) grid[std::size_t(k)] = sAt(k * df) * window(k) * (k == 0 ? 1.0 : 2.0);
+    transform(grid, 1);
     const double dt = 1 / (2.0 * m * df);
     double running = 0, before = 0;
     for (int i = -m; i < m; ++i) {
         const double t = i * dt;
-        Complex sum = grid[0];
-        for (int k = 1; k <= m; ++k) sum += 2.0 * grid[std::size_t(k)] * std::exp(Complex(0, 2 * M_PI * k * df * t));
-        const double h = df * sum.real();
+        const double h = df * grid[std::size_t((i + 2 * m) % (2 * m))].real();
         // (The step: the impulse's running sum, trapezoids.)
         running += i > -m ? 0.5 * (h + before) * dt : 0.0;
         before = h;
@@ -131,8 +243,8 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
                         "magnitude and phase, which is a guess past some 20 degrees - a finer sweep is surer.")
                          .arg(turned * 180 / M_PI, 0, 'f', 0);
     if (f0 > 3 * df)
-        out.lines << tr("The sweep starts at %1 GHz, %2 of the grid's steps above nought: below it S is a straight line from "
-                        "S at nought, on which the step's late level rests. A low-pass response wants the sweep to start at "
+        out.lines << tr("The sweep starts at %1 GHz, %2 of the grid's steps above nought: below it S is drawn from S at "
+                        "nought to it, a guess on which the step's late level rests. A low-pass response wants the sweep to start at "
                         "its top over its points' count (%3 MHz here).")
                          .arg(f0 / 1e9, 0, 'g', 4).arg(f0 / df, 0, 'f', 0).arg(top / n / 1e6, 0, 'g', 4);
     {
@@ -148,10 +260,19 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
                             "further away folds back into it - a finer grid (more points) sees further.")
                              .arg(100 * late / peak, 0, 'g', 2).arg(m * dt * 1e9, 0, 'g', 4);
     }
-    out.lines << tr("A low-pass response: %1 points to %2 GHz, every %3 MHz; S at nought %4, the real part of the lowest "
-                    "three's quadratic; Kaiser's window of beta %5; the time every %6 ps to %7 ns.")
-                     .arg(m).arg(top / 1e9, 0, 'g', 4).arg(df / 1e6, 0, 'g', 4).arg(atZero, 0, 'g', 4).arg(beta, 0, 'g', 3)
-                     .arg(dt * 1e12, 0, 'g', 4).arg(m * dt * 1e9, 0, 'g', 4);
+    if (carried && offReal > M_PI / 4)
+        out.lines << tr("S's phase, carried from the sweep's first point down to nought, lands %1 degrees from the real "
+                        "axis, where S at nought is real: S at nought, and the step's late level with it, is a guess - a "
+                        "reactance's S rising from nought does so - start the sweep lower.")
+                         .arg(offReal * 180 / M_PI, 0, 'f', 0);
+    out.lines << tr("A low-pass response: %1 points to %2 GHz, every %3 MHz; S at nought %4, %5; Kaiser's window of beta "
+                    "%6; the time every %7 ps to %8 ns.")
+                     .arg(m).arg(top / 1e9, 0, 'g', 4).arg(df / 1e6, 0, 'g', 4).arg(atZero, 0, 'g', 4)
+                     .arg(carried ? tr("the real part of the lowest point carried down to nought along its phase (it turns "
+                                       "%1 degrees below the first point)")
+                                        .arg(turnBelow * 180 / M_PI, 0, 'f', 0)
+                                  : tr("the real part of the lowest three's quadratic"))
+                     .arg(beta, 0, 'g', 3).arg(dt * 1e12, 0, 'g', 4).arg(m * dt * 1e9, 0, 'g', 4);
     return out;
 }
 

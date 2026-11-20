@@ -182,6 +182,10 @@ QList<double> sweepFrequencies(double from, double to, int points, bool logarith
     };
     if (problem != nullptr) problem->clear();
     if (points < 1) return refuse(tr("A sweep wants at least one point."));
+    if (points > kMostSweepPoints)
+        return refuse(tr("A sweep of %1 points is past the %2 a solve takes: each frequency is a solve of its own, and keeps "
+                         "its answer.")
+                          .arg(points).arg(kMostSweepPoints));
     if (!(from >= 0) || !(to >= 0)) return refuse(tr("A sweep's frequencies cannot be less than nothing."));
     if (to < from) return refuse(tr("A sweep ends above where it starts: %1 Hz to %2 Hz.")
                                      .arg(from, 0, 'g', 4)
@@ -230,6 +234,16 @@ QList<double> studySweep(const Model& model, QString* problem)
     const double points = numberIn(*study, QStringLiteral("points"), scope, 1, &why);
     if (!why.isEmpty()) {
         if (problem != nullptr) *problem = why;
+        return {};
+    }
+    // (Its points before they are an int: 1e12 of them overflowed it. And a
+    //  cap - a study of ten million points made ten million frequencies, each
+    //  solved and kept: a bug hunt's second hour.)
+    if (!(points < kMostSweepPoints + 0.5)) {
+        if (problem != nullptr)
+            *problem = tr("A sweep of %1 points is past the %2 a solve takes: each frequency is a solve of its own, and keeps "
+                          "its answer.")
+                           .arg(points, 0, 'g', 6).arg(kMostSweepPoints);
         return {};
     }
     const bool logarithmic = textOf(*study, QStringLiteral("scale")) == QLatin1String("log");
