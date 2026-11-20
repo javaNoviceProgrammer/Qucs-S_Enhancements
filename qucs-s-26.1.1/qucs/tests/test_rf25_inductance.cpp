@@ -1157,7 +1157,12 @@ private slots:
     // the slanted side held at its box's middle, which for a right triangle
     // is on its hypotenuse, so that a stub to it had no length; and L in
     // picohenries beside A's ones, which the dense LU took for singular on a
-    // fine mesh. And a U turned as well.
+    // fine mesh. And a U turned as well. (R at 45 degrees reads under the
+    // strip's along x, the slanted mesh's own, and the less the finer: -16.1,
+    // -6.0, -3.1 and -1.6 % at 1, 3, 6 and 12 across. At 3 across it read
+    // -3.8 % while some of each end's cells, their corners off the slanted
+    // face by the cuts' rounding, were not found and the current crowded
+    // into the rest.)
     void aStripAt45DegreesIsTheStripAlongX()
     {
         const rf::Stack stack = grounded(3.9, 10e-6, 0.9e-6, 3.5e7);
@@ -1176,7 +1181,7 @@ private slots:
         QList<QPointF> uTurned;
         for (const QPointF& q : u) uTurned << turned(q.x(), q.y());
         for (const auto& [largest, across, within, resistance] :
-             {std::tuple<double, int, double, double>{15, 1, 0.03, 0.2}, {5, 3, 0.015, 0.05}}) {
+             {std::tuple<double, int, double, double>{15, 1, 0.03, 0.2}, {5, 3, 0.015, 0.065}}) {
             const rf::MeshSettings how = likeTheTab(largest, across);
             const rf::Inductance flat = loopOf(shape({{0, 0}, {L, 0}, {L, w}, {0, w}}), QPointF(0, w / 2), QPointF(L, w / 2), how);
             const rf::Inductance slant = loopOf(shape({turned(0, 0), turned(L, 0), turned(L, w), turned(0, w)}), turned(0, w / 2),
@@ -1333,6 +1338,34 @@ private slots:
             qWarning("%s; L_dc %.4g nH (ASITIC %.3g), R_dc %.4g Ohm (%.3f of along it)", qPrintable(said), loop.lDc * 1e9, sp.asitic,
                      loop.rDc, loop.rDc / along);
         }
+    }
+
+    // A loop's ends on a slanted face take the whole face: its cells' corners up to 0.7 nm off the face's line,
+    // they were looked for within 1e-6 of its length, and the current went
+    // in at the one cell nearest - a 2 mm strip's R at direct current 15 %
+    // high at 10 degrees, 11 % at 30, against 45 degrees', whose corners
+    // the cuts happen to keep on it. Now within 4 % of each other and of
+    // the strip along x.
+    void aLoopsEndsOnASlantedFaceTakeTheWholeFace()
+    {
+        const rf::Stack stack = grounded(4, 200e-6, 0.6e-6, 3.5e7);
+        QList<double> r;
+        for (const double deg : {0.0, 10.0, 30.0, 45.0}) {
+            const double a = deg * M_PI / 180, ca = std::cos(a), sa = std::sin(a);
+            const auto rot = [&](double x, double y) { return QPointF(x * ca - y * sa, x * sa + y * ca); };
+            rf::Conductor c;
+            c.layer = QStringLiteral("M1");
+            c.outline = QPolygonF(QList<QPointF>{rot(0, -50), rot(2000, -50), rot(2000, 50), rot(0, 50)});
+            rf::MeshSettings how;
+            how.maximum = 100e-6;
+            how.cellsAcross = 6;
+            const rf::Mesh mesh = rf::meshOf({c}, how, stack, 10e9);
+            const rf::Inductance ind = rf::inductanceOf(mesh, {c}, stack, rot(0, 0), rot(2000, 0), 1e-6, 1e9);
+            QVERIFY2(ind.ok(), qPrintable(ind.problems.join(" | ")));
+            r << ind.rDc;
+        }
+        qWarning("a strip's R at direct current at 0, 10, 30 and 45 degrees: %.4f, %.4f, %.4f and %.4f Ohm", r.at(0), r.at(1), r.at(2), r.at(3));
+        for (int k = 1; k < r.size(); ++k) QVERIFY2(std::abs(r.at(k) / r.at(0) - 1) < 0.045, qPrintable(QStringLiteral("%1 against %2").arg(r.at(k)).arg(r.at(0))));
     }
 
     // A compressed loop past what a solve may take is refused before it is

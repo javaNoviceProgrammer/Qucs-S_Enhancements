@@ -311,7 +311,9 @@ QList<double> sharesOf(const Mesh& mesh, const QList<int>& cells, QPointF on, QP
         const QPointF unit = along / n, normal(-unit.y(), unit.x());
         for (int k = 0; k < cells.size(); ++k) {
             const QPolygonF& outline = mesh.cells.at(cells.at(k)).outline;
-            const double tol = 1e-6 * std::max(1.0, std::max(outline.boundingRect().width(), outline.boundingRect().height()));
+            // (Within the cuts' grid too, as faceCells() takes the cells.)
+            const double tol =
+                std::max(1e-6 * std::max(1.0, std::max(outline.boundingRect().width(), outline.boundingRect().height())), kBooleanGrid);
             for (int i = 0, m = int(outline.size()); i < m; ++i) {
                 const QPointF a = outline.at(i), b = outline.at((i + 1) % m);
                 const double offA = (a.x() - on.x()) * normal.x() + (a.y() - on.y()) * normal.y();
@@ -367,7 +369,7 @@ Beside besideFaces(const Mesh& mesh, const QList<int>& reached, const QList<int>
     const QString layer = mesh.cells.at(face.first()).layer;
     QRectF all;
     for (const int c : reached) all = all.united(mesh.cells.at(c).outline.boundingRect());
-    const double tol = 1e-6 * std::max(1.0, std::max(all.width(), all.height()));
+    const double tol = std::max(1e-6 * std::max(1.0, std::max(all.width(), all.height())), kBooleanGrid);   // (faceCells()'s)
     // A cell's side along the line, as from and to along it.
     const auto sideOn = [&mesh, on, unit, normal, tol](int c, double* t0, double* t1) {
         const QPolygonF& outline = mesh.cells.at(c).outline;

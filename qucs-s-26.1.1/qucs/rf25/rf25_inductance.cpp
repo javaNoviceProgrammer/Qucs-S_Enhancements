@@ -14,6 +14,7 @@
 #include "multiphysics/fem_sparse.h"
 #include "rf25_fast.h"
 #include "rf25_fullwave.h"
+#include "rf25_layout.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -817,8 +818,13 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
     if (onLine != nullptr) *onLine = p;
     if (alongLine != nullptr) *alongLine = unit;
     // A cell is on that face where one of its own sides lies along the
-    // same line and within the edge's own extent.
-    const double tol = 1e-6 * std::max(1.0, len);
+    // same line and within the edge's own extent - within the grid the cuts
+    // round to: a slanted face's cells' corners up to 0.7 nm off its line,
+    // where this took them within 1e-6 of its length, none of a 100 µm
+    // face's 19 at 30 degrees, and a port or a loop's end drove the one
+    // cell nearest - S21's phase 11 % off at 10 GHz on a 2 mm line, a
+    // loop's R 11 to 15 % high.
+    const double tol = std::max(1e-6 * std::max(1.0, len), kBooleanGrid);
     for (const int c : reached) {
         const MeshCell& cell = mesh.cells.at(c);
         if (cell.layer != onLayer) continue;

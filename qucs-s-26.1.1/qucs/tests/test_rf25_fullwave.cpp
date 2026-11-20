@@ -3484,6 +3484,39 @@ private slots:
         }
     }
 
+    // An edge port on a slanted face drives the whole face: its cells' corners, cut by the layout's booleans, lie up
+    // to 0.7 nm off the face's line, where they were looked for within 1e-6
+    // of its length - none of a 100 µm face's at 30 degrees, and the port
+    // drove the one cell nearest, a 2 mm line's S21 -55.6 degrees at 10
+    // GHz against -50.1 along x, |S11| 0.532 against 0.466. Now its 19
+    // cells, S21 within 1.6 % of the line's along x - the slanted mesh's
+    // own, 0.7 % at twelve cells across.
+    void anEdgePortOnASlantedFaceDrivesTheWholeFace()
+    {
+        const rf::Stack stack = grounded(4, 200e-6, 0, 0, 5.8e7);
+        QList<Complex> s21;
+        for (const double deg : {0.0, 30.0}) {
+            const double a = deg * M_PI / 180, ca = std::cos(a), sa = std::sin(a);
+            const auto rot = [&](double x, double y) { return QPointF(x * ca - y * sa, x * sa + y * ca); };
+            rf::Conductor c;
+            c.layer = QStringLiteral("M1");
+            c.outline = QPolygonF(QList<QPointF>{rot(0, -50), rot(2000, -50), rot(2000, 50), rot(0, 50)});
+            rf::MeshSettings how;
+            how.maximum = 100e-6;
+            how.cellsAcross = 6;
+            const rf::Mesh mesh = rf::meshOf({c}, how, stack, 10e9);
+            const rf::FullWave w = rf::fullWaveOf(mesh, {c}, stack, {edgePort(rot(0, 0)), edgePort(rot(2000, 0))}, {10e9});
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            for (const QString& said : w.portsSaid)
+                QVERIFY2(!said.contains(QStringLiteral("drives the 1 cell(s)")), qPrintable(w.portsSaid.join(" | ")));
+            s21 << w.s.at(0).at(1).at(0);
+        }
+        const double phase = std::arg(s21.at(1)) / std::arg(s21.at(0)) - 1;
+        qWarning("a line at 30 degrees: S21 %.5f at %.3f degrees, along x %.5f at %.3f (%+.2f %%)", std::abs(s21.at(1)), std::arg(s21.at(1)) * 180 / M_PI,
+                 std::abs(s21.at(0)), std::arg(s21.at(0)) * 180 / M_PI, 100 * phase);
+        QVERIFY2(std::abs(phase) < 0.025 && std::abs(std::abs(s21.at(1)) - std::abs(s21.at(0))) < 0.005, qPrintable(QString::number(phase)));
+    }
+
     // A plane of symmetry: the half beyond it, every charge's, run's, via's
     // and port path's mirror in it, against the whole solved as it is.
     //  - A magnetic wall along a line's axis, its edge ports on it: the

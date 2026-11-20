@@ -40,8 +40,9 @@ QString tr(const char* text, const char* disambiguation = nullptr, int n = -1)
 }
 
 /// The integer grid the boolean operations work on: the coordinates are
-/// micrometres, and a nanometre is finer than any layout's database unit.
-constexpr double kScaling = 1000.0;
+/// micrometres, and a nanometre is finer than any layout's database unit
+/// (kBooleanGrid).
+constexpr double kScaling = 1 / kBooleanGrid;
 
 /// The smaller side of a polygon's bounding box - how a sliver is told
 /// from a shape, which is exact for a rectangle and an over-estimate for
