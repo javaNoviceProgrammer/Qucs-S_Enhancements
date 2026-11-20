@@ -1877,10 +1877,17 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     // (The charge's own count, as the mesh's line gives it - "unknowns"
     // there are a full-wave solve's edges, a second number the phase B
     // check found beside this one under the same word.)
+    // (Held compressed, it said so in its own line, and this one still gave
+    //  the dense matrix it would have taken as the one solved - 692 MB
+    //  beside "held in 129.0 MB".)
     const double megabytes = 8.0 * double(n) * double(n) / (1024 * 1024);
-    out.lines << tr("%1 cell(s) on %2 net(s) over %3: a charge on each, a dense matrix of %4 to solve.")
-                     .arg(mesh.cells.size()).arg(nets.size()).arg(layers.join(QStringLiteral(", ")))
-                     .arg(megabytes >= 1024 ? tr("%1 GB").arg(megabytes / 1024, 0, 'f', 1) : tr("%1 MB").arg(megabytes, 0, 'f', 1));
+    if (compressedSolve)
+        out.lines << tr("%1 cell(s) on %2 net(s) over %3: a charge on each, held compressed.")
+                         .arg(mesh.cells.size()).arg(nets.size()).arg(layers.join(QStringLiteral(", ")));
+    else
+        out.lines << tr("%1 cell(s) on %2 net(s) over %3: a charge on each, a dense matrix of %4 to solve.")
+                         .arg(mesh.cells.size()).arg(nets.size()).arg(layers.join(QStringLiteral(", ")))
+                         .arg(megabytes >= 1024 ? tr("%1 GB").arg(megabytes / 1024, 0, 'f', 1) : tr("%1 MB").arg(megabytes, 0, 'f', 1));
     out.lines << (lossy && out.perMetre.fromMiddle
                       ? tr("Solved %1 time(s): with the stack and in vacuum; each lossy layer's share on the line's middle "
                            "cross-section alone.").arg(out.solves)

@@ -437,6 +437,39 @@ private slots:
         QVERIFY2(std::abs(dl) < 0.006, qPrintable(QStringLiteral("L %1 H/m, %2 %").arg(l).arg(100 * dl)));
     }
 
+    // A microstrip as wide as it is thick, 10 µm, as its two faces, 10 µm
+    // over a perfect ground in air, against the 2D eddy solve of its section
+    // where its metal
+    // is a quarter to four skin depths thick: L' was 1.4 % under it at one skin depth and 6.5 % over at
+    // two, its section's own inside, held at its share of the slab's at a low
+    // frequency, faded out faster than the slab's own fell. Now within 4 %
+    // at each, 3.6 at four skin depths, and falling as the eddy solve's does.
+    void aSquareLinesInductanceFallsWithFrequency()
+    {
+        const double t = 10;
+        const double sigma = 1 / (M_PI * 1e10 * 4e-7 * M_PI * t * t * 1e-12);   // (t/delta 1 at 10 GHz)
+        const rf::Stack stack = stackOf(QStringLiteral("perfect"), 10e-6, 1.0, t * 1e-6, sigma, true);
+        rf::MeshSettings how;
+        how.cellsAcross = 8;
+        how.gaps = true;
+        how.maximum = 25e-6;
+        const QList<double> fs{0.625e9, 2.5e9, 10e9, 40e9, 160e9};
+        const double eddy[] = {380.760, 380.753, 380.638, 378.963, 365.879};   // (nH/m)
+        const rf::Calibration cal = rf::calibrate(stack, how, 0, feedOf(10, 0, 0), fs);
+        QVERIFY2(cal.ok(), qPrintable(cal.problems.join(" | ")));
+        QList<double> l;
+        QStringList said;
+        for (int k = 0; k < fs.size(); ++k) {
+            l << rlOf(cal, k).second * 1e9;
+            said << QStringLiteral("%1 GHz %2 nH/m (%3 %)").arg(fs.at(k) / 1e9).arg(l.last(), 0, 'f', 2).arg(100 * (l.last() / eddy[k] - 1), 0, 'f', 2);
+        }
+        qInfo("%s", qPrintable(said.join(QStringLiteral("; "))));
+        for (int k = 0; k < fs.size(); ++k) {
+            QVERIFY2(std::abs(l.at(k) / eddy[k] - 1) < 0.04, qPrintable(said.join(QStringLiteral("; "))));
+            if (k > 0) QVERIFY2(l.at(k) <= l.at(k - 1) * (1 + 1e-4), qPrintable(said.join(QStringLiteral("; "))));
+        }
+    }
+
     // The five reference lines, full wave as the tab meshes them, each
     // against its 2D eddy solve: R and L, and what they make of the
     // attenuation.
@@ -467,7 +500,12 @@ private slots:
         //  current still filling it, and 3 cells across, which read low as
         //  any mesh does - a square loop's 6 % low at 2 across, 1.5 % at 8.)
         QTest::newRow("film") << 2 << 0.065 << 0.02 << 0.065;
-        QTest::newRow("narrow") << 3 << 0.085 << 0.01 << 0.085;
+        // (The narrow line's L at 10 GHz -1.0 %, -0.8 before a faces metal's
+        //  inside was held under both its share of the slab's and the slab's
+        //  own, so that no L rises with frequency: 3 µm of gold 3.8 skin depths thick, its slab's own
+        //  reactance still over its share there, the share's correction kept
+        //  where the fade had all but let it go.)
+        QTest::newRow("narrow") << 3 << 0.085 << 0.012 << 0.085;
         QTest::newRow("microstrip") << 4 << 0.37 << 0.015 << 0.35;
     }
     void theFiveLinesAreTheir2DSolves()
