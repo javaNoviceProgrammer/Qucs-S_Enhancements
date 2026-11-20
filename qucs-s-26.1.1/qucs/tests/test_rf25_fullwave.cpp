@@ -24,6 +24,7 @@
 #include "rf25/rf25_dense.h"
 #include "rf25/rf25_fast.h"
 #include "rf25/rf25_fullwave.h"
+#include "rf25/rf25_sparams.h"
 #include "rf25/rf25_edge.h"
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_static.h"
@@ -2960,6 +2961,40 @@ private slots:
             QVERIFY2(says(r.lines, qPrintable(QString::number(f110 / 1e9, 'g', 5))), qPrintable(r.lines.join(" | ")));
             QVERIFY(!r.warnings.isEmpty());
         }
+    }
+
+    // A number an expression comes to that is not finite is refused, where
+    // it was taken: a substrate "1/0" thick
+    // read as infinity, no problem said, and the charge solve was at work
+    // for ever; a permittivity of "0/0" solved to answers said to be right;
+    // a lumped element's R of "0/0" passed its check of nought or above as
+    // NaN, its S NaN and said to be right.
+    void aNumberThatIsNotFiniteIsRefused()
+    {
+        for (const char* text : {"0/0", "1/0", "sqrt(-1)"}) {
+            rf::Model m = rf::Model::blank();
+            rf::Node e = m.make(QStringLiteral("rf_internal_port"));
+            e.label = QStringLiteral("R9");
+            e.props.insert(QStringLiteral("element"), QStringLiteral("lumped"));
+            e.props.insert(QStringLiteral("r"), QString::fromLatin1(text));
+            for (rf::Node& n : m.root.children)
+                if (n.type == QStringLiteral("rf_ports")) n.children.push_back(e);
+            QString problem;
+            QVERIFY2(rf::portsOf(m, &problem).isEmpty() && problem.contains(QStringLiteral("R9")), qPrintable(QString::fromLatin1(text) + ": " + problem));
+        }
+        for (const QString key : {QStringLiteral("thickness"), QStringLiteral("epsr")})
+            for (const char* text : {"0/0", "1/0"}) {
+                rf::Model m = rf::Model::blank();
+                for (rf::Node& n : m.stackNode().children)
+                    if (n.type == QStringLiteral("rf_substrate")) n.props.insert(key, QString::fromLatin1(text));
+                const rf::Stack st = m.stack();
+                QVERIFY2(says(st.problems, "no finite number"), qPrintable(key + " " + QString::fromLatin1(text) + ": " + st.problems.join(" | ")));
+            }
+        rf::Model m = rf::Model::blank();
+        for (rf::Node& n : m.root.children)
+            if (n.type == QStringLiteral("rf_study")) n.props.insert(QStringLiteral("to"), QStringLiteral("1/0"));
+        QString problem;
+        QVERIFY2(rf::studySweep(m, &problem).isEmpty() && problem.contains(QStringLiteral("no finite number")), qPrintable(problem));
     }
 
     // Lumped elements: each solved as

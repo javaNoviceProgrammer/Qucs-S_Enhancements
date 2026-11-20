@@ -45,9 +45,12 @@ double numberIn(const Node& node, const QString& key, const fem::Scope& scope, d
     const QString text = textOf(node, key);
     if (text.trimmed().isEmpty()) return fallback;
     const fem::Expression e = fem::Expression::compile(text, scope);
-    if (!e.isValid() || !e.isConstant()) {
+    if (!e.isValid() || !e.isConstant() || !std::isfinite(e.constant())) {
         if (problem != nullptr && problem->isEmpty())
-            *problem = tr("Study: %1 is not a number (%2).").arg(key, e.isValid() ? tr("it is not a constant") : e.error());
+            *problem = tr("Study: %1 is not a number (%2).")
+                           .arg(key, !e.isValid()      ? e.error()
+                                     : !e.isConstant() ? tr("it is not a constant")
+                                                       : tr("it comes to %1, no finite number").arg(e.constant()));
         return fallback;
     }
     return e.constant();
@@ -203,7 +206,9 @@ double numberOf(const Node& node, const QString& key, const Model& model, double
     const QString text = textOf(node, key);
     if (text.trimmed().isEmpty()) return fallback;
     const fem::Expression e = fem::Expression::compile(text, scopeOf(model.parameters()));
-    if (!e.isValid() || !e.isConstant()) {
+    // (A finite one: a lumped element's R of "0/0" passed its check of
+    //  nought or above as NaN, its S NaN and said to be right.)
+    if (!e.isValid() || !e.isConstant() || !std::isfinite(e.constant())) {
         if (ok != nullptr) *ok = false;
         return fallback;
     }
