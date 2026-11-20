@@ -478,9 +478,60 @@ std::complex<double> Layers::Slab::permittivityZAt(double frequency) const
     return epsz > 0 && epsr > 0 ? plane * (epsz / epsr) : plane;
 }
 
+QStringList valueProblemsOf(const Stack& stack)
+{
+    QStringList out;
+    for (const Layer& l : stack.layers) {
+        if (l.kind == Layer::Dielectric || l.kind == Layer::Substrate) {
+            if (l.epsr < 1) out << tr("%1 has a relative permittivity below 1 (%2).").arg(l.name).arg(l.epsr);
+            if (l.tand < 0) out << tr("%1 has a loss tangent below zero.").arg(l.name);
+            if (l.sigma < 0) out << tr("%1 has a conductivity below zero.").arg(l.name);
+            if (!(l.mur > 0)) out << tr("%1 has a relative permeability of no more than nought (%2).").arg(l.name).arg(l.mur);
+            if (l.mtand < 0) out << tr("%1 has a magnetic loss tangent below zero.").arg(l.name);
+            if (l.epsz != 0 && l.epsz < 1) out << tr("%1 has a relative permittivity along z below 1 (%2).").arg(l.name).arg(l.epsz);
+            if ((l.epsx != 0 && l.epsx < 1) || (l.epsy != 0 && l.epsy < 1))
+                out << tr("%1 has a relative permittivity along x or y below 1.").arg(l.name);
+            if (!l.dispersion.isEmpty()) {
+                // (Outside Djordjevic-Sarkar's poles, or with a loss so high
+                //  that its permittivity at a high frequency is under 1 - 0.3
+                //  at 1 GHz of eps_r 4 gives eps -0.33 at 300 GHz and a loss
+                //  tangent of -3, gain -, it fits no material: at 0 Hz it was
+                //  taken as not dispersive, at 1e13 Hz fitted as given.)
+                if (!(l.dispersionAt >= 1e3 && l.dispersionAt <= 1e12))
+                    out << tr("%1's dispersion is given at %2 Hz, outside Djordjevic-Sarkar's poles from 1 kHz to 1 THz.")
+                               .arg(l.name)
+                               .arg(l.dispersionAt, 0, 'g', 4);
+                else if (const double high = djordjevicSarkar(l.epsr, std::max(0.0, l.tand), l.dispersionAt, 1e30).real(); high < 1)
+                    out << tr("%1's loss tangent of %2 is too high for Djordjevic-Sarkar's model at %3 GHz: its "
+                              "permittivity at a high frequency would come out at %4, under 1.")
+                               .arg(l.name)
+                               .arg(l.tand, 0, 'g', 3)
+                               .arg(l.dispersionAt / 1e9, 0, 'g', 4)
+                               .arg(high, 0, 'g', 3);
+            }
+        } else if (l.kind == Layer::Metal) {
+            // (A roughness below nought was taken as smooth, a Huray nodule
+            //  of no radius as Hammerstad's rule, a surface ratio below
+            //  nought as smooth.)
+            if (l.roughness < 0) out << tr("%1 has a roughness below zero.").arg(l.name);
+            if (l.huray && !(l.nodule > 0)) out << tr("%1's nodules have no radius.").arg(l.name);
+            if (l.huray && l.surfaceRatio < 0) out << tr("%1's surface ratio is below nought.").arg(l.name);
+        }
+    }
+    return out;
+}
+
 Layers layersOf(const Stack& stack)
 {
     Layers out;
+    // What the reader says cannot be, refused, not taken as something else:
+    // a loss tangent below nought was taken as nought, a permeability of
+    // nought or less as 1, an eps_z under 1 as none - so that a substrate
+    // shown in red was solved as another one (the reviews of 1213eeef and
+    // 3f31f0c4). A thickness of nothing, or a metal's conductivity of
+    // nothing, is the sheet or the perfect conductor each solver takes and
+    // says, so not refused.
+    out.problems = valueProblemsOf(stack);
     // The metals take no room: a conductor is a surface charge at a
     // height, which is the planar approximation this solver is built on
     // (a metal's thickness is for its resistance, not for its charge).
@@ -526,19 +577,6 @@ Layers layersOf(const Stack& stack)
             break;   // no room of its own
         case Layer::Substrate:
         case Layer::Dielectric:
-            // (What the reader says cannot be, refused, not taken as something
-            //  else: a loss tangent below nought was taken as nought, a
-            //  permeability of nought or less as 1, an eps_z under 1 as none, a
-            //  conductivity or a magnetic loss tangent below nought as nought -
-            //  so that a substrate shown in red was solved as another one (the
-            //  review of 1213eeef). Its thickness of nothing, a metal's too, is
-            //  a sheet each solver takes and says, so not refused here.)
-            if (l.epsr < 1) out.problems << tr("%1 has a relative permittivity below 1 (%2).").arg(l.name).arg(l.epsr);
-            if (l.tand < 0) out.problems << tr("%1 has a loss tangent below zero.").arg(l.name);
-            if (l.sigma < 0) out.problems << tr("%1 has a conductivity below zero.").arg(l.name);
-            if (!(l.mur > 0)) out.problems << tr("%1 has a relative permeability of no more than nought (%2).").arg(l.name).arg(l.mur);
-            if (l.mtand < 0) out.problems << tr("%1 has a magnetic loss tangent below zero.").arg(l.name);
-            if (l.epsz != 0 && l.epsz < 1) out.problems << tr("%1 has a relative permittivity along z below 1 (%2).").arg(l.name).arg(l.epsz);
             if (l.thickness > 0) {
                 Layers::Slab s;
                 s.z0 = z;
@@ -554,21 +592,6 @@ Layers layersOf(const Stack& stack)
                 s.mur = l.mur > 0 ? l.mur : 1;
                 s.mtand = std::max(0.0, l.mtand);
                 s.epsz = l.epsz >= 1 ? l.epsz : 0;
-                // (Its permittivity at a high frequency under 1: a loss tangent
-                //  too high for the model - 0.3 at 1 GHz of eps_r 4 gives eps
-                //  -0.33 at 300 GHz and a loss tangent of -3, gain. The model's
-                //  reader refuses it; a stack made otherwise was solved, nothing
-                //  said - a bug hunt's second hour.)
-                if (s.dispersive) {
-                    const double high = djordjevicSarkar(s.epsr, s.tand, s.dispersionAt, 1e30).real();
-                    if (high < 1)
-                        out.problems << tr("%1's loss tangent of %2 is too high for Djordjevic-Sarkar's model at %3 GHz: its "
-                                           "permittivity at a high frequency would come out at %4, under 1.")
-                                            .arg(l.name)
-                                            .arg(s.tand, 0, 'g', 3)
-                                            .arg(s.dispersionAt / 1e9, 0, 'g', 4)
-                                            .arg(high, 0, 'g', 3);
-                }
                 out.slabs << s;
                 z = s.z1;
             }

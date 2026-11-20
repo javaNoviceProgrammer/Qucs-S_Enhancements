@@ -153,6 +153,17 @@ QList<BoxImage> boxImagesOf(const QRectF& box, const QRectF& rect, const QPointF
 /// Nought without both plates.
 double staticDecay(const Layers& layers);
 
+/// What of \a stack's values no solver can take, each said - what the
+/// model's reader refuses of them: a permittivity under 1, a loss tangent,
+/// a conductivity or a magnetic loss tangent below nought, a permeability of
+/// nought or less, Djordjevic-Sarkar outside its poles or past its loss
+/// tangent, a metal's roughness below nought or Huray nodules of no radius or
+/// a surface ratio below nought. A thickness or a metal's conductivity of
+/// nothing is not among them: the sheet and the perfect conductor each solver
+/// takes and says. layersOf() starts from it; a solve of a model checks it
+/// before its stack is taken at one frequency.
+QStringList valueProblemsOf(const Stack& stack);
+
 /// \a stack read as dielectric slabs: its metals and vias left out, its
 /// ground noted, its dielectrics and substrate kept in order. A stack with
 /// nothing to stand on (no dielectric at all) says so.

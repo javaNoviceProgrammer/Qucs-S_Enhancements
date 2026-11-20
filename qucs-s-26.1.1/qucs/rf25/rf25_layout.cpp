@@ -22,6 +22,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QMap>
 
@@ -778,9 +779,12 @@ QPolygonF circleOf(QPointF centre, double radius)
 {
     QPolygonF out;
     if (!(radius > 0)) return out;
-    // Its sides no further than a nanometre in from the circle.
+    // Its sides no further than a nanometre in from the circle, up to some
+    // 212 µm of radius; past that 1024 of them, 4.7 nm in at 1 mm. (Clamped
+    // before it is an int: past 9.35e14 µm it overflowed one - the review
+    // of 747a2cfd.)
     const double sagitta = 1e-3;
-    const int sides = std::clamp(int(std::ceil(M_PI / std::sqrt(2 * sagitta / radius))), 32, 1024);
+    const int sides = int(std::clamp(std::ceil(M_PI / std::sqrt(2 * sagitta / radius)), 32.0, 1024.0));
     for (int i = 0; i < sides; ++i) {
         const double a = 2 * M_PI * i / sides;
         out << centre + radius * QPointF(std::cos(a), std::sin(a));
@@ -800,6 +804,53 @@ QPolygonF ringOf(QPointF centre, double radius, double inner)
     for (qsizetype i = in.size() - 1; i >= 1; --i) out << in.at(i);
     out << in.first();
     return out;
+}
+
+QList<QPolygonF> loopsOf(const QPolygonF& polygon)
+{
+    QList<QPolygonF> loops, open{polygon};
+    while (!open.isEmpty()) {
+        QPolygonF p = open.takeLast();
+        if (p.size() > 1 && p.first() == p.last()) p.removeLast();
+        const int n = int(p.size());
+        const QRectF bounds = p.boundingRect();
+        const double tol = 1e-9 * std::max(1.0, std::max(bounds.width(), bounds.height()));
+        // (Each edge by its two ends, rounded to the tolerance: one met the
+        //  other way round is a slit's other side.)
+        const auto keyOf = [tol](QPointF a, QPointF b) {
+            return QStringLiteral("%1,%2,%3,%4")
+                .arg(std::llround(a.x() / tol))
+                .arg(std::llround(a.y() / tol))
+                .arg(std::llround(b.x() / tol))
+                .arg(std::llround(b.y() / tol));
+        };
+        QHash<QString, int> edges;
+        int from = -1, to = -1;
+        for (int i = 0; i < n && from < 0; ++i) {
+            const QPointF a = p.at(i), b = p.at((i + 1) % n);
+            if (std::hypot(b.x() - a.x(), b.y() - a.y()) <= tol) continue;
+            const auto back = edges.constFind(keyOf(b, a));
+            if (back != edges.cend()) {
+                from = back.value();
+                to = i;
+            } else {
+                edges.insert(keyOf(a, b), i);
+            }
+        }
+        if (from < 0) {
+            if (n >= 3) loops << p;
+            continue;
+        }
+        // Cut at the slit, from a to b and back: the corners between its two
+        // sides one loop (b and on, b once), the rest the other (a once).
+        QPolygonF inner, outer;
+        for (int k = from + 1; k < to; ++k) inner << p.at(k);
+        for (int k = to + 1; k < n; ++k) outer << p.at(k);
+        for (int k = 0; k < from; ++k) outer << p.at(k);
+        for (const QPolygonF& part : {inner, outer})
+            if (part.size() >= 3 && std::abs(areaOf(part)) > 0) open << part;
+    }
+    return loops;
 }
 
 Cutout cutoutOf(const Model& model, QStringList* problems)

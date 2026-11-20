@@ -508,7 +508,7 @@ QList<NodeKind> makeKinds()
          tr("A shape of the model's own on a layer of the stack, its numbers expressions of the parameters: a "
             "rectangle by a corner or its centre and its width and height, a polygon by its corners, a path by its "
             "points and width, a square via by its centre and side, a circle by its centre and radius, a ring by its "
-            "centre and its two radii (a circle's sides within a nanometre of it).")});
+            "centre and its two radii (a circle of up to 1024 sides, within a nanometre of it to a radius of some 200 µm).")});
 
     // A parameter tied to the file's own shapes: the corners of a layer's
     // shapes inside a box moved by an expression - a line widened, a stub
@@ -1188,8 +1188,12 @@ Stack Stack::atFrequency(double frequency) const
     for (Layer& l : out.layers) {
         if (l.dispersion.isEmpty()) continue;
         const std::complex<double> e = djordjevicSarkar(l.epsr, l.tand, l.dispersionAt, frequency);
-        // (A uniaxial layer's along z the same share of the plane's.)
-        if (l.epsz > 0 && l.epsr > 0) l.epsz *= e.real() / l.epsr;
+        // (A uniaxial layer's along z: its susceptibility, eps_z - 1, the same
+        //  share of the plane's - not eps_z itself, which took one given at
+        //  1.01 to 0.96 at 40 GHz, under 1, and the solve refused a value never
+        //  given (the review of 3f31f0c4). One the same as the plane's stays
+        //  the plane's.)
+        if (l.epsz > 0 && l.epsr > 1) l.epsz = 1 + (l.epsz - 1) * (e.real() - 1) / (l.epsr - 1);
         l.epsr = e.real();
         l.tand = e.real() > 0 ? -e.imag() / e.real() : 0.0;
         l.dispersion.clear();

@@ -271,7 +271,37 @@ QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved =
         double area = 0;    // the outline's, its corners snapped as the cuts have them
         double moved = 0;   // the furthest the outline moved off itself
     };
-    const auto cut = [&given, m, tol, merge, across](bool acrossY) {
+    // A keyhole's slit - an edge run back along by another, there and back,
+    // the way a polygon holds a hole (a ring of the model's own, a file's
+    // polygon with a hole) -: no side, so left out where the slabs cross the
+    // outline. Crossed as two sides, it cut every slab it crossed into the
+    // piece on one side and the piece on the other, each meshed on its own,
+    // and their cells met along a third of it: the current across the ring
+    // there through a third of its width (the review of 747a2cfd).
+    QSet<int> slit;
+    {
+        // (Each edge by its two ends, rounded to the tolerance: one met the
+        //  other way round is the slit's other side.)
+        const auto keyOf = [tol](QPointF a, QPointF b) {
+            return QStringLiteral("%1,%2,%3,%4")
+                .arg(std::llround(a.x() / tol))
+                .arg(std::llround(a.y() / tol))
+                .arg(std::llround(b.x() / tol))
+                .arg(std::llround(b.y() / tol));
+        };
+        QHash<QString, int> edges;
+        for (int i = 0; i < m; ++i) {
+            const QPointF a = given.at(i), b = given.at((i + 1) % m);
+            if (std::hypot(b.x() - a.x(), b.y() - a.y()) <= tol) continue;
+            const auto back = edges.constFind(keyOf(b, a));
+            if (back != edges.cend()) {
+                slit << i << back.value();
+                continue;
+            }
+            edges.insert(keyOf(a, b), i);
+        }
+    }
+    const auto cut = [&given, &slit, m, tol, merge, across](bool acrossY) {
         // (u: along the slab; c: across it, the corners' coordinates.)
         const auto cOf = [acrossY](QPointF p) { return acrossY ? p.y() : p.x(); };
         const auto uOf = [acrossY](QPointF p) { return acrossY ? p.x() : p.y(); };
@@ -412,6 +442,7 @@ QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved =
             const double c0 = unique.at(s), c1 = unique.at(s + 1), mid = (c0 + c1) / 2;
             QList<std::array<double, 4>> crossings;   // (u at mid, at c0, at c1; the edge)
             for (int i = 0; i < m; ++i) {
+                if (slit.contains(i)) continue;
                 const QPointF a = points.at(i), b = points.at((i + 1) % m);
                 const double ca = cOf(a), cb = cOf(b);
                 if (std::abs(cb - ca) <= tol || mid <= std::min(ca, cb) || mid >= std::max(ca, cb)) continue;
