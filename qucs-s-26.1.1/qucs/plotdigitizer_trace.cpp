@@ -21,6 +21,7 @@
 #include <QPdfSelection>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <vector>
 
@@ -146,8 +147,32 @@ struct LinePiece {
     QList<double> dash;
     bool closed = false;
     bool curved = false;
-    QRectF clip;
+    QList<int> breaks;     ///< where its clip cut it: indices that start a new run
 };
+
+// A line in runs (\a breaks: indices that start one) clipped to \a box,
+// run by run: no segment made up across a break.
+void clipRuns(const QPolygonF& line, const QList<int>& breaks, const QRectF& box, bool closed, QList<QPointF>* out, QList<int>* outBreaks)
+{
+    if (breaks.isEmpty()) {
+        clipInto(line, box, closed, out, outBreaks);
+        return;
+    }
+    QList<int> ends = breaks;
+    ends << int(line.size());
+    for (int from = 0; const int to : std::as_const(ends)) {
+        QList<QPointF> run;
+        QList<int> runBreaks;
+        clipInto(line.mid(from, to - from), box, false, &run, &runBreaks);
+        if (!run.isEmpty()) {
+            const int at = int(out->size());
+            if (at > 0) outBreaks->append(at);
+            for (const int k : std::as_const(runBreaks)) outBreaks->append(at + k);
+            out->append(run);
+        }
+        from = to;
+    }
+}
 
 struct Stamp {
     QPointF at;
@@ -202,6 +227,115 @@ double inkAgreement(const QImage& image, const QRectF& area, double scale, const
         inked += hit;
     }
     return asked > 0 ? double(inked) / asked : -1;
+}
+
+// What a picture's pixel is the colour of, darkness apart: the share of each
+// of red, green and blue in how far it is from white (a line's anti-aliased
+// edge, lighter, keeps it).
+std::array<double, 3> chromaOf(int r, int g, int b)
+{
+    const double dr = 255 - r, dg = 255 - g, db = 255 - b, sum = dr + dg + db;
+    if (sum <= 0) return {1.0 / 3, 1.0 / 3, 1.0 / 3};
+    return {dr / sum, dg / sum, db / sum};
+}
+
+// The other way from inkAgreement: of the picture's ink in each colour of
+// the series, inside the frame, the share that lies along a series of that
+// colour (Series::inkCovered). A reading of the file that lost part of a
+// curve - a clip cut it short, a piece not found - leaves ink of its colour
+// with nothing along it. Black and grey are not judged: the frame, the axes
+// and the words are in them.
+void inkCoverage(const QImage& image, const QRectF& area, double scale, const QRectF& frame, const QList<QRectF>& away, QList<Series>& series)
+{
+    if (image.isNull()) return;
+    struct Colour {
+        std::array<double, 3> chroma;
+        QList<int> members;
+        QImage along;
+        qint64 ink = 0, covered = 0;
+    };
+    QList<Colour> colours;
+    const std::array<double, 3> grey{1.0 / 3, 1.0 / 3, 1.0 / 3};
+    const auto distance = [](const std::array<double, 3>& a, const std::array<double, 3>& b) { return std::hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]); };
+    for (int i = 0; i < series.size(); ++i) {
+        const Series& s = series.at(i);
+        if (s.points.isEmpty()) continue;
+        const std::array<double, 3> c = chromaOf(s.colour.red(), s.colour.green(), s.colour.blue());
+        if (distance(c, grey) < 0.1 || s.colour.lightness() >= 235) continue;
+        int k = 0;
+        while (k < colours.size() && distance(colours.at(k).chroma, c) >= 0.03) ++k;
+        if (k == colours.size()) colours << Colour{c, {}, {}, 0, 0};
+        colours[k].members << i;
+    }
+    if (colours.isEmpty()) return;
+    const QPointF origin(std::floor(area.left() * scale), std::floor(area.top() * scale));
+    const QRectF inFrame((frame.topLeft() * scale - origin), frame.size() * scale);
+    for (Colour& c : colours) {
+        c.along = QImage(image.size(), QImage::Format_Grayscale8);
+        c.along.fill(0);
+        QPainter painter(&c.along);
+        painter.setRenderHint(QPainter::Antialiasing, false);
+        painter.translate(-origin);
+        painter.scale(scale, scale);
+        for (const int i : std::as_const(c.members)) {
+            const Series& s = series.at(i);
+            // (A line's width and two pixels each side: an anti-aliased edge.)
+            const double width = std::max(s.width, 0.5) + 4 / scale;
+            if (s.shape == Series::Shape::Markers) {
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(Qt::white);
+                for (const QPointF& q : s.points) painter.drawEllipse(q, 7.0, 7.0);
+                continue;
+            }
+            if (s.shape == Series::Shape::Area || s.shape == Series::Shape::Bars) {
+                painter.setPen(QPen(Qt::white, width));
+                painter.setBrush(Qt::white);
+                painter.drawPolygon(QPolygonF(s.points));
+                continue;
+            }
+            painter.setPen(QPen(Qt::white, width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter.setBrush(Qt::NoBrush);
+            QPolygonF run;
+            for (int k = 0; k <= s.points.size(); ++k) {
+                if (k == s.points.size() || (s.breaks.contains(k) && !run.isEmpty())) {
+                    if (run.size() == 1) painter.drawPoint(run.first());
+                    else painter.drawPolyline(run);
+                    run.clear();
+                }
+                if (k < s.points.size()) run << s.points.at(k);
+            }
+        }
+    }
+    QList<QRect> skipped;
+    for (const QRectF& r : away) skipped << QRectF(r.topLeft() * scale - origin, r.size() * scale).toAlignedRect();
+    const QRect pixels = inFrame.toAlignedRect().adjusted(2, 2, -2, -2).intersected(image.rect());
+    for (int y = pixels.top(); y <= pixels.bottom(); ++y) {
+        const QRgb* row = reinterpret_cast<const QRgb*>(image.constScanLine(y));
+        for (int x = pixels.left(); x <= pixels.right(); ++x) {
+            const QRgb v = row[x];
+            if ((255 - qRed(v)) + (255 - qGreen(v)) + (255 - qBlue(v)) < 90) continue;
+            const std::array<double, 3> c = chromaOf(qRed(v), qGreen(v), qBlue(v));
+            int nearest = -1;
+            double best = 0.06;
+            for (int k = 0; k < colours.size(); ++k)
+                if (const double d = distance(c, colours.at(k).chroma); d < best) {
+                    best = d;
+                    nearest = k;
+                }
+            if (nearest < 0) continue;
+            bool off = false;
+            for (const QRect& r : std::as_const(skipped)) off = off || r.contains(x, y);
+            if (off) continue;
+            Colour& k = colours[nearest];
+            ++k.ink;
+            k.covered += k.along.constScanLine(y)[x] != 0;
+        }
+    }
+    for (const Colour& c : std::as_const(colours)) {
+        // (Too little of it to say: a few pixels, a word in colour.)
+        if (c.ink < 60) continue;
+        for (const int i : c.members) series[i].inkCovered = double(c.covered) / double(c.ink);
+    }
 }
 
 bool extractVector(Source& source, Plot& plot, const Options& options, QStringList* notes)
@@ -307,7 +441,24 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
             piece.dash = p.dash;
             piece.closed = part.closed;
             piece.curved = part.curved;
-            piece.clip = p.clip;
+            // What its clip leaves of it, each piece by its own (some
+            // writers clip every segment to a box just round it: a curve
+            // in pieces, clipped as a whole by the first piece's box, was
+            // cut back to its first segment).
+            const bool clipped = !p.clip.isNull() && !p.clip.isEmpty() && !p.clip.intersected(inside).isEmpty() &&
+                                 !p.clip.adjusted(-1e-6, -1e-6, 1e-6, 1e-6).contains(box);
+            if (!clipped) {
+                pieces << piece;
+                continue;
+            }
+            // (One piece still, in runs: a curve that leaves the frame and
+            // comes back is one curve with a gap, as when it was clipped
+            // whole.)
+            QList<QPointF> kept;
+            clipInto(part.points, p.clip, part.closed, &kept, &piece.breaks);
+            if (kept.size() < 2) continue;
+            piece.points = QPolygonF(kept);
+            piece.closed = false;
             pieces << piece;
         }
     }
@@ -326,7 +477,6 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
         QColor colour;
         double width = 0;
         QList<double> dash;
-        QRectF clip;
         bool strokeByStroke = false;
         bool closed = false;
         bool curved = false;
@@ -370,22 +520,24 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
                 cur.colour = p.colour;
                 cur.width = p.width;
                 cur.dash = p.dash;
-                cur.clip = p.clip;
                 cur.closed = p.closed;
             } else {
                 // (Where they touch, one point.)
                 if (QLineF(cur.points.last(), p.points.first()).length() < 1e-6) {
+                    const int at = int(cur.points.size()) - 1;
+                    for (const int k : p.breaks) cur.breaks << at + k;
                     cur.points << p.points.mid(1);
                     cur.curved = cur.curved || p.curved;
                     continue;
                 }
             }
+            const int at = int(cur.points.size());
+            for (const int k : p.breaks) cur.breaks << at + k;
             cur.points << p.points;
             cur.curved = cur.curved || p.curved;
         }
         push();
     }
-
     // Short strokes of one style left apart, crossing in pairs: + and x markers.
     {
         QHash<QString, QList<int>> shortOnes;
@@ -532,12 +684,8 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
         s.origin = Series::Origin::Vector;
         s.width = c.width;
         s.dashed = !c.dash.isEmpty() || c.strokeByStroke;
-        QRectF clip = inside;
-        if (!c.clip.isNull() && !c.clip.isEmpty()) {
-            const QRectF both = c.clip.intersected(inside);
-            if (!both.isEmpty()) clip = both;
-        }
-        clipInto(c.points, clip, c.closed, &s.points, &s.breaks);
+        // (Each piece was clipped by its own clip already.)
+        clipRuns(c.points, c.breaks, inside, c.closed, &s.points, &s.breaks);
         if (s.points.size() < 2) continue;
         // (Kept to a line's width outside the frame, where a line starts on
         // an axis: on it, not a hair before the axis begins.)
@@ -645,7 +793,7 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
             return 0;
         };
         const double reach = 0.1 * frame.width();
-        int joinedPieces = 0;
+        int joinedPieces = 0, putInFront = 0;
         for (int i = 0; i < found.size(); ++i) {
             const int way = foundClosed.at(i) ? 0 : direction(found.at(i));
             if (way == 0) continue;
@@ -659,18 +807,32 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
                 const int next = direction(found.at(j));
                 const bool narrow = QPolygonF(found.at(j).points).boundingRect().width() <= 0.02 * frame.width();
                 if (next != way && !(next == 0 && (foundTiny.at(j) || narrow))) break;
-                const double gap = way * (found.at(j).points.first().x() - found.at(i).points.last().x());
-                if (gap < -0.6 || gap > reach) break;
                 // (Not something else of the style that starts far above or
                 // below where the curve stopped: a legend's sample.)
-                if (std::abs(found.at(j).points.first().y() - found.at(i).points.last().y()) > 0.3 * frame.height()) break;
+                const auto follows = [&](const Series& first, const Series& then) {
+                    const double gap = way * (then.points.first().x() - first.points.last().x());
+                    return gap >= -0.6 && gap <= reach && std::abs(then.points.first().y() - first.points.last().y()) <= 0.3 * frame.height();
+                };
                 Series& a = found[i];
                 const Series& b = found.at(j);
-                const int at = int(a.points.size());
-                a.breaks << at;
-                for (const int k : b.breaks) a.breaks << at + k;
-                a.points << b.points;
-                ++joinedPieces;
+                if (follows(a, b)) {
+                    const int at = int(a.points.size());
+                    a.breaks << at;
+                    for (const int k : b.breaks) a.breaks << at + k;
+                    a.points << b.points;
+                    ++joinedPieces;
+                } else if (next == way && follows(b, a)) {
+                    // The part before it, drawn after it (a curve written
+                    // right half first): put in front, a gap only where they
+                    // do not meet.
+                    QList<int> breaks = b.breaks;
+                    const int at = int(b.points.size());
+                    if (QLineF(b.points.last(), a.points.first()).length() > 0.6) breaks << at;
+                    for (const int k : std::as_const(a.breaks)) breaks << at + k;
+                    a.points = b.points + a.points;
+                    a.breaks = breaks;
+                    ++putInFront;
+                } else break;
                 foundTiny[i] = false;
                 found.removeAt(j);
                 foundKeys.removeAt(j);
@@ -716,6 +878,47 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
                 foundEllipse.removeAt(i);
             }
         if (joinedPieces > 0) notes->append(tr("%1 pieces of curves the file draws one after another along x were joined to the curve before them, with a gap between: where the curve left the axes.").arg(joinedPieces));
+        if (putInFront > 0) notes->append(tr("%1 pieces of curves the file draws after the part that follows them along x were put in front of it.").arg(putInFront));
+    }
+
+    // --- A curve the file draws twice, one over the other (some writers
+    // do): taken once. The shorter goes where nearly all its vertices are
+    // the other's, of one style.
+    {
+        constexpr double same = 0.15;
+        const auto cell = [](QPointF q) { return std::pair<qint64, qint64>(qint64(std::floor(q.x() / same)), qint64(std::floor(q.y() / same))); };
+        int twice = 0;
+        for (int i = 0; i < found.size(); ++i) {
+            QHash<std::pair<qint64, qint64>, QList<QPointF>> at;
+            for (const QPointF& q : found.at(i).points) at[cell(q)] << q;
+            for (int j = int(found.size()) - 1; j >= 0; --j) {
+                if (j == i || foundKeys.at(j) != foundKeys.at(i) || found.at(j).shape != found.at(i).shape) continue;
+                const QList<QPointF>& other = found.at(j).points;
+                if (other.size() > found.at(i).points.size() || (other.size() == found.at(i).points.size() && j < i)) continue;
+                int on = 0;
+                for (const QPointF& q : other) {
+                    const auto [cx, cy] = cell(q);
+                    bool hit = false;
+                    for (qint64 dx = -1; dx <= 1 && !hit; ++dx)
+                        for (qint64 dy = -1; dy <= 1 && !hit; ++dy)
+                            for (const QPointF& v : at.value({cx + dx, cy + dy}))
+                                if (QLineF(q, v).length() <= same) {
+                                    hit = true;
+                                    break;
+                                }
+                    on += hit;
+                }
+                if (on < 0.98 * other.size()) continue;
+                found.removeAt(j);
+                foundKeys.removeAt(j);
+                foundClosed.removeAt(j);
+                foundTiny.removeAt(j);
+                foundEllipse.removeAt(j);
+                ++twice;
+                if (j < i) --i;
+            }
+        }
+        if (twice > 0) notes->append(tr("%1 curves the file draws twice, one over the other, were taken once.").arg(twice));
     }
 
     // --- On a log axis, what is drawn along the frame's edge is a value
@@ -1069,8 +1272,14 @@ bool extractVector(Source& source, Plot& plot, const Options& options, QStringLi
     plot.route = QStringLiteral("vector");
     // Do the page and this reading agree?
     ink = source.render(plot.page, inside, inkScale);
-    if (!ink.isNull())
+    if (!ink.isNull()) {
         for (Series& s : plot.series) s.agreement = inkAgreement(ink, inside, inkScale, s.points, std::max(s.width, 1.0));
+        // And is all the ink of the curves' colours along them? (Not a
+        // legend's samples and words, nor what was left out.)
+        QList<QRectF> away = plot.exclude + plot.leftOut + legendSamples;
+        for (const Phrase& phrase : std::as_const(legendPhrases)) away << phrase.box.adjusted(-1, -1, 1, 1);
+        inkCoverage(ink, inside, inkScale, frame, away, plot.series);
+    }
     return true;
 }
 

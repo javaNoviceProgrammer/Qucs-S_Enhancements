@@ -147,6 +147,11 @@ struct Series {
     double width = 0;          ///< of the line, points
     int bridged = 0;           ///< gaps crossed by following the line (raster)
     double agreement = -1;     ///< the share of its points with ink under them; -1 not checked
+    /// The other way about (the vector route): the share of the picture's
+    /// ink of its colour, inside the frame, that lies along the series of
+    /// that colour; -1 not checked (black or grey, which the frame and the
+    /// words share, or too little ink of it to say).
+    double inkCovered = -1;
     /// Traced as the colour asked for by this index in Options::colours (a
     /// picture's line may be lighter or darker than the colour named, and a
     /// marker's average greyer); -1 when none was. Not kept.

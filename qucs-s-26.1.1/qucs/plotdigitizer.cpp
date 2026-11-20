@@ -2053,6 +2053,22 @@ Trust assess(const Plot& plot)
     }
     if (worstAgreement < 0.85) lower(0, tr("Only %1% of a series' points have ink under them in the picture of the page: look at the overlay.").arg(int(worstAgreement * 100)));
     else if (worstAgreement < 0.97) lower(1, tr("%1% of a series' points have ink under them in the picture of the page.").arg(int(worstAgreement * 100)));
+    // The other way about: ink of a curve's colour with no series along it
+    // is a curve, or part of one, not read (the file's vertices are exact
+    // where they are, which says nothing of what is missing).
+    {
+        double worst = 1;
+        QString colour;
+        for (const Series& s : plot.series)
+            if (s.inkCovered >= 0 && s.inkCovered < worst) {
+                worst = s.inkCovered;
+                colour = s.colour.name();
+            }
+        if (worst < 0.6)
+            lower(0, tr("Only %1% of the ink in %2 inside the frame lies along the series of that colour: part of a curve may be missing. Look at the overlay; route raster traces the picture.").arg(int(worst * 100)).arg(colour));
+        else if (worst < 0.9)
+            lower(1, tr("%1% of the ink in %2 inside the frame lies along the series of that colour: something of it was not read (words in it, or part of a curve).").arg(int(worst * 100)).arg(colour));
+    }
     if (anyRaster) {
         lower(1, tr("Traced from a picture (%1 pixels a point), not read from the file's vertices.").arg(plot.renderScale, 0, 'f', 1));
         if (bridged > 0) t.reasons << tr("%1 gaps (dashes, crossings, what lies over the line) were crossed by following the line: no points are made up inside them.").arg(bridged);
@@ -2465,6 +2481,7 @@ QJsonObject toJson(const Plot& plot)
         if (s.width > 0) item.insert(QStringLiteral("width"), s.width);
         if (s.bridged > 0) item.insert(QStringLiteral("bridged"), s.bridged);
         if (inkSaysSomething(s)) item.insert(QStringLiteral("agreement"), s.agreement);
+        if (s.inkCovered >= 0) item.insert(QStringLiteral("inkCovered"), s.inkCovered);
         series.append(item);
     }
     o.insert(QStringLiteral("series"), series);
@@ -2598,6 +2615,8 @@ bool fromJson(const QJsonObject& o, Plot* out, QString* why)
         if (bridged >= 0) s.bridged = bridged;
         const double agreement = item.value(QLatin1String("agreement")).toDouble(-1);
         if (std::isfinite(agreement) && agreement >= 0 && agreement <= 1) s.agreement = agreement;
+        const double covered = item.value(QLatin1String("inkCovered")).toDouble(-1);
+        if (std::isfinite(covered) && covered >= 0 && covered <= 1) s.inkCovered = covered;
         plot.series << s;
     }
     const QJsonArray annotations = o.value(QLatin1String("annotations")).toArray();
