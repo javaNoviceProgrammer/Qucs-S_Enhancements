@@ -275,7 +275,7 @@ private slots:
                     const int id = it.next().captured(1).toInt();
                     if (!defined.contains(id)) return QStringLiteral("#%1 used, not defined").arg(id);
                 }
-            const int n = int(bodies.filter(QRegularExpression(QStringLiteral("^MANIFOLD_SOLID_BREP\\("))).size());
+            const int n = int(bodies.filter(QRegularExpression(QStringLiteral("^(MANIFOLD_SOLID_BREP|BREP_WITH_VOIDS)\\("))).size());
             if (n != breps) return QStringLiteral("%1 solid B-reps, not %2").arg(n).arg(breps);
             return QString();
         };
@@ -303,6 +303,22 @@ private slots:
         why = check(holed, int(two.g.topology->domains.size()));
         QVERIFY2(why.isEmpty(), qPrintable(why));
         QVERIFY2(holed.count("FACE_BOUND(") >= 2, "the plate's top and bottom each a bound about the rod");
+        QVERIFY(!holed.contains("BREP_WITH_VOIDS("));
+        // A rod wholly inside a block: the block's domain a solid with a
+        // void, the rod's surface its shell taken the other way.
+        Model inside = model3d(0.5);
+        addBox(inside, QStringLiteral("block"), 0, 0, 0, 4, 3, 2);
+        addCylinder(inside, QStringLiteral("rod"), 2, 1.5, 0.8, 0.5, 1);
+        const Built three = build(inside);
+        QVERIFY2(three.error.isEmpty(), qPrintable(three.error));
+        const QByteArray hollow = stepOf(domainShells(*three.g.topology), *three.g.topology, QStringLiteral("block and rod"));
+        keep(QStringLiteral("block_and_rod.step"), hollow);
+        why = check(hollow, int(three.g.topology->domains.size()));
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QCOMPARE(int(hollow.count("=BREP_WITH_VOIDS(")), 1);
+        QCOMPARE(int(hollow.count("=ORIENTED_CLOSED_SHELL('',*,")), 1);
+        QVERIFY(hollow.contains(",.F.);\n") && QRegularExpression(QStringLiteral("ORIENTED_CLOSED_SHELL\\('',\\*,#\\d+,\\.F\\.\\)")).match(QString::fromLatin1(hollow)).hasMatch());
+        QCOMPARE(int(hollow.count("=MANIFOLD_SOLID_BREP(")), int(three.g.topology->domains.size()) - 1);
     }
 
     // The mesh in MSH 4.1, INP and BDF: its nodes and elements all there,
@@ -468,8 +484,8 @@ private slots:
         }
     }
 
-    // Refused, and why: no file, a file that is not one, a solid with no
-    // height.
+    // Refused, and why: no file, a file that is not one, a coordinate not
+    // finite, slices past a thousand, a solid with no height.
     void whatIsRefused()
     {
         QTemporaryDir dir;
@@ -485,6 +501,20 @@ private slots:
         addImport(m, QStringLiteral("text"), QStringLiteral("text.stl"));
         b = build(m);
         QVERIFY2(b.error.contains(QStringLiteral("not an STL")), qPrintable(b.error));
+        // (A coordinate not finite: refused where it is read.)
+        for (const char* bad : {"nan", "inf"}) {
+            QByteArray text = stlText(prismOf({{0, 0}, {1, 0}, {1, 1}, {0, 1}}, 0, 1));
+            text.replace("vertex 1 0 1", QByteArray("vertex 1 ") + bad + " 1");
+            const TriangleSoup soup = readTriangles(text, QStringLiteral("x.stl"));
+            QVERIFY2(soup.error.contains(QStringLiteral("not a finite number")) && soup.triangles.empty(), qPrintable(soup.error));
+        }
+        // (Slices past a thousand.)
+        writeFile(dir.filePath(QStringLiteral("box.stl")), stlText(prismOf({{0, 0}, {1, 0}, {1, 1}, {0, 1}}, 0, 1)));
+        m = model3d(0.5);
+        m.fileName = dir.filePath(QStringLiteral("model.qfem3d"));
+        addImport(m, QStringLiteral("many"), QStringLiteral("box.stl"), 2000);
+        b = build(m);
+        QVERIFY2(b.error.contains(QStringLiteral("a thousand at most")), qPrintable(b.error));
         writeFile(dir.filePath(QStringLiteral("flat.stl")), stlText({{Vec3{0, 0, 1}, Vec3{1, 0, 1}, Vec3{0, 1, 1}}}));
         m = model3d(0.5);
         m.fileName = dir.filePath(QStringLiteral("model.qfem3d"));

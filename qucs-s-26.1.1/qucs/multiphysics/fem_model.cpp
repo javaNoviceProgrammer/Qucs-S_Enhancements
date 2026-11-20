@@ -883,7 +883,8 @@ QList<NodeKind> makeKinds()
               expr(QStringLiteral("dz"), tr("Moved along z"), QStringLiteral("m"), QStringLiteral("0")),
               integer(QStringLiteral("slices"), tr("Slices of a solid not prismatic"), 10,
                       tr("A solid whose faces are not all level or upright (a sphere, a cone): cut into this many slabs of its height, "
-                         "each its section at its middle - a staircase; a prismatic one is cut at its own levels, exactly"))},
+                         "each its section at its middle - a staircase; a prismatic one is cut at its own levels, exactly. A thousand "
+                         "at most"))},
              {}, {}, false, false, QStringLiteral("cad"),
              tr("Closed solids read from an STL or OBJ (another CAD tool's export), each a solid of the model: cut into slabs where its "
                 "faces change, each slab its section of the plan extruded - a prismatic solid (its faces level or upright) exactly, any "

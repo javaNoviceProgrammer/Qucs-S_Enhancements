@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <numeric>
 #include <set>
@@ -279,7 +280,7 @@ QByteArray stlOf(const std::vector<DomainShell>& shells, double unitScale, bool 
 
 QByteArray objOf(const std::vector<DomainShell>& shells, const Topology3& topology)
 {
-    QByteArray out = "# Qucs-S Multiphysics 3D geometry: each domain an object, closed, wound out of it\n";
+    QByteArray out = "# Qucs-S Multiphysics 3D geometry: each domain an object of its own points, closed, wound out of it\n";
     out += "# unit: " + (topology.unitName.isEmpty() ? QByteArray("m * ") + number(topology.unitScale) : topology.unitName.toUtf8()) + '\n';
     int base = 1;
     for (const DomainShell& sh : shells) {
@@ -369,100 +370,157 @@ QByteArray stepOf(const std::vector<DomainShell>& shells, const Topology3& topol
             const Vec3 x = (ref0 - normal * ref0.dot(normal)).normalized();
             return add("PLANE(''," + ref(add("AXIS2_PLACEMENT_3D(''," + ref(point(at * k)) + ',' + ref(direction(normal)) + ',' + ref(direction(x)) + ')')) + ')');
         };
-        std::vector<int> faces;
-        // Each face of the geometry's triangles: a planar one's outlines and
-        // holes (the edges of its triangles no other of them has), one
-        // polygon an outline; a curved one's triangles each a facet.
-        std::map<int, std::vector<int>> byFace;
-        for (std::size_t t = 0; t < sh.triangles.size(); ++t) byFace[sh.faces[t]].push_back(int(t));
-        // (A curved wall's triangles in planes of their own: those of one
-        // plane - a strip between two of its arc's points - one face.)
-        std::vector<std::vector<int>> groups;
-        const double grid = std::max(topology.bounds.diagonal(), 1e-300) * 1e-9;
-        for (const auto& [f, tris] : byFace) {
-            const bool planar = f >= 0 && f < int(topology.faces.size()) && topology.faces[std::size_t(f)].planar;
-            if (planar) {
-                groups.push_back(tris);
+        // Its surfaces: those joined by their edges, each an outline (its
+        // volume positive) or a cavity's (negative, wound into it). A cavity
+        // is a void of the solid round it (BREP_WITH_VOIDS), its shell
+        // written as the void's own - wound out of the void, then taken the
+        // other way (ORIENTED_CLOSED_SHELL, .F.).
+        std::vector<int> part(sh.triangles.size());
+        std::iota(part.begin(), part.end(), 0);
+        const std::function<int(int)> root = [&](int i) { return part[std::size_t(i)] == i ? i : part[std::size_t(i)] = root(part[std::size_t(i)]); };
+        {
+            std::map<std::pair<int, int>, int> firstOn;
+            for (int t = 0; t < int(sh.triangles.size()); ++t)
+                for (int j = 0; j < 3; ++j) {
+                    const int a = sh.triangles[std::size_t(t)][std::size_t(j)], b = sh.triangles[std::size_t(t)][std::size_t((j + 1) % 3)];
+                    const auto [it, made] = firstOn.emplace(std::pair<int, int>{std::min(a, b), std::max(a, b)}, t);
+                    if (!made) part[std::size_t(root(t))] = root(it->second);
+                }
+        }
+        std::map<int, std::vector<int>> surfaces;
+        for (int t = 0; t < int(sh.triangles.size()); ++t) surfaces[root(t)].push_back(t);
+        std::vector<std::vector<int>> outlines, cavities;
+        for (auto& [r, members] : surfaces) {
+            double v = 0;
+            for (int t : members) v += signedVolume(sh.points, sh.triangles[std::size_t(t)]);
+            (v >= 0 ? outlines : cavities).push_back(std::move(members));
+        }
+        std::vector<std::array<int, 3>> tri = sh.triangles;
+        for (const auto& c : cavities)
+            for (int t : c) std::swap(tri[std::size_t(t)][1], tri[std::size_t(t)][2]);
+        // A surface's faces, a closed shell of them.
+        const auto shellOf = [&](const std::vector<int>& members) {
+            std::vector<int> faces;
+            // Each face of the geometry's triangles: a planar one's outlines and
+            // holes (the edges of its triangles no other of them has), one
+            // polygon an outline; a curved one's triangles each a facet.
+            std::map<int, std::vector<int>> byFace;
+            for (int t : members) byFace[sh.faces[std::size_t(t)]].push_back(t);
+            // (A curved wall's triangles in planes of their own: those of one
+            // plane - a strip between two of its arc's points - one face.)
+            std::vector<std::vector<int>> groups;
+            const double grid = std::max(topology.bounds.diagonal(), 1e-300) * 1e-9;
+            for (const auto& [f, tris] : byFace) {
+                const bool planar = f >= 0 && f < int(topology.faces.size()) && topology.faces[std::size_t(f)].planar;
+                if (planar) {
+                    groups.push_back(tris);
+                    continue;
+                }
+                std::map<std::array<long long, 4>, std::vector<int>> byPlane;
+                for (int t : tris) {
+                    const auto& one = tri[std::size_t(t)];
+                    const Vec3 a = sh.points[std::size_t(one[0])];
+                    const Vec3 nn = (sh.points[std::size_t(one[1])] - a).cross(sh.points[std::size_t(one[2])] - a).normalized();
+                    byPlane[{std::llround(nn.x * 1e6), std::llround(nn.y * 1e6), std::llround(nn.z * 1e6), std::llround(nn.dot(a) / grid)}].push_back(t);
+                }
+                for (auto& [key, g] : byPlane) groups.push_back(std::move(g));
+            }
+            for (const std::vector<int>& tris : groups) {
+                std::multiset<std::pair<int, int>> edges;
+                for (int t : tris)
+                    for (int j = 0; j < 3; ++j) edges.emplace(tri[std::size_t(t)][std::size_t(j)], tri[std::size_t(t)][std::size_t((j + 1) % 3)]);
+                std::multimap<int, int> boundary;   // a to b
+                for (const auto& e : edges)
+                    if (edges.find({e.second, e.first}) == edges.end()) boundary.emplace(e.first, e.second);
+                std::vector<std::vector<int>> loops;
+                while (!boundary.empty()) {
+                    auto it = boundary.begin();
+                    const int start = it->first;
+                    std::vector<int> loop{start};
+                    int at = it->second;
+                    boundary.erase(it);
+                    for (int guard = 0; at != start && guard < 1 << 24; ++guard) {
+                        loop.push_back(at);
+                        auto nx = boundary.find(at);
+                        if (nx == boundary.end()) break;
+                        at = nx->second;
+                        boundary.erase(nx);
+                    }
+                    if (loop.size() >= 3) loops.push_back(std::move(loop));
+                }
+                if (loops.empty()) continue;
+                // The face's normal (out of the domain: its triangles wound so),
+                // each loop's area about it, the plan it is drawn in.
+                const auto& t0 = tri[std::size_t(tris.front())];
+                const Vec3 n = (sh.points[std::size_t(t0[1])] - sh.points[std::size_t(t0[0])]).cross(sh.points[std::size_t(t0[2])] - sh.points[std::size_t(t0[0])]).normalized();
+                const auto area = [&](const std::vector<int>& loop) {
+                    Vec3 s;
+                    for (std::size_t i = 0; i < loop.size(); ++i) s = s + sh.points[std::size_t(loop[i])].cross(sh.points[std::size_t(loop[(i + 1) % loop.size()])]);
+                    return s.dot(n) / 2;
+                };
+                const int drop = std::abs(n.z) >= std::abs(n.x) && std::abs(n.z) >= std::abs(n.y) ? 2 : std::abs(n.y) >= std::abs(n.x) ? 1 : 0;
+                const auto flat = [&](int p) {
+                    const Vec3& v = sh.points[std::size_t(p)];
+                    return drop == 2 ? QPointF(v.x, v.y) : drop == 1 ? QPointF(v.x, v.z) : QPointF(v.y, v.z);
+                };
+                const auto inside = [&](const std::vector<int>& loop, QPointF q) {
+                    bool in = false;
+                    for (std::size_t i = 0, j = loop.size() - 1; i < loop.size(); j = i++) {
+                        const QPointF a = flat(loop[i]), b = flat(loop[j]);
+                        if ((a.y() > q.y()) != (b.y() > q.y()) && q.x() < (b.x() - a.x()) * (q.y() - a.y()) / (b.y() - a.y()) + a.x()) in = !in;
+                    }
+                    return in;
+                };
+                std::vector<int> outlines, holes;
+                for (int i = 0; i < int(loops.size()); ++i) (area(loops[std::size_t(i)]) > 0 ? outlines : holes).push_back(i);
+                std::map<int, std::vector<int>> holesOf;
+                for (int hIdx : holes) {
+                    int best = -1;
+                    double bestArea = INFINITY;
+                    for (int o : outlines) {
+                        const double a = area(loops[std::size_t(o)]);
+                        if (a < bestArea && inside(loops[std::size_t(o)], flat(loops[std::size_t(hIdx)].front()))) {
+                            best = o;
+                            bestArea = a;
+                        }
+                    }
+                    if (best >= 0) holesOf[best].push_back(hIdx);
+                }
+                for (int o : outlines) {
+                    std::vector<int> bounds{add("FACE_OUTER_BOUND(''," + ref(edgeLoop(loops[std::size_t(o)])) + ",.T.)")};
+                    for (int hIdx : holesOf[o]) bounds.push_back(add("FACE_BOUND(''," + ref(edgeLoop(loops[std::size_t(hIdx)])) + ",.T.)"));
+                    faces.push_back(add("ADVANCED_FACE(''," + list(bounds) + ',' + ref(plane(sh.points[std::size_t(loops[std::size_t(o)].front())], n)) + ",.T.)"));
+                }
+            }
+            return add("CLOSED_SHELL(''," + list(faces) + ')');
+        };
+        // Each cavity the void of the least outline round it.
+        std::vector<std::vector<int>> voidsOf(outlines.size());
+        for (int c = 0; c < int(cavities.size()); ++c) {
+            const Vec3 q = sh.points[std::size_t(sh.triangles[std::size_t(cavities[std::size_t(c)].front())][0])];
+            int best = -1;
+            double least = INFINITY;
+            for (int o = 0; o < int(outlines.size()); ++o) {
+                double v = 0;
+                for (int t : outlines[std::size_t(o)]) v += signedVolume(sh.points, sh.triangles[std::size_t(t)]);
+                if (v < least && insideOf(q, sh.points, sh.triangles, outlines[std::size_t(o)])) {
+                    least = v;
+                    best = o;
+                }
+            }
+            if (best >= 0) voidsOf[std::size_t(best)].push_back(c);
+        }
+        for (int o = 0; o < int(outlines.size()); ++o) {
+            const QByteArray name = (outlines.size() == 1 ? sh.name : QStringLiteral("%1_%2").arg(sh.name).arg(o + 1)).toLatin1();
+            const int outer = shellOf(outlines[std::size_t(o)]);
+            if (voidsOf[std::size_t(o)].empty()) {
+                items.push_back(add("MANIFOLD_SOLID_BREP('" + name + "'," + ref(outer) + ')'));
                 continue;
             }
-            std::map<std::array<long long, 4>, std::vector<int>> byPlane;
-            for (int t : tris) {
-                const auto& tri = sh.triangles[std::size_t(t)];
-                const Vec3 a = sh.points[std::size_t(tri[0])];
-                const Vec3 nn = (sh.points[std::size_t(tri[1])] - a).cross(sh.points[std::size_t(tri[2])] - a).normalized();
-                byPlane[{std::llround(nn.x * 1e6), std::llround(nn.y * 1e6), std::llround(nn.z * 1e6), std::llround(nn.dot(a) / grid)}].push_back(t);
-            }
-            for (auto& [key, g] : byPlane) groups.push_back(std::move(g));
+            std::vector<int> voids;
+            for (int c : voidsOf[std::size_t(o)]) voids.push_back(add("ORIENTED_CLOSED_SHELL('',*," + ref(shellOf(cavities[std::size_t(c)])) + ",.F.)"));
+            items.push_back(add("BREP_WITH_VOIDS('" + name + "'," + ref(outer) + ',' + list(voids) + ')'));
         }
-        for (const std::vector<int>& tris : groups) {
-            std::multiset<std::pair<int, int>> edges;
-            for (int t : tris)
-                for (int j = 0; j < 3; ++j) edges.emplace(sh.triangles[std::size_t(t)][std::size_t(j)], sh.triangles[std::size_t(t)][std::size_t((j + 1) % 3)]);
-            std::multimap<int, int> boundary;   // a to b
-            for (const auto& e : edges)
-                if (edges.find({e.second, e.first}) == edges.end()) boundary.emplace(e.first, e.second);
-            std::vector<std::vector<int>> loops;
-            while (!boundary.empty()) {
-                auto it = boundary.begin();
-                const int start = it->first;
-                std::vector<int> loop{start};
-                int at = it->second;
-                boundary.erase(it);
-                for (int guard = 0; at != start && guard < 1 << 24; ++guard) {
-                    loop.push_back(at);
-                    auto nx = boundary.find(at);
-                    if (nx == boundary.end()) break;
-                    at = nx->second;
-                    boundary.erase(nx);
-                }
-                if (loop.size() >= 3) loops.push_back(std::move(loop));
-            }
-            if (loops.empty()) continue;
-            // The face's normal (out of the domain: its triangles wound so),
-            // each loop's area about it, the plan it is drawn in.
-            const auto& t0 = sh.triangles[std::size_t(tris.front())];
-            const Vec3 n = (sh.points[std::size_t(t0[1])] - sh.points[std::size_t(t0[0])]).cross(sh.points[std::size_t(t0[2])] - sh.points[std::size_t(t0[0])]).normalized();
-            const auto area = [&](const std::vector<int>& loop) {
-                Vec3 s;
-                for (std::size_t i = 0; i < loop.size(); ++i) s = s + sh.points[std::size_t(loop[i])].cross(sh.points[std::size_t(loop[(i + 1) % loop.size()])]);
-                return s.dot(n) / 2;
-            };
-            const int drop = std::abs(n.z) >= std::abs(n.x) && std::abs(n.z) >= std::abs(n.y) ? 2 : std::abs(n.y) >= std::abs(n.x) ? 1 : 0;
-            const auto flat = [&](int p) {
-                const Vec3& v = sh.points[std::size_t(p)];
-                return drop == 2 ? QPointF(v.x, v.y) : drop == 1 ? QPointF(v.x, v.z) : QPointF(v.y, v.z);
-            };
-            const auto inside = [&](const std::vector<int>& loop, QPointF q) {
-                bool in = false;
-                for (std::size_t i = 0, j = loop.size() - 1; i < loop.size(); j = i++) {
-                    const QPointF a = flat(loop[i]), b = flat(loop[j]);
-                    if ((a.y() > q.y()) != (b.y() > q.y()) && q.x() < (b.x() - a.x()) * (q.y() - a.y()) / (b.y() - a.y()) + a.x()) in = !in;
-                }
-                return in;
-            };
-            std::vector<int> outlines, holes;
-            for (int i = 0; i < int(loops.size()); ++i) (area(loops[std::size_t(i)]) > 0 ? outlines : holes).push_back(i);
-            std::map<int, std::vector<int>> holesOf;
-            for (int hIdx : holes) {
-                int best = -1;
-                double bestArea = INFINITY;
-                for (int o : outlines) {
-                    const double a = area(loops[std::size_t(o)]);
-                    if (a < bestArea && inside(loops[std::size_t(o)], flat(loops[std::size_t(hIdx)].front()))) {
-                        best = o;
-                        bestArea = a;
-                    }
-                }
-                if (best >= 0) holesOf[best].push_back(hIdx);
-            }
-            for (int o : outlines) {
-                std::vector<int> bounds{add("FACE_OUTER_BOUND(''," + ref(edgeLoop(loops[std::size_t(o)])) + ",.T.)")};
-                for (int hIdx : holesOf[o]) bounds.push_back(add("FACE_BOUND(''," + ref(edgeLoop(loops[std::size_t(hIdx)])) + ",.T.)"));
-                faces.push_back(add("ADVANCED_FACE(''," + list(bounds) + ',' + ref(plane(sh.points[std::size_t(loops[std::size_t(o)].front())], n)) + ",.T.)"));
-            }
-        }
-        const int shell = add("CLOSED_SHELL(''," + list(faces) + ')');
-        items.push_back(add("MANIFOLD_SOLID_BREP('" + sh.name.toLatin1() + "'," + ref(shell) + ')'));
     }
     const int representation = add("ADVANCED_BREP_SHAPE_REPRESENTATION(''," + list(items) + ',' + ref(context) + ')');
     add("SHAPE_DEFINITION_REPRESENTATION(" + ref(shapeDef) + ',' + ref(representation) + ')');
@@ -672,7 +730,31 @@ QByteArray bdfOf(const Mesh3& mesh)
 
 // ------------------------------------------------------------------ Reading
 
+namespace {
+
+TriangleSoup readTriangleData(const QByteArray& data, const QString& fileName);
+
+} // namespace
+
 TriangleSoup readTriangles(const QByteArray& data, const QString& fileName)
+{
+    // (A coordinate not finite refused where it is read: a NaN welded onto
+    // a point of the solid would change it without a word.)
+    TriangleSoup out = readTriangleData(data, fileName);
+    if (out.error.isEmpty())
+        for (const auto& t : out.triangles)
+            for (const Vec3& p : t)
+                if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+                    out.error = tr("a coordinate of its triangles is not a finite number (%1, %2, %3)").arg(p.x).arg(p.y).arg(p.z);
+                    out.triangles.clear();
+                    return out;
+                }
+    return out;
+}
+
+namespace {
+
+TriangleSoup readTriangleData(const QByteArray& data, const QString& fileName)
 {
     TriangleSoup out;
     const bool obj = fileName.endsWith(QLatin1String(".obj"), Qt::CaseInsensitive);
@@ -757,6 +839,8 @@ TriangleSoup readTriangles(const QByteArray& data, const QString& fileName)
     }
     return out;
 }
+
+} // namespace
 
 // ------------------------------------------------------------------ Slabs
 
