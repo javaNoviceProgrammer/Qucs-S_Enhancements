@@ -112,6 +112,13 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
         out.problems << tr("A low-pass response of %1 points is past the %2 it takes.").arg(points).arg(kMostPoints);
         return out;
     }
+    // (Kaiser's beta bounded: past some 710 Bessel's I0 overflows, and beta
+    //  1000 made every point NaN, said as fine - the review of 5d395cad.)
+    if (!(beta <= kMostBeta)) {
+        out.problems << tr("Kaiser's window's beta of %1 is past the %2 it takes (some 6 to 12 is usual; nought, none).")
+                            .arg(beta, 0, 'g', 4).arg(kMostBeta, 0, 'g', 3);
+        return out;
+    }
     const int m = points > 0 ? points : n;
     const double top = frequencies.last(), df = top / m;
     out.df = df;
@@ -123,8 +130,13 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
     // phase turning between the three sends it far off: S11 = 0.2 exp(-j w 1
     // ns) swept from 1 GHz came to -3.56, from 5 GHz to -97, and Z(t) to
     // nought throughout, said as fine (a bug hunt's second
-    // hour) -, so the lowest point's magnitude, its sign the phase's carried
-    // down to nought along the lowest three's slope.
+    // hour) -, so the lowest point carried down to nought along the lowest
+    // three's slope of phase, and its real part taken: |S(f0)| cos(phase at
+    // nought). (Its magnitude with the sign of that cosine, as it first was,
+    // took a pad's or a bond wire's S, rising as j w from nought, at +-|S(f0)|
+    // with the sign a third-order term's: a 0.2 pF pad on a matched line read
+    // as a step down to 37 Ohm from 5 GHz, a 1 nH wire as one up to 93 - the
+    // review of 5d395cad. The real part is continuous through 90 degrees.)
     const double f0 = frequencies.at(0), f1 = frequencies.at(1), f2 = frequencies.at(2);
     const double r0 = s.at(0).real(), r1 = s.at(1).real(), r2 = s.at(2).real();
     const double quadratic = r0 * (f1 * f2) / ((f0 - f1) * (f0 - f2)) + r1 * (f0 * f2) / ((f1 - f0) * (f1 - f2)) + r2 * (f0 * f1) / ((f2 - f0) * (f2 - f1));
@@ -139,9 +151,9 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
     if (carried) {
         const double phase = std::arg(s.at(0)) - slope * f0;
         const double c = std::cos(phase);
-        atZero = std::abs(s.at(0)) * (c < 0 ? -1.0 : 1.0);
+        atZero = std::abs(s.at(0)) * c;
         // (How far the carried phase lands from nought or 180 degrees - the
-        //  sign's guess past 45.)
+        //  level a guess past 45.)
         offReal = std::acos(std::min(1.0, std::abs(c)));
         // (And the phase's whole turn from nought up to the first point, the
         //  whole turns nearest the slope's: below it S is taken along that
@@ -251,13 +263,13 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
     }
     if (carried && offReal > M_PI / 4)
         out.lines << tr("S's phase, carried from the sweep's first point down to nought, lands %1 degrees from the real "
-                        "axis, where S at nought is real: its sign, and the step's late level with it, is a guess - start "
-                        "the sweep lower.")
+                        "axis, where S at nought is real: S at nought, and the step's late level with it, is a guess - a "
+                        "reactance's S rising from nought does so - start the sweep lower.")
                          .arg(offReal * 180 / M_PI, 0, 'f', 0);
     out.lines << tr("A low-pass response: %1 points to %2 GHz, every %3 MHz; S at nought %4, %5; Kaiser's window of beta "
                     "%6; the time every %7 ps to %8 ns.")
                      .arg(m).arg(top / 1e9, 0, 'g', 4).arg(df / 1e6, 0, 'g', 4).arg(atZero, 0, 'g', 4)
-                     .arg(carried ? tr("the lowest point's magnitude, its sign its phase's carried down to nought (it turns "
+                     .arg(carried ? tr("the real part of the lowest point carried down to nought along its phase (it turns "
                                        "%1 degrees below the first point)")
                                         .arg(turnBelow * 180 / M_PI, 0, 'f', 0)
                                   : tr("the real part of the lowest three's quadratic"))

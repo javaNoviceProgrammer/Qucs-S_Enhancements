@@ -3358,6 +3358,18 @@ private slots:
         // Its time domain (rf25_tdr): one frequency is too few to make one.
         const QJsonObject tdr = call("rf25_tdr", {{"path", model}}, 60000);
         QVERIFY2(failed(tdr) && text(tdr).contains(QLatin1String("four frequencies")), qPrintable(text(tdr)));
+        // Its points a whole number from 4 to 65536, its beta a number: 4.5 and
+        // 3e9 were taken as nought, the sweep's own count, without a word (the
+        // review of 5d395cad). Refused - by the schema's check, or the tool's.
+        for (const QJsonValue bad : {QJsonValue(4.5), QJsonValue(3e9), QJsonValue(70000), QJsonValue(QStringLiteral("many"))}) {
+            const QJsonObject refused = call("rf25_tdr", {{"path", model}, {"points", bad}}, 60000);
+            QVERIFY2(failed(refused) && text(refused).contains(QLatin1String("points")) && !text(refused).contains(QLatin1String("four frequencies")),
+                     qPrintable(text(refused)));
+        }
+        for (const QJsonValue bad : {QJsonValue(QStringLiteral("wide")), QJsonValue(1000)}) {
+            const QJsonObject refused = call("rf25_tdr", {{"path", model}, {"beta", bad}}, 60000);
+            QVERIFY2(failed(refused) && text(refused).contains(QLatin1String("beta")), qPrintable(text(refused)));
+        }
         QVERIFY(!failed(call("close_document", {{"path", model}, {"unsaved", "discard"}})));
     }
 

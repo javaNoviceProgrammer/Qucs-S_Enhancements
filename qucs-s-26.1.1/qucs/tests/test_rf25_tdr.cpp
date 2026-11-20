@@ -290,8 +290,38 @@ private slots:
             QVERIFY2(r.lines.join(' ').contains(QRegularExpression(QStringLiteral("S at nought 0\\.(2|200\\d|199\\d),"))),
                      qPrintable(r.lines.join(" | ")));
         }
+        // A shunt pad of 0.2 pF and a series bond wire of 1 nH on a matched
+        // 50 Ohm line, half a nanosecond along, swept every 50 MHz to 10 GHz
+        // from 25 MHz, 1 and 5 GHz: the profile past them 50 Ohm within 2 %.
+        // Their S rises as j w from nought: taken at +-|S(f0)|, the pad read
+        // as a step down to 37 Ohm from 5 GHz and the wire as one up to 93
+        // (the review of 5d395cad).
+        for (const double start : {25e6, 1e9, 5e9})
+            for (const bool pad : {true, false}) {
+                QList<double> fs;
+                QList<Complex> s11;
+                for (double f = start; f <= 10e9 + 1; f += 50e6) {
+                    const Complex jw(0, 2 * M_PI * f);
+                    const Complex g = pad ? -jw * 0.2e-12 * 50.0 / (2.0 + jw * 0.2e-12 * 50.0) : jw * 1e-9 / (100.0 + jw * 1e-9);
+                    fs << f;
+                    s11 << g * std::exp(-kJ * (2 * M_PI * f * 1e-9));
+                }
+                const rf::TimeDomain r = rf::timeDomainOf(fs, s11, true, 50, 6, 1000);
+                QVERIFY2(r.ok(), qPrintable(r.problems.join(" | ")));
+                double past = 0;
+                int n = 0;
+                for (int i = 0; i < r.t.size(); ++i)
+                    if (r.t.at(i) > 1.5e-9 && r.t.at(i) < 1.9e-9) {
+                        past += r.impedance.at(i);
+                        ++n;
+                    }
+                past /= n;
+                qWarning("a %s swept from %.3g GHz: the profile past it %.4g Ohm", pad ? "pad" : "wire", start / 1e9, past);
+                QVERIFY2(std::abs(past / 50 - 1) < 0.02,
+                         qPrintable(QStringLiteral("a %1 from %2 GHz: %3 Ohm | %4").arg(pad ? "pad" : "wire").arg(start / 1e9).arg(past).arg(r.lines.join(" | "))));
+            }
         // The phase carried to nought 90 degrees off the real axis: S11 =
-        // 0.2 j exp(-j w 1 ns), which no port's S is. Said, the sign a guess.
+        // 0.2 j exp(-j w 1 ns), which no port's S is. Said, the level a guess.
         QList<double> fs;
         QList<Complex> odd;
         for (double f = 1e9; f <= 10e9 + 1; f += 50e6) {
@@ -372,6 +402,15 @@ private slots:
         QVERIFY(!rf::timeDomainOf({1e9, 2e9}, {0.1, 0.1}, true).ok());
         QVERIFY(!rf::timeDomainOf({1e9, 3e9, 2e9, 4e9}, {0.1, 0.1, 0.1, 0.1}, true).ok());
         QVERIFY(!rf::timeDomainOf({0, 1e9, 2e9, 3e9}, {0.1, 0.1, 0.1, 0.1}, true).ok());
+        // Kaiser's beta past kMostBeta: past some 710 Bessel's I0 overflowed,
+        // and beta 1000 made every point NaN, said as fine (the review of
+        // 5d395cad).
+        const QList<double> four{1e9, 2e9, 3e9, 4e9};
+        const QList<Complex> some{0.1, 0.1, 0.1, 0.1};
+        QVERIFY(!rf::timeDomainOf(four, some, true, 50, 1000).ok());
+        const rf::TimeDomain most = rf::timeDomainOf(four, some, true, 50, rf::kMostBeta);
+        QVERIFY(most.ok());
+        for (const double z : most.impedance) QVERIFY(std::isfinite(z));
     }
 };
 
