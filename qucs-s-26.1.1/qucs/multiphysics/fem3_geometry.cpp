@@ -11,13 +11,16 @@
  * (at your option) any later version.
  */
 #include "fem3_geometry.h"
+#include "fem3_cad.h"
 #include "fem_import.h"
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QJsonArray>
+#include <QSet>
 
 #include <clipper/clipper.hpp>
 
@@ -284,6 +287,7 @@ private:
         if (t == QLatin1String("box") || t == QLatin1String("cylinder")) primitive(f);
         else if (t == QLatin1String("extrude")) extrude(f);
         else if (t == QLatin1String("stack")) stack(f);
+        else if (t == QLatin1String("solidimport")) importSolids(f);
         else if (t == QLatin1String("union") || t == QLatin1String("difference") || t == QLatin1String("intersection")) boolean(f);
         else {
             const NodeKind* k = f.kind();
@@ -462,6 +466,76 @@ private:
         }
         if (open > 0) warn(tr("%n of its sketch's objects not solid (an open curve, a point) left out: a 3D model's are solids", nullptr, open));
         if (made == 0) fail(tr("its sketch makes no solid: closed shapes are extruded"));
+    }
+
+    /// A CAD Import: closed solids of an STL or OBJ, each cut into slabs
+    /// (fem3_cad's slabSolids()), each slab its section's region from its
+    /// bottom up through its top - one solid each, of the feature's name.
+    void importSolids(const Node& f)
+    {
+        const QString given = f.text(QStringLiteral("file")).trimmed();
+        if (given.isEmpty()) return fail(tr("give it a file: an STL or OBJ of closed solids"));
+        QString path = given;
+        if (QFileInfo(given).isRelative()) {
+            if (a_model.fileName.isEmpty()) return fail(tr("%1 is relative to the model's folder: save the model first, or give its whole path").arg(given));
+            path = QFileInfo(a_model.fileName).absoluteDir().absoluteFilePath(given);
+        }
+        a_files << QFileInfo(path).absoluteFilePath();
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) return fail(tr("%1 could not be read").arg(given));
+        const TriangleSoup soup = readTriangles(file.readAll(), path);
+        if (!soup.error.isEmpty()) return fail(tr("%1: %2").arg(given, soup.error));
+        // Its coordinates in the model's unit, moved.
+        const QString unit = f.text(QStringLiteral("unit"));
+        const double metres = unit == QLatin1String("m")    ? 1.0
+                              : unit == QLatin1String("cm") ? 1e-2
+                              : unit == QLatin1String("um") ? 1e-6
+                              : unit == QLatin1String("in") ? 0.0254
+                              : unit == QLatin1String("model") ? a_scale
+                                                              : 1e-3;
+        const auto offset = [&](const char* key) {
+            const QString text = f.text(QString::fromLatin1(key)).trimmed();
+            return text.isEmpty() ? 0.0 : length(text, tr("its move along %1").arg(QLatin1Char(key[1])));
+        };
+        const Vec3 move{offset("dx"), offset("dy"), offset("dz")};
+        if (!a_error.isEmpty()) return;
+        std::vector<std::array<Vec3, 3>> tris = soup.triangles;
+        const double k = metres / a_scale;
+        for (auto& t : tris)
+            for (Vec3& p : t) p = p * k + move;
+        QStringList warnings;
+        const std::vector<SlabbedSolid> bodies = slabSolids(tris, std::max(1, f.integer(QStringLiteral("slices"))), &warnings, soup.group);
+        for (const QString& w : warnings) warn(w);
+        if (bodies.empty()) return fail(tr("%1 holds no solid with a height").arg(given));
+        const QString name = f.label.isEmpty() ? f.tag : f.label;
+        // (Its regions' window: round everything it holds.)
+        Box3 box;
+        for (const auto& t : tris)
+            for (const Vec3& p : t) box.add(p);
+        const double pad = std::max(box.diagonal(), 1e-12);
+        const QRectF window(QPointF(box.x0 - pad, box.y0 - pad), QPointF(box.x1 + pad, box.y1 + pad));
+        // (Each named after the file's group it is of, where it has one.)
+        QSet<QString> taken;
+        for (std::size_t b = 0; b < bodies.size(); ++b) {
+            Solid s;
+            const int g = bodies[b].group;
+            const QString part = g >= 0 && g < int(soup.names.size()) && !soup.names[g].isEmpty() ? soup.names[g] : QString();
+            s.name = bodies.size() == 1 ? name : part.isEmpty() ? QStringLiteral("%1_%2").arg(name).arg(b + 1) : QStringLiteral("%1_%2").arg(name, part);
+            for (int k = 2; taken.contains(s.name); ++k) s.name = QStringLiteral("%1_%2").arg(name).arg(b + 1) + QStringLiteral("_%1").arg(k);
+            taken.insert(s.name);
+            s.group = name;
+            s.tag = f.tag;
+            for (const SlabbedSolid::Slab& slab : bodies[b].slabs) {
+                GObject o = clipped(slab.loops, 1.0, window);
+                if (!a_error.isEmpty()) return;
+                if (!o.solid()) continue;
+                o.name = s.name;
+                a_regions.push_back(std::move(o));
+                s.pieces.push_back(addPiece(int(a_regions.size()) - 1, slab.z0, slab.z1));
+            }
+            if (s.pieces.empty()) continue;
+            if (!addSolid(std::move(s))) return;
+        }
     }
 
     /// A Layer Stack: its rows read, its window and layout's layers made once

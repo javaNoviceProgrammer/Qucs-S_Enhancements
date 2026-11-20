@@ -899,20 +899,25 @@ QWidget* Multiphysics3DPanel::makeEditor(const Node& node, const PropertyDef& p)
         auto* edit = new QLineEdit(node.text(key), w);
         edit->setObjectName(QStringLiteral("mp3Edit_") + key);
         const bool layout = node.type == QLatin1String("stack");
-        edit->setPlaceholderText(layout ? tr("a GDSII or OASIS layout, beside the model") : tr("a DXF, SVG, GDSII or OASIS file, beside the model"));
+        const bool solids = node.type == QLatin1String("solidimport");
+        edit->setPlaceholderText(layout   ? tr("a GDSII or OASIS layout, beside the model")
+                                 : solids ? tr("an STL or OBJ of closed solids, beside the model")
+                                          : tr("a DXF, SVG, GDSII or OASIS file, beside the model"));
         auto* browse = new QToolButton(w);
         browse->setText(QStringLiteral("…"));
         browse->setObjectName(QStringLiteral("mp3Browse_") + key);
         h->addWidget(edit, 1);
         h->addWidget(browse);
         connect(edit, &QLineEdit::editingFinished, this, [this, key, edit] { commit(key, edit->text().trimmed()); });
-        connect(browse, &QToolButton::clicked, this, [this, key, edit, layout] {
+        connect(browse, &QToolButton::clicked, this, [this, key, edit, layout, solids] {
             const QString model = a_doc ? a_doc->getDocName() : QString();
             const QDir dir = model.isEmpty() ? QDir::home() : QFileInfo(model).absoluteDir();
             const QString layouts = tr("Layouts (*.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis)");
-            const QString chosen = layout ? QFileDialog::getOpenFileName(this, tr("A Layout"), dir.absolutePath(), layouts + tr(";;All files (*)"))
-                                          : QFileDialog::getOpenFileName(this, tr("Import a Drawing or a Layout"), dir.absolutePath(),
-                                                                         tr("Drawings and layouts (*.dxf *.svg *.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis);;All files (*)"));
+            const QString chosen = layout   ? QFileDialog::getOpenFileName(this, tr("A Layout"), dir.absolutePath(), layouts + tr(";;All files (*)"))
+                                   : solids ? QFileDialog::getOpenFileName(this, tr("Import Solids"), dir.absolutePath(),
+                                                                           tr("Solids (*.stl *.obj);;All files (*)"))
+                                            : QFileDialog::getOpenFileName(this, tr("Import a Drawing or a Layout"), dir.absolutePath(),
+                                                                           tr("Drawings and layouts (*.dxf *.svg *.gds *.gds2 *.gdsii *.gds.gz *.oas *.oasis);;All files (*)"));
             if (chosen.isEmpty()) return;
             const QString value = model.isEmpty() ? chosen : dir.relativeFilePath(chosen);
             edit->setText(value);
