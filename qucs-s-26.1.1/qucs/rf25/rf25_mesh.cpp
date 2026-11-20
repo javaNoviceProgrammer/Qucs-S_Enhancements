@@ -723,6 +723,76 @@ QString edgeKey(const QPointF& a, const QPointF& b)
     return QStringLiteral("%1,%2").arg(std::llround(middle.x() * 1e3)).arg(std::llround(middle.y() * 1e3));
 }
 
+/*!
+ * The metals the solvers take as their two faces, as thickened() decides
+ * it, \a stack's flags set so: an Automatic metal as its faces where it is
+ * at least a fortieth as thick as the narrowest gap beside it (\a gaps, µm
+ * by layer), else a sheet; and a film - under a fiftieth of its narrowest
+ * conductor's width - a sheet, however it is asked. What was decided, in
+ * \a said. The mesh counts its charges by it too: by the stack's flags
+ * alone it counted a film's cells twice - 19,048 "past the dense limit"
+ * where the charge solve took 9,524 - and an
+ * Automatic metal's once.
+ */
+QStringList facesDecided(Stack* stack, const QList<Conductor>& conductors, const QMap<QString, double>& gaps, QStringList* said)
+{
+    // A metal Solved as Automatic: as its two faces where it is at least a
+    // fortieth as thick as the narrowest gap beside it (kAutomaticFaces) -
+    // where a sheet, which has no thickness in the field and no walls,
+    // reads Z0 a per cent and more high (A1 of the open items of 8
+    // November) -, else a sheet. Said either way, and decided before
+    // anything else reads the stack.
+    QStringList words;
+    for (Layer& l : stack->layers) {
+        if (l.kind != Layer::Metal || !l.automatic || l.face != Layer::Whole) continue;
+        l.automatic = false;
+        const double t = l.thickness * 1e6, gap = gaps.value(l.name, 0);   // (µm, as the mesh)
+        if (t > 0 && gap > 0 && t >= kAutomaticFaces * gap) {
+            l.twoSheets = true;
+            words << tr("%1 is solved as its two faces (Automatic): %2 µm thick beside gaps as narrow as %3 µm, a fortieth "
+                        "of them or more.")
+                         .arg(l.name).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3);
+        } else {
+            l.twoSheets = false;
+            words << (gap > 0 ? tr("%1 is solved as a sheet (Automatic): %2 µm thick, its narrowest gap %3 µm, over forty "
+                                   "times as wide.")
+                                    .arg(l.name).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3)
+                              : tr("%1 is solved as a sheet (Automatic): no gap faces it.").arg(l.name));
+        }
+    }
+    QStringList metals;
+    for (const Layer& l : stack->layers)
+        if (l.kind == Layer::Metal && l.twoSheets && l.thickness > 0 && l.face == Layer::Whole) metals << l.name;
+    // A film - a metal under a fiftieth of its narrowest conductor's width
+    // (twice its area over its perimeter) - is one sheet, its thickness in
+    // its loss: two faces that close are a pair of sheets whose charges
+    // nearly the same potentials cannot tell apart - 0.01 µm on a comb's 1
+    // µm fingers took GMRES 2492 iterations at six across, and a
+    // twelve-finger comb never converged, where the sheet it is in the limit
+    // solves in 22 -, and what they add
+    // to it is under a per cent.
+    for (qsizetype i = metals.size() - 1; i >= 0; --i) {
+        double narrowest = 0;
+        for (const Conductor& c : conductors) {
+            if (c.layer != metals.at(i)) continue;
+            const double around = perimeterOf(c.outline), width = around > 0 ? 2 * areaOf(c.outline) / around : 0;
+            if (width > 0 && (narrowest <= 0 || width < narrowest)) narrowest = width;
+        }
+        const Layer* l = stack->named(metals.at(i));
+        const double t = l->thickness * 1e6;   // µm, as the mesh
+        if (narrowest > 0 && t < kFacesApart * narrowest) {
+            words << tr("%1 is solved as a sheet, its thickness in its loss: %2 µm thick on conductors as narrow as %3 "
+                        "µm, it is a film, its two faces as good as one.")
+                         .arg(metals.at(i)).arg(t, 0, 'g', 3).arg(narrowest, 0, 'g', 3);
+            for (Layer& layer : stack->layers)
+                if (layer.name == metals.at(i)) layer.twoSheets = false;
+            metals.removeAt(i);
+        }
+    }
+    if (said != nullptr) *said << words;
+    return metals;
+}
+
 } // namespace
 
 QMap<QString, int> Mesh::byLayer() const
@@ -2104,11 +2174,12 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         for (int i = 0, n = cell.outline.size(); i < n; ++i)
             ++shared[cell.layer + QLatin1Char('|') + edgeKey(cell.outline.at(i), cell.outline.at((i + 1) % n))];
     // A metal solved as its two faces is its cells twice, its edges twice,
-    // and a wall up from each cell along its conductor's edge (thickened()).
-    const auto twoFaces = [&stack](const QString& layer) {
-        const Layer* l = stack.named(layer);
-        return l != nullptr && l->kind == Layer::Metal && l->twoSheets && l->thickness > 0;
-    };
+    // and a wall up from each cell along its conductor's edge (thickened()):
+    // the metals the solvers take so (facesDecided()) - a film a sheet, an
+    // Automatic metal its faces where it is thick beside its gaps.
+    Stack decided = stack;
+    const QStringList facedMetals = facesDecided(&decided, given, mesh.gapByLayer, nullptr);
+    const auto twoFaces = [&facedMetals](const QString& layer) { return facedMetals.contains(layer); };
     int unknowns = 0, charges = int(mesh.cells.size());
     for (auto it = shared.constBegin(); it != shared.constEnd(); ++it)
         if (it.value() >= 2) unknowns += twoFaces(it.key().section(QLatin1Char('|'), 0, 0)) ? 2 : 1;
@@ -2161,63 +2232,14 @@ bool Thickened::made(const QString& layer) const
 Thickened thickened(const Stack& given, const QList<Conductor>& conductors, const Mesh& mesh)
 {
     Thickened out;
-    // A metal Solved as Automatic: as its two faces where it is at least a
-    // fortieth as thick as the narrowest gap beside it (kAutomaticFaces) -
-    // where a sheet, which has no thickness in the field and no walls,
-    // reads Z0 a per cent and more high (A1 of the open items of 8
-    // November) -, else a sheet. Said either way, and decided before
-    // anything else reads the stack.
+    // (Which metals are their two faces: facesDecided(), as the mesh counts
+    //  its charges by.)
     Stack stack = given;
-    for (Layer& l : stack.layers) {
-        if (l.kind != Layer::Metal || !l.automatic || l.face != Layer::Whole) continue;
-        l.automatic = false;
-        const double t = l.thickness * 1e6, gap = mesh.gapByLayer.value(l.name, 0);   // (µm, as the mesh)
-        if (t > 0 && gap > 0 && t >= kAutomaticFaces * gap) {
-            l.twoSheets = true;
-            out.said << tr("%1 is solved as its two faces (Automatic): %2 µm thick beside gaps as narrow as %3 µm, a fortieth "
-                           "of them or more.")
-                            .arg(l.name).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3);
-        } else {
-            l.twoSheets = false;
-            out.said << (gap > 0 ? tr("%1 is solved as a sheet (Automatic): %2 µm thick, its narrowest gap %3 µm, over forty "
-                                      "times as wide.")
-                                       .arg(l.name).arg(t, 0, 'g', 3).arg(gap, 0, 'g', 3)
-                                 : tr("%1 is solved as a sheet (Automatic): no gap faces it.").arg(l.name));
-        }
-    }
+    const QStringList metals = facesDecided(&stack, conductors, mesh.gapByLayer, &out.said);
     out.stack = stack;
     out.conductors = conductors;
     out.mesh = mesh;
     out.cells = int(mesh.cells.size());
-    QStringList metals;
-    for (const Layer& l : stack.layers)
-        if (l.kind == Layer::Metal && l.twoSheets && l.thickness > 0 && l.face == Layer::Whole) metals << l.name;
-    // A film - a metal under a fiftieth of its narrowest conductor's width
-    // (twice its area over its perimeter) - is one sheet, its thickness in
-    // its loss: two faces that close are a pair of sheets whose charges
-    // nearly the same potentials cannot tell apart - 0.01 µm on a comb's 1
-    // µm fingers took GMRES 2492 iterations at six across, and a
-    // twelve-finger comb never converged, where the sheet it is in the limit
-    // solves in 22 -, and what they add
-    // to it is under a per cent.
-    for (qsizetype i = metals.size() - 1; i >= 0; --i) {
-        double narrowest = 0;
-        for (const Conductor& c : conductors) {
-            if (c.layer != metals.at(i)) continue;
-            const double around = perimeterOf(c.outline), width = around > 0 ? 2 * areaOf(c.outline) / around : 0;
-            if (width > 0 && (narrowest <= 0 || width < narrowest)) narrowest = width;
-        }
-        const Layer* l = stack.named(metals.at(i));
-        const double t = l->thickness * 1e6;   // µm, as the mesh
-        if (narrowest > 0 && t < kFacesApart * narrowest) {
-            out.said << tr("%1 is solved as a sheet, its thickness in its loss: %2 µm thick on conductors as narrow as %3 "
-                           "µm, it is a film, its two faces as good as one.")
-                            .arg(metals.at(i)).arg(t, 0, 'g', 3).arg(narrowest, 0, 'g', 3);
-            for (Layer& layer : out.stack.layers)
-                if (layer.name == metals.at(i)) layer.twoSheets = false;
-            metals.removeAt(i);
-        }
-    }
     if (metals.isEmpty()) return out;
     out.any = true;
 

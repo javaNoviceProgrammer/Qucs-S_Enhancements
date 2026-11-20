@@ -405,6 +405,10 @@ public:
     /// The loop's inductance as last solved, or null: nothing solved, the
     /// model changed since, or it has not the two ports a loop wants.
     std::shared_ptr<const qucs_s::rf25::Inductance> inductance() const { return a_inductance; }
+    /// Which ends the loop was taken between, where the ports leave it to
+    /// be said - one port returning through a terminal, more than two -,
+    /// else nothing.
+    QString loopPortsSaid() const { return a_portsSaid; }
     /// The loop's L, its resistance at direct current and its Q, for the
     /// Results node and the notes; what the ports said where there is no
     /// loop to find.

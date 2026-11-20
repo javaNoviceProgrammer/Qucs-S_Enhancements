@@ -450,6 +450,12 @@ private slots:
         const rf::Extraction compressed = rf::extract(mesh, line, stack, 1e-6, {}, &held);
         QVERIFY2(dense.ok() && compressed.ok(), qPrintable((dense.problems + compressed.problems).join(" | ")));
         QVERIFY2(says(compressed.lines, "solved compressed") && !says(dense.lines, "solved compressed"), qPrintable(compressed.lines.join(" | ")));
+        // (Its cells' line says so too, where it gave the dense matrix it
+        //  would have taken as the one solved - "a dense matrix of 692.0 MB
+        //  to solve" beside "held in 129.0 MB".)
+        QVERIFY2(says(compressed.lines, "a charge on each, held compressed") && !says(compressed.lines, "a dense matrix of"),
+                 qPrintable(compressed.lines.join(" | ")));
+        QVERIFY2(says(dense.lines, "a charge on each, a dense matrix of"), qPrintable(dense.lines.join(" | ")));
         double apart = 0, largest = 0;
         for (int i = 0; i < 3; ++i)
             for (int j = 0; j < 3; ++j) {

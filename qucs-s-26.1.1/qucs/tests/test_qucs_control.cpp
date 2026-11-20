@@ -2701,6 +2701,32 @@ private slots:
             QVERIFY(failed(alone));
             QVERIFY2(text(alone).contains(QStringLiteral("two ports")) || text(alone).contains(QStringLiteral("wants two")),
                      qPrintable(text(alone)));
+            // One port returning through a terminal at the wire's other end,
+            // a second port disabled: the loop from the port to the terminal,
+            // and said so - it said only where the current went in and out
+            qucs_s::rf25::Model through = lossy;
+            qucs_s::rf25::Node fed = port(-600);
+            fed.props.insert(QStringLiteral("return"), QStringLiteral("terminals"));
+            fed.props.insert(QStringLiteral("returns"), QStringLiteral("T1"));
+            qucs_s::rf25::Node off = port(600);
+            off.enabled = false;
+            qucs_s::rf25::Node terminal = through.make(QStringLiteral("rf_terminal"));
+            terminal.label = QStringLiteral("T1");
+            terminal.props.insert(QStringLiteral("metal"), QStringLiteral("M1"));
+            terminal.props.insert(QStringLiteral("x"), QStringLiteral("0"));
+            terminal.props.insert(QStringLiteral("y"), QStringLiteral("600[um]"));
+            QVERIFY(through.add(QStringLiteral("ports"), fed) != nullptr);
+            QVERIFY(through.add(QStringLiteral("ports"), off) != nullptr);
+            QVERIFY(through.add(QStringLiteral("ports"), terminal) != nullptr);
+            QVERIFY(put(ws + "/rf/through.qrf25", through.toJson()));
+            const QJsonObject viaTerminal = call("rf25_inductance", {{"path", ws + "/rf/through.qrf25"}}, 300000);
+            QVERIFY2(!failed(viaTerminal), qPrintable(text(viaTerminal)));
+            const QJsonObject taken = json(viaTerminal).toObject();
+            QVERIFY2(std::abs(taken.value("L").toDouble() - l) < 0.01 * l,
+                     qPrintable(QStringLiteral("%1 nH against %2").arg(taken.value("L").toDouble() * 1e9).arg(l * 1e9)));
+            const QStringList did = taken.value("what it did").toVariant().toStringList();
+            QVERIFY2(did.join(QLatin1Char(' ')).contains(QStringLiteral("returning through T1: the loop is taken from the port to T1")),
+                     qPrintable(did.join(QStringLiteral(" | "))));
             // And rf25_solve's own L is the other quantity, of the
             // cross-section, which is nothing like the loop's.
             const QJsonObject line = json(call("rf25_solve", {{"path", ws + "/rf/wire.qrf25"}}, 300000)).toObject()

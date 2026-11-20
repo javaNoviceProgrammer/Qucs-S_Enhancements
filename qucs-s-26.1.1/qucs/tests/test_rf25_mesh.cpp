@@ -9,6 +9,7 @@
 
 #include "rf25/rf25_fullwave.h"
 #include "rf25/rf25_mesh.h"
+#include "rf25/rf25_static.h"
 #include "rf25/rf25_inductance.h"
 
 #include <QSet>
@@ -555,9 +556,20 @@ private slots:
         QCOMPARE(mesh.charges, int(mesh.cells.size()));
         rf::Model faced = stacked();
         faced.stackNode().children.back().props.insert(QStringLiteral("model"), QStringLiteral("faces"));
+        faced.stackNode().children.back().props.insert(QStringLiteral("thickness"), QStringLiteral("3[um]"));
         const rf::Mesh two = rf::meshOf(line, how, faced.stack(), 0);
         QVERIFY2(faced.stack().layers.last().twoSheets, "the metal is not solved as its faces");
         QCOMPARE(two.charges, 2 * int(two.cells.size()));
+        // Each as many as the charge solve has: and a film asked to be its
+        // faces - 0.6 µm on strips some 48 µm wide, under a fiftieth - is
+        // one sheet to the solvers, its cells once. It was counted twice:
+        // 19,048 "past the dense limit" where the solve took 9,524.
+        faced.stackNode().children.back().props.insert(QStringLiteral("thickness"), QStringLiteral("0.6[um]"));
+        const rf::Mesh film = rf::meshOf(line, how, faced.stack(), 0);
+        QCOMPARE(film.charges, int(film.cells.size()));
+        QCOMPARE(rf::extract(film, line, faced.stack()).unknowns, film.charges);
+        faced.stackNode().children.back().props.insert(QStringLiteral("thickness"), QStringLiteral("3[um]"));
+        QCOMPARE(rf::extract(two, line, faced.stack()).unknowns, two.charges);
     }
 
     // Cells across a conductor: at least so many across its narrowest

@@ -1314,6 +1314,10 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
     out.insert(QStringLiteral("cells"), ind->nodes);
     QJsonArray said;
     for (const QString& line : model->preparedLines()) said.append(line);
+    // (Which ends it took, where the ports leave it to be said: of one port
+    //  returning through a terminal, beside a second port disabled, it said
+    //  only where the current went in and out.)
+    if (!model->loopPortsSaid().isEmpty()) said.append(model->loopPortsSaid());
     // (Its Q line the frequency asked for's, as "Q" is: it said Q at the
     //  study's top beside a "Q" of the one asked for - 6.91e+03 at 0.1 GHz
     //  beside 690.7 at 10 MHz, a smaller point of a review.)

@@ -2096,23 +2096,27 @@ template <typename Add> void ownImpedances(const Context& c, double f, Add rawAd
         Complex own, across;
         faceImpedances(run.sigma, run.thickness, f, &own, &across);
         // The faces' even current's inside, the slab's, held to its
-        // section's (Context::inside): at a low frequency by its share k,
-        // and less and less of it once the two faces' skins part, at a skin
-        // depth half the thickness - X' = X (1 - (1 - k)/(1 + (t/2 delta)^4)),
-        // X the even mode's reactance -, until the current is on the faces'
-        // skins, whose reactance is a narrow conductor's as it is a wide
-        // one's. A square loop of wire took a wide slab's inside, six times
-        // its own beyond its faces' field, and read the more the finer its
-        // cells across. (Faded as the
-        // slab's own reactance falls, (X/X0)^2, it still took 40 % at four
-        // skin depths, and a 20 µm line of 3 µm gold read L 0.5 % lower at
-        // 10 GHz than its 2D eddy solve allows.)
+        // section's (Context::inside): never more than its share k of the
+        // slab's at a low frequency, X0 = omega mu0 t/6 a square for the two
+        // faces' even mode, nor than the slab's own at the frequency,
+        // X' = min(X, k X0). The slab's falls once its skins part, and
+        // where it falls under k X0 - some 3/k skin depths thick - the
+        // current is on the faces' skins, whose reactance is a narrow
+        // conductor's as it is a wide one's. A square loop of wire took a
+        // wide slab's inside, six times its own beyond its faces' field, and
+        // read the more the finer its cells across. Both non-increasing in X/omega, so is their least:
+        // the share faded as 1/(1 + (t/2 delta)^4), from whole to nought
+        // between one skin depth and three, went faster than the slab's own
+        // reactance fell, and gave back what it took - the loop's L rose 6 %
+        // over its value at direct current between 40 and 300 kHz, which no
+        // conductor's can.
         if (const double k = c.inside.value(a, 1.0); k < 1 && run.sigma > 0) {
-            const double halfDepths = run.thickness / 2 * std::sqrt(M_PI * f * kMu0 * run.sigma);
-            const double fade = 1 / (1 + std::pow(halfDepths, 4));
-            const Complex shift(0, -(1 - k) * fade * 0.5 * (own + across).imag());
-            own += shift;
-            across += shift;
+            const double even = (own + across).imag(), held = k * 2 * M_PI * f * kMu0 * run.thickness / 6;
+            if (even > held) {
+                const Complex shift(0, -0.5 * (even - held));
+                own += shift;
+                across += shift;
+            }
         }
         const QList<Context::Part>& parts = c.parts.value(a);
         if (!parts.isEmpty()) {

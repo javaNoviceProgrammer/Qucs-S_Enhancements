@@ -1041,13 +1041,62 @@ private slots:
                  nh.at(0), nh.at(1), skin.at(0), skin.at(1));
         QVERIFY2(nh.at(1) > nh.at(0) && nh.at(1) < 24.17 * 1.005 && nh.at(1) > 24.17 * 0.95,
                  qPrintable(QStringLiteral("%1 %2").arg(nh.at(0)).arg(nh.at(1))));
-        // (At 100 MHz, the skin a seventh of its thickness, the faces' skins'
-        //  reactance as it was: 22.367 and 22.424 nH before the inside was
-        //  held to the section's, 22.366 and 22.423 now. Its share faded as
-        //  the slab's own reactance falls left 22.315 and 22.376, as its
-        //  square, and 22.231 and 22.297, as itself.)
-        QVERIFY2(std::abs(skin.at(0) - 22.367) < 0.001 * 22.367 && std::abs(skin.at(1) - 22.424) < 0.001 * 22.424,
-                 qPrintable(QStringLiteral("%1 %2").arg(skin.at(0)).arg(skin.at(1))));
+        // (At 100 MHz, the skin a seventh of its thickness, the loop's L at
+        //  4 across a share of its L at 100 kHz that the 2D eddy solve of
+        //  its section has as 0.9488 - the wire's L' 760.164 nH/m at a low
+        //  frequency and 729.228 at that thickness against its skin, over
+        //  the loop's 40 mm -: 0.9470 now; 0.9565 with the share faded as
+        //  1/(1 + (t/2 delta)^4).)
+        QVERIFY2(std::abs(skin.at(1) / nh.at(1) / 0.9488 - 1) < 0.005, qPrintable(QStringLiteral("%1 %2").arg(skin.at(1)).arg(nh.at(1))));
+    }
+
+    // A thick loop's L falls as its frequency rises, as every conductor's
+    // does - its current redistributing toward less magnetic energy -, as
+    // its two faces too: the square
+    // copper loop, 0.5 by 0.5 mm, read 23.44 nH at 1 kHz and 24.37 at 74
+    // kHz on 4 cells across, 25.43 at 100 kHz on 10, the section's own
+    // inside, held at its share of the slab's at a low frequency, faded
+    // out faster than the slab's own fell. Each L now no more than the
+    // one before it, and its fall from 1 kHz the 2D eddy solve's of the
+    // wire's section over the loop's 40 mm within 0.6 nH, 0.47 at most
+    // (the wire 5 mm
+    // over a perfect ground, its image the return).
+    void aThickLoopsInductanceFallsWithFrequency()
+    {
+        rf::Stack st = grounded(1, 5e-3, 0, 0.5e-3, 6e7);
+        st.layers[0].variant = QStringLiteral("open");
+        st.layers[2].twoSheets = true;
+        rf::Conductor loop;
+        loop.layer = QStringLiteral("M1");
+        loop.outline = QPolygonF(QList<QPointF>{{-5250, -100}, {-5250, -5250}, {5250, -5250}, {5250, 5250}, {-5250, 5250}, {-5250, 100},
+                                                {-4750, 100}, {-4750, 4750}, {4750, 4750}, {4750, -4750}, {-4750, -4750}, {-4750, -100}});
+        rf::FullWavePort p = edgePort(QPointF(-5000, -100), QString(), QPointF(0, 1));
+        p.terminals = true;
+        rf::PortTerminal t;
+        t.name = QStringLiteral("T1");
+        t.at = QPointF(-5000, 100);
+        t.face = true;
+        t.facing = QPointF(0, -1);
+        p.returns = {t};
+        rf::MeshSettings how;
+        how.cellsAcross = 4;
+        const rf::Mesh mesh = rf::meshOf({loop}, how, st, 1e8);
+        // (t/delta 0.24 to 77; the wire's L' by the eddy solve, nH/m.)
+        const QList<double> fs{1e3, 1e4, 3.8e4, 7.4e4, 1e5, 1.41e5, 2.71e5, 5.21e5, 1e6, 1e7, 1e8};
+        const QList<double> wire{760.1636, 760.1410, 759.8375, 758.9626, 758.0387, 756.2039, 749.1613, 738.4818, 729.2277, 712.4585, 707.0195};
+        const rf::FullWave w = rf::fullWaveOf(mesh, {loop}, st, {p}, fs);
+        QVERIFY2(w.ok(), qPrintable(why(w)));
+        QList<double> nh;
+        QStringList said;
+        for (int k = 0; k < fs.size(); ++k) {
+            nh << w.z.at(k).at(0).at(0).imag() / (2 * M_PI * fs.at(k)) * 1e9;
+            said << QStringLiteral("%1 kHz %2 nH (eddy %3)").arg(fs.at(k) / 1e3).arg(nh.last(), 0, 'f', 3).arg(nh.first() + 0.04 * (wire.at(k) - wire.first()), 0, 'f', 3);
+        }
+        qInfo("%s", qPrintable(said.join(QStringLiteral("; "))));
+        for (int k = 1; k < fs.size(); ++k) {
+            QVERIFY2(nh.at(k) <= nh.at(k - 1) * (1 + 1e-5), qPrintable(said.join(QStringLiteral("; "))));
+            QVERIFY2(std::abs(nh.at(k) - nh.first() - 0.04 * (wire.at(k) - wire.first())) < 0.6, qPrintable(said.join(QStringLiteral("; "))));
+        }
     }
 
     // At a low frequency the dense solve keeps the cells' charges as unknowns
