@@ -342,7 +342,7 @@ QList<NodeKind> makeKinds()
         QStringLiteral("mirror"), QStringLiteral("array"), QStringLiteral("union"), QStringLiteral("difference"),
         QStringLiteral("intersection"), QStringLiteral("import"), QStringLiteral("crosssection"), QStringLiteral("process"),
         // (A 3D model's: layered solids.)
-        QStringLiteral("stack"), QStringLiteral("box"), QStringLiteral("cylinder"), QStringLiteral("extrude")};
+        QStringLiteral("stack"), QStringLiteral("box"), QStringLiteral("cylinder"), QStringLiteral("extrude"), QStringLiteral("solidimport")};
     add({QStringLiteral("geometry"), tr("Geometry"), QString(), QStringLiteral("geometry"), Level::None, {}, geometryFeatures,
          {QStringLiteral("form union")}, true, true, QString(),
          tr("A sequence of features, built in order: each makes objects of the parameters. Form Union makes them one: "
@@ -866,6 +866,28 @@ QList<NodeKind> makeKinds()
              tr("A chip's layers from the bottom up: each row a solid of its name from its z up through its thickness, across a window "
                 "of the plan - or, its layer named, where a layout draws that layer in the window. Where rows meet (a trace in its "
                 "oxide) the overlap is a domain of its own, as where any solids meet. The stack's name all of its rows.")});
+        P solids;
+        solids.key = QStringLiteral("file");
+        solids.label = tr("File");
+        solids.kind = P::File;
+        solids.defaultValue = QString();
+        solids.tooltip = tr("An STL (ASCII or binary) or a Wavefront OBJ of closed solids, its path relative to the model's folder");
+        add({QStringLiteral("solidimport"), tr("CAD Import"), QStringLiteral("geometry"), QStringLiteral("solidimport"), Level::None,
+             {solids,
+              choice(QStringLiteral("unit"), tr("Its unit"), {QStringLiteral("mm"), QStringLiteral("m"), QStringLiteral("cm"), QStringLiteral("um"),
+                                                              QStringLiteral("in"), QStringLiteral("model")},
+                     {tr("mm"), tr("m"), tr("cm"), tr("µm"), tr("inch"), tr("The model's")}, QStringLiteral("mm"),
+                     tr("What a unit of the file's coordinates is (STL and OBJ say none)")),
+              expr(QStringLiteral("dx"), tr("Moved along x"), QStringLiteral("m"), QStringLiteral("0"), tr("In the model's unit, or with units")),
+              expr(QStringLiteral("dy"), tr("Moved along y"), QStringLiteral("m"), QStringLiteral("0")),
+              expr(QStringLiteral("dz"), tr("Moved along z"), QStringLiteral("m"), QStringLiteral("0")),
+              integer(QStringLiteral("slices"), tr("Slices of a solid not prismatic"), 10,
+                      tr("A solid whose faces are not all level or upright (a sphere, a cone): cut into this many slabs of its height, "
+                         "each its section at its middle - a staircase; a prismatic one is cut at its own levels, exactly"))},
+             {}, {}, false, false, QStringLiteral("cad"),
+             tr("Closed solids read from an STL or OBJ (another CAD tool's export), each a solid of the model: cut into slabs where its "
+                "faces change, each slab its section of the plan extruded - a prismatic solid (its faces level or upright) exactly, any "
+                "other as a stack of slices. Several solids in the file: one each, named after it (_1, _2...).")});
     }
 
     // Materials.
@@ -4433,7 +4455,7 @@ QList<NodeKind> makeKinds()
         QStringLiteral("geometry"), QStringLiteral("union"), QStringLiteral("difference"), QStringLiteral("intersection"),
         QStringLiteral("form union"), QStringLiteral("materials"), QStringLiteral("material"), QStringLiteral("mesh"),
         QStringLiteral("mesh/size"), QStringLiteral("results"), QStringLiteral("derived"), QStringLiteral("exports")};
-    const QSet<QString> threeD = {QStringLiteral("box"), QStringLiteral("cylinder"), QStringLiteral("extrude"), QStringLiteral("stack"),
+    const QSet<QString> threeD = {QStringLiteral("box"), QStringLiteral("cylinder"), QStringLiteral("extrude"), QStringLiteral("stack"), QStringLiteral("solidimport"),
                                   QStringLiteral("mesh/zdistribution"), QStringLiteral("eme"), QStringLiteral("eme/port"), QStringLiteral("eme/periodic"),
                                   QStringLiteral("waves3"), QStringLiteral("waves3/port"), QStringLiteral("waves3/pml"), QStringLiteral("waves3t"),
                                   QStringLiteral("waves3t/port"), QStringLiteral("waves3t/pml"), QStringLiteral("wavelength")};

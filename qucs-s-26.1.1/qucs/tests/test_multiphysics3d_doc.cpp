@@ -512,6 +512,72 @@ private slots:
 
     /// The examples: opened in tabs of their own, built and meshed; a
     /// selection drawn; the file written as it was read.
+    // The view bar's Draw menu - the geometry's vertices and edges, the
+    // mesh's nodes - and the toolbar's Export: the geometry and the mesh as
+    // built to files, a mesh asked for before it is built refused.
+    void drawingAndExporting()
+    {
+        Multiphysics3DDoc* doc = open(copyOf(QStringLiteral("chip_heater.qfem3d")));
+        QVERIFY(doc && doc->waitForIdle());
+        QVERIFY2(doc->geometry().ok(), qPrintable(doc->messages().join(QStringLiteral("\n"))));
+        doc->showGeometry();
+        QVERIFY(doc->drawsVertices() && doc->drawsEdges() && !doc->drawsNodes());
+        QVERIFY(!doc->view()->scene().dots.empty() && !doc->view()->scene().lines.empty());
+        QMenu* draw = doc->drawButton()->menu();
+        QVERIFY(draw);
+        QAction* vertices = draw->findChild<QAction*>(QStringLiteral("mp3DrawVertices"));
+        QAction* edges = draw->findChild<QAction*>(QStringLiteral("mp3DrawEdges"));
+        QAction* nodes = draw->findChild<QAction*>(QStringLiteral("mp3DrawNodes"));
+        QVERIFY(vertices && edges && nodes);
+        vertices->trigger();
+        QVERIFY(!doc->drawsVertices() && doc->view()->scene().dots.empty() && !doc->view()->scene().lines.empty());
+        edges->trigger();
+        QVERIFY(doc->view()->scene().lines.empty() && !doc->view()->scene().triangles.empty());
+        doc->setDrawn(true, true, false);
+        QVERIFY(vertices->isChecked() && edges->isChecked() && !nodes->isChecked());
+        QVERIFY(!doc->view()->scene().dots.empty());
+        // Export: the mesh not built yet, refused; the geometry written.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        QVERIFY2(doc->exportTo(dir.filePath(QStringLiteral("x.msh")), QStringLiteral("msh")).contains(QStringLiteral("Build the mesh first")),
+                 "a mesh not built");
+        for (const char* format : {"step", "stl", "stlbinary", "obj"}) {
+            const QString path = dir.filePath(QStringLiteral("chip.") + QString::fromLatin1(format));
+            const QString why = doc->exportTo(path, QString::fromLatin1(format));
+            QVERIFY2(why.isEmpty(), qPrintable(why));
+            QVERIFY(QFileInfo(path).size() > 1000);
+        }
+        QFile step(dir.filePath(QStringLiteral("chip.step")));
+        QVERIFY(step.open(QIODevice::ReadOnly));
+        const QByteArray text = step.readAll();
+        QVERIFY(text.startsWith("ISO-10303-21;"));
+        QCOMPARE(int(text.count("=MANIFOLD_SOLID_BREP(")), int(doc->geometry().topology->domains.size()));
+        QCOMPARE(doc->exportButton()->menu()->actions().size(), 7);   // (six, and a separator)
+        // The mesh: its nodes drawn where asked, then written.
+        doc->buildMesh();
+        QVERIFY(doc->waitForIdle());
+        QVERIFY(doc->mesh() && !doc->meshStale());
+        QVERIFY(doc->view()->scene().dots.empty());
+        nodes->trigger();
+        QVERIFY(doc->drawsNodes() && !doc->view()->scene().dots.empty());
+        for (const char* format : {"msh", "inp", "bdf"}) {
+            const QString why = doc->exportTo(dir.filePath(QStringLiteral("chip.") + QString::fromLatin1(format)), QString::fromLatin1(format));
+            QVERIFY2(why.isEmpty(), qPrintable(why));
+        }
+        QFile msh(dir.filePath(QStringLiteral("chip.msh")));
+        QVERIFY(msh.open(QIODevice::ReadOnly) && msh.readAll().startsWith("$MeshFormat\n4.1"));
+        QVERIFY(doc->exportTo(dir.filePath(QStringLiteral("x.dwg")), QStringLiteral("dwg")).contains(QStringLiteral("not a format")));
+        // The geometry changed: its mesh no longer the one built, refused.
+        QString box;
+        for (const FNode& c : doc->model().geometry().children)
+            if (c.type == QLatin1String("box") && box.isEmpty()) box = c.tag;
+        QVERIFY(!box.isEmpty());
+        QVERIFY(doc->editNode(box, [](FNode& n) { n.props.insert(QStringLiteral("height"), QStringLiteral("7")); }, QStringLiteral("taller")));
+        QVERIFY(doc->meshStale());
+        QVERIFY2(doc->exportTo(dir.filePath(QStringLiteral("y.msh")), QStringLiteral("msh")).contains(QStringLiteral("Build the mesh first")), "a stale mesh");
+        QVERIFY(doc->waitForIdle());
+    }
+
     void theExamples()
     {
         Multiphysics3DDoc* doc = open(copyOf(QStringLiteral("chip_heater.qfem3d")));

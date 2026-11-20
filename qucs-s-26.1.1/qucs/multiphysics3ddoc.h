@@ -246,6 +246,23 @@ public:
     /// The view bar's Visibility drop-down: Show, Hide, Frame Only for the
     /// node chosen in the tree, Show All.
     QToolButton* visibilityButton() const { return a_visibilityButton; }
+    /// The view bar's Show drop-down: what the view draws besides the faces
+    /// - the geometry's vertices and edges (in the geometry's and the
+    /// solution's views; a chosen one drawn whatever), the mesh's nodes (in
+    /// the mesh's view, on the faces drawn). Each the tab's own.
+    QToolButton* drawButton() const { return a_drawButton; }
+    /// The toolbar's Export drop-down: the geometry (STEP, STL, OBJ) and
+    /// the mesh (Gmsh MSH, Abaqus INP, Nastran BDF) to a file, each asked
+    /// where.
+    QToolButton* exportButton() const { return a_exportButton; }
+    /// The geometry or the mesh as built written to \a path in \a format -
+    /// step, stl, stlbinary, obj; msh, inp, bdf -, every domain; empty, or
+    /// why not (nothing built, the file not written).
+    QString exportTo(const QString& path, const QString& format) const;
+    bool drawsVertices() const { return a_drawVertices; }
+    bool drawsEdges() const { return a_drawEdges; }
+    bool drawsNodes() const { return a_drawNodes; }
+    void setDrawn(bool vertices, bool edges, bool nodes);
 
 signals:
     void modelChanged();
@@ -353,6 +370,12 @@ private:
     QProgressBar* a_progress = nullptr;
     QToolButton* a_cancel = nullptr;
     QToolButton* a_visibilityButton = nullptr;
+    QToolButton* a_drawButton = nullptr;
+    QToolButton* a_exportButton = nullptr;
+    QAction* a_drawVerticesAction = nullptr;
+    QAction* a_drawEdgesAction = nullptr;
+    QAction* a_drawNodesAction = nullptr;
+    bool a_drawVertices = true, a_drawEdges = true, a_drawNodes = false;
     QAction* a_showAction = nullptr;
     QAction* a_hideAction = nullptr;
     QAction* a_frameAction = nullptr;

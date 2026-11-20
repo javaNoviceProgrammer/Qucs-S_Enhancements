@@ -30,6 +30,7 @@ set(FEM_SRCS
   fem3_magnetic.cpp
   fem3_semiconductor.cpp
   fem3_results.cpp
+  fem3_cad.cpp
   fem3_export.cpp
   fem3_estimate.cpp
   fem3_eme.cpp

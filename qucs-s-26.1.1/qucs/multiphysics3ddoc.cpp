@@ -13,6 +13,7 @@
 #include "multiphysics3ddoc.h"
 
 #include "dataimport.h"
+#include "fem3_cad.h"
 #include "fem3_export.h"
 #include "fem3_results.h"
 #include "ink.h"
@@ -42,6 +43,8 @@
 #include <QPlainTextEdit>
 #include <QPrinter>
 #include <QProgressBar>
+#include <QFileDialog>
+#include <QMessageBox>
 #include <QSaveFile>
 #include <QSlider>
 #include <QSplitter>
@@ -50,6 +53,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QToolButton>
+#include <QSignalBlocker>
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QVBoxLayout>
@@ -300,6 +304,50 @@ void Multiphysics3DDoc::buildUi()
     connect(a_buildMesh, &QToolButton::clicked, this, &Multiphysics3DDoc::buildMesh);
     a_compute = button(tr("Compute"), tr("Solve the model's study (its geometry and mesh first, where they changed)"), "mp3Compute");
     connect(a_compute, &QToolButton::clicked, this, [this] { compute(); });
+    // The geometry and the mesh as built, to other tools' formats.
+    a_exportButton = button(tr("Export"), tr("Write the geometry (STEP, STL, OBJ) or the mesh (Gmsh, Abaqus, Nastran) as built to a file"),
+                            "mp3Export");
+    a_exportButton->setPopupMode(QToolButton::InstantPopup);
+    a_exportButton->setText(tr("Export") + QStringLiteral(" \u25BE"));
+    a_exportButton->setAccessibleName(tr("Export"));
+    a_exportButton->setStyleSheet(QStringLiteral("QToolButton#mp3Export::menu-indicator { image: none; width: 0px; }"));
+    {
+        auto* menu = new QMenu(a_exportButton);
+        menu->setObjectName(QStringLiteral("mp3ExportMenu"));
+        struct Format {
+            const char* key;
+            QString text, filter, suffix;
+            bool mesh;
+        };
+        const Format formats[] = {
+            {"step", tr("Geometry as STEP…"), tr("STEP (*.step *.stp)"), QStringLiteral("step"), false},
+            {"stl", tr("Geometry as STL…"), tr("STL (*.stl)"), QStringLiteral("stl"), false},
+            {"obj", tr("Geometry as OBJ…"), tr("Wavefront OBJ (*.obj)"), QStringLiteral("obj"), false},
+            {"msh", tr("Mesh as Gmsh MSH…"), tr("Gmsh mesh (*.msh)"), QStringLiteral("msh"), true},
+            {"inp", tr("Mesh as Abaqus INP…"), tr("Abaqus input (*.inp)"), QStringLiteral("inp"), true},
+            {"bdf", tr("Mesh as Nastran BDF…"), tr("Nastran bulk data (*.bdf *.nas)"), QStringLiteral("bdf"), true},
+        };
+        bool meshes = false;
+        for (const Format& f : formats) {
+            if (f.mesh && !meshes) {
+                menu->addSeparator();
+                meshes = true;
+            }
+            const QString key = QString::fromLatin1(f.key), filter = f.filter, suffix = f.suffix;
+            QAction* a = menu->addAction(f.text, this, [this, key, filter, suffix] {
+                const QFileInfo model(getDocName());
+                const QString start = (model.fileName().isEmpty() ? QDir::home().absoluteFilePath(QStringLiteral("model"))
+                                                                  : model.absoluteDir().absoluteFilePath(model.completeBaseName()))
+                                      + QLatin1Char('.') + suffix;
+                const QString path = QFileDialog::getSaveFileName(this, tr("Export"), start, filter + tr(";;All files (*)"));
+                if (path.isEmpty()) return;
+                const QString why = exportTo(path, key);
+                if (!why.isEmpty()) QMessageBox::warning(this, tr("Export"), why);
+            });
+            a->setObjectName(QStringLiteral("mp3Export_") + key);
+        }
+        a_exportButton->setMenu(menu);
+    }
     row->addSpacing(8);
     row->addWidget(new QLabel(tr("Show:"), bar));
     a_showBox = new QComboBox(bar);
@@ -428,6 +476,31 @@ void Multiphysics3DDoc::buildUi()
         a_showAllAction = menu->addAction(tr("Show All"), this, [this] { showAllParts(); });
         a_showAllAction->setObjectName(QStringLiteral("mp3VisibilityShowAll"));
         a_visibilityButton->setMenu(menu);
+    }
+    // What it draws besides the faces: the geometry's vertices and edges, the
+    // mesh's nodes.
+    a_drawButton = button(tr("Draw"), tr("What the view draws besides the faces: the geometry's vertices and edges, the mesh's nodes"), "mp3Draw");
+    a_drawButton->setPopupMode(QToolButton::InstantPopup);
+    a_drawButton->setText(tr("Draw") + QStringLiteral(" \u25BE"));
+    a_drawButton->setAccessibleName(tr("Draw"));
+    a_drawButton->setStyleSheet(QStringLiteral("QToolButton#mp3Draw::menu-indicator { image: none; width: 0px; }"));
+    {
+        auto* menu = new QMenu(a_drawButton);
+        menu->setObjectName(QStringLiteral("mp3DrawMenu"));
+        auto add = [&](const QString& text, const char* name, bool on) {
+            QAction* a = menu->addAction(text);
+            a->setObjectName(QString::fromLatin1(name));
+            a->setCheckable(true);
+            a->setChecked(on);
+            connect(a, &QAction::toggled, this, [this] {
+                setDrawn(a_drawVerticesAction->isChecked(), a_drawEdgesAction->isChecked(), a_drawNodesAction->isChecked());
+            });
+            return a;
+        };
+        a_drawVerticesAction = add(tr("Vertices"), "mp3DrawVertices", a_drawVertices);
+        a_drawEdgesAction = add(tr("Edges"), "mp3DrawEdges", a_drawEdges);
+        a_drawNodesAction = add(tr("Mesh Nodes"), "mp3DrawNodes", a_drawNodes);
+        a_drawButton->setMenu(menu);
     }
     row->addStretch(1);
     a_stage = new QLabel(viewBar);
@@ -2023,6 +2096,44 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
     if (sol->selected() != before && before >= 0) sol->select(before);
 }
 
+QString Multiphysics3DDoc::exportTo(const QString& path, const QString& format) const
+{
+    using namespace qucs_s::fem;
+    QByteArray data;
+    const bool mesh = format == QLatin1String("msh") || format == QLatin1String("inp") || format == QLatin1String("bdf");
+    if (mesh) {
+        if (!a_mesh || a_meshStale) return tr("Build the mesh first: the mesh as built is exported.");
+        data = format == QLatin1String("msh") ? mshOf(*a_mesh) : format == QLatin1String("inp") ? inpOf(*a_mesh) : bdfOf(*a_mesh);
+    } else {
+        const Topology3* t = a_geometry.topology.get();
+        if (!t || t->domains.empty() || a_geometryStale) return tr("Build the geometry first: the geometry as built is exported.");
+        const std::vector<DomainShell> shells = domainShells(*t);
+        if (format == QLatin1String("step")) data = stepOf(shells, *t, QFileInfo(path).completeBaseName());
+        else if (format == QLatin1String("stl") || format == QLatin1String("stlbinary")) data = stlOf(shells, t->unitScale, format == QLatin1String("stlbinary"));
+        else if (format == QLatin1String("obj")) data = objOf(shells, *t);
+        else return tr("%1 is not a format the geometry is exported to (step, stl, stlbinary, obj; msh, inp, bdf the mesh)").arg(format);
+    }
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly) || file.write(data) != data.size() || !file.commit())
+        return tr("%1 could not be written: %2").arg(QDir::toNativeSeparators(path), file.errorString());
+    return QString();
+}
+
+void Multiphysics3DDoc::setDrawn(bool vertices, bool edges, bool nodes)
+{
+    if (vertices == a_drawVertices && edges == a_drawEdges && nodes == a_drawNodes) return;
+    a_drawVertices = vertices;
+    a_drawEdges = edges;
+    a_drawNodes = nodes;
+    // (The menu's checks kept as given, without telling it again.)
+    for (auto [action, on] : {std::pair{a_drawVerticesAction, vertices}, std::pair{a_drawEdgesAction, edges}, std::pair{a_drawNodesAction, nodes}})
+        if (action && action->isChecked() != on) {
+            const QSignalBlocker quiet(action);
+            action->setChecked(on);
+        }
+    updateScene();
+}
+
 void Multiphysics3DDoc::updateScene(bool fit)
 {
     if (!a_view) return;
@@ -2181,7 +2292,7 @@ void Multiphysics3DDoc::updateScene(bool fit)
             scene.triangles.push_back(c);
         }
         if (t) {
-            for (int edge = 0; edge < int(t->edges.size()); ++edge) {
+            for (int edge = 0; edge < int(t->edges.size()) && a_drawEdges; ++edge) {
                 const std::vector<Vec3> line = t->edgePolyline(edge);
                 for (std::size_t i = 0; i + 1 < line.size(); ++i) scene.lines.push_back({line[i], line[i + 1], edgeColor, 1, edge});
             }
@@ -2224,6 +2335,17 @@ void Multiphysics3DDoc::updateScene(bool fit)
             for (int i = 0; i < n; ++i)
                 scene.lines.push_back({m.nodes[std::size_t(f.nodes[std::size_t(i)])], m.nodes[std::size_t(f.nodes[std::size_t((i + 1) % n)])], edgeColor, 1, -1});
         }
+        // (Its nodes on the faces drawn, where asked.)
+        if (a_drawNodes) {
+            std::vector<char> on(m.nodes.size(), 0);
+            for (const Mesh3::Face& f : m.faces) {
+                const int as = d.any && f.face >= 0 && f.face < int(d.face.size()) ? d.face[std::size_t(f.face)] : 2;
+                if (as == 0 || (ghost && !faceLit(f.face) && !faceFramedLit(f.face))) continue;
+                for (int i = 0; i < (f.quad ? 4 : 3); ++i) on[std::size_t(f.nodes[std::size_t(i)])] = 1;
+            }
+            for (std::size_t k = 0; k < on.size(); ++k)
+                if (on[k]) scene.dots.push_back({m.nodes[k], edgeColor, 1.5f, -1});
+        }
         if (ghost)
             for (int e = 0; e < int(t->edges.size()); ++e) {
                 const bool framed = edgeFramedLit(e);
@@ -2241,6 +2363,8 @@ void Multiphysics3DDoc::updateScene(bool fit)
         for (int e = 0; e < int(t->edges.size()); ++e) {
             const bool on = a_highlightLevel == Level::Edge && lit.contains(e);
             const bool framed = !on && edgeFramedLit(e);
+            // (Edges not drawn: a chosen one, or a framed part's, all the same.)
+            if (!a_drawEdges && !on && !framed) continue;
             const QColor color = on || framed ? Highlight : ghost ? wireColor : edgeColor;
             const std::vector<Vec3> line = t->edgePolyline(e);
             for (std::size_t i = 0; i + 1 < line.size(); ++i)
@@ -2249,7 +2373,7 @@ void Multiphysics3DDoc::updateScene(bool fit)
         for (int p = 0; p < int(t->points.size()); ++p) {
             const bool on = a_highlightLevel == Level::Point && lit.contains(p);
             if (on) scene.dots.push_back({t->points[std::size_t(p)].position, Highlight, 4, p});
-            else if (!ghost) scene.dots.push_back({t->points[std::size_t(p)].position, edgeColor, 1.5f, p});
+            else if (!ghost && a_drawVertices) scene.dots.push_back({t->points[std::size_t(p)].position, edgeColor, 1.5f, p});
         }
         scene.bounds = t->bounds;
     }
