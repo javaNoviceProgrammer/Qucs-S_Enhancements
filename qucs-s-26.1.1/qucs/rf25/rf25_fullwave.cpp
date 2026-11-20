@@ -982,6 +982,11 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
     QMap<QString, Group> groups;
     QStringList keys;    // (the groups in the order they were met)
     int stranded = 0;
+    // (A via's cells through a shape of a metal between its two, which it
+    //  does not join: as made it would short to it, and a 3D export does -
+    //  a via from M1 to M3 through an M2 strip left it a net of its own, |S31|
+    //  0.021 where joined it reads some 0.5, nothing said: a bug hunt's second hour. Of each via and metal, how many.)
+    QMap<QPair<QString, QString>, int> through;
     for (int index = 0; index < mesh.cells.size(); ++index) {
         const MeshCell& cell = mesh.cells.at(index);
         const Layer* via = stack.named(cell.layer);
@@ -990,6 +995,17 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
         if (!(za >= 0) || !(zb >= 0) || za == zb) {
             ++stranded;
             continue;
+        }
+        for (const Layer& between : stack.layers) {
+            if (between.kind != Layer::Metal || between.face == Layer::Top || between.name == via->from || between.name == via->to)
+                continue;
+            const double z = metalHeight(stack, between.name);
+            if (!(z > std::min(za, zb) && z < std::max(za, zb))) continue;
+            for (const int c : bins.near(between.name, cell.centre, 0))
+                if (mesh.cells.at(c).outline.containsPoint(cell.centre, Qt::OddEvenFill)) {
+                    ++through[qMakePair(cell.layer, between.name)];
+                    break;
+                }
         }
         const QString lower = za < zb ? via->from : via->to, upper = za < zb ? via->to : via->from;
         const bool grounded = stack.isGround(lower);
@@ -1048,6 +1064,13 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
         warned->append(QCoreApplication::translate("qucs_s::rf25", "%1 via cell(s) land on no metal they join, and are left out: a "
                                                                    "via drawn off the pads of its two metals joins nothing.")
                            .arg(stranded));
+    for (auto it = through.cbegin(); it != through.cend() && warned != nullptr; ++it)
+        warned->append(QCoreApplication::translate("qucs_s::rf25", "%1 cell(s) of %2 pass through a shape of %3, a metal between "
+                                                                   "the two it joins, without joining it: here %3 stays apart, "
+                                                                   "but as made the via would short to it, as a 3D solver's "
+                                                                   "export of it does. Move the via, or cut %3 round it.")
+                           .arg(it.value())
+                           .arg(it.key().first, it.key().second));
     return out;
 }
 
@@ -4569,6 +4592,23 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 return out;
             }
         }
+        // (Every shape inside the walls: a strip run past them, or one wholly
+        //  outside, came to "nothing finite" at every frequency - a bug hunt's second hour.)
+        for (const Conductor& conductor : conductors) {
+            const QRectF bounds = conductor.outline.boundingRect();
+            const QRectF at(bounds.topLeft() * micrometre, bounds.bottomRight() * micrometre);
+            if (at.left() < box.left() - hair || at.right() > box.right() + hair || at.top() < box.top() - hair
+                || at.bottom() > box.bottom() + hair) {
+                out.problems << tr("In a box every shape is inside its walls, from %1 to %2 µm in x and %3 to %4 µm in y: a shape on "
+                                   "%5 spans %6 to %7 µm in x and %8 to %9 µm in y. Cut it at the walls, or make the box larger.")
+                                    .arg(box.left() * 1e6, 0, 'g', 6).arg(box.right() * 1e6, 0, 'g', 6)
+                                    .arg(box.top() * 1e6, 0, 'g', 6).arg(box.bottom() * 1e6, 0, 'g', 6)
+                                    .arg(conductor.layer)
+                                    .arg(at.left() * 1e6, 0, 'g', 6).arg(at.right() * 1e6, 0, 'g', 6)
+                                    .arg(at.top() * 1e6, 0, 'g', 6).arg(at.bottom() * 1e6, 0, 'g', 6);
+                return out;
+            }
+        }
     }
     // A plane of symmetry: every charge's, run's, via's and port path's
     // mirror in it, signed by the wall (FullWaveControl::Symmetry).
@@ -4960,15 +5000,27 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // (A box dense: its kernel is no function of distance alone.)
     const bool compress = !c.boxed && c.symAxis == 0
                           && (asked == FullWaveControl::Matrix::Compressed || (asked == FullWaveControl::Matrix::Automatic && nr + nc > most));
+    // (A box or a plane of symmetry is held dense alone: told to hold it
+    //  compressed, which it cannot, and asked to, solved dense with no word -
+    //  a bug hunt's second hour.)
+    const bool denseAlone = c.boxed || c.symAxis != 0;
+    const QString why = c.boxed ? tr("a box") : tr("a plane of symmetry");
     if (!compress && nr + nc > most) {
         out.tooLarge = true;
-        out.problems << tr("%1 runs of current over %2 cells is more than a dense complex matrix is set up for (%3 in "
-                           "all). Mesh the layout more coarsely: fewer cells across a conductor, or a larger largest "
-                           "cell - or hold it compressed (the study's Matrix), or raise the limit (RF 2.5D > "
-                           "Settings…).")
-                            .arg(nr).arg(nc).arg(most);
+        out.problems << (denseAlone ? tr("%1 runs of current over %2 cells is more than a dense complex matrix is set up for (%3 in "
+                                         "all), and a solve in %4 is held dense alone. Mesh the layout more coarsely: fewer "
+                                         "cells across a conductor, or a larger largest cell - or raise the limit (RF 2.5D > "
+                                         "Settings…).")
+                                          .arg(nr).arg(nc).arg(most).arg(why)
+                                    : tr("%1 runs of current over %2 cells is more than a dense complex matrix is set up for (%3 in "
+                                         "all). Mesh the layout more coarsely: fewer cells across a conductor, or a larger largest "
+                                         "cell - or hold it compressed (the study's Matrix), or raise the limit (RF 2.5D > "
+                                         "Settings…).")
+                                          .arg(nr).arg(nc).arg(most));
         return out;
     }
+    if (denseAlone && asked == FullWaveControl::Matrix::Compressed)
+        out.lines << tr("Asked to hold its matrix compressed, a solve in %1 is held dense: compressed it is not solved yet.").arg(why);
     if (nr + nc > kMostCompressed) {
         out.tooLarge = true;
         out.problems << tr("%1 runs of current over %2 cells is more than this build sets up even compressed (%3 in "

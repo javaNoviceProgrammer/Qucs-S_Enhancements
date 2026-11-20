@@ -2898,6 +2898,21 @@ private slots:
             // A port off the walls: refused.
             const rf::FullWave off = solve(boxed(er, b, QRectF(QPointF(-100e-6, -2e-3), QPointF(1000e-6, 2.1e-3))), 1000, 100, {fl});
             QVERIFY2(!off.ok() && says(off.problems, "In a box a port stands at a wall"), qPrintable(why(off)));
+            // A shape past the walls, or wholly outside the box: refused by
+            // name - each came to "nothing finite" (a bug hunt's second hour).
+            {
+                const QList<rf::Conductor> cs{strip(0, 0, 1000, 100), strip(0, 2500, 1000, 100)};
+                const rf::FullWave outside = rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, stack(1000),
+                                                            {edgePort(QPointF(0, 50), QStringLiteral("M1"), QPointF(-1, 0)),
+                                                             edgePort(QPointF(1000, 50), QStringLiteral("M1"), QPointF(1, 0))},
+                                                            {fl});
+                QVERIFY2(!outside.ok() && says(outside.problems, "In a box every shape is inside its walls"), qPrintable(why(outside)));
+                // (Asked compressed, a box is held dense, and said.)
+                rf::FullWaveControl compressed;
+                compressed.matrix = rf::FullWaveControl::Matrix::Compressed;
+                const rf::FullWave asked = solve(stack(1000), 1000, 100, {fl}, &compressed);
+                QVERIFY2(asked.ok() && says(asked.lines, "a solve in a box is held dense"), qPrintable(why(asked)));
+            }
         }
         // In a channel, in vacuum; and the split moved.
         {
@@ -4642,6 +4657,32 @@ private slots:
         QVERIFY2(says(left.lines, "land on no metal") && says(left.warnings, "a via drawn off the pads of its two metals joins nothing"),
                  qPrintable(left.warnings.join(" | ")));
         QVERIFY2(!says(joined.warnings, "land on no metal"), qPrintable(joined.warnings.join(" | ")));
+        // A via from M1 to M3 through a shape of M2 between them, which it
+        // does not join: warned of - as made it shorts to it, and a 3D
+        // solver's export does; it was solved apart with no word (a bug // hunt's second hour). Clear of M2, not.
+        {
+            rf::Stack three = two;
+            three.layers.removeIf([](const rf::Layer& l) { return l.kind == rf::Layer::Via; });
+            three.layers << layer(rf::Layer::Dielectric, QStringLiteral("ILD2"), 10e-6, 4) << layer(rf::Layer::Metal, QStringLiteral("M3"), 0, 1);
+            rf::Layer v13 = layer(rf::Layer::Via, QStringLiteral("V13"), 0, 1);
+            v13.from = QStringLiteral("M1");
+            v13.to = QStringLiteral("M3");
+            three.layers << v13;
+            rf::Conductor top = strip(300, 0, 400, 100), through = strip(300, 0, 100, 100), middle = strip(250, -50, 200, 200),
+                          aside = strip(250, 300, 200, 200);
+            top.layer = QStringLiteral("M3");
+            through.layer = QStringLiteral("V13");
+            middle.layer = aside.layer = QStringLiteral("M2");
+            const QList<rf::FullWavePort> ends{edgePort(QPointF(0, 50), QStringLiteral("M1"), QPointF(-1, 0)),
+                                               edgePort(QPointF(700, 50), QStringLiteral("M3"), QPointF(1, 0))};
+            const QList<rf::Conductor> shorted{strip(0, 0, 400, 100), top, through, middle};
+            const rf::FullWave past = rf::fullWaveOf(meshed(shorted, 4, 50e-6), shorted, three, ends, {1e9});
+            QVERIFY2(past.ok(), qPrintable(why(past)));
+            QVERIFY2(says(past.warnings, "of V13 pass through a shape of M2, a metal between the two it joins"), qPrintable(past.warnings.join(" | ")));
+            const QList<rf::Conductor> clear{strip(0, 0, 400, 100), top, through, aside};
+            const rf::FullWave apart = rf::fullWaveOf(meshed(clear, 4, 50e-6), clear, three, ends, {1e9});
+            QVERIFY2(apart.ok() && !says(apart.warnings, "pass through a shape"), qPrintable(why(apart) + apart.warnings.join(" | ")));
+        }
         // More than the dense limit holds, a dense solve asked (unasked, it
         // is held compressed).
         const QList<rf::Conductor> plate{strip(0, 0, 1000, 1000)};
