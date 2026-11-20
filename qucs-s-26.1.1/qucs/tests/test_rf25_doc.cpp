@@ -3320,6 +3320,19 @@ private slots:
         own->undo();
         QVERIFY(own->waitForPrepared(60000));
         QCOMPARE(stripBox(), QRectF(0, 0, 1000, 50));
+        // A shape that is no number: said once in the problems pane, though it
+        // is the model's problem and the processing's both (the review of
+        // 1213eeef - it was listed under each heading).
+        QVERIFY(own->editNode(stripTag, [](rf::Node& n) { n.props.insert(QStringLiteral("height"), QStringLiteral("1/0")); },
+                              QStringLiteral("no number")));
+        QVERIFY(own->waitForPrepared(60000));
+        {
+            const QString pane = own->problemsText()->toPlainText();
+            QCOMPARE(pane.count(QStringLiteral("it comes to inf, no finite number")), 1);
+        }
+        own->undo();
+        QVERIFY(own->waitForPrepared(60000));
+        QCOMPARE(stripBox(), QRectF(0, 0, 1000, 50));
 
         // A click on it in Select: its node chosen.
         LayoutView* view = own->view();

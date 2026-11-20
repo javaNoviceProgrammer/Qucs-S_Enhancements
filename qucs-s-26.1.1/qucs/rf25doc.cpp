@@ -1083,6 +1083,10 @@ void RF25Doc::showProblems()
     if (a_processed) cannot += a_processed->problems;
     if (a_mesh) cannot += a_mesh->problems;
     if (!a_solveProblem.isEmpty()) cannot << a_solveProblem;
+    // Each said once: a shape's problem is the model's and the processing's
+    // both, and was listed under each heading (the review of 1213eeef).
+    cannot.removeDuplicates();
+    for (const QString& s : said) cannot.removeAll(s);
     if (!cannot.isEmpty()) {
         lines << tr("What stands in the way of a solve:");
         for (const QString& line : cannot) lines << QStringLiteral("  • ") + line;

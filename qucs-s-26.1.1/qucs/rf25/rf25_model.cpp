@@ -1765,16 +1765,13 @@ QStringList Model::problems() const
     // too: a strip "1/0" long, or a sweep of 200,001 points, went in with no
     // problem said, where a substrate's eps_r of 1/0 was said here.
     ownShapesOf(*this, &said);
-    if (const Node* study = root.child(QStringLiteral("rf_study"))) {
-        bool given = true;
-        const double points = numberOf(*study, QStringLiteral("points"), *this, 1, &given);
-        if (!given)
-            said << tr("Study: its points are not a number.");
-        else if (!(points < kMostSweepPoints + 0.5))
-            said << tr("A sweep of %1 points is past the %2 a solve takes: each frequency is a solve of its own, and keeps "
-                       "its answer.")
-                        .arg(points, 0, 'g', 6)
-                        .arg(kMostSweepPoints);
+    // (The study's refusal whole, in the solve's own words: a from of
+    //  -1 GHz, a to of 1/0 or no points were the solve's alone - the review
+    //  of 1213eeef.)
+    if (root.child(QStringLiteral("rf_study")) != nullptr) {
+        QString why;
+        studySweep(*this, &why);
+        if (!why.isEmpty()) said << why;
     }
     return said;
 }
