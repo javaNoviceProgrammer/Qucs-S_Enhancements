@@ -2626,7 +2626,9 @@ private slots:
         QVERIFY2(said.isEmpty(), qPrintable(said));
         said = refused(QJsonObject{{"add", "rectangle"}, {"layer", "M1"}, {"box", QJsonArray{0, 0, 10, 0}}}, QStringLiteral("no area"));
         QVERIFY2(said.isEmpty(), qPrintable(said));
-        said = refused(QJsonObject{{"add", "circle"}, {"layer", "M1"}}, QStringLiteral("a rectangle, a polygon, a path or a via"));
+        said = refused(QJsonObject{{"add", "ellipse"}, {"layer", "M1"}}, QStringLiteral("a rectangle, a polygon, a path, a via, a circle or a ring"));
+        QVERIFY2(said.isEmpty(), qPrintable(said));
+        said = refused(QJsonObject{{"add", "circle"}, {"layer", "M1"}, {"radius", 10}}, QStringLiteral("a circle is put 'at' its centre"));
         QVERIFY2(said.isEmpty(), qPrintable(said));
         said = refused(QJsonObject{{"add", "rectangle"}, {"colour", "red"}}, QStringLiteral("'colour' is not a key"));
         QVERIFY2(said.isEmpty(), qPrintable(said));
@@ -2715,6 +2717,36 @@ private slots:
         QVERIFY2(doc->layout()->shapeCount == 2, qPrintable(doc->statusLabel()->text()));
         // And the stub by its point.
         QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"delete", "shape"}, {"layer", "M1"}, {"at", QJsonArray{500, 200}}}}, &done, &why), qPrintable(why));
+        QVERIFY(doc->waitForLayout(60000));
+        QCOMPARE(doc->layout()->shapeCount, quint64(1));
+        // A ring, written to the file as the keyhole a hole is written as: read
+        // back and processed, one conductor of the ring's area, its hole kept;
+        // then deleted by a box round it.
+        QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"add", "ring"}, {"layer", "M1"}, {"at", QJsonArray{2000, 0}}, {"radius", 60},
+                                                        {"inner_radius", 40}}},
+                                 &done, &why),
+                 qPrintable(why));
+        QVERIFY2(done.join(' ').contains(QStringLiteral("a ring of M1 about (2000, 0) µm, from 40 to 60 µm")), qPrintable(done.join(" | ")));
+        QVERIFY(doc->waitForLayout(60000));
+        QCOMPARE(doc->layout()->shapeCount, quint64(2));
+        QVERIFY(doc->waitForPrepared(60000));
+        {
+            QVERIFY(doc->processed() != nullptr);
+            double ring = 0;
+            int found = 0;
+            for (const rf::Conductor& c : doc->processed()->conductors)
+                if (c.outline.boundingRect().contains(QPointF(2000, 50))) {
+                    ring += std::abs(rf::areaOf(c.outline));
+                    ++found;
+                }
+            QVERIFY2(found == 1 && std::abs(ring / (M_PI * 2000) - 1) < 0.005, qPrintable(QStringLiteral("%1 of %2").arg(found).arg(ring)));
+        }
+        QVERIFY(!doc->drawShapes(QJsonArray{QJsonObject{{"add", "ring"}, {"layer", "M1"}, {"at", QJsonArray{2000, 0}}, {"radius", 40},
+                                                        {"inner_radius", 60}}},
+                                 &done, &why));
+        QVERIFY2(why.contains(QStringLiteral("less than its 'radius'")), qPrintable(why));
+        QVERIFY2(doc->drawShapes(QJsonArray{QJsonObject{{"delete", "shape"}, {"layer", "M1"}, {"box", QJsonArray{1900, -100, 2100, 100}}}}, &done, &why),
+                 qPrintable(why));
         QVERIFY(doc->waitForLayout(60000));
         QCOMPARE(doc->layout()->shapeCount, quint64(1));
 
@@ -3288,6 +3320,19 @@ private slots:
         own->undo();
         QVERIFY(own->waitForPrepared(60000));
         QCOMPARE(stripBox(), QRectF(0, 0, 1000, 50));
+        // A shape that is no number: said once in the problems pane, though it
+        // is the model's problem and the processing's both (the review of
+        // 1213eeef - it was listed under each heading).
+        QVERIFY(own->editNode(stripTag, [](rf::Node& n) { n.props.insert(QStringLiteral("height"), QStringLiteral("1/0")); },
+                              QStringLiteral("no number")));
+        QVERIFY(own->waitForPrepared(60000));
+        {
+            const QString pane = own->problemsText()->toPlainText();
+            QCOMPARE(pane.count(QStringLiteral("it comes to inf, no finite number")), 1);
+        }
+        own->undo();
+        QVERIFY(own->waitForPrepared(60000));
+        QCOMPARE(stripBox(), QRectF(0, 0, 1000, 50));
 
         // A click on it in Select: its node chosen.
         LayoutView* view = own->view();
@@ -3330,6 +3375,30 @@ private slots:
         QVERIFY(!own->drawShapes(QJsonArray{QJsonObject{{"delete", "shape"}, {"layer", "M1"}, {"at", QJsonArray{50, 200}}, {"parametric", true}}},
                                  &done, &why));
         QVERIFY2(why.contains(QStringLiteral("under Layout > Shapes")), qPrintable(why));
+        // A circle and a ring of the model's own: Shape nodes of their centre
+        // and radii, drawn as the shapes they make.
+        QVERIFY2(own->drawShapes(QJsonArray{QJsonObject{{"add", "circle"}, {"layer", "M1"}, {"parametric", true}, {"at", QJsonArray{0, 300}},
+                                                        {"radius", 30}},
+                                            QJsonObject{{"add", "ring"}, {"layer", "M1"}, {"parametric", true}, {"at", QJsonArray{200, 300}},
+                                                        {"radius", 30}, {"inner_radius", 20}}},
+                                 &done, &why),
+                 qPrintable(why));
+        QVERIFY2(done.join(' ').contains(QStringLiteral("a circle of M1 about (0, 300) µm, 30 µm in radius")), qPrintable(done.join(" | ")));
+        {
+            const rf::Node* shapes = own->model().layout().child(QStringLiteral("rf_shapes"));
+            QCOMPARE(int(shapes->children.size()), 4);
+            const rf::Node& ring = shapes->children.back();
+            QCOMPARE(ring.props.value(QStringLiteral("shape")).toString(), QStringLiteral("ring"));
+            QCOMPARE(ring.props.value(QStringLiteral("inner_radius")).toString(), QStringLiteral("20[um]"));
+            QVERIFY2(own->model().problems().filter(QStringLiteral("Shapes:")).isEmpty(), qPrintable(own->model().problems().join(" | ")));
+            double area = 0;
+            for (const rf::OwnShape& s : own->ownShapes())
+                if (s.outline.boundingRect().top() > 250) area += std::abs(rf::areaOf(s.outline));
+            QVERIFY2(std::abs(area / (M_PI * (900 + 900 - 400)) - 1) < 1e-4, qPrintable(QString::number(area)));
+        }
+        QVERIFY(!own->drawShapes(QJsonArray{QJsonObject{{"add", "circle"}, {"layer", "M1"}, {"parametric", true}, {"at", QJsonArray{0, 0}}}},
+                                 &done, &why));
+        QVERIFY2(why.contains(QStringLiteral("a circle's 'radius' is in µm")), qPrintable(why));
         app->closeAllFiles();
     }
 

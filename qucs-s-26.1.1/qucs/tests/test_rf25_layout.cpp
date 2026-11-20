@@ -16,6 +16,7 @@
 
 #include <gdstk/gdstk.hpp>
 #include "rf25/rf25_layout.h"
+#include "rf25/rf25_mesh.h"
 
 namespace rf = qucs_s::rf25;
 
@@ -818,6 +819,95 @@ private slots:
         own = rf::ownShapesOf(m, &problems);
         QVERIFY2(problems.join(' ').contains(QStringLiteral("a ground plane has no shapes")), qPrintable(problems.join(" | ")));
         Q_UNUSED(problem);
+    }
+
+    // A circle and a ring of the model's own, by their centre and radii, each
+    // an expression of the parameters: a circle's corners on it, its sides
+    // within a nanometre, its area the circle's; a ring the keyhole a file
+    // writes a hole as, its area between its two circles'. Processed, the
+    // ring is one conductor with its hole, and its mesh has no cell in the
+    // hole. A radius of nothing, or a ring's inner one past its outer, is
+    // left out and said. The cutout's circle is the same polygon.
+    void aCircleAndARingAreShapes()
+    {
+        rf::Model m = stacked();
+        m.root.child(QStringLiteral("rf_parameters"))->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"R", "50[um]"});
+        QVERIFY(m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes"))) != nullptr);
+        const QString shapes = m.layout().child(QStringLiteral("rf_shapes"))->tag;
+        const auto shape = [&](const QJsonObject& props) {
+            rf::Node n = m.make(QStringLiteral("rf_shape"));
+            n.props = props;
+            const rf::Node* added = m.add(shapes, n);
+            return added != nullptr ? added->tag : QString();
+        };
+        const QString circle = shape({{"layer", "M1"}, {"shape", "circle"}, {"x", "100[um]"}, {"y", "0"}, {"radius", "R"}});
+        const QString ring = shape({{"layer", "M1"}, {"shape", "ring"}, {"x", "400[um]"}, {"y", "0"}, {"radius", "60[um]"}, {"inner_radius", "40[um]"}});
+        QStringList problems;
+        QList<rf::OwnShape> own = rf::ownShapesOf(m, &problems);
+        QVERIFY2(problems.isEmpty(), qPrintable(problems.join(" | ")));
+        QCOMPARE(int(own.size()), 2);
+        const auto of = [&own](const QString& tag) {
+            for (const rf::OwnShape& s : own)
+                if (s.tag == tag) return s;
+            return rf::OwnShape();
+        };
+        const QPolygonF disc = of(circle).outline;
+        QVERIFY2(disc.size() >= 32 && disc.size() <= 1024, qPrintable(QString::number(disc.size())));
+        for (const QPointF& p : disc) QVERIFY(std::abs(std::hypot(p.x() - 100, p.y()) - 50) < 1e-9);
+        QVERIFY(50 * (1 - std::cos(M_PI / disc.size())) <= 1e-3 + 1e-12);
+        QVERIFY2(std::abs(std::abs(rf::areaOf(disc)) / (M_PI * 2500) - 1) < 1e-4, qPrintable(QString::number(rf::areaOf(disc))));
+        QVERIFY2(std::abs(std::abs(rf::areaOf(of(ring).outline)) / (M_PI * (3600 - 1600)) - 1) < 1e-4,
+                 qPrintable(QString::number(rf::areaOf(of(ring).outline))));
+        const QRectF ringBox = of(ring).outline.boundingRect();
+        QVERIFY2(std::abs(ringBox.left() - 340) < 1e-3 && std::abs(ringBox.right() - 460) < 1e-9 && std::abs(ringBox.height() - 120) < 1e-3,
+                 qPrintable(QStringLiteral("%1 %2 %3").arg(ringBox.left()).arg(ringBox.right()).arg(ringBox.height())));
+        // The cutout's circle is the same.
+        QCOMPARE(rf::circleOf(QPointF(100, 0), 50), disc);
+        // A parameter changed: the circle with it.
+        m.root.child(QStringLiteral("rf_parameters"))->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"R", "80[um]"});
+        own = rf::ownShapesOf(m);
+        QVERIFY(std::abs(of(circle).outline.boundingRect().right() - 180) < 1e-9);
+
+        // Processed over an empty layout: two conductors, the ring one with
+        // its hole; meshed, no cell in the hole, and the ring's cells its area.
+        m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"1", "0", "M1"});
+        qucs_s::layout::Layout empty;
+        qucs_s::layout::Cell top;
+        top.name = QStringLiteral("TOP");
+        empty.cells << top;
+        empty.byName.insert(top.name, 0);
+        const rf::Processed processed = rf::processRead(m, empty, QStringLiteral("none"));
+        QVERIFY2(processed.problems.isEmpty(), qPrintable(processed.problems.join(" | ")));
+        QCOMPARE(int(processed.conductors.size()), 2);
+        rf::MeshSettings how;
+        how.maximum = 10e-6;
+        how.cellsAcross = 0;
+        const rf::Mesh mesh = rf::meshOf(processed.conductors, how, m.solveStack(), 1e9);
+        QVERIFY(!mesh.cells.isEmpty());
+        double ringArea = 0, discArea = 0;
+        for (const rf::MeshCell& c : mesh.cells) {
+            const double r = std::hypot(c.centre.x() - 400, c.centre.y());
+            if (c.centre.x() > 300) {
+                // (A cell cut by the inner circle, concave there, has its
+                //  centroid a little inside it: none in the hole itself.)
+                QVERIFY2(r > 39 && r < 61, qPrintable(QStringLiteral("a cell at %1, %2").arg(c.centre.x()).arg(c.centre.y())));
+                ringArea += c.area;
+            } else {
+                discArea += c.area;
+            }
+        }
+        QVERIFY2(std::abs(ringArea / (M_PI * 2000) - 1) < 0.005, qPrintable(QString::number(ringArea)));
+        QVERIFY2(std::abs(discArea / (M_PI * 6400) - 1) < 0.005, qPrintable(QString::number(discArea)));
+
+        // What cannot be read: left out, and said.
+        m.find(circle)->props.insert(QStringLiteral("radius"), QStringLiteral("0"));
+        m.find(ring)->props.insert(QStringLiteral("inner_radius"), QStringLiteral("70[um]"));
+        problems.clear();
+        own = rf::ownShapesOf(m, &problems);
+        QVERIFY(own.isEmpty());
+        const QString said = problems.join(QStringLiteral(" | "));
+        QVERIFY2(said.contains(QStringLiteral("radius is not a length above zero")), qPrintable(said));
+        QVERIFY2(said.contains(QStringLiteral("inner radius is to be above zero and under its radius (70 and 60 µm)")), qPrintable(said));
     }
 
     // A Dimension (Layout > Dimension): the corners of a layer's shapes of

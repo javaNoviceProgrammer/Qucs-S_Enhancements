@@ -21,6 +21,9 @@
 #include <QRegularExpression>
 #include <QScopeGuard>
 
+#include <functional>
+#include <tuple>
+
 #include "rf25/rf25_dense.h"
 #include "rf25/rf25_fast.h"
 #include "rf25/rf25_fullwave.h"
@@ -40,6 +43,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <functional>
 #include <tuple>
 #include <complex>
 #include <thread>
@@ -3010,6 +3014,26 @@ private slots:
             return s;
         }(), ends, {1e9});
         QVERIFY2(!refused.ok() && says(refused.problems, "too high for Djordjevic-Sarkar"), qPrintable(why(refused)));
+        // And what the reader says cannot be, refused by the solvers, not taken
+        // as something else - a loss tangent below nought was solved as nought,
+        // a permeability of nought or less as 1, an eps_z under 1 as none (the
+        // review of 1213eeef). A thickness of nothing is not among them: a sheet.
+        const QList<std::tuple<std::function<void(rf::Layer&)>, const char*>> wrong{
+            {[](rf::Layer& l) { l.epsr = 0.5; }, "relative permittivity below 1 (0.5)"},
+            {[](rf::Layer& l) { l.tand = -0.02; }, "loss tangent below zero"},
+            {[](rf::Layer& l) { l.sigma = -1; }, "conductivity below zero"},
+            {[](rf::Layer& l) { l.mur = 0; }, "permeability of no more than nought"},
+            {[](rf::Layer& l) { l.mtand = -0.1; }, "magnetic loss tangent below zero"},
+            {[](rf::Layer& l) { l.epsz = 0.5; }, "permittivity along z below 1 (0.5)"}};
+        for (const auto& [make, words] : wrong) {
+            rf::Stack s = grounded(4, 100e-6);
+            make(s.layers[1]);
+            const rf::FullWave w = rf::fullWaveOf(meshed(line, 3, 100e-6), line, s, ends, {1e9});
+            QVERIFY2(!w.ok() && says(w.problems, words), qPrintable(QString::fromLatin1(words) + ": " + why(w)));
+            const rf::Extraction e = rf::extract(meshed(line, 3, 100e-6), line, s);
+            QVERIFY2(!e.ok() && says(e.problems, words), qPrintable(QString::fromLatin1(words) + ": " + e.problems.join(" | ")));
+        }
+        QVERIFY(rf::layersOf(grounded(4, 100e-6)).ok());
     }
 
     void aNumberThatIsNotFiniteIsRefused()
@@ -3055,6 +3079,23 @@ private slots:
         QVERIFY2(says(own.problems(), "comes to inf, no finite number"), qPrintable(own.problems().join(" | ")));
         own.root.child(QStringLiteral("rf_study"))->props.insert(QStringLiteral("points"), QStringLiteral("200001"));
         QVERIFY2(says(own.problems(), "past the 100001"), qPrintable(own.problems().join(" | ")));
+        // And the study's other refusals, in the solve's own words (the review
+        // of 1213eeef: they were the solve's alone).
+        for (const auto& [key, text, words] : QList<std::tuple<const char*, const char*, const char*>>{
+                 {"points", "1/0", "Study: points is not a number (it comes to inf, no finite number)"},
+                 {"points", "0", "A sweep wants at least one point"},
+                 {"points", "-3", "A sweep wants at least one point"},
+                 {"from", "-1[GHz]", "cannot be less than nothing"},
+                 {"to", "1/0", "Study: to is not a number (it comes to inf, no finite number)"}}) {
+            rf::Model m = rf::Model::blank();
+            QVERIFY2(m.problems().filter(QStringLiteral("sweep")).isEmpty() && m.problems().filter(QStringLiteral("Study")).isEmpty(),
+                     qPrintable(m.problems().join(" | ")));
+            m.root.child(QStringLiteral("rf_study"))->props.insert(QLatin1String(key), QString::fromLatin1(text));
+            QString solve;
+            rf::studySweep(m, &solve);
+            QVERIFY2(solve.contains(QLatin1String(words)) && m.problems().contains(solve),
+                     qPrintable(QStringLiteral("%1 %2: %3 against %4").arg(key, text, solve, m.problems().join(" | "))));
+        }
     }
 
     // Lumped elements: each solved as

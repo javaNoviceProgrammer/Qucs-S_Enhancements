@@ -526,6 +526,19 @@ Layers layersOf(const Stack& stack)
             break;   // no room of its own
         case Layer::Substrate:
         case Layer::Dielectric:
+            // (What the reader says cannot be, refused, not taken as something
+            //  else: a loss tangent below nought was taken as nought, a
+            //  permeability of nought or less as 1, an eps_z under 1 as none, a
+            //  conductivity or a magnetic loss tangent below nought as nought -
+            //  so that a substrate shown in red was solved as another one (the
+            //  review of 1213eeef). Its thickness of nothing, a metal's too, is
+            //  a sheet each solver takes and says, so not refused here.)
+            if (l.epsr < 1) out.problems << tr("%1 has a relative permittivity below 1 (%2).").arg(l.name).arg(l.epsr);
+            if (l.tand < 0) out.problems << tr("%1 has a loss tangent below zero.").arg(l.name);
+            if (l.sigma < 0) out.problems << tr("%1 has a conductivity below zero.").arg(l.name);
+            if (!(l.mur > 0)) out.problems << tr("%1 has a relative permeability of no more than nought (%2).").arg(l.name).arg(l.mur);
+            if (l.mtand < 0) out.problems << tr("%1 has a magnetic loss tangent below zero.").arg(l.name);
+            if (l.epsz != 0 && l.epsz < 1) out.problems << tr("%1 has a relative permittivity along z below 1 (%2).").arg(l.name).arg(l.epsz);
             if (l.thickness > 0) {
                 Layers::Slab s;
                 s.z0 = z;

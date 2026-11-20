@@ -774,6 +774,34 @@ fem::Scope scopeOf(const QList<fem::Model::Parameter>& parameters)
 
 } // namespace
 
+QPolygonF circleOf(QPointF centre, double radius)
+{
+    QPolygonF out;
+    if (!(radius > 0)) return out;
+    // Its sides no further than a nanometre in from the circle.
+    const double sagitta = 1e-3;
+    const int sides = std::clamp(int(std::ceil(M_PI / std::sqrt(2 * sagitta / radius))), 32, 1024);
+    for (int i = 0; i < sides; ++i) {
+        const double a = 2 * M_PI * i / sides;
+        out << centre + radius * QPointF(std::cos(a), std::sin(a));
+    }
+    return out;
+}
+
+QPolygonF ringOf(QPointF centre, double radius, double inner)
+{
+    if (!(inner > 0) || !(inner < radius)) return {};
+    // The outer circle counterclockwise and back to its first corner, across
+    // to the inner one, round it clockwise and back: a keyhole, its slit along
+    // +x of no width, as a file's polygon with a hole is written.
+    const QPolygonF outer = circleOf(centre, radius), in = circleOf(centre, inner);
+    QPolygonF out = outer;
+    out << outer.first() << in.first();
+    for (qsizetype i = in.size() - 1; i >= 1; --i) out << in.at(i);
+    out << in.first();
+    return out;
+}
+
 Cutout cutoutOf(const Model& model, QStringList* problems)
 {
     Cutout out;
@@ -837,13 +865,7 @@ Cutout cutoutOf(const Model& model, QStringList* problems)
                 say(tr("Cutout: %1's radius is not a length above zero.").arg(name));
                 continue;
             }
-            // Its sides no further than a nanometre in from the circle.
-            const double sagitta = 1e-3;
-            const int sides = radius > 0 ? std::clamp(int(std::ceil(M_PI / std::sqrt(2 * sagitta / radius))), 32, 1024) : 0;
-            for (int i = 0; i < sides; ++i) {
-                const double a = 2 * M_PI * i / sides;
-                region.outline << centre + radius * QPointF(std::cos(a), std::sin(a));
-            }
+            if (radius > 0) region.outline = circleOf(centre, radius);
         } else {
             const QPointF a(lengthOf("x0"), lengthOf("y0"));
             const QPointF b(lengthOf("x1"), lengthOf("y1"));
@@ -1014,6 +1036,24 @@ QList<OwnShape> ownShapesOf(const Model& model, QStringList* problems)
             }
             shape.outline = QPolygonF(QRectF(centre - QPointF(side / 2, side / 2), QSizeF(side, side)));
             shape.outline.removeLast();
+        } else if (kind == QLatin1String("circle") || kind == QLatin1String("ring")) {
+            const QPointF centre(lengthOf("x", QStringLiteral("x")), lengthOf("y", QStringLiteral("y")));
+            const double radius = lengthOf("radius", tr("radius"));
+            const bool ring = kind == QLatin1String("ring");
+            const double inner = ring ? lengthOf("inner_radius", tr("inner radius")) : 0;
+            if (!readable) continue;
+            if (!(radius > 0)) {
+                say(tr("Shapes: %1's radius is not a length above zero.").arg(name));
+                continue;
+            }
+            if (ring && !(inner > 0 && inner < radius)) {
+                say(tr("Shapes: %1's inner radius is to be above zero and under its radius (%2 and %3 µm).")
+                        .arg(name)
+                        .arg(inner)
+                        .arg(radius));
+                continue;
+            }
+            shape.outline = ring ? ringOf(centre, radius, inner) : circleOf(centre, radius);
         } else {
             const QPointF at(lengthOf("x", QStringLiteral("x")), lengthOf("y", QStringLiteral("y")));
             const double w = lengthOf("width", tr("width")), h = lengthOf("height", tr("height"));
