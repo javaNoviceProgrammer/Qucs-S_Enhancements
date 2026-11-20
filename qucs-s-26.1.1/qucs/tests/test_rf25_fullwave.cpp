@@ -4157,6 +4157,35 @@ private slots:
         QVERIFY(!none.ok());
         QVERIFY2(none.problems.join(' ').contains(QStringLiteral("rectangle at 1000, 400 µm is over no cell of M1")),
                  qPrintable(why(none)));
+        // A point off the metal: refused, as the rectangle is - it drove the
+        // nearest cell and named its own point as the cell's (a bug hunt's second hour). On the strip's edge, taken.
+        const rf::FullWave offPoint = rf::fullWaveOf(mesh, line, stack, {internalPort(QPointF(1000, 120), QStringLiteral("M1"))}, fs);
+        QVERIFY2(!offPoint.ok() && says(offPoint.problems, "is over no cell of M1 that a current reaches"), qPrintable(why(offPoint)));
+        const rf::FullWave onEdge = rf::fullWaveOf(mesh, line, stack, {internalPort(QPointF(1000, 100), QStringLiteral("M1"))}, fs);
+        QVERIFY2(onEdge.ok(), qPrintable(why(onEdge)));
+        // Driven from a metal with nothing under its point - M1 ending 400 µm
+        // short of it -: refused; it took the nearest cell 400 µm off as "the
+        // cell under it".
+        {
+            rf::Conductor up = strip(0, 0, 1000, 100);
+            up.layer = QStringLiteral("M2");
+            const QList<rf::Conductor> both{strip(0, 0, 400, 100), up};
+            const rf::FullWave unheld =
+                rf::fullWaveOf(meshed(both, 3, 100e-6), both, twoMetals(), {internalPort(QPointF(800, 50), QStringLiteral("M2"), QStringLiteral("M1"))}, fs);
+            QVERIFY2(!unheld.ok() && says(unheld.problems, "has no cell of M1 under it to drive against"), qPrintable(why(unheld)));
+        }
+        // A rectangle over two strips not otherwise joined ties them through
+        // the port: warned of (|S21| 0.17 where over one strip 0.9998, nothing
+        // said); over one strip, not.
+        {
+            const QList<rf::Conductor> pair{strip(0, 0, 2000, 100), strip(0, 200, 2000, 100)};
+            const rf::Mesh two = meshed(pair, 3, 100e-6);
+            rf::FullWavePort across = internalPort(QPointF(25, 150), QStringLiteral("M1"));
+            across.size = QSizeF(20, 400);
+            const rf::FullWave tied = rf::fullWaveOf(two, pair, stack, {across, edgePort(QPointF(2000, 50))}, fs);
+            QVERIFY2(tied.ok() && says(tied.warnings, "lies over 2 pieces of metal not otherwise joined"), qPrintable(why(tied) + tied.warnings.join(" | ")));
+            QVERIFY2(!says(boxes.warnings, "pieces of metal"), qPrintable(boxes.warnings.join(" | ")));
+        }
     }
 
     // A GSSG on 150 µm of InP with nothing under it. A port on each signal returns through the two

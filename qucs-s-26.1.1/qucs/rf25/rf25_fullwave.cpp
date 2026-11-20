@@ -711,23 +711,39 @@ std::atomic<double> sweepMemorySet{0};
 
 /// The cell of \a reached under \a where on \a layer (any, where it is
 /// empty): the one whose outline holds the point, else the one whose
-/// centre is nearest it. -1 where there is none on that layer.
+/// outline is nearest it, within the booleans' grid (kBooleanGrid) - a
+/// point on the line between two cells, which neither outline may hold. -1
+/// where there is none on that layer, or none so near: the nearest cell
+/// however far, as it was, took an internal port between two strips onto
+/// the nearer, and one whose other metal ended 400 µm short onto that end,
+/// said as "the cell under it" (a bug hunt's second hour).
 int cellUnder(const Mesh& mesh, const QList<int>& reached, QPointF where, const QString& layer)
 {
+    const auto distance = [&where](const QPolygonF& outline) {
+        double least = std::numeric_limits<double>::infinity();
+        for (int i = 0; i < outline.size(); ++i) {
+            const QPointF a = outline.at(i), b = outline.at((i + 1) % outline.size());
+            const QPointF ab = b - a, aw = where - a;
+            const double along = QPointF::dotProduct(ab, ab);
+            const double t = along > 0 ? std::clamp(QPointF::dotProduct(aw, ab) / along, 0.0, 1.0) : 0.0;
+            const QPointF d = aw - t * ab;
+            least = std::min(least, std::hypot(d.x(), d.y()));
+        }
+        return least;
+    };
     int best = -1;
     double closest = 0;
     for (const int c : reached) {
         const MeshCell& cell = mesh.cells.at(c);
         if (!layer.isEmpty() && cell.layer != layer) continue;
         if (cell.outline.containsPoint(where, Qt::OddEvenFill)) return c;
-        const QPointF d = cell.centre - where;
-        const double far = d.x() * d.x() + d.y() * d.y();
+        const double far = distance(cell.outline);
         if (best < 0 || far < closest) {
             best = c;
             closest = far;
         }
     }
-    return best;
+    return best >= 0 && closest <= 2 * kBooleanGrid ? best : -1;
 }
 
 /// The cells of \a reached on \a layer (any, where it is empty) that
@@ -5078,6 +5094,25 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                 shape.insert(nodeOf.value(cell), boxOf(over ? box.intersected(rect) : box));
             }
             ownNet[p] = netOf.value(to.first().first, -1);
+            // (A rectangle over pieces of metal not otherwise joined ties them
+            //  through the port, which no probe does: two strips under one
+            //  read |S21| 0.17 where one alone reads 0.9998, nothing said - a bug hunt's second hour. An element across a gap
+            //  is a port over one pad returning through a terminal over the
+            //  other.)
+            {
+                QSet<int> under;
+                for (const auto& [cell, share] : to) under.insert(netOf.value(cell, -1));
+                if (under.size() > 1) {
+                    const QString w2 = tr("%1's %2 by %3 µm rectangle at %4, %5 µm lies over %6 pieces of metal not otherwise "
+                                          "joined, and ties them together through the port, as no probe would. To drive "
+                                          "across a gap, put the port over one side and a terminal over the other among its "
+                                          "returns.")
+                                           .arg(name, w, h, x, y)
+                                           .arg(under.size());
+                    out.warnings << w2;
+                    out.lines << w2;
+                }
+            }
             owns[p] = column;
             ownCount[p] = int(to.size());
             if (port.terminals) {
