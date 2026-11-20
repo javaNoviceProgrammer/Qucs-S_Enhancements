@@ -5036,6 +5036,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     QList<int> columnReturn;
     QList<int> naming;
     QStringList drivesSaid = QStringList(QList<QString>(np));
+    QList<Conductor> placedOn;   // (the conductors whole, on a plane of symmetry: portPlace())
     for (int p = 0; p < np; ++p) {
         const FullWavePort& port = ports.at(p);
         const QString& name = out.portNames.at(p);
@@ -5119,9 +5120,18 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         // On the edge it drives (portPlace()): taken however far it was, a
         // port off the layout drove the nearest face, one inside a strip its
         // long side, one facing the wrong way its far end, nothing said.
-        switch (portPlace(conductors, port.at, port.metal, port.facing)) {
+        // (Of the conductors whole on a plane of symmetry, their mirrors
+        //  joined to them: the cut along the plane is no edge, and a port
+        //  moved a hair off the plane is not on a corner of it.)
+        if (c.symAxis != 0 && placedOn.isEmpty()) placedOn = withMirrors(conductors, c.symAxis, c.symAt / micrometre);
+        switch (portPlace(c.symAxis != 0 ? placedOn : conductors, port.at, port.metal, port.facing)) {
         case PortPlace::OnEdge:
             break;
+        case PortPlace::OnCorner:
+            out.problems << tr("%1, at %2, %3 µm, is on a corner, where two edges meet: give it the facing of the edge it is to "
+                               "drive, or move it along that edge.")
+                                .arg(name, x, y);
+            return out;
         case PortPlace::FacingOtherWay:
             out.problems << tr("%1, at %2, %3 µm, is on an edge that does not face the way it is said to: turn its facing "
                                "to the edge's outward side, or leave it to the edge.")

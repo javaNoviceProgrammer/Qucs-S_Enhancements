@@ -755,6 +755,33 @@ bool onEdge(const QLineF& edge, QPointF where)
 PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QString& layer, QPointF facing)
 {
     QLineF edge;
+    if (facing == QPointF(0, 0)) {
+        // The ways the edges it is on face, outward, of those whose outside
+        // is no other shape of the layer.
+        QList<QPointF> ways;
+        for (const Conductor& c : conductors) {
+            if (!layer.isEmpty() && c.layer != layer) continue;
+            for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
+                const QLineF side(c.outline.at(i), c.outline.at((i + 1) % n));
+                const double len = side.length();
+                if (!(len > 0) || !onEdge(side, where)) continue;
+                const QPointF d = side.p2() - side.p1();
+                QPointF normal(d.y() / len, -d.x() / len);
+                if (c.outline.containsPoint(side.center() + normal * (1e-3 * len), Qt::OddEvenFill)) normal = -normal;
+                const QPointF beyond = side.center() + normal * (1e-3 * len);
+                bool covered = false;
+                for (const Conductor& other : conductors)
+                    if (&other != &c && (layer.isEmpty() || other.layer == layer) && other.outline.containsPoint(beyond, Qt::OddEvenFill)) {
+                        covered = true;
+                        break;
+                    }
+                if (!covered) ways << normal;
+            }
+        }
+        for (int i = 0; i < ways.size(); ++i)
+            for (int j = i + 1; j < ways.size(); ++j)
+                if (QPointF::dotProduct(ways.at(i), ways.at(j)) < M_SQRT1_2) return PortPlace::OnCorner;
+    }
     if (faceEdge(conductors, where, layer, facing, &edge) && onEdge(edge, where)) return PortPlace::OnEdge;
     if (facing != QPointF(0, 0) && faceEdge(conductors, where, layer, QPointF(), &edge) && onEdge(edge, where))
         return PortPlace::FacingOtherWay;
@@ -1115,6 +1142,18 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
             out.lines << tr("%1, at %2, %3 µm, is inside a conductor, on none of its edges: the current goes in at the one "
                             "cell nearest.")
                              .arg(end).arg(at.x(), 0, 'g', 6).arg(at.y(), 0, 'g', 6);
+        // (On a corner, of two edges, which one a loop's end, given no way to
+        //  face, takes: said.)
+        if (place == PortPlace::OnCorner) {
+            QLineF taken;
+            faceEdge(conductors, at, layer, QPointF(), &taken);
+            const QString w = tr("%1, at %2, %3 µm, is on a corner, where two edges meet: the current goes in along the edge from "
+                                 "%4, %5 to %6, %7 µm. Move it along the edge it is to go in at to be sure of it.")
+                                  .arg(end).arg(at.x(), 0, 'g', 6).arg(at.y(), 0, 'g', 6)
+                                  .arg(taken.p1().x(), 0, 'g', 6).arg(taken.p1().y(), 0, 'g', 6)
+                                  .arg(taken.p2().x(), 0, 'g', 6).arg(taken.p2().y(), 0, 'g', 6);
+            out.lines << w;
+        }
     }
     QPointF sourceOn, sourceAlong, sinkOn, sinkAlong;
     const QList<int> sourceFace = faceAt(from, &sourceOn, &sourceAlong, fromLayer);

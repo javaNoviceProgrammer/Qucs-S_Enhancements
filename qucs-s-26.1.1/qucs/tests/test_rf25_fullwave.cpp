@@ -3599,6 +3599,29 @@ private slots:
         }
     }
 
+    // An edge port on a corner, no facing given, is asked for one: of the two edges it is on, it took one as found
+    // - a port at a line's end's corner drove its 2000 µm side, 32 cells,
+    // and nothing said. Given its facing, the end. Where two shapes meet
+    // along the line's axis, their edges between them are no corner.
+    void anEdgePortOnACornerIsAskedItsFacing()
+    {
+        const rf::Stack stack = grounded(4, 200e-6, 0, 0, 5.8e7);
+        rf::MeshSettings how;
+        how.maximum = 100e-6;
+        how.cellsAcross = 6;
+        const QList<rf::Conductor> line{strip(0, -50, 2000, 100)};
+        const rf::Mesh mesh = rf::meshOf(line, how, stack, 10e9);
+        const rf::FullWave corner = rf::fullWaveOf(mesh, line, stack, {edgePort(QPointF(0, -50)), edgePort(QPointF(2000, 0))}, {1e9});
+        QVERIFY2(!corner.ok() && corner.problems.join(' ').contains(QStringLiteral("is on a corner")), qPrintable(why(corner)));
+        const rf::FullWave facing =
+            rf::fullWaveOf(mesh, line, stack, {edgePort(QPointF(0, -50), QString(), QPointF(-1, 0)), edgePort(QPointF(2000, 0))}, {1e9});
+        QVERIFY2(facing.ok() && facing.portsSaid.first().contains(QStringLiteral("8 cell(s)")), qPrintable(why(facing) + facing.portsSaid.join(" | ")));
+        const QList<rf::Conductor> halves{strip(0, -50, 2000, 50), strip(0, 0, 2000, 50)};
+        const rf::Mesh two = rf::meshOf(halves, how, stack, 10e9);
+        const rf::FullWave between = rf::fullWaveOf(two, halves, stack, {edgePort(QPointF(0, 0)), edgePort(QPointF(2000, 0))}, {1e9});
+        QVERIFY2(between.ok(), qPrintable(why(between)));
+    }
+
     // A plane of symmetry: the half beyond it, every charge's, run's, via's
     // and port path's mirror in it, against the whole solved as it is.
     //  - A magnetic wall along a line's axis, its edge ports on it: the

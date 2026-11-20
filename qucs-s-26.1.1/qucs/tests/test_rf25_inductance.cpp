@@ -1368,6 +1368,25 @@ private slots:
         for (int k = 1; k < r.size(); ++k) QVERIFY2(std::abs(r.at(k) / r.at(0) - 1) < 0.045, qPrintable(QStringLiteral("%1 against %2").arg(r.at(k)).arg(r.at(0))));
     }
 
+    // A loop's end on a corner says which edge the current goes in along
+    // It has no facing to give, and of the
+    // two edges it took one as found, nothing said.
+    void aLoopsEndOnACornerSaysItsEdge()
+    {
+        const rf::Stack stack = grounded(4, 200e-6, 0.6e-6, 3.5e7);
+        const QList<rf::Conductor> line{strip(0, -50, 2000, 100)};
+        rf::MeshSettings how;
+        how.maximum = 100e-6;
+        how.cellsAcross = 6;
+        const rf::Mesh mesh = rf::meshOf(line, how, stack, 10e9);
+        const rf::Inductance corner = rf::inductanceOf(mesh, line, stack, QPointF(0, -50), QPointF(2000, 0), 1e-6, 1e9);
+        QVERIFY2(corner.ok(), qPrintable(corner.problems.join(" | ")));
+        QVERIFY2(corner.lines.join(' ').contains(QStringLiteral("is on a corner, where two edges meet: the current goes in along the edge")),
+                 qPrintable(corner.lines.join(" | ")));
+        const rf::Inductance middle = rf::inductanceOf(mesh, line, stack, QPointF(0, 0), QPointF(2000, 0), 1e-6, 1e9);
+        QVERIFY2(middle.ok() && !middle.lines.join(' ').contains(QStringLiteral("on a corner")), qPrintable(middle.lines.join(" | ")));
+    }
+
     // A compressed loop past what a solve may take is refused before it is
     // made, and says what it would have taken: an octagonal spiral of
     // 172,000 runs went on into its near field's LU, 25 GB in 30 s and

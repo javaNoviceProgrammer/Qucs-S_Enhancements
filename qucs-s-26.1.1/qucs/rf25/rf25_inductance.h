@@ -273,8 +273,12 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
  * shape at all. The nearest edge was taken however far: a port 4 mm off a
  * strip drove its face, one in the middle of a 1000 µm strip its whole
  * long side, one facing the wrong way its other end, and nothing said
+ * And, no facing given, on a corner: on two
+ * edges facing ways apart by more than 45 degrees - an edge whose outside
+ * is another shape of the layer none -, which of them it drives a guess:
+ * a port at a strip's end's corner drove its long side, and nothing said
  */
-enum class PortPlace { OnEdge, FacingOtherWay, Inside, Outside };
+enum class PortPlace { OnEdge, FacingOtherWay, Inside, Outside, OnCorner };
 PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QString& layer = QString(),
                     QPointF facing = QPointF());
 
