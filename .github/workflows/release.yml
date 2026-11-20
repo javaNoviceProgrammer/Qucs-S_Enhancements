@@ -1,18 +1,22 @@
-# Builds redistributable bundles of the enhanced Qucs-S for every platform and
-# publishes them as a GitHub Release. Adapted from upstream's deploy.yml with
-# the source rooted at $SRC_DIR and one Qt version for every artifact.
+# Builds redistributable bundles of the enhanced Qucs-S for Linux and Windows
+# and publishes them as a GitHub Release. Adapted from upstream's deploy.yml
+# with the source rooted at $SRC_DIR and one Qt version for every artifact.
+#
+# No macOS bundle is built here: the repository is private, where a macOS
+# runner's minutes count many times a Linux one's, so the DMGs are built
+# locally with scripts/package-macos.sh (README, "macOS, with Qt's own build").
 #
 # Triggers
 #   * workflow_dispatch  – pick the platforms you want; publishes to the rolling
 #                          "continuous" pre-release unless "publish" is off.
-#   * push of a tag v*   – builds every platform and publishes a release named
-#                          after the tag.
+#   * push of a tag v*   – builds every platform here and publishes a release
+#                          named after the tag.
 #
 # The bundles are release assets only: nothing built here is ever committed
-# to the repository (bin/ is git-ignored). The repository is public, so the
-# standard and the ARM runners are free; every platform is on by default and
-# can be deselected per run (dispatch inputs). Set the repository variable
-# BUILD_ARM=false to leave the ARM builds out of tag builds.
+# to the repository (bin/ is git-ignored). Every run spends the account's
+# Actions minutes; every platform is on by default and can be deselected per
+# run (dispatch inputs). Set the repository variable BUILD_ARM=false to leave
+# the ARM builds out of tag builds.
 #
 # Fetch the results into bin/ with:  scripts/fetch-binaries.sh [tag]
 name: Release
@@ -20,14 +24,6 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
-      macos_apple_silicon:
-        description: 'macOS (Apple Silicon) .dmg'
-        type: boolean
-        default: true
-      macos_intel:
-        description: 'macOS (Intel) .dmg'
-        type: boolean
-        default: true
       linux_intel:
         description: 'Linux x86_64 AppImage'
         type: boolean
@@ -72,8 +68,6 @@ jobs:
       version:   ${{ steps.v.outputs.version }}
       base:      ${{ steps.v.outputs.base }}
       tag:       ${{ steps.v.outputs.tag }}
-      macos_apple_silicon: ${{ steps.p.outputs.macos_apple_silicon }}
-      macos_intel:   ${{ steps.p.outputs.macos_intel }}
       linux_intel:   ${{ steps.p.outputs.linux_intel }}
       windows_intel: ${{ steps.p.outputs.windows_intel }}
       linux_arm:     ${{ steps.p.outputs.linux_arm }}
@@ -102,15 +96,13 @@ jobs:
       - id: p
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "macos_apple_silicon=${{ inputs.macos_apple_silicon }}" >> "$GITHUB_OUTPUT"
-            echo "macos_intel=${{ inputs.macos_intel }}"     >> "$GITHUB_OUTPUT"
             echo "linux_intel=${{ inputs.linux_intel }}"     >> "$GITHUB_OUTPUT"
             echo "windows_intel=${{ inputs.windows_intel }}" >> "$GITHUB_OUTPUT"
             echo "linux_arm=${{ inputs.linux_arm }}"         >> "$GITHUB_OUTPUT"
             echo "windows_arm=${{ inputs.windows_arm }}"     >> "$GITHUB_OUTPUT"
             echo "publish=${{ inputs.publish }}"             >> "$GITHUB_OUTPUT"
           else
-            for k in macos_apple_silicon macos_intel linux_intel windows_intel publish; do
+            for k in linux_intel windows_intel publish; do
               echo "$k=true" >> "$GITHUB_OUTPUT"
             done
             echo "linux_arm=${{ vars.BUILD_ARM != 'false' }}"   >> "$GITHUB_OUTPUT"
@@ -236,93 +228,6 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  macos:
-    name: macOS ${{ matrix.label }}
-    needs: setup
-    if: needs.setup.outputs.macos_apple_silicon == 'true' || needs.setup.outputs.macos_intel == 'true'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - label: apple-silicon
-            os: macos-15
-            enabled: ${{ needs.setup.outputs.macos_apple_silicon == 'true' }}
-            cmake_arch: arm64
-          - label: intel
-            os: macos-15-intel
-            enabled: ${{ needs.setup.outputs.macos_intel == 'true' }}
-            cmake_arch: x86_64
-    env:
-      # Qt 6.10 supports macOS 13 and newer.
-      DEPLOYMENT_TARGET: '13.0'
-    steps:
-      - name: Skip (platform not selected)
-        if: ${{ !matrix.enabled }}
-        run: echo "macos/${{ matrix.label }} not selected" && exit 0
-
-      - uses: actions/checkout@v4
-        if: ${{ matrix.enabled }}
-
-      - name: Install Qt ${{ env.QT_VERSION }}
-        if: ${{ matrix.enabled }}
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: mac
-          target: desktop
-          arch: clang_64
-          modules: qtcharts qtpdf
-          cache: true
-
-      - name: Use the newest Xcode
-        # The image's default Xcode 16.4 (Apple clang 17) crashes on
-        # qucs-s-spar-viewer's Microstrip.cpp for x86_64 - reproducibly,
-        # and only for that target - so the Intel build takes the newest
-        # Xcode installed. The Apple Silicon build stays on the default.
-        if: ${{ matrix.enabled && matrix.label == 'intel' }}
-        run: |
-          newest="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
-          sudo xcode-select -s "$newest"
-          xcodebuild -version | head -1
-          clang++ --version | head -1
-
-      - name: Install build dependencies
-        if: ${{ matrix.enabled }}
-        run: |
-          brew install ninja gperf dos2unix bison flex
-          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
-          echo "$(brew --prefix flex)/bin"  >> "$GITHUB_PATH"
-
-      - name: Configure
-        if: ${{ matrix.enabled }}
-        run: |
-          cmake -S "$SRC_DIR" -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
-            -DCMAKE_OSX_ARCHITECTURES="${{ matrix.cmake_arch }}" \
-            -DCI_VERSION="${{ needs.setup.outputs.version }}" \
-            -DGIT="${GITHUB_SHA::7}"
-
-      - name: Build
-        if: ${{ matrix.enabled }}
-        run: cmake --build build --parallel
-
-      - name: Package app bundle and DMG
-        if: ${{ matrix.enabled }}
-        run: |
-          scripts/package-macos.sh build dist "${{ needs.setup.outputs.base }}-macos-${{ matrix.label }}"
-          ls -la dist
-
-      - uses: actions/upload-artifact@v4
-        if: ${{ matrix.enabled }}
-        with:
-          name: macos-${{ matrix.label }}
-          path: dist/${{ needs.setup.outputs.base }}-macos-${{ matrix.label }}.dmg
-          if-no-files-found: error
-
-  # ---------------------------------------------------------------------------
   windows:
     name: Windows ${{ matrix.label }}
     needs: setup
@@ -436,7 +341,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish:
     name: Publish GitHub release
-    needs: [setup, linux, macos, windows]
+    needs: [setup, linux, windows]
     # Run when every platform job succeeded or was not selected. A job that
     # timed out is "cancelled", not "failure": the 26.1.3 release went out
     # without its Windows arm files that way.
@@ -444,7 +349,6 @@ jobs:
       always() && !cancelled()
       && needs.setup.outputs.publish == 'true'
       && contains(fromJSON('["success", "skipped"]'), needs.linux.result)
-      && contains(fromJSON('["success", "skipped"]'), needs.macos.result)
       && contains(fromJSON('["success", "skipped"]'), needs.windows.result)
     runs-on: ubuntu-latest
     steps:

@@ -24,21 +24,23 @@ file from a newer version unless *Load documents from future versions* is on.
 
 ## Downloads
 
-Every release carries one bundle per platform, built by the
-[Release workflow](.github/workflows/release.yml) from a single Qt version:
+The [Release workflow](.github/workflows/release.yml) builds the Linux and
+Windows bundles, each from a single Qt version. It builds no macOS bundle:
+the DMGs are built locally, as
+[macOS, with Qt's own build](#macos-with-qts-own-build) says.
 
 | Platform | Bundle | Notes |
 |---|---|---|
-| macOS, Apple Silicon | `qucs-s-<ver>-macos-apple-silicon.dmg` | ad-hoc signed, not notarised: on first launch right-click the app and choose *Open*, or `xattr -d com.apple.quarantine <app>` |
+| macOS, Apple Silicon | `qucs-s-<ver>-macos-apple-silicon.dmg` | built locally; ad-hoc signed, not notarised: on first launch right-click the app and choose *Open*, or `xattr -d com.apple.quarantine <app>` |
 | macOS, Intel | `qucs-s-<ver>-macos-intel.dmg` | same |
-
-On macOS the application is called **Physics Room** in its menu, the
-Dock and the Finder (its bundle's name); its program, `qucs-s.app`, and
-its settings, caches and data keep the name qucs-s.
 | Linux x86_64 | `qucs-s-<ver>-linux-intel.AppImage` | `chmod +x` and run; needs FUSE 2 (`libfuse2`) or `--appimage-extract` |
 | Linux arm64 | `qucs-s-<ver>-linux-arm.AppImage` | same; needs glibc 2.38 or newer (Ubuntu 24.04, Debian 13) |
 | Windows x64 | `...-windows-intel.zip` and `...-windows-intel-setup.exe` | |
 | Windows arm64 | `...-windows-arm.zip` and `...-windows-arm-setup.exe` | |
+
+On macOS the application is called **Physics Room** in its menu, the
+Dock and the Finder (its bundle's name); its program, `qucs-s.app`, and
+its settings, caches and data keep the name qucs-s.
 
 No bundle includes ngspice: install it separately (`brew install ngspice`,
 `apt install ngspice`, the Windows archive from
@@ -89,7 +91,8 @@ self-contained bundle you can run anywhere (and a `.dmg`):
 scripts/package-macos.sh build bin/macos/apple-silicon
 ```
 
-This is the same script the Release workflow uses. The bundle also carries
+The release DMGs are made with this script too, locally: the Release
+workflow builds no macOS bundle. The bundle also carries
 Qt's offscreen platform plugin, so its binary works headless too — the smoke
 suites run against it unchanged. If Homebrew upgrades Qt underneath an
 existing build directory, rebuild from scratch: the new headers carry old
@@ -100,8 +103,8 @@ timestamps, and an incremental build mixes objects of two Qt versions.
 Homebrew builds Qt, and every library it brings, for the macOS it runs on,
 so a bundle made with Homebrew's Qt needs that macOS or newer. A bundle for
 older macOS takes Qt's own build instead — from the Qt installer, or
-aqtinstall, which the Release workflow uses — and names the oldest macOS it
-runs on:
+aqtinstall — and names the oldest macOS it runs on. The release DMGs are
+built this way:
 
 ```bash
 python3 -m venv ~/aqt && ~/aqt/bin/pip install aqtinstall
@@ -367,7 +370,7 @@ Please attach the report when filing a crash.
 | Workflow | Trigger | What it does |
 |---|---|---|
 | [CI](.github/workflows/ci.yml) | every push / PR | Linux Debug build with ASan + UBSan, the unit tests, the `load`, `simulate` and `hostile` smoke suites, then 150 fuzzed schematics/datasets and 150 fuzzed simulator outputs; a macOS Release build with the unit tests; a Windows (MSYS2 ucrt64) Release build. Logs, renders and any fuzz findings are uploaded as a workflow artifact (kept 14 days). |
-| [Release](.github/workflows/release.yml) | manual (*Actions → Release → Run workflow*) or a `v*` tag | Builds the bundles of the table above on GitHub's runners and publishes them, with checksums, as a GitHub Release. |
+| [Release](.github/workflows/release.yml) | manual (*Actions → Release → Run workflow*) or a `v*` tag | Builds the Linux and Windows bundles of the table above on GitHub's runners and publishes them, with checksums, as a GitHub Release. The macOS DMGs are built locally. |
 
 The `hostile` suite is the regression guard for the dataset-loader crashes
 fixed in WS1.1; it is blocking.

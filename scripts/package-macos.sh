@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Turn a finished macOS build into a self-contained, redistributable
-# qucs-s.app and a .dmg. Used by the Release workflow and for local builds.
+# qucs-s.app and a .dmg, locally: the Release workflow builds no macOS bundle.
 #
 # Usage:
 #   scripts/package-macos.sh <build-dir> <output-dir> [name]
