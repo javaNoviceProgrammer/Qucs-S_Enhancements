@@ -293,7 +293,8 @@ private slots:
     // A metal thick against its own width says the full wave's inductance
     // at a low frequency reads high - as a sheet, and as its two faces - and
     // that the loop inductance takes it as the bar it is (a square wire as thick as it is wide, 38 % high as a
-    // sheet). A metal thin against its width says nothing of it.
+    // sheet). A metal thin against its width says nothing of it. An
+    // Automatic one as the solvers take it.
     void aMetalThickAgainstItsWidthSaysItsInductanceReadsHigh()
     {
         rf::Model m = stacked();
@@ -324,6 +325,21 @@ private slots:
         QVERIFY2(says(sheet.warnings, "as narrow as 10 "), qPrintable(sheet.warnings.join(" | ")));
         const rf::Mesh pad = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 40, 40)}, how, m.stack(), 1e9);
         QVERIFY2(!says(pad.warnings, "inductance at a low frequency reads high"), qPrintable(pad.warnings.join(" | ")));
+        // (Automatic, as the solvers decide it: the lone wire, no gap beside
+        //  it, a sheet - said, where Automatic was taken for faces and
+        //  nothing said, its L 27 % high on a lone 10 µm wire of 8 µm metal,
+        //  a bug hunt -; beside a 4 µm gap, as its faces,
+        //  not.)
+        for (rf::Layer& l : stack.layers)
+            if (l.name == QLatin1String("M1")) {
+                l.twoSheets = false;
+                l.automatic = true;
+            }
+        const rf::Mesh lone = rf::meshOf(wire, how, stack, 1e9);
+        QVERIFY2(says(lone.warnings, "as a sheet its field is of no thickness") && says(lone.warnings, "Its Solved as is Automatic"),
+                 qPrintable(lone.warnings.join(" | ")));
+        const rf::Mesh beside = rf::meshOf({on(QStringLiteral("M1"), 0, 0, 500, 10), on(QStringLiteral("M1"), 0, 14, 500, 10)}, how, stack, 1e9);
+        QVERIFY2(!says(beside.warnings, "inductance at a low frequency reads high"), qPrintable(beside.warnings.join(" | ")));
     }
 
     void theMeshSettingsAreReadAndChecked()

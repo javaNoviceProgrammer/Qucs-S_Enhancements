@@ -3552,6 +3552,53 @@ private slots:
         QVERIFY2(std::abs(phase) < 0.025 && std::abs(std::abs(s21.at(1)) - std::abs(s21.at(0))) < 0.005, qPrintable(QString::number(phase)));
     }
 
+    // A plane of symmetry's half solves a metal as its faces as the whole
+    // does: the film rule and a run's breadth
+    // across its conductor were of the half, a strip the plane halves along
+    // its length half as wide - a 1.5 µm metal on a 100 µm stepped line a
+    // film whole and two faces in the half, Z21 0.85 % apart and twice the
+    // charges; a 50 µm one's series reactance 0.75 % under the whole's, its
+    // section's share of a slab's inside taken of half its breadth, and 8e-4
+    // with that mended, walls stood along the cut. Now the whole's to 1e-8.
+    void aSymmetryPlanesHalfSolvesItsFacesAsTheWholeDoes()
+    {
+        for (const double thickness : {1.5e-6, 50e-6}) {
+            rf::Stack stack = grounded(4, 200e-6, 0, thickness, 5.8e7);
+            stack.layers[2].twoSheets = true;
+            const QList<rf::Conductor> whole{strip(0, -50, 1000, 100), strip(1000, -150, 1000, 300), strip(2000, -50, 1000, 100)};
+            QList<rf::Conductor> half;
+            for (const rf::Conductor& c : whole) {
+                const QRectF box = c.outline.boundingRect();
+                half << strip(box.left(), 0, box.width(), box.bottom());
+            }
+            rf::MeshSettings how;
+            how.maximum = 100e-6;
+            how.cellsAcross = 4;
+            how.gaps = true;
+            const rf::Mesh a = rf::meshOf(whole, how, stack, 6e9);
+            how.symmetryAxis = 2;
+            how.symmetryAt = 0;
+            const rf::Mesh b = rf::meshOf(half, how, stack, 6e9);
+            QCOMPARE(b.charges * 2, a.charges);
+            const QList<rf::FullWavePort> ports{edgePort(QPointF(0, 0)), edgePort(QPointF(3000, 0))};
+            rf::FullWaveControl control;
+            control.symmetry.axis = 2;
+            control.symmetry.at = 0;
+            control.symmetry.magnetic = true;
+            const rf::FullWave wa = rf::fullWaveOf(a, whole, stack, ports, {1e8, 6e9}, 1e-6, nullptr);
+            const rf::FullWave wb = rf::fullWaveOf(b, half, stack, ports, {1e8, 6e9}, 1e-6, &control);
+            QVERIFY2(wa.ok() && wb.ok(), qPrintable(why(wa) + why(wb)));
+            QCOMPARE(says(wb.lines, "it is a film"), says(wa.lines, "it is a film"));
+            for (int k = 0; k < 2; ++k) {
+                const auto series = [k](const rf::FullWave& w) { return w.z.at(k).at(0).at(0) - w.z.at(k).at(1).at(0); };
+                const double z21 = std::abs(wa.z.at(k).at(1).at(0) - wb.z.at(k).at(1).at(0)) / std::abs(wa.z.at(k).at(1).at(0));
+                const double se = std::abs(series(wa) - series(wb)) / std::abs(series(wa));
+                qWarning("%g µm at %g Hz: the half's Z21 %.2e and series %.2e of the whole's", thickness * 1e6, wa.frequencies.at(k), z21, se);
+                QVERIFY2(z21 < 1e-10 && se < 1e-7, qPrintable(QStringLiteral("%1 %2").arg(z21).arg(se)));
+            }
+        }
+    }
+
     // A plane of symmetry: the half beyond it, every charge's, run's, via's
     // and port path's mirror in it, against the whole solved as it is.
     //  - A magnetic wall along a line's axis, its edge ports on it: the

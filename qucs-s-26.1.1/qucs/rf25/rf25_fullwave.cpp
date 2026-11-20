@@ -4459,8 +4459,12 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     out.warnings << given.warnings;
     // A metal solved as its two faces is two sheets and the walls that join
     // them, which is what the rest solves (thickened()); what is handed
-    // back is of the mesh as given.
-    const Thickened thick = thickened(givenStack, givenConductors, given);
+    // back is of the mesh as given. Which metals are films, of the
+    // conductors whole on a plane of symmetry, as the mesh has them.
+    const bool halved = control != nullptr && control->symmetry.axis != 0;
+    const QList<Conductor> wholeGiven =
+        halved ? withMirrors(givenConductors, control->symmetry.axis, control->symmetry.at / micrometre) : QList<Conductor>();
+    const Thickened thick = thickened(givenStack, givenConductors, given, halved ? &wholeGiven : nullptr);
     const Mesh& mesh = thick.mesh;
     const QList<Conductor>& conductors = thick.conductors;
     const Stack& stack = thick.stack;
@@ -4852,6 +4856,15 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // and how much of a wide slab's inside its faces hold there
     // (Context::inside).
     if (thick.any) {
+        // (Beyond a magnetic wall the conductor's mirror is there, its
+        //  current even across the plane: its breadth the whole's. Of the
+        //  half's, a strip the plane halves along its length was half as
+        //  broad, its share of a slab's inside the less, and a 100 by 50 µm
+        //  line's series reactance 0.75 % under the whole's.)
+        const QList<Conductor> mirrored = c.symAxis != 0 && c.symCharge > 0
+                                              ? withMirrors(conductors, c.symAxis, c.symAt / micrometre) : conductors;
+        QHash<QString, QList<int>> mirroredOn;
+        for (int s = 0; s < mirrored.size(); ++s) mirroredOn[mirrored.at(s).layer] << s;
         c.inside = QList<double>(c.planar, 1.0);
         for (int a = 0; a < c.planar; ++a) {
             const Filament& run = c.runs.at(a);
@@ -4861,7 +4874,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (!(length > 0)) continue;
             const QPointF normal(-d.y() / length, d.x() / length), middle = (run.from + run.to) / (2 * micrometre);
             QList<QPolygonF> outlines;
-            for (const int s : shapesOn.value(mesh.cells.at(ends.at(a).first).layer)) outlines << conductors.at(s).outline;
+            for (const int s : mirroredOn.value(mesh.cells.at(ends.at(a).first).layer)) outlines << mirrored.at(s).outline;
             const double across = breadthAcross(outlines, middle, normal, 100 * run.thickness / micrometre);
             const double breadth = across > 0 ? across * micrometre : run.width;
             c.inside[a] = facesInside(std::max(breadth, run.width), run.thickness);
