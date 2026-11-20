@@ -2260,6 +2260,10 @@ QJsonObject QucsControl::rf25Tdr(const QJsonObject& args)
                                    .arg(kToolPoints)
                                    .arg(given.isDouble() ? QString::number(p, 'g', 10) : given.toVariant().toString()));
         points = int(p);
+    } else if (wave->frequencies.size() > kToolPoints) {
+        // (Not given, the sweep's own count - which may be 100,001 -, at most
+        //  the tool's: the review of f2e35fa9.)
+        points = kToolPoints;
     }
     const QJsonValue betaGiven = args.value(QLatin1String("beta"));
     if (!betaGiven.isUndefined() && !betaGiven.isNull()

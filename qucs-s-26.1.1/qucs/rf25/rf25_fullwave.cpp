@@ -6061,6 +6061,13 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // (A vector, not a QList: the threads write to it side by side, and a
     //  QList's implicit sharing is no place for that.)
     std::vector<AtFrequency> solved(static_cast<std::size_t>(nf));
+    // (Each frequency's currents kept where they fit, else at some of them
+    //  alone - keptCurrentsOf() -, and one not kept dropped as soon as it is
+    //  solved: thinned after the sweep, a 10,001-point four-port of 30,000
+    //  runs still held its 19 GB as the sweep ended - the review of f2e35fa9.)
+    const QList<bool> keepCurrents =
+        keptCurrentsOf(nf, 16.0 * np * nr, int(std::max_element(frequencies.begin(), frequencies.end()) - frequencies.begin()),
+                       control != nullptr && control->keptCurrentsBytes > 0 ? control->keptCurrentsBytes : kKeptCurrentsBytes);
     std::atomic_int next{0};
     std::atomic_bool failed{false};
     // (Compressed, the highest frequency first: where the charges as
@@ -6075,8 +6082,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     //  the charges' term it fell short at, solveCompressed().)
     std::vector<NearBlocks> kept(static_cast<std::size_t>(side));
     std::vector<double> shortAt(static_cast<std::size_t>(side), std::numeric_limits<double>::infinity());
-    const auto work = [&c, &z, &frequencies, &solved, &next, &failed, &order, &shortAt, &kept, control, nf, compress, inner,
-                       side, symmetricLu](int thread) {
+    const auto work = [&c, &z, &frequencies, &solved, &next, &failed, &order, &shortAt, &kept, &keepCurrents, control, nf, compress,
+                       inner, side, symmetricLu](int thread) {
         const std::atomic_bool* stop = control != nullptr ? control->stop : nullptr;
         // (Compressed, each thread's frequencies dealt to it in turn - the
         //  highest to the first, the next to the second, and round -, not
@@ -6091,6 +6098,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (!allowedOne(control)) return;
             solved[std::size_t(k)] = compress ? solveCompressed(c, z, frequencies.at(k), inner, control, &shortAt[std::size_t(thread)], &kept[std::size_t(thread)])
                                                 : solveAt(c, frequencies.at(k), inner, symmetricLu, control != nullptr ? control->augmentedFrom : 0.0);
+            if (!keepCurrents.at(k)) solved[std::size_t(k)].current.resize(0, 0);
             if (!solved[std::size_t(k)].problems.isEmpty()) failed = true;
             if (control != nullptr && control->done != nullptr) ++*control->done;
         }
@@ -6329,15 +6337,11 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (columnReturn.at(k) >= 0)
                 out.returnsOf[c.portOf.at(k)][columnReturn.at(k)].share = intoColumns(k, c.portOf.at(k));
     };
-    // (Each frequency's currents kept where they fit, else at some of them
-    //  alone - keptCurrentsOf(). And each frequency's own answer moved out of
-    //  the sweep's, not copied: two copies of the currents for every
-    //  frequency.)
-    const QList<bool> keepCurrents = keptCurrentsOf(nf, 16.0 * np * nr, topAt);
+    // (Each frequency's own answer moved out of the sweep's, not copied: two
+    //  copies of the currents kept. Those not kept were dropped as solved.)
     const int keptCount = int(std::count(keepCurrents.begin(), keepCurrents.end(), true));
     for (int k = 0; k < nf; ++k) {
         AtFrequency a = std::move(solved[std::size_t(k)]);
-        if (!keepCurrents.at(k)) a.current.resize(0, 0);
         if (c.basis.size() > 0) {
             // In the columns solved for (Context::basis): each port's first,
             // then the differences, which carry no port's current. Tied, the
@@ -6614,11 +6618,11 @@ QStringList returnSharesOf(const FullWave& solved)
     return out;
 }
 
-QList<bool> keptCurrentsOf(int count, double perFrequency, int top)
+QList<bool> keptCurrentsOf(int count, double perFrequency, int top, double budget)
 {
     QList<bool> out(std::max(0, count), true);
     if (count <= 1 || !(perFrequency > 0)) return out;
-    const double fit = std::floor(kKeptCurrentsBytes / perFrequency);
+    const double fit = std::floor(budget / perFrequency);
     if (fit >= count) return out;
     out.fill(false);
     const int many = int(std::max(1.0, fit));
@@ -6627,7 +6631,15 @@ QList<bool> keptCurrentsOf(int count, double perFrequency, int top)
         return out;
     }
     for (int j = 0; j < many; ++j) out[int(std::lround(double(j) * (count - 1) / (many - 1)))] = true;
-    if (top >= 0 && top < count) out[top] = true;
+    // (The highest in place of the spread's nearest to it, not beside them:
+    //  one more than fits - 140 of 139, the review of f2e35fa9.)
+    if (top >= 0 && top < count && !out.at(top)) {
+        int nearest = -1;
+        for (int i = 0; i < count; ++i)
+            if (out.at(i) && (nearest < 0 || std::abs(i - top) < std::abs(nearest - top))) nearest = i;
+        if (nearest >= 0) out[nearest] = false;
+        out[top] = true;
+    }
     return out;
 }
 

@@ -312,9 +312,41 @@ private slots:
         // fits.
         const QList<bool> mid = rf::keptCurrentsOf(10001, each, 5003);
         QVERIFY(mid.at(5003));
+        // (In place of the spread's nearest, not beside them: it kept 140 of
+        //  139 - the review of f2e35fa9.)
+        QCOMPARE(int(std::count(mid.begin(), mid.end(), true)), kept);
         const QList<bool> one = rf::keptCurrentsOf(100, rf::kKeptCurrentsBytes, 37);
         QCOMPARE(int(std::count(one.begin(), one.end(), true)), 1);
         QVERIFY(one.at(37));
+        // A solve's, its budget lowered to three frequencies' worth: the
+        // others' currents dropped - in the sweep's worker, as each is solved
+        // (thinned after the sweep, the solve still held them all as it ended:
+        // the review of f2e35fa9) -, the far field refusing them, and said.
+        rf::Conductor patch;
+        patch.layer = QStringLiteral("M1");
+        patch.outline = QPolygonF(QRectF(0, 0, 4000, 3000));
+        rf::MeshSettings how;
+        how.maximum = 1e-3;
+        how.cellsAcross = 4;
+        const rf::Mesh mesh = rf::meshOf({patch}, how, rf::Stack(), 0);
+        rf::FullWavePort port;
+        port.at = QPointF(0, 1500);
+        port.metal = QStringLiteral("M1");
+        port.facing = QPointF(-1, 0);
+        const QList<double> fs{8e9, 9e9, 10e9, 11e9, 12e9, 13e9, 14e9};
+        const rf::FullWave whole = rf::fullWaveOf(mesh, {patch}, stackOf(1, 1e-3), {port}, fs);
+        QVERIFY2(whole.ok(), qPrintable(whole.problems.join(" | ")));
+        rf::FullWaveControl small;
+        small.keptCurrentsBytes = 3.5 * 16.0 * whole.runs;
+        const rf::FullWave few = rf::fullWaveOf(mesh, {patch}, stackOf(1, 1e-3), {port}, fs, 1e-6, &small);
+        QVERIFY2(few.ok(), qPrintable(few.problems.join(" | ")));
+        int keptAt = 0;
+        for (const auto& at : few.currents) keptAt += at.isEmpty() ? 0 : 1;
+        QCOMPARE(keptAt, 3);
+        QVERIFY(!few.currents.first().isEmpty() && !few.currents.last().isEmpty());
+        QVERIFY2(few.lines.join(' ').contains(QStringLiteral("kept at 3 of the 7 frequencies")), qPrintable(few.lines.join(" | ")));
+        for (int k = 0; k < fs.size(); ++k)
+            if (!few.currents.at(k).isEmpty()) QCOMPARE(few.currents.at(k), whole.currents.at(k));
     }
 };
 

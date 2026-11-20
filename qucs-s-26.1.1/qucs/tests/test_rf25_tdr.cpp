@@ -257,7 +257,7 @@ private slots:
     // exp(-j w 1 ns), swept every 50 MHz to 10 GHz from 25 MHz, 0.3, 1, 2 and
     // 5 GHz: S at nought 0.2 throughout, and the profile 50 Ohm before the
     // nanosecond and 75 after it. From 1 GHz the lowest three's quadratic gave
-    // -3.56, from 5 GHz -97, and Z(t) nought throughout, said as fine (a bug hunt's second hour). And a sweep whose phase carried
+    // -3.51, from 5 GHz -92.9, and Z(t) nought throughout, said as fine (a bug hunt's second hour). And a sweep whose phase carried
     // to nought lands off the real axis: said.
     void aSweepFromHighHasItsLevel()
     {

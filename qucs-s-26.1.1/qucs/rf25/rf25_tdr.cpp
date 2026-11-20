@@ -128,9 +128,8 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
     // the sweep's first point, the real part of the lowest three's quadratic
     // through them, at nought. Where it turns more, that quadratic is wild - a
     // phase turning between the three sends it far off: S11 = 0.2 exp(-j w 1
-    // ns) swept from 1 GHz came to -3.56, from 5 GHz to -97, and Z(t) to
-    // nought throughout, said as fine (a bug hunt's second
-    // hour) -, so the lowest point carried down to nought along the lowest
+    // ns) swept every 50 MHz from 1 GHz came to -3.51, from 5 GHz to -92.9,
+    // and Z(t) to nought throughout, said as fine (a bug hunt's second hour) -, so the lowest point carried down to nought along the lowest
     // three's slope of phase, and its real part taken: |S(f0)| cos(phase at
     // nought). (Its magnitude with the sign of that cosine, as it first was,
     // took a pad's or a bond wire's S, rising as j w from nought, at +-|S(f0)|

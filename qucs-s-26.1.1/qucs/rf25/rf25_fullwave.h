@@ -373,6 +373,10 @@ struct FullWaveControl {
     /// The most runs and cells it sets up a dense solve for; 0: the build's
     /// own. (Lower, a test meets the limit without a solve of thousands.)
     int mostUnknowns = 0;
+    /// The most a sweep's currents hold before they are kept at some of its
+    /// frequencies alone, bytes; 0: kKeptCurrentsBytes. (Lower, a test thins
+    /// them without a sweep of gigabytes.)
+    double keptCurrentsBytes = 0;
     /// The charges' term over the currents' past which a solve keeps the
     /// cells' charges as unknowns of their own (nought: the build's) - tests
     /// set it to force one formulation or the other.
@@ -681,10 +685,12 @@ QStringList returnSharesOf(const FullWave& solved);
 constexpr double kKeptCurrentsBytes = 256.0 * 1024 * 1024;
 
 /// Which of \a count frequencies keep their currents, \a perFrequency
-/// bytes each: every one where they fit in kKeptCurrentsBytes, else as many
-/// as fit, evenly spread over the sweep, its ends and \a top (the highest
-/// frequency's, which the current view opens on) among them.
-QList<bool> keptCurrentsOf(int count, double perFrequency, int top);
+/// bytes each: every one where they fit in \a budget, else as many
+/// as fit, evenly spread over the sweep, its ends among them, and \a top
+/// (the highest frequency's, which the current view opens on) in place of
+/// the nearest of them where it is off the spread. fullWaveOf() drops a
+/// frequency's currents not kept as soon as it is solved.
+QList<bool> keptCurrentsOf(int count, double perFrequency, int top, double budget = kKeptCurrentsBytes);
 
 /// The surface current density on each cell of the mesh, A/m (its size;
 /// the cells by their index in the mesh), at frequency \a k with port
