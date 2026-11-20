@@ -1799,9 +1799,41 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             pm.maxwell0.clear();
             pm.dielectricLoss.clear();
             pm.crowding.clear();
-            pm.said = tr("Not a uniform line - a net does not run its whole length, or is not the same along all of "
-                         "it - so there are no values per metre: its capacitance stands whole, and its ports' S are "
-                         "the full-wave solve's.");
+            // (A straight line drawn at an angle, every conductor a rectangle
+            //  along one way that is no axis, is uniform but not taken so -
+            //  its cross-section is cut along x or y -: said so, where it was
+            //  "not the same along all of it", its length the x projection's.)
+            double angle = std::nan("");
+            bool slanted = !conductors.isEmpty();
+            for (const Conductor& c : conductors) {
+                QPolygonF o = c.outline;
+                if (o.size() > 1 && o.first() == o.last()) o.removeLast();
+                if (o.size() != 4) {
+                    slanted = false;
+                    break;
+                }
+                const QPointF u = o.at(1) - o.at(0), v = o.at(2) - o.at(1);
+                const double lu = std::hypot(u.x(), u.y()), lv = std::hypot(v.x(), v.y());
+                if (!(lu > 0) || !(lv > 0) || std::abs(QPointF::dotProduct(u, v)) > 1e-6 * lu * lv) {
+                    slanted = false;
+                    break;
+                }
+                const QPointF longer = lu >= lv ? u : v;
+                double a = std::fmod(std::atan2(longer.y(), longer.x()) + 2 * M_PI, M_PI);
+                if (std::isnan(angle)) angle = a;
+                const double offAxis = std::abs(std::remainder(a, M_PI / 2));
+                if (offAxis < 1e-6 || std::abs(std::remainder(a - angle, M_PI)) > 1e-6) {
+                    slanted = false;
+                    break;
+                }
+            }
+            pm.said = slanted ? tr("A straight line drawn at %1 degrees: its values per metre are of a line along x or y, whose "
+                                   "middle cross-section is cut across it - turn it onto an axis for them. Its capacitance "
+                                   "stands whole, and its ports' S are the full-wave solve's.")
+                                    .arg(angle * 180 / M_PI, 0, 'g', 4)
+                              : tr("Not a uniform line - a net does not run its whole length, or is not the same along all of "
+                                   "it - so there are no values per metre: its capacitance stands whole, and its ports' S are "
+                                   "the full-wave solve's.");
         }
         out.lines << pm.said;
     }

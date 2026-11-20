@@ -1785,9 +1785,19 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         mesh.lines << w;
         mesh.warnings << w;
     } else if (perFeature < how.cellsAcross) {
-        const QString w = tr("Fewer cells across a conductor do not bring the mesh within the %1 this build solves: the "
-                             "largest cell, or the wavelength, sets the size there - ask for a larger largest cell.")
-                              .arg(most);
+        // (Which sets the size: at one across, a conductor narrower than the
+        //  largest cell has cells as narrow as it, whatever the largest cell
+        //  - a wedge 0.5 µm at its base was told to ask for a larger one, and
+        //  a largest cell of 1000 µm made the same 9,992 cells as one of 20.)
+        const QString w = finest > 0 && finest < size * (1 - 1e-9)
+                              ? tr("Fewer cells across a conductor do not bring the mesh within the %1 this build solves: at one "
+                                   "cell across, its narrowest conductor, %2 µm across, has cells of %3 µm, whatever the largest "
+                                   "cell - widen or drop what is that narrow (a sliver, a wedge's point), or raise Most cells on "
+                                   "the Mesh node.")
+                                    .arg(most).arg(narrowest, 0, 'g', 3).arg(finest, 0, 'g', 3)
+                              : tr("Fewer cells across a conductor do not bring the mesh within the %1 this build solves: the "
+                                   "largest cell, or the wavelength, sets the size there - ask for a larger largest cell.")
+                                    .arg(most);
         mesh.lines << w;
         mesh.warnings << w;
     }

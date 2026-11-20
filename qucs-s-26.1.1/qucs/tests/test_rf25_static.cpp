@@ -431,6 +431,29 @@ private slots:
                  qPrintable(QStringLiteral("%1 and %2 of the sheet's").arg(crowd).arg(whole)));
     }
 
+    // A straight line drawn at an angle says so, where it was "not the same
+    // along all of it": its values per metre
+    // are of a line along x or y. Along x, they are there.
+    void aLineDrawnAtAnAngleSaysItsValuesPerMetreAreOfAnAxis()
+    {
+        const rf::Stack stack = grounded(4, 100e-6);
+        for (const double deg : {0.0, 30.0}) {
+            const double a = deg * M_PI / 180, ca = std::cos(a), sa = std::sin(a);
+            const auto rot = [&](double x, double y) { return QPointF(x * ca - y * sa, x * sa + y * ca); };
+            rf::Conductor c;
+            c.layer = QStringLiteral("M1");
+            c.outline = QPolygonF(QList<QPointF>{rot(0, -50), rot(2000, -50), rot(2000, 50), rot(0, 50)});
+            rf::MeshSettings how;
+            how.maximum = 100e-6;
+            how.cellsAcross = 4;
+            const rf::Mesh mesh = rf::meshOf({c}, how, stack, 0);
+            const rf::Extraction e = rf::extract(mesh, {c}, stack);
+            QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+            if (deg == 0) QVERIFY2(e.perMetre.fromMiddle, qPrintable(e.perMetre.said));
+            else QVERIFY2(!e.perMetre.fromMiddle && e.perMetre.said.contains(QStringLiteral("drawn at 30 degrees")), qPrintable(e.perMetre.said));
+        }
+    }
+
     // The charge past the dense limit, solved compressed (the production-
     // readiness review: past 8,000 cells the charge solve was
     // refused). On one mesh, a coplanar line's, held compressed - its dense

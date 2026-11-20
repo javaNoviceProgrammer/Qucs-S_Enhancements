@@ -615,6 +615,24 @@ private slots:
         QVERIFY2(std::abs(area - 2000 * 400.0) < 1e-6 * area, qPrintable(QString::number(area)));
     }
 
+    // A mesh that fewer cells across cannot bring within the limit says what
+    // sets its cells' size: a wedge 0.5 µm at
+    // its base, cells as narrow at one across whatever the largest cell,
+    // was told to ask for a larger largest cell - 9,992 cells at 20 µm and
+    // at 1000 alike.
+    void whatSetsTheCellsSizeIsSaid()
+    {
+        rf::Model m = stacked();
+        rf::Conductor wedge;
+        wedge.layer = QStringLiteral("M1");
+        wedge.outline = QPolygonF(QList<QPointF>{{0, 0}, {1000, 0}, {1000, 0.5}});
+        rf::MeshSettings how;
+        how.maximum = 20e-6;
+        const rf::Mesh mesh = rf::meshOf({wedge}, how, m.stack(), 0);
+        QVERIFY2(says(mesh.warnings, "whatever the largest cell") && !says(mesh.warnings, "ask for a larger largest cell"),
+                 qPrintable(mesh.warnings.join(" | ")));
+    }
+
     // Cells across a conductor: at least so many across its narrowest
     // part, whatever the wavelength - the phase B check found a 100 µm
     // strip one cell wide at the default, its Z0 12 % high - and a straight
