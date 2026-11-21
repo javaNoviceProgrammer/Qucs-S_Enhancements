@@ -37,6 +37,8 @@ struct SliceTriangle {
     std::array<Vec3, 3> p;
     std::array<double, 3> value;
     int domain = -1;
+    int prism = -1;                              ///< the prism it cuts
+    std::array<std::array<double, 3>, 3> ref{};  ///< each corner's (ξ, η, ζ) in it
 };
 /// The prisms cut by the plane \a axis (0 x, 1 y, 2 z) = \a at (the
 /// geometry's unit): each cut - a triangle across z, a quadrilateral as two
@@ -54,6 +56,8 @@ struct IsoTriangle {
     std::array<Vec3, 3> p;
     int level = 0;
     int domain = -1;
+    int prism = -1;                              ///< the prism it is in
+    std::array<std::array<double, 3>, 3> ref{};  ///< each corner's (ξ, η, ζ) in it
 };
 /// Where \a nodal - an expression's values at the mesh's nodes, as
 /// nodalValues() gives them - is each of \a levels: each prism split into
@@ -68,8 +72,26 @@ std::vector<IsoTriangle> isosurfaces(const Solution3& solution, const std::vecto
 struct Arrow3 {
     Vec3 at;
     Vec3 v;
+    int prism = -1;                    ///< the prism it is in
+    std::array<double, 3> ref{};       ///< its (ξ, η, ζ) there
 };
 std::vector<Arrow3> arrows3(const Solution3& solution, const std::array<Expression, 3>& v, const Box3& box, int nx, int ny, int nz);
+
+/// Plots drawn where a solid has moved: each node's displacement (m), the
+/// x, y and z of a Deformation plot's expressions, times a scale - asked, or
+/// (\a scale 0) the largest a tenth of the model's largest side.
+struct Deformation3 {
+    std::array<std::vector<double>, 3> nodal;   ///< by node (NaN read as 0)
+    double used = 0;                            ///< the scale drawn with
+    double largest = 0;                         ///< the largest displacement (m)
+    QString error;
+    /// Node \a n moved (the geometry's unit).
+    Vec3 node(const Mesh3& mesh, int n) const;
+    /// The point (ξ, η, ζ) of prism \a prism, at \a x (the geometry's unit),
+    /// moved: the nodes' displacements interpolated linearly across it.
+    Vec3 at(const Mesh3& mesh, int prism, const std::array<double, 3>& ref, const Vec3& x) const;
+};
+Deformation3 deformation3(const Solution3& solution, const std::array<Expression, 3>& u, double scale);
 
 /// One solution of a 3D study's, as results take it: its sweep's point and
 /// its output time.

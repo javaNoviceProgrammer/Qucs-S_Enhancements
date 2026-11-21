@@ -611,7 +611,7 @@ QString formatText3D()
         "recombination, Fowler-Nordheim tunnelling (semi.Ifn), a magnetic field Bx, By, Bz (the Hall effect), a lattice temperature TL "
         "(ht.T: semi.H its heat source); at rest, in time, and small-signal in a \"frequency\" step (semi.G_<k>_<l>, semi.C_<k>_<l>; "
         "\"noise\": semi.Sn_<contact>, Fshot_; lit, Hop_); semi.V, n, p, Ec, Efn, Jz, R, H, Tn; semi.I_<contact>, semi.Q_<contact>. Results: \"plotgroup3d\" (\"clip\" x, y or z at \"clipat\") of \"surface\" (the boundaries coloured), "
-        "\"slice\", \"isosurface\", \"arrowvolume\" and \"meshplot\"; derived values \"global\", \"integral\", \"average\", "
+        "\"slice\", \"isosurface\", \"arrowvolume\", \"meshplot\" and \"deformation\" (x, y, z: the group's plots drawn moved); derived values \"global\", \"integral\", \"average\", "
         "\"maximum\" and \"minimum\" (\"level\" domain, boundary or edge) and \"pointeval\" (\"coordinates3\" rows of x, y, z); "
         "exports \"vtu\" (ParaView) and \"fieldexport\" (\"zrange\", \"nz\" its z). A geometry feature (Form Union not) or "
         "a material may carry \"visibility\": \"hidden\" (not drawn) or \"frame\" (its edges alone), as \"enabled\" is "

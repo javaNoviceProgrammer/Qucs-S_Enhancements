@@ -1318,6 +1318,66 @@ private slots:
         }
     }
 
+    // Plots drawn deformed: a displacement linear in x, y and z, read at the
+    // nodes, moves each node by itself times the scale (in the geometry's
+    // unit), and a slice's, an isosurface's and an arrow's points - inside
+    // their prisms - exactly as the formula does (the linear prism holds a
+    // linear field). Automatic, the largest moves a tenth of the model's
+    // largest side; none read refused, said.
+    void deformedPlots()
+    {
+        Model m = model3d(0.25);
+        addBox(m, QStringLiteral("box"), 0, 0, 0, 2, 1, 1);
+        const QString ht = addPhysics(m, QStringLiteral("heat"), 1, QStringLiteral("1[W/(m*K)]"));
+        addFeature(m, ht, QStringLiteral("heat/temperature"), rule(R"({"exterior": true})"),
+                   QJsonObject{{QStringLiteral("T0"), QStringLiteral("300[K] + 1e4[K/m]*(x + 2*y + 3*z)")}});
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(sv.error));
+        const Scope& sc = sv.s().pointScope();
+        const std::array<Expression, 3> u{Expression::compile(QStringLiteral("0.1*x + 0.05*y"), sc), Expression::compile(QStringLiteral("0.2*z"), sc),
+                                          Expression::compile(QStringLiteral("-0.1*x + 0.3*y - 0.1*z"), sc)};
+        // (x, y, z in mm, the displacement in mm by the scale 2.)
+        auto expected = [](const Vec3& p) {
+            return Vec3{p.x + 2 * (0.1 * p.x + 0.05 * p.y), p.y + 2 * (0.2 * p.z), p.z + 2 * (-0.1 * p.x + 0.3 * p.y - 0.1 * p.z)};
+        };
+        auto off = [](const Vec3& a, const Vec3& b) { return std::max({std::abs(a.x - b.x), std::abs(a.y - b.y), std::abs(a.z - b.z)}); };
+        const Deformation3 d = deformation3(sv.s(), u, 2);
+        QVERIFY2(d.error.isEmpty() && d.used == 2, qPrintable(d.error));
+        const Mesh3& mesh = sv.s().mesh();
+        double worst = 0;
+        for (int n = 0; n < int(mesh.nodes.size()); ++n) worst = std::max(worst, off(d.node(mesh, n), expected(mesh.nodes[std::size_t(n)])));
+        QVERIFY2(worst < 1e-12, qPrintable(QStringLiteral("a node %1 mm off").arg(worst)));
+        const Expression T = Expression::compile(QStringLiteral("ht.T"), sc);
+        int corners = 0;
+        for (const std::vector<SliceTriangle>& cut :
+             {slice(sv.s(), T, 0, 0.6), slice(sv.s(), T, 1, 0.3), slice(sv.s(), T, 2, 0.45), slicePlane(sv.s(), T, Vec3{1, 0.5, 0.5}, Vec3{1, 2, 3})}) {
+            QVERIFY(!cut.empty());
+            for (const SliceTriangle& st : cut)
+                for (int k = 0; k < 3; ++k, ++corners)
+                    worst = std::max(worst, off(d.at(mesh, st.prism, st.ref[std::size_t(k)], st.p[std::size_t(k)]), expected(st.p[std::size_t(k)])));
+        }
+        for (const IsoTriangle& it : isosurfaces(sv.s(), nodalValues(sv.s(), T), {320, 340}))
+            for (int k = 0; k < 3; ++k, ++corners)
+                worst = std::max(worst, off(d.at(mesh, it.prism, it.ref[std::size_t(k)], it.p[std::size_t(k)]), expected(it.p[std::size_t(k)])));
+        const Scope& global = sv.s().scope();
+        for (const Arrow3& a : arrows3(sv.s(), {Expression::compile(QStringLiteral("ht.qx"), global), Expression::compile(QStringLiteral("ht.qy"), global),
+                                                Expression::compile(QStringLiteral("ht.qz"), global)},
+                                       sv.s().topology().bounds, 4, 3, 3)) {
+            worst = std::max(worst, off(d.at(mesh, a.prism, a.ref, a.at), expected(a.at)));
+            ++corners;
+        }
+        QVERIFY2(corners > 1000 && worst < 1e-12, qPrintable(QStringLiteral("%1 points, one %2 mm off").arg(corners).arg(worst)));
+        // Automatic: the largest a tenth of 2 mm.
+        const Deformation3 a = deformation3(sv.s(), u, 0);
+        QVERIFY2(a.largest > 0 && std::abs(a.used * a.largest - 0.2e-3) < 1e-15, qPrintable(QStringLiteral("%1 by %2").arg(a.largest).arg(a.used)));
+        // None moving: nothing moved; one that does not read, said.
+        const Deformation3 still = deformation3(sv.s(), {Expression::compile(QStringLiteral("0"), sc), Expression::compile(QStringLiteral("0"), sc),
+                                                         Expression::compile(QStringLiteral("0"), sc)}, 0);
+        QVERIFY(still.used == 0 && off(still.node(mesh, 5), mesh.nodes[5]) == 0);
+        const Deformation3 bad = deformation3(sv.s(), {Expression::compile(QStringLiteral("solid.u"), sc), u[1], u[2]}, 0);
+        QVERIFY(!bad.error.isEmpty() && bad.used == 0);
+    }
+
     // A 3D model's exports, read back. A VTU of a linear field (order 1): its
     // points the mesh's nodes, ht.T at each the field's there, each cell a
     // wedge whose floor's normal points away from its top (VTK's), its

@@ -1197,6 +1197,32 @@ bool Multiphysics3DDoc::addDefaultPlots(Model& m, const std::vector<Field3>& fie
         const Node* physics = m.find(f.tag);
         const QString name = physics && physics->kind() ? physics->kind()->title : f.type;
         const QString variable = f.tag + QLatin1Char('.') + f.variable;
+        if (f.type == QLatin1String("solid")) {
+            // Its stress and displacement on its boundaries, drawn where it
+            // has moved (as the plane's are).
+            const QString t = f.tag;
+            const std::pair<QString, QString> two[2] = {{tr("Stress (%1)").arg(t), t + QStringLiteral(".mises")},
+                                                       {tr("Displacement (%1)").arg(t), t + QStringLiteral(".disp")}};
+            for (const auto& [label, expression] : two) {
+                Node g = m.make(QStringLiteral("plotgroup3d"));
+                g.label = label;
+                const Node* added = m.add(results, g);
+                if (!added) continue;
+                const QString group = added->tag;
+                Node plot = m.make(QStringLiteral("surface"));
+                plot.props.insert(QStringLiteral("expression"), expression);
+                if (expression.endsWith(QLatin1String(".mises"))) plot.props.insert(QStringLiteral("unit"), QStringLiteral("MPa"));
+                else plot.props.insert(QStringLiteral("colors"), QStringLiteral("viridis"));
+                m.add(group, plot);
+                Node moved = m.make(QStringLiteral("deformation"));
+                moved.props.insert(QStringLiteral("x"), t + QStringLiteral(".u"));
+                moved.props.insert(QStringLiteral("y"), t + QStringLiteral(".v"));
+                moved.props.insert(QStringLiteral("z"), t + QStringLiteral(".w"));
+                m.add(group, moved);
+                any = true;
+            }
+            continue;
+        }
         for (const QString type : {QStringLiteral("surface"), QStringLiteral("slice")}) {
             Node g = m.make(QStringLiteral("plotgroup3d"));
             g.label = type == QLatin1String("surface") ? tr("%1 (%2)").arg(name, f.tag) : tr("%1, slice (%2)").arg(name, f.tag);
@@ -1905,6 +1931,27 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
         return std::make_pair(lo, hi);
     };
     const QColor text = palette().color(QPalette::Text);
+    // Its plots drawn where the solid has moved: a Deformation's
+    // displacement, scaled.
+    std::optional<Deformation3> deformation;
+    for (const Node& p : g.children)
+        if (p.enabled && p.type == QLatin1String("deformation")) {
+            const std::array<Expression, 3> u{Expression::compile(p.text(QStringLiteral("x")), sol->scope()),
+                                              Expression::compile(p.text(QStringLiteral("y")), sol->scope()),
+                                              Expression::compile(p.text(QStringLiteral("z")), sol->scope())};
+            double scale = 0;
+            if (p.text(QStringLiteral("scaling")) == QLatin1String("manual"))
+                scale = evaluateConstant(p.text(QStringLiteral("scale")), sol->parameters().scope, Dim()).value_or(1);
+            Deformation3 d = deformation3(*sol, u, scale);
+            if (!d.error.isEmpty()) a_plotProblems << tr("%1: %2").arg(p.name(), d.error);
+            else deformation = std::move(d);
+        }
+    const Deformation3* def = deformation && deformation->used > 0 ? &*deformation : nullptr;
+    auto nodeAt = [&m, def](int n) { return def ? def->node(m, n) : m.nodes[std::size_t(n)]; };
+    auto moved = [&m, def](const auto& st, int k) {
+        return def ? def->at(m, st.prism, st.ref[std::size_t(k)], st.p[std::size_t(k)]) : st.p[std::size_t(k)];
+    };
+    auto movedTriangle = [&moved](const auto& st) { return std::array<Vec3, 3>{moved(st, 0), moved(st, 1), moved(st, 2)}; };
     for (const Node& p : g.children) {
         if (!p.enabled) continue;
         const QString type = p.type;
@@ -1914,12 +1961,12 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
             for (const Mesh3::Face& f : m.faces) {
                 const Topology3::Face* tf = t && f.face >= 0 && f.face < int(t->faces.size()) ? &t->faces[std::size_t(f.face)] : nullptr;
                 const QColor colour = quality ? colourIn(table, 0, 1, faceQuality(m, f)) : domainColor(tf ? std::max(tf->back, tf->front) : -1);
-                const Vec3 a = m.nodes[std::size_t(f.nodes[0])], b = m.nodes[std::size_t(f.nodes[1])], c = m.nodes[std::size_t(f.nodes[2])];
+                const Vec3 a = nodeAt(f.nodes[0]), b = nodeAt(f.nodes[1]), c = nodeAt(f.nodes[2]);
                 scene.triangles.push_back({{a, b, c}, colour, f.face});
-                if (f.quad) scene.triangles.push_back({{a, c, m.nodes[std::size_t(f.nodes[3])]}, colour, f.face});
+                if (f.quad) scene.triangles.push_back({{a, c, nodeAt(f.nodes[3])}, colour, f.face});
                 const int n = f.quad ? 4 : 3;
                 for (int i = 0; i < n; ++i)
-                    scene.lines.push_back({m.nodes[std::size_t(f.nodes[std::size_t(i)])], m.nodes[std::size_t(f.nodes[std::size_t((i + 1) % n)])], text, 1, -1});
+                    scene.lines.push_back({nodeAt(f.nodes[std::size_t(i)]), nodeAt(f.nodes[std::size_t((i + 1) % n)]), text, 1, -1});
             }
             if (quality && !legend.shown) {
                 legend.title = tr("Mesh quality");
@@ -1956,8 +2003,9 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
                 if (!(norm > 0) || !(longest > 0)) continue;
                 const double length = 0.9 * cell * (normalized ? 1 : norm / longest);
                 const Vec3 d{a.v.x / norm, a.v.y / norm, a.v.z / norm};
-                const Vec3 tip{a.at.x + length * d.x, a.at.y + length * d.y, a.at.z + length * d.z};
-                scene.lines.push_back({a.at, tip, colour, 1.5f, -1});
+                const Vec3 at = def ? def->at(m, a.prism, a.ref, a.at) : a.at;
+                const Vec3 tip{at.x + length * d.x, at.y + length * d.y, at.z + length * d.z};
+                scene.lines.push_back({at, tip, colour, 1.5f, -1});
                 // Its head: two strokes back from the tip, across it.
                 Vec3 across{-d.y, d.x, 0};
                 if (std::abs(d.z) > 0.9) across = Vec3{1, 0, 0};
@@ -1992,14 +2040,14 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
             std::tie(lo, hi) = rangeOf(p, unit, on);
             for (const Mesh3::Face& f : m.faces) {
                 const int n0 = f.nodes[0], n1 = f.nodes[1], n2 = f.nodes[2];
-                View3D::Triangle a{{m.nodes[std::size_t(n0)], m.nodes[std::size_t(n1)], m.nodes[std::size_t(n2)]}, QColor(), f.face};
+                View3D::Triangle a{{nodeAt(n0), nodeAt(n1), nodeAt(n2)}, QColor(), f.face};
                 a.shaded = true;
                 a.colors = {colourIn(table, lo, hi, nodal[std::size_t(n0)]), colourIn(table, lo, hi, nodal[std::size_t(n1)]),
                             colourIn(table, lo, hi, nodal[std::size_t(n2)])};
                 scene.triangles.push_back(a);
                 if (f.quad) {
                     const int n3 = f.nodes[3];
-                    View3D::Triangle b{{m.nodes[std::size_t(n0)], m.nodes[std::size_t(n2)], m.nodes[std::size_t(n3)]}, QColor(), f.face};
+                    View3D::Triangle b{{nodeAt(n0), nodeAt(n2), nodeAt(n3)}, QColor(), f.face};
                     b.shaded = true;
                     b.colors = {colourIn(table, lo, hi, nodal[std::size_t(n0)]), colourIn(table, lo, hi, nodal[std::size_t(n2)]),
                                 colourIn(table, lo, hi, nodal[std::size_t(n3)])};
@@ -2043,7 +2091,7 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
             for (const SliceTriangle& st : cut) on.insert(on.end(), st.value.begin(), st.value.end());
             std::tie(lo, hi) = rangeOf(p, unit, on);
             for (const SliceTriangle& st : cut) {
-                View3D::Triangle c{st.p, QColor(), -1};
+                View3D::Triangle c{movedTriangle(st), QColor(), -1};
                 c.shaded = true;
                 c.colors = {colourIn(table, lo, hi, st.value[0]), colourIn(table, lo, hi, st.value[1]), colourIn(table, lo, hi, st.value[2])};
                 scene.triangles.push_back(c);
@@ -2062,7 +2110,7 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
             }
             for (const IsoTriangle& it : isosurfaces(*sol, nodal, levels)) {
                 const QColor colour = colourIn(table, lo, hi, levels[std::size_t(it.level)]);
-                scene.triangles.push_back({it.p, colour, -1});
+                scene.triangles.push_back({movedTriangle(it), colour, -1});
             }
         }
         if (!first) first = Coloured{e, what, unit, &table, lo, hi};
@@ -2075,10 +2123,11 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
         legend.table = *first->table;
         legend.shown = true;
         a_plotRange = {first->lo, first->hi};
+        if (def) legend.title += tr(" (deformed %1×)").arg(formatNumber(def->used, 3));
         // The clip's cut face, as the first coloured plot is.
         if (*clipAxis >= 0)
             for (const SliceTriangle& st : slice(*sol, first->e, *clipAxis, clipAt)) {
-                View3D::Triangle c{st.p, QColor(), -1};
+                View3D::Triangle c{movedTriangle(st), QColor(), -1};
                 c.shaded = true;
                 c.colors = {colourIn(*first->table, first->lo, first->hi, st.value[0]), colourIn(*first->table, first->lo, first->hi, st.value[1]),
                             colourIn(*first->table, first->lo, first->hi, st.value[2])};
@@ -2086,12 +2135,25 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
             }
     }
     if (t) {
-        const QColor edge = qucs_s::ink::isDark(palette().color(QPalette::Base)) ? QColor(220, 225, 232) : QColor(40, 44, 52);
+        // The geometry's edges where it is at rest: faint under a deformed
+        // plot, its outline before it moved.
+        const bool dark = qucs_s::ink::isDark(palette().color(QPalette::Base));
+        const QColor edge = def ? (dark ? QColor(120, 125, 132) : QColor(150, 154, 160)) : dark ? QColor(220, 225, 232) : QColor(40, 44, 52);
         for (int e = 0; e < int(t->edges.size()); ++e) {
             const std::vector<Vec3> line = t->edgePolyline(e);
             for (std::size_t i = 0; i + 1 < line.size(); ++i) scene.lines.push_back({line[i], line[i + 1], edge, 1, e});
         }
         scene.bounds = t->bounds;
+        if (def)
+            for (int n = 0; n < int(m.nodes.size()); ++n) {
+                const Vec3 x = def->node(m, n);
+                scene.bounds.x0 = std::min(scene.bounds.x0, x.x);
+                scene.bounds.x1 = std::max(scene.bounds.x1, x.x);
+                scene.bounds.y0 = std::min(scene.bounds.y0, x.y);
+                scene.bounds.y1 = std::max(scene.bounds.y1, x.y);
+                scene.bounds.z0 = std::min(scene.bounds.z0, x.z);
+                scene.bounds.z1 = std::max(scene.bounds.z1, x.z);
+            }
     }
     if (sol->selected() != before && before >= 0) sol->select(before);
 }
