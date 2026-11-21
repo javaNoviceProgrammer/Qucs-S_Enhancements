@@ -101,11 +101,13 @@ std::vector<SliceTriangle> slice(const Solution3& s, const Expression& e, int ax
             const std::array<int, 3>& tri = m.plan->triangles[std::size_t(m.prismTriangle[std::size_t(p)])];
             SliceTriangle t;
             t.domain = m.domain[std::size_t(p)];
+            t.prism = p;
             const double ref[3][2] = {{0, 0}, {1, 0}, {0, 1}};
             for (int k = 0; k < 3; ++k) {
                 const QPointF q = m.plan->nodes[std::size_t(tri[std::size_t(k)])];
                 t.p[std::size_t(k)] = Vec3{q.x(), q.y(), at};
                 t.value[std::size_t(k)] = value(p, ref[k][0], ref[k][1], zeta);
+                t.ref[std::size_t(k)] = {ref[k][0], ref[k][1], zeta};
             }
             out.push_back(t);
         }
@@ -148,8 +150,9 @@ std::vector<SliceTriangle> slice(const Solution3& s, const Expression& e, int ax
         const Vec3 a0{A.x.x(), A.x.y(), z0}, b0{B.x.x(), B.x.y(), z0}, b1{B.x.x(), B.x.y(), z1}, a1{A.x.x(), A.x.y(), z1};
         const double va0 = value(p, A.xi, A.eta, 0), vb0 = value(p, B.xi, B.eta, 0), vb1 = value(p, B.xi, B.eta, 1), va1 = value(p, A.xi, A.eta, 1);
         const int d = m.domain[std::size_t(p)];
-        out.push_back({{a0, b0, b1}, {va0, vb0, vb1}, d});
-        out.push_back({{a0, b1, a1}, {va0, vb1, va1}, d});
+        const std::array<double, 3> ra0{A.xi, A.eta, 0}, rb0{B.xi, B.eta, 0}, rb1{B.xi, B.eta, 1}, ra1{A.xi, A.eta, 1};
+        out.push_back({{a0, b0, b1}, {va0, vb0, vb1}, d, p, {ra0, rb0, rb1}});
+        out.push_back({{a0, b1, a1}, {va0, vb1, va1}, d, p, {ra0, rb1, ra1}});
     }
     return out;
 }
@@ -257,7 +260,11 @@ std::vector<IsoTriangle> isosurfaces(const Solution3& s, const std::vector<doubl
                 }
                 cut.clear();
                 marchTet(x, r, v, cut);
-                for (const auto& tri : cut) out.push_back({{tri[0].x, tri[1].x, tri[2].x}, l, m.domain[std::size_t(p)]});
+                for (const auto& tri : cut) {
+                    IsoTriangle it{{tri[0].x, tri[1].x, tri[2].x}, l, m.domain[std::size_t(p)], p, {}};
+                    for (int k = 0; k < 3; ++k) it.ref[std::size_t(k)] = {tri[std::size_t(k)].ref[0], tri[std::size_t(k)].ref[1], tri[std::size_t(k)].ref[2]};
+                    out.push_back(it);
+                }
             }
         }
     }
@@ -298,8 +305,10 @@ std::vector<SliceTriangle> slicePlane(const Solution3& s, const Expression& e, c
             for (const auto& tri : cut) {
                 SliceTriangle st;
                 st.domain = m.domain[std::size_t(p)];
+                st.prism = p;
                 for (int k = 0; k < 3; ++k) {
                     st.p[std::size_t(k)] = tri[std::size_t(k)].x;
+                    st.ref[std::size_t(k)] = {tri[std::size_t(k)].ref[0], tri[std::size_t(k)].ref[1], tri[std::size_t(k)].ref[2]};
                     ev.at(p, tri[std::size_t(k)].ref[0], tri[std::size_t(k)].ref[1], tri[std::size_t(k)].ref[2]);
                     st.value[std::size_t(k)] = ev.eval(e);
                 }
@@ -328,8 +337,63 @@ std::vector<Arrow3> arrows3(const Solution3& s, const std::array<Expression, 3>&
                 if (!ev.at(Vec3{k * at.x, k * at.y, k * at.z})) continue;
                 const Vec3 a{ev.eval(v[0]), ev.eval(v[1]), ev.eval(v[2])};
                 if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(a.z)) continue;
-                out.push_back({at, a});
+                out.push_back({at, a, ev.prism(), {ev.xi(), ev.eta(), ev.zeta()}});
             }
+    return out;
+}
+
+// ------------------------------------------------------------ Deformation
+
+Vec3 Deformation3::node(const Mesh3& m, int n) const
+{
+    const Vec3& x = m.nodes[std::size_t(n)];
+    if (nodal[0].size() != m.nodes.size() || !(used > 0)) return x;
+    const double s = used / m.unitScale;
+    return Vec3{x.x + s * nodal[0][std::size_t(n)], x.y + s * nodal[1][std::size_t(n)], x.z + s * nodal[2][std::size_t(n)]};
+}
+
+Vec3 Deformation3::at(const Mesh3& m, int prism, const std::array<double, 3>& ref, const Vec3& x) const
+{
+    if (nodal[0].size() != m.nodes.size() || !(used > 0) || prism < 0 || prism >= int(m.prisms.size())) return x;
+    // The linear prism's six: the triangle's (1 - ξ - η, ξ, η) times
+    // (1 - ζ) below, ζ above.
+    const double l[3] = {1 - ref[0] - ref[1], ref[0], ref[1]}, z = ref[2];
+    const std::array<int, 6>& g = m.prisms[std::size_t(prism)];
+    Vec3 d{0, 0, 0};
+    for (int k = 0; k < 6; ++k) {
+        const double w = l[k % 3] * (k < 3 ? 1 - z : z);
+        const std::size_t n = std::size_t(g[std::size_t(k)]);
+        d.x += w * nodal[0][n];
+        d.y += w * nodal[1][n];
+        d.z += w * nodal[2][n];
+    }
+    const double s = used / m.unitScale;
+    return Vec3{x.x + s * d.x, x.y + s * d.y, x.z + s * d.z};
+}
+
+Deformation3 deformation3(const Solution3& s, const std::array<Expression, 3>& u, double scale)
+{
+    Deformation3 out;
+    const Mesh3& m = s.mesh();
+    for (int c = 0; c < 3; ++c) {
+        if (!u[std::size_t(c)].isValid()) {
+            out.error = u[std::size_t(c)].error();
+            return out;
+        }
+        out.nodal[std::size_t(c)] = nodalValues(s, u[std::size_t(c)]);
+        for (double& v : out.nodal[std::size_t(c)])
+            if (!std::isfinite(v)) v = 0;
+    }
+    for (std::size_t n = 0; n < m.nodes.size(); ++n)
+        out.largest = std::max(out.largest, std::sqrt(out.nodal[0][n] * out.nodal[0][n] + out.nodal[1][n] * out.nodal[1][n]
+                                                      + out.nodal[2][n] * out.nodal[2][n]));
+    if (scale > 0 && std::isfinite(scale)) {
+        out.used = scale;
+    } else if (out.largest > 0 && m.topology) {
+        const Box3& b = m.topology->bounds;
+        const double side = std::max({b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0}) * m.unitScale;
+        out.used = 0.1 * side / out.largest;
+    }
     return out;
 }
 

@@ -3879,6 +3879,7 @@ QList<NodeKind> makeKinds()
         add({QStringLiteral("deformation"), tr("Deformation"), QStringLiteral("plot"), QStringLiteral("deformation"), Level::None,
              {spatial(QStringLiteral("x"), tr("x component"), QStringLiteral("m"), QStringLiteral("solid.u")),
               spatial(QStringLiteral("y"), tr("y component"), QStringLiteral("m"), QStringLiteral("solid.v")),
+              inSpaces(spatial(QStringLiteral("z"), tr("z component"), QStringLiteral("m"), QStringLiteral("solid.w")), Spaces::ThreeD),
               choice(QStringLiteral("scaling"), tr("Scale"), {QStringLiteral("auto"), QStringLiteral("manual")},
                      {tr("Automatic: the largest a tenth of the model"), tr("Manual")}, QStringLiteral("auto")),
               shownIf(expr(QStringLiteral("scale"), tr("Scale factor"), QString(), QStringLiteral("1")), QStringLiteral("scaling=manual"))},
@@ -4007,7 +4008,8 @@ QList<NodeKind> makeKinds()
                      tr("What lies beyond a plane cut away - its cut face drawn as the group's first surface or slice is coloured")),
               shownIf(expr(QStringLiteral("clipat"), tr("Clip at"), QStringLiteral("length"), QStringLiteral("0"), tr("In the geometry's unit")),
                       QStringLiteral("clip!=none"))},
-             {QStringLiteral("surface"), QStringLiteral("slice"), QStringLiteral("isosurface"), QStringLiteral("arrowvolume"), QStringLiteral("meshplot")},
+             {QStringLiteral("surface"), QStringLiteral("slice"), QStringLiteral("isosurface"), QStringLiteral("arrowvolume"), QStringLiteral("meshplot"),
+              QStringLiteral("deformation")},
              {}, false, false, QStringLiteral("pg3d"),
              tr("Plots of a 3D solution shown together in its tab's view: its boundaries coloured, slices, isosurfaces, arrows, the "
                 "mesh - at the tab's time and point, or the group's own.")});
@@ -4546,7 +4548,8 @@ QList<NodeKind> makeKinds()
         if (kind.type == QLatin1String("plotgroup3d") || kind.type == QLatin1String("slice") || kind.type == QLatin1String("isosurface")
             || kind.type == QLatin1String("arrowvolume"))
             kind.spaces = Spaces::ThreeD;
-        if (kind.type == QLatin1String("surface") || kind.type == QLatin1String("meshplot")) kind.spaces = Spaces::All;
+        if (kind.type == QLatin1String("surface") || kind.type == QLatin1String("meshplot") || kind.type == QLatin1String("deformation"))
+            kind.spaces = Spaces::All;
         // Derived values of a 3D solution: globals, integrals, averages and
         // extrema over its domains, faces or edges, values at points - an
         // axisymmetric model's revolution the plane's.

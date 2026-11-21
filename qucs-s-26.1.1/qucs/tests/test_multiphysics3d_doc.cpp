@@ -1711,6 +1711,46 @@ private slots:
         QVERIFY(plot);
         QTRY_VERIFY(plot->findText(QStringLiteral("solid.mises")) >= 0);
         QVERIFY(plot->findText(QStringLiteral("solid.disp")) >= 0);
+        // Its default plots: its stress and its displacement, each drawn
+        // where it has moved - the tip down nearly a tenth of the beam's
+        // 4 mm, automatic (the largest of its corners' moves, a little
+        // along x too) -, the legend saying how much; the deformation turned
+        // off, drawn at rest.
+        QTRY_VERIFY(doc->solution() && !doc->solutionStale());
+        QStringList groups;
+        QString deformation;
+        for (const FNode& c : doc->model().results().children)
+            if (c.type == QLatin1String("plotgroup3d")) {
+                groups << c.name();
+                if (c.name() == QStringLiteral("Displacement (%1)").arg(sm)) {
+                    QVERIFY(c.children.size() == 2 && c.children[0].type == QLatin1String("surface") && c.children[1].type == QLatin1String("deformation"));
+                    QCOMPARE(c.children[1].text(QStringLiteral("z")), sm + QStringLiteral(".w"));
+                    deformation = c.children[1].tag;
+                    QVERIFY(doc->showPlotGroup(c.tag));
+                }
+            }
+        QVERIFY2(groups == QStringList({QStringLiteral("Stress (%1)").arg(sm), QStringLiteral("Displacement (%1)").arg(sm)}), qPrintable(groups.join(", ")));
+        QVERIFY2(doc->view()->legend().title.contains(QStringLiteral("deformed")), qPrintable(doc->view()->legend().title));
+        auto lowest = [doc] {
+            double z = 1e300;
+            for (const View3D::Triangle& t : doc->view()->scene().triangles)
+                for (const Vec3& v : t.p) z = std::min(z, v.z);
+            return z;
+        };
+        QVERIFY2(lowest() < -0.35 && lowest() > -0.4 - 1e-9, qPrintable(QString::number(lowest())));
+        // (Every triangle at the tip moved: its top, at rest 1 mm up, now
+        // some 0.6.)
+        double tipTop = -1e300;
+        for (const View3D::Triangle& t : doc->view()->scene().triangles)
+            for (const Vec3& v : t.p)
+                if (v.x > 3.9) tipTop = std::max(tipTop, v.z);
+        QVERIFY2(tipTop < 0.7, qPrintable(QString::number(tipTop)));
+        QVERIFY(doc->view()->scene().bounds.z0 <= lowest() + 1e-12);
+        Model m = doc->model();
+        m.find(deformation)->enabled = false;
+        QVERIFY(doc->setModel(m, QStringLiteral("at rest")));
+        QTRY_VERIFY(std::abs(lowest()) < 1e-12);
+        QVERIFY(!doc->view()->legend().title.contains(QStringLiteral("deformed")));
     }
 
     /// A 3D magnetic field through Claude's tools: a bar of 1e8 A/m² along z
