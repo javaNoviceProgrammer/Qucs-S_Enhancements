@@ -38,6 +38,9 @@ struct Options3 {
     /// A Frequency Domain step's frequency (Hz): a magnetic field solved
     /// harmonically, its eddy currents jωσA in its conductors - 0 at rest.
     double frequency = 0;
+    /// An Eigenfrequency step's: the solid's stress as it is solved (at
+    /// rest, before) stiffening its modes - K + Kσ, the geometric stiffness.
+    bool prestress = false;
     /// A step in time's: what multiplies the capacity's ∂u/∂t of u (1/h,
     /// BDF2's (1 + 2ω)/((1 + ω)h)), and the history it is taken from by dof
     /// - C (mass u - history) + K u = F. 0: at rest.

@@ -3469,6 +3469,10 @@ QList<NodeKind> makeKinds()
               inSpaces(expr(QStringLiteral("fshift"), tr("Search about"), QStringLiteral("Hz"), QStringLiteral("0[Hz]"),
                             tr("A frequency: the modes nearest it (0: the lowest)")),
                        Spaces::ThreeD),
+              inSpaces(flag(QStringLiteral("prestress"), tr("Prestressed"), false,
+                            tr("The solid solved at rest first, its loads' stress stiffening it - K + Kσ, a string's tension: "
+                               "a tension raises its frequencies, a compression lowers them (to nought where it buckles)")),
+                       Spaces::ThreeD),
               inSpaces(integer(QStringLiteral("keep"), tr("Mode kept for the steps after"), 0,
                                tr("The mode a laser's step after it lases in: its number of those found (0: the one of highest Q)")),
                        Spaces::TwoD),
