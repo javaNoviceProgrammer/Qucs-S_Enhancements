@@ -1855,6 +1855,7 @@ bool SolidProblem3::solvePlastic(const Options3& o, QString* error)
         for (std::size_t k = 0; k < q.fixedKey.size(); ++k) trial[std::size_t(q.fixedKey[k])] = target * ud(Eigen::Index(k));
         o.tell(tr("%1: load %2 %, plasticity").arg(name).arg(qRound(100 * target)));
         bool converged = false;
+        double lastSize = std::numeric_limits<double>::infinity();
         for (int it = 0; it < std::max(1, o.maxIterations); ++it) {
             Eigen::SparseMatrix<double> K;
             Eigen::VectorXd fi, fd;
@@ -1876,10 +1877,15 @@ bool SolidProblem3::solvePlastic(const Options3& o, QString* error)
                 if (q.eq[k] >= 0) trial[k] += dx(q.eq[k]);
             double scale = 0;
             for (double v : trial) scale = std::max(scale, std::abs(v));
-            if (dx.lpNorm<Eigen::Infinity>() <= tol * std::max(scale, 1e-300)) {
+            const double size = dx.lpNorm<Eigen::Infinity>();
+            if (size <= tol * std::max(scale, 1e-300)) {
                 converged = true;
                 break;
             }
+            // (Its corrections no longer shrinking - a load past what it can
+            // carry -: the step cut short, halved, not iterated to its end.)
+            if (it >= 4 && size > 0.5 * lastSize) break;
+            lastSize = size;
         }
         if (converged) {
             // (Its history at where it converged.)
@@ -2725,6 +2731,26 @@ bool solidStateAt(PointEvaluator3& ev, int f, SolidState& out, bool imaginary)
             const std::size_t at = (std::size_t(prism) * std::size_t(nq) + std::size_t(best)) * 7;
             for (int I = 0; I < 6; ++I) ep[I] = field.internal[at + std::size_t(I)];
             out.epeq = field.internal[at + 6];
+            // (Its strain there too: a point's own strain less another
+            // point's plastic strain is neither's stress - over yield where
+            // the plastic strain varies, the review of 82025124.)
+            const auto& qp = rule.points[std::size_t(best)];
+            const Space3& sp = *field.space;
+            const Space3::Map mp = sp.map(prism, qp[0], qp[1], qp[2]);
+            PrismShape sh;
+            prismShapeAt(sp.order(), qp[0], qp[1], qp[2], sh);
+            const int* dofs = sp.dofs(prism);
+            const std::size_t n = std::size_t(sp.size());
+            for (int c = 0; c < 3; ++c)
+                for (int k = 0; k < 3; ++k) G[c][k] = 0;
+            for (int i = 0; i < sh.count; ++i) {
+                double gi[3];
+                Space3::gradient(mp, sh.dxi[i], sh.deta[i], sh.dzeta[i], gi);
+                for (int c = 0; c < 3; ++c) {
+                    const double v = field.values[std::size_t(c) * n + std::size_t(dofs[i])];
+                    for (int k = 0; k < 3; ++k) G[c][k] += gi[k] * v;
+                }
+            }
         }
     }
     for (int I = 0; I < 6; ++I) S0[I] += ep[I];

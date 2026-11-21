@@ -1261,7 +1261,8 @@ QList<NodeKind> makeKinds()
                   QStringLiteral("thermal=true")),
           inSpaces(flag(QStringLiteral("plastic"), tr("Plasticity"), false,
                         tr("von Mises (J2) plasticity, isotropic hardening linear: past its yield stress it flows, the strain it "
-                           "keeps solid.epeq - small strain, an isotropic material, in load steps of a tenth")),
+                           "keeps solid.epeq - small strain, an isotropic material, in load steps of a tenth, each solve from rest "
+                           "(loading alone: unloading and cycles not followed)")),
                    Spaces::ThreeD),
           inSpaces(shownIf(expr(QStringLiteral("sigmay"), tr("Yield stress σy"), QStringLiteral("Pa"), QStringLiteral("250[MPa]")),
                            QStringLiteral("plastic=true")),

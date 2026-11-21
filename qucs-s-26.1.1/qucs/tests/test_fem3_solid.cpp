@@ -1299,7 +1299,7 @@ private slots:
     void plasticity()
     {
         const double E = 200e9, nu = 0.3, sy = 250e6, G = E / (2 * (1 + nu));
-        auto model = [&](bool shear, double Et, bool large, bool anisotropic) {
+        auto model = [&](bool shear, double Et, bool large, bool anisotropic, double held = 0) {
             Model m = model3d(0.5);
             addBox(m, QStringLiteral("blk"), 0, 0, 0, 2, 1, 1);
             QJsonObject props = anisotropic ? QJsonObject{{QStringLiteral("anisotropy"), QStringLiteral("anisotropic")},
@@ -1317,7 +1317,11 @@ private slots:
                             {QStringLiteral("u0"), QStringLiteral("5e-3*y")}, {QStringLiteral("v0"), QStringLiteral("0[m]")}, {QStringLiteral("w0"), QStringLiteral("0[m]")}});
             } else {
                 for (const char* side : {"left", "front", "bottom"}) addFeature(m, solid, QStringLiteral("solid/roller"), ofSide(QStringLiteral("blk"), QString::fromLatin1(side)));
-                addFeature(m, solid, QStringLiteral("solid/load"), ofSide(QStringLiteral("blk"), QStringLiteral("right")), {{QStringLiteral("Fx"), QStringLiteral("375[MPa]")}});
+                if (held > 0)
+                    addFeature(m, solid, QStringLiteral("solid/displacement"), ofSide(QStringLiteral("blk"), QStringLiteral("right")),
+                               {{QStringLiteral("x"), true}, {QStringLiteral("u0"), QStringLiteral("%1[m]").arg(held, 0, 'g', 17)}});
+                else
+                    addFeature(m, solid, QStringLiteral("solid/load"), ofSide(QStringLiteral("blk"), QStringLiteral("right")), {{QStringLiteral("Fx"), QStringLiteral("375[MPa]")}});
             }
             for (Node& c : m.root.children)
                 if (c.type == QLatin1String("study")) {
@@ -1353,6 +1357,31 @@ private slots:
             const QString said = QStringLiteral("sheared 5e-3, Et %1 GPa: τ %2 MPa against %3, equivalent plastic strain %4 against %5")
                                      .arg(Et / 1e9).arg(sxy / 1e6, 0, 'g', 10).arg(tau / 1e6, 0, 'g', 10).arg(eq, 0, 'g', 10).arg(gp / std::sqrt(3.0), 0, 'g', 10);
             QVERIFY2(std::abs(sxy - tau) < 1e-7 * tau && std::abs(eq - gp / std::sqrt(3.0)) < 1e-7 * gp, qPrintable(said));
+            info(said);
+        }
+        // Held at twice its yield strain, perfectly plastic (the review of
+        // 82025124): its plastic strain gathers unevenly (the solution not
+        // unique), and its stress at its points - each its nearest quadrature
+        // point's strain and plastic strain - is nowhere over yield. (Its
+        // σx not σy everywhere: the elements' equilibrium is weak, other
+        // components where the plastic strain varies.)
+        {
+            const double u = 2 * sy / E * 2e-3;
+            const Solved sv = solve(model(false, 0, false, false, u));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            QString said;
+            double worstVm = -1e300, least = 1e300, most = 0;
+            for (double x : {0.13, 0.5, 1.0, 1.37, 1.9})
+                for (double y : {0.21, 0.5, 0.83})
+                    for (double z : {0.2, 0.5, 0.8}) {
+                        worstVm = std::max(worstVm, valueAt(sv.s(), QStringLiteral("solid.mises"), x, y, z) - sy);
+                        const double eq = valueAt(sv.s(), QStringLiteral("solid.epeq"), x, y, z);
+                        least = std::min(least, eq);
+                        most = std::max(most, eq);
+                    }
+            said = QStringLiteral("held at twice its yield strain: von Mises over σy by %1 Pa at most; its plastic strain %2 to %3; %4")
+                       .arg(worstVm).arg(least).arg(most).arg(sv.r.log.filter(QStringLiteral("plasticity")).join(QLatin1Char(' ')));
+            QVERIFY2(worstVm < 1e-6 * sy && most > 1.05 * least, qPrintable(said));
             info(said);
         }
         QVERIFY(solve(model(false, 20e9, true, false)).error.contains(QStringLiteral("not with large deformation")));

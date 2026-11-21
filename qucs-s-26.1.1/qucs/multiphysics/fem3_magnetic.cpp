@@ -2379,6 +2379,32 @@ void MagneticProblem3::setForceGlobals(bool harmonic)
         }
         double F[3] = {0, 0, 0}, T[3] = {0, 0, 0};
         int faces = 0;
+        // (Its layer's domains: Maxwell's stress is divergence-free only
+        // where nothing is - no current, no magnet, µr 1, no eddy currents -,
+        // else the weighted integral takes part of their own force - a bar
+        // touching another fed one 12.5 % over, the review of 8d5e9e9e.)
+        std::set<int> notAir;
+        const Solution3::Coefficients& coef = s.coefficients()[std::size_t(a_fi)];
+        const std::vector<std::array<Expression, 3>> sources = sourcesOf(-1);
+        const auto air = [&](int d) {
+            const auto zero = [](const Expression& e) { return !e.isValid() || (e.isConstant() && e.constant() == 0); };
+            if (d < int(sources.size()))
+                for (const Expression& e : sources[std::size_t(d)])
+                    if (!zero(e)) return false;
+            for (const char* k : {"Brx", "Bry", "Brz"})
+                if (const auto it = coef.named.find(QString::fromLatin1(k)); it != coef.named.end() && d < int(it->second.size()) && !zero(it->second[std::size_t(d)]))
+                    return false;
+            if (d < int(coef.curves.size()) && coef.curves[std::size_t(d)]) return false;
+            if (d < int(coef.c.size()))
+                for (int k = 0; k < 9; ++k) {
+                    const Expression& e = coef.c[std::size_t(d)][std::size_t(k)];
+                    const double want = k % 4 == 0 ? 1.0 : 0.0;
+                    if (e.isValid() && !(e.isConstant() && e.constant() == want)) return false;
+                    if (!e.isValid() && want == 1.0) return false;
+                }
+            if (harmonic && conducts(d)) return false;
+            return true;
+        };
         for (int e = 0; e < int(mesh.prisms.size()); ++e) {
             const int d = mesh.domain[std::size_t(e)];
             if (d < 0 || (d < int(fc.on.size()) && fc.on[std::size_t(d)]) || d >= int(f.domains.size()) || !f.domains[std::size_t(d)]) continue;
@@ -2387,6 +2413,7 @@ void MagneticProblem3::setForceGlobals(bool harmonic)
             for (int n : g) touches = touches || psi[std::size_t(n)];
             if (!touches) continue;
             ++faces;
+            if (!notAir.count(d) && !air(d)) notAir.insert(d);
             for (const auto& qp : rule.points) {
                 const Space3::Map mp = sp.map(e, qp[0], qp[1], qp[2]);
                 PrismShape sh;
@@ -2419,6 +2446,14 @@ void MagneticProblem3::setForceGlobals(bool harmonic)
                 T[1] -= w * (r[2] * t[0] - r[0] * t[2]);
                 T[2] -= w * (r[0] * t[1] - r[1] * t[0]);
             }
+        }
+        if (!notAir.empty()) {
+            const QString said = tr("%1's Force Calculation %2: the elements round it are not air (a current, a magnet, µr not 1 or eddy currents "
+                                    "in them, %3 domain(s)) - its force and torque take part of theirs: leave an air layer round it")
+                                     .arg(a_node->name(), fc.name)
+                                     .arg(notAir.size());
+            s.log << said;
+            if (!s.warnings.contains(said)) s.warnings << said;
         }
         if (faces == 0) {
             const QString said = tr("%1's Force Calculation %2 has no domain round it the field is solved in: no force").arg(a_node->name(), fc.name);
