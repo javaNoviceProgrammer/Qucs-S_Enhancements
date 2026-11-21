@@ -749,6 +749,121 @@ bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi
     return gained;
 }
 
+/*!
+ * \a cells made to meet side to side: into each side of a cell that runs
+ * along x or y, the corners of the cells of its layer and its conductor
+ * (\a conductor, by cell) that lie strictly inside it. A side of 0 to 10
+ * facing two of 0 to 5 and 5 to 10 is two sides then, each one of theirs, so
+ * that the current crosses it - paired by edgeKey(), a side met by cells of
+ * other lines met none. The cells, their areas and centres stay as they are.
+ *
+ * Where pieces of a conductor meet, their lines are shared (shareLines()),
+ * but not every one of them: at three cells across, a slanted tee's stem met
+ * its bar along no side at all, its 20 µm base cut, and a chamfered pad's
+ * trapezoid and the rectangle over it met along 70 µm of 100 (the review of
+ * 9acb72fd). Shared further, the lines moved meshes that must stay as they
+ * are - a line inside its pads meshed as drawn alone.
+ */
+void conform(QList<MeshCell>& cells, const QList<int>& conductor)
+{
+    if (cells.isEmpty() || conductor.size() != cells.size()) return;
+    // (A nanometre, as edgeKey() rounds: corners nearer than that are one,
+    //  and sides of cells that near each other pair already. Finer, a
+    //  taper's lines 0.3 nm off a line's were put in its cells' sides, and
+    //  the slivers they made paired with nothing.)
+    const double tol = 1e-3;
+    // Each coordinate within a nanometre of another taken as that one - the
+    // value most corners of the run have, so that a line's own grid stays as
+    // it is beside a taper's lines 0.3 nm off it -: sides that are one then
+    // have one middle. Rounded by edgeKey() as they were, the two sides of a
+    // hexagon's cells at 3.333 and 3.334 µm fell either side of a nanometre
+    // and paired with nothing.
+    {
+        QList<double> xs, ys;
+        for (const MeshCell& c : std::as_const(cells))
+            for (const QPointF& p : std::as_const(c.outline)) {
+                xs << p.x();
+                ys << p.y();
+            }
+        const auto runsOf = [tol](QList<double>& values) {
+            std::sort(values.begin(), values.end());
+            QList<double> taken(values.size());   // (each value's run's most common, at every value of it)
+            for (int i = 0; i < values.size();) {
+                int j = i + 1;
+                while (j < values.size() && values.at(j) - values.at(i) <= tol) ++j;
+                double most = values.at(i);
+                int count = 0;
+                for (int k = i; k < j;) {
+                    int l = k + 1;
+                    while (l < j && values.at(l) == values.at(k)) ++l;
+                    if (l - k > count) {
+                        count = l - k;
+                        most = values.at(k);
+                    }
+                    k = l;
+                }
+                for (int k = i; k < j; ++k) taken[k] = most;
+                i = j;
+            }
+            return taken;
+        };
+        const QList<double> xFirst = runsOf(xs), yFirst = runsOf(ys);
+        const auto snapped = [](const QList<double>& sorted, const QList<double>& firsts, double v) {
+            const auto it = std::lower_bound(sorted.cbegin(), sorted.cend(), v);
+            return it == sorted.cend() ? v : firsts.at(int(it - sorted.cbegin()));
+        };
+        for (MeshCell& c : cells)
+            for (QPointF& p : c.outline) p = QPointF(snapped(xs, xFirst, p.x()), snapped(ys, yFirst, p.y()));
+    }
+    // The corners on each line along x (by y) and along y (by x), each line's
+    // sorted, by layer and conductor: a line's key its coordinate in units of
+    // the tolerance, its neighbours' looked in too.
+    const auto keyOf = [](const QString& layer, int c, bool alongX, qint64 at) {
+        return QStringLiteral("%1|%2|%3|%4").arg(layer).arg(c).arg(alongX ? 'x' : 'y').arg(at);
+    };
+    QHash<QString, QList<QPointF>> lines;
+    for (int i = 0; i < cells.size(); ++i)
+        for (const QPointF& p : std::as_const(cells.at(i).outline)) {
+            lines[keyOf(cells.at(i).layer, conductor.at(i), true, std::llround(p.y() / tol))] << p;
+            lines[keyOf(cells.at(i).layer, conductor.at(i), false, std::llround(p.x() / tol))] << p;
+        }
+    for (int index = 0; index < cells.size(); ++index) {
+        MeshCell& cell = cells[index];
+        const int c = conductor.at(index);
+        QPolygonF o = cell.outline;
+        if (o.size() > 1 && o.first() == o.last()) o.removeLast();
+        const int n = int(o.size());
+        QPolygonF out;
+        bool more = false;
+        for (int i = 0; i < n; ++i) {
+            const QPointF a = o.at(i), b = o.at((i + 1) % n);
+            out << a;
+            const bool alongX = std::abs(b.y() - a.y()) <= tol, alongY = std::abs(b.x() - a.x()) <= tol;
+            if (alongX == alongY) continue;
+            const double from = alongX ? a.x() : a.y(), to = alongX ? b.x() : b.y(), at = alongX ? a.y() : a.x();
+            QList<double> on;
+            const qint64 k = std::llround(at / tol);
+            for (const qint64 near : {k - 1, k, k + 1})
+                for (const QPointF& p : lines.value(keyOf(cell.layer, c, alongX, near))) {
+                    if (std::abs((alongX ? p.y() : p.x()) - at) > tol) continue;
+                    const double t = alongX ? p.x() : p.y();
+                    if (t > std::min(from, to) + tol && t < std::max(from, to) - tol) on << t;
+                }
+            if (on.isEmpty()) continue;
+            std::sort(on.begin(), on.end());
+            if (to < from) std::reverse(on.begin(), on.end());
+            for (const double t : std::as_const(on)) {
+                const QPointF p = alongX ? QPointF(t, a.y()) : QPointF(a.x(), t);
+                if (std::abs(p.x() - out.last().x()) > tol || std::abs(p.y() - out.last().y()) > tol) {
+                    out << p;
+                    more = true;
+                }
+            }
+        }
+        if (more) cell.outline = out;
+    }
+}
+
 /// A key that two cells sharing an edge agree on, whichever way round they
 /// have it: the midpoint, rounded to a nanometre.
 QString edgeKey(const QPointF& a, const QPointF& b)
@@ -2292,7 +2407,9 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         // (The half kept: above the plane. A cell across it cut at it.)
         const int whole = int(mesh.cells.size());
         QList<MeshCell> half;
-        for (MeshCell cell : std::as_const(mesh.cells)) {
+        QList<int> halfConductor;
+        for (int k = 0; k < mesh.cells.size(); ++k) {
+            MeshCell cell = mesh.cells.at(k);
             const QRectF box = cell.outline.boundingRect();
             const double lo = axis == 1 ? box.left() : box.top(), hi = axis == 1 ? box.right() : box.bottom();
             const double tol = 1e-9 * std::max({1.0, std::abs(lo), std::abs(hi)});
@@ -2309,12 +2426,18 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 cell.area = a;
             }
             half << cell;
+            if (k < cellConductor.size()) halfConductor << cellConductor.at(k);
         }
         mesh.cells = half;
+        cellConductor = halfConductor;
         mesh.lines << tr("Meshed as the whole with its mirror across the plane of symmetry, %1 cells, and the half of them "
                          "beyond the plane kept: %2.")
                           .arg(whole).arg(half.size());
     }
+
+    // Its cells made to meet side to side, each piece's cells and its
+    // neighbour's (conform()).
+    conform(mesh.cells, cellConductor);
 
     // The unknowns: an edge two cells of a layer share is where current
     // flows from one to the other, and is one unknown of a rooftop basis.

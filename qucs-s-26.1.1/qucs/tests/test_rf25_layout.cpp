@@ -821,8 +821,9 @@ private slots:
         Q_UNUSED(problem);
     }
 
-    // A hole in a slanted outline, as the processing writes it: its cells
-    // meet edge to edge all round it, as the solve pairs them (by their
+    // A hole in a slanted outline, as the processing writes it, a slanted
+    // tee and a chamfered pad, at cells of 10 µm and at three across: their
+    // cells meet edge to edge all round, as the solve pairs them (by their
     // sides' middles, to a nanometre) - a hexagon's beside its square hole's
     // corners met no cell across x = 60 for 17.5 µm, the pieces under and
     // over the hole ending at its corners and their ends not lines of the
@@ -851,15 +852,24 @@ private slots:
             // A hexagon with a square hole x 20-60, y 20-40, by a keyhole.
             QPolygonF({{0, 25}, {50, 0}, {100, 25}, {100, 75}, {50, 100}, {0, 75}, {0, 30}, {20, 30}, {20, 40}, {60, 40}, {60, 20}, {20, 20}, {20, 30}, {0, 30}}),
             // A square frame.
-            QPolygonF({{0, 0}, {100, 0}, {100, 100}, {0, 100}, {0, 50}, {30, 50}, {30, 70}, {70, 70}, {70, 30}, {30, 30}, {30, 50}, {0, 50}})};
-        for (const QPolygonF& shape : shapes) {
+            QPolygonF({{0, 0}, {100, 0}, {100, 100}, {0, 100}, {0, 50}, {30, 50}, {30, 70}, {70, 70}, {70, 30}, {30, 30}, {30, 50}, {0, 50}}),
+            // A slanted tee: at three across its stem met its bar along no
+            // side, its base cut (the review of 9acb72fd).
+            QPolygonF({{0, 0}, {200, 0}, {200, 40}, {120, 40}, {160, 140}, {140, 148}, {100, 40}, {0, 40}}),
+            // A chamfered pad: its trapezoid and the rectangle over it met
+            // along 70 µm of 100 at three across.
+            QPolygonF({{0, 0}, {80, 0}, {100, 20}, {100, 100}, {0, 100}})};
+        for (int s = 0; s < shapes.size(); ++s)
+        for (const bool fine : {true, false}) {
+            const QPolygonF& shape = shapes.at(s);
             const auto [processed, stack] = processedOf(shape);
             QCOMPARE(int(processed.conductors.size()), 1);
             const QPolygonF whole = processed.conductors.first().outline;
-            QCOMPARE(int(rf::loopsOf(whole).size()), 2);
+            QCOMPARE(int(rf::loopsOf(whole).size()), s < 2 ? 2 : 1);
+            // At cells of 10 µm, and as the tab meshes: three across, 25 µm at most.
             rf::MeshSettings how;
-            how.maximum = 10e-6;
-            how.cellsAcross = 0;
+            how.maximum = fine ? 10e-6 : 25e-6;
+            how.cellsAcross = fine ? 0 : 3;
             const rf::Mesh mesh = rf::meshOf(processed.conductors, how, stack, 1e9);
             QVERIFY(!mesh.cells.isEmpty());
             QHash<QString, int> sides;
@@ -878,13 +888,16 @@ private slots:
                 if (it.value() != 1) continue;
                 const QLineF l = lines.value(it.key());
                 const QPointF mid = (l.p1() + l.p2()) / 2, d = l.p2() - l.p1();
-                const QPointF off = QPointF(-d.y(), d.x()) / l.length() * 1e-4;
+                // (Metal both sides of it, 0.15 µm off: the slabs' corners are
+                //  snapped up to 0.1 µm off the drawn outline - piecesOf().)
+                const QPointF off = QPointF(-d.y(), d.x()) / l.length() * 0.15;
                 if (whole.containsPoint(mid + off, Qt::OddEvenFill) && whole.containsPoint(mid - off, Qt::OddEvenFill)) {
                     lone += l.length();
                     where += QStringLiteral(" (%1, %2)-(%3, %4)").arg(l.p1().x()).arg(l.p1().y()).arg(l.p2().x()).arg(l.p2().y());
                 }
             }
-            QVERIFY2(lone < 1e-9, qPrintable(QStringLiteral("%1 µm of cell sides inside the metal are no other cell's:%2").arg(lone).arg(where)));
+            QVERIFY2(lone < 1e-9, qPrintable(QStringLiteral("shape %1 at %2: %3 µm of cell sides inside the metal are no other cell's:%4")
+                                                 .arg(s).arg(fine ? "10 µm" : "three across").arg(lone).arg(where)));
         }
         // The keyhole of a square hole as the processing writes it: its way
         // back runs on along the hole's edge.
