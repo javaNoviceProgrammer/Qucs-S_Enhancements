@@ -1212,7 +1212,12 @@ QList<NodeKind> makeKinds()
                           QStringLiteral("planestrain")),
                    Spaces::TwoD),
           choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
-                 QStringLiteral("2"))},
+                 QStringLiteral("2")),
+          inSpaces(flag(QStringLiteral("large"), tr("Large deformation"), false,
+                        tr("Geometric nonlinearity: the Green-Lagrange strain, Saint Venant-Kirchhoff's stress of it, by Newton's "
+                           "method in load steps - large rotations and stretches (its loads dead: the body at rest's area and "
+                           "normal). At rest; its frequency response and modes about where it is at rest")),
+                   Spaces::ThreeD)},
          {QStringLiteral("solid/elastic"), QStringLiteral("solid/free"), QStringLiteral("solid/fixed"), QStringLiteral("solid/displacement"),
           QStringLiteral("solid/roller"), QStringLiteral("solid/load"), QStringLiteral("solid/bodyload"), QStringLiteral("solid/piezo"),
           QStringLiteral("solid/damping")},

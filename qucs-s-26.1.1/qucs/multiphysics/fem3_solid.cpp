@@ -259,6 +259,12 @@ private:
     /// ∫ ∇φiᵀ σ0 ∇φj, each component's own, among the equations.
     Eigen::SparseMatrix<double> geometricStiffness(const Equations& q) const;
     bool solveHarmonic(const Options3& o, QString* error);
+    /// Large deformation: its tangent stiffness K (material and geometric,
+    /// among the equations) and internal forces ∫ Bᵀ S (the equations' and
+    /// the held dofs') at displacement \a u (by component * n + dof).
+    void assembleLarge(const Equations& q, const std::vector<double>& u, Eigen::SparseMatrix<double>& K, Eigen::VectorXd& fint,
+                       Eigen::VectorXd& fintFixed) const;
+    bool solveLarge(const Options3& o, QString* error);
     /// Each domain's damping (a Damping feature's): its loss factor η and
     /// Rayleigh's αdM (1/s) and βdK (s).
     struct Damping {
@@ -273,6 +279,7 @@ private:
     double a_reaction[3] = {0, 0, 0};
     double a_reactionIm[3] = {0, 0, 0};
     bool a_harmonic = false;   // solved in the frequency domain last
+    bool a_large = false;      // large deformation asked
 };
 
 // ------------------------------------------------------------------ Setup
@@ -302,7 +309,8 @@ bool SolidProblem3::setup(QString* error)
     coef.sourceScale.assign(D, 1.0);
     coef.capacity.assign(D, Expression());
     coef.named.clear();
-    QStringList keys = {QStringLiteral("E"), QStringLiteral("nu"), QStringLiteral("alpha"), QStringLiteral("dT"), QStringLiteral("rho")};
+    QStringList keys = {QStringLiteral("E"), QStringLiteral("nu"), QStringLiteral("alpha"), QStringLiteral("dT"), QStringLiteral("rho"),
+                        QStringLiteral("large")};
     for (int I = 1; I <= 6; ++I) {
         for (int J = 1; J <= 6; ++J) keys << QStringLiteral("C%1%2").arg(I).arg(J);
         keys << QStringLiteral("alpha%1").arg(I) << QStringLiteral("sp%1").arg(I);
@@ -312,6 +320,7 @@ bool SolidProblem3::setup(QString* error)
     a_loads.assign(F, {});
     a_body.assign(D, {});
     a_damping.assign(D, Damping());
+    a_large = a_node->flag(QStringLiteral("large"));
     const Scope& params = a_s.parameters().scope;
     std::vector<const Node*> elasticOf(D, nullptr), piezoOf(D, nullptr);
     int order = 0;
@@ -543,6 +552,17 @@ bool SolidProblem3::setup(QString* error)
         }
     }
     if (a_emax == 0) a_emax = 1e11;
+    // Large deformation: its strain Green-Lagrange's, said to the results; no
+    // thermal strain or piezoelectric stress in it (small strain's).
+    if (a_large) {
+        for (int d = 0; d < int(D); ++d) {
+            if (!f.domains[std::size_t(d)]) continue;
+            coef.named[QStringLiteral("large")][std::size_t(d)] = Expression::compile(QStringLiteral("1"), a_s.pointScope());
+            const Node* e = elasticOf[std::size_t(d)];
+            if ((e && e->flag(QStringLiteral("thermal"))) || piezoOf[std::size_t(d)])
+                problem(tr("%1: large deformation takes no thermal strain or piezoelectric stress (domain %2)").arg(a_node->name()).arg(d + 1));
+        }
+    }
     if (a_reads.contains(a_fi)) problem(tr("%1: a solid's properties may not read its own displacement").arg(a_node->name()));
     if (!a_problems.isEmpty()) {
         *error = a_problems.join(QLatin1Char('\n'));
@@ -881,6 +901,7 @@ void SolidProblem3::assemble(const Equations& q, Assembled& out, const std::vect
 bool SolidProblem3::solve(const Options3& o, QString* error)
 {
     if (o.frequency > 0) return solveHarmonic(o, error);
+    if (a_large) return solveLarge(o, error);
     a_harmonic = false;
     for (double& r : a_reactionIm) r = 0;
     Field3& f = field();
@@ -1113,6 +1134,277 @@ Eigen::SparseMatrix<double> SolidProblem3::geometricStiffness(const Equations& q
     Eigen::SparseMatrix<double> out(q.neq, q.neq);
     out.setFromTriplets(t.begin(), t.end());
     return out;
+}
+
+// ------------------------------------------------------- Large deformation
+
+void SolidProblem3::assembleLarge(const Equations& q, const std::vector<double>& u, Eigen::SparseMatrix<double>& K, Eigen::VectorXd& fint,
+                                  Eigen::VectorXd& fintFixed) const
+{
+    const Field3& f = a_s.fields()[std::size_t(a_fi)];
+    const Space3& sp = *f.space;
+    const Mesh3& mesh = a_s.mesh();
+    const Topology3& topo = a_s.topology();
+    const Solution3::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
+    const int n = sp.size();
+    const int nfix = int(q.fixedKey.size());
+    const int per = sp.perElement(), m = 3 * per;
+    using T = Eigen::Triplet<double>;
+    std::vector<Material> mats(topo.domains.size());
+    for (int d = 0; d < int(mats.size()); ++d)
+        if (f.domains[std::size_t(d)]) mats[std::size_t(d)] = materialOf(coef, d);
+    struct Part {
+        std::vector<T> t;
+        std::vector<std::pair<int, double>> f, fd;
+    };
+    const PrismRule& rule = sp.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+    const int E = sp.elements();
+    const int asked = assemblyParts();
+    const int partCount = std::clamp(asked > 0 ? asked : E / 2000, 1, asked > 0 ? std::max(1, E) : 64);
+    std::vector<Part> parts(static_cast<std::size_t>(partCount));
+    const auto assemblePart = [&, partCount](int k) {
+        Part& part = parts[std::size_t(k)];
+        const int from = int(qint64(E) * k / partCount), to = int(qint64(E) * (k + 1) / partCount);
+        PointEvaluator3 ev(a_s);
+        std::vector<double> Ke(static_cast<std::size_t>(m * m)), Fe(static_cast<std::size_t>(m)), grads(static_cast<std::size_t>(3 * per));
+        std::vector<std::array<double, 18>> B(static_cast<std::size_t>(per)), CB(static_cast<std::size_t>(per));
+        for (int e = from; e < to; ++e) {
+            const int d = mesh.domain[std::size_t(e)];
+            if (d < 0 || !f.domains[std::size_t(d)]) continue;
+            const Material& mat = mats[std::size_t(d)];
+            std::fill(Ke.begin(), Ke.end(), 0.0);
+            std::fill(Fe.begin(), Fe.end(), 0.0);
+            const int* dofs = sp.dofs(e);
+            for (const auto& qp : rule.points) {
+                const Space3::Map mp = sp.map(e, qp[0], qp[1], qp[2]);
+                const double w = qp[3] * std::abs(mp.det);
+                PrismShape s;
+                prismShapeAt(sp.order(), qp[0], qp[1], qp[2], s);
+                if (!mat.constant) ev.at(e, qp[0], qp[1], qp[2], mp.x);
+                double C6[6][6], S0[6], SP[6];
+                mat.eval(mat.constant ? nullptr : &ev, C6, S0, SP);
+                // F = I + ∇u (F[a][k] = δak + ∂ua/∂Xk) at the point.
+                double F[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+                for (int i = 0; i < per; ++i) {
+                    double* g = &grads[std::size_t(3 * i)];
+                    Space3::gradient(mp, s.dxi[i], s.deta[i], s.dzeta[i], g);
+                    for (int a = 0; a < 3; ++a) {
+                        const double ua = u[std::size_t(a * n + dofs[i])];
+                        for (int kk = 0; kk < 3; ++kk) F[a][kk] += ua * g[kk];
+                    }
+                }
+                // Green-Lagrange's E (Voigt's, engineering shears) and the
+                // second Piola-Kirchhoff stress S = C E.
+                double Cg[3][3];
+                for (int i2 = 0; i2 < 3; ++i2)
+                    for (int j2 = 0; j2 < 3; ++j2) Cg[i2][j2] = F[0][i2] * F[0][j2] + F[1][i2] * F[1][j2] + F[2][i2] * F[2][j2];
+                const double Ev[6] = {0.5 * (Cg[0][0] - 1), 0.5 * (Cg[1][1] - 1), 0.5 * (Cg[2][2] - 1), Cg[1][2], Cg[0][2], Cg[0][1]};
+                double Sv[6];
+                for (int I = 0; I < 6; ++I) {
+                    Sv[I] = 0;
+                    for (int J = 0; J < 6; ++J) Sv[I] += C6[I][J] * Ev[J];
+                }
+                const double St[3][3] = {{Sv[0], Sv[5], Sv[4]}, {Sv[5], Sv[1], Sv[3]}, {Sv[4], Sv[3], Sv[2]}};
+                for (int i = 0; i < per; ++i) {
+                    const double* g = &grads[std::size_t(3 * i)];
+                    for (int a = 0; a < 3; ++a) {
+                        double* b = &B[std::size_t(i)][0];
+                        b[0 * 3 + a] = F[a][0] * g[0];
+                        b[1 * 3 + a] = F[a][1] * g[1];
+                        b[2 * 3 + a] = F[a][2] * g[2];
+                        b[3 * 3 + a] = F[a][1] * g[2] + F[a][2] * g[1];
+                        b[4 * 3 + a] = F[a][0] * g[2] + F[a][2] * g[0];
+                        b[5 * 3 + a] = F[a][0] * g[1] + F[a][1] * g[0];
+                    }
+                    for (int I = 0; I < 6; ++I)
+                        for (int a = 0; a < 3; ++a) {
+                            double v = 0;
+                            for (int J = 0; J < 6; ++J) v += C6[I][J] * B[std::size_t(i)][std::size_t(3 * J + a)];
+                            CB[std::size_t(i)][std::size_t(3 * I + a)] = v;
+                        }
+                }
+                for (int i = 0; i < per; ++i) {
+                    const double* gi = &grads[std::size_t(3 * i)];
+                    const double Sg[3] = {St[0][0] * gi[0] + St[0][1] * gi[1] + St[0][2] * gi[2], St[1][0] * gi[0] + St[1][1] * gi[1] + St[1][2] * gi[2],
+                                          St[2][0] * gi[0] + St[2][1] * gi[1] + St[2][2] * gi[2]};
+                    for (int a = 0; a < 3; ++a) {
+                        const int li = 3 * i + a;
+                        double fv = 0;
+                        for (int I = 0; I < 6; ++I) fv += B[std::size_t(i)][std::size_t(3 * I + a)] * Sv[I];
+                        Fe[std::size_t(li)] += w * fv;
+                        for (int j = 0; j < per; ++j) {
+                            const double* gj = &grads[std::size_t(3 * j)];
+                            const double geo = Sg[0] * gj[0] + Sg[1] * gj[1] + Sg[2] * gj[2];
+                            for (int b2 = 0; b2 < 3; ++b2) {
+                                double v = 0;
+                                for (int I = 0; I < 6; ++I) v += B[std::size_t(i)][std::size_t(3 * I + a)] * CB[std::size_t(j)][std::size_t(3 * I + b2)];
+                                if (a == b2) v += geo;
+                                Ke[std::size_t(li * m + 3 * j + b2)] += w * v;
+                            }
+                        }
+                    }
+                }
+            }
+            for (int i = 0; i < m; ++i) {
+                const int ki = (i % 3) * n + dofs[i / 3];
+                const int ei = q.eq[std::size_t(ki)], fi = q.fixed[std::size_t(ki)];
+                if (ei >= 0) part.f.emplace_back(ei, Fe[std::size_t(i)]);
+                else if (fi >= 0) part.fd.emplace_back(fi, Fe[std::size_t(i)]);
+                if (ei < 0) continue;
+                for (int j = 0; j < m; ++j) {
+                    const int kj = (j % 3) * n + dofs[j / 3];
+                    const int ej = q.eq[std::size_t(kj)];
+                    const double v = Ke[std::size_t(i * m + j)];
+                    if (ej >= 0 && v != 0) part.t.emplace_back(ei, ej, v);
+                }
+            }
+        }
+    };
+    if (partCount == 1) assemblePart(0);
+    else {
+        const int threads = std::clamp(int(std::thread::hardware_concurrency()), 1, std::min(16, partCount));
+        std::atomic<int> next{0};
+        detail::Threads pool;
+        for (int t = 0; t < threads; ++t)
+            pool.start([&next, &assemblePart, partCount] {
+                for (int k = next++; k < partCount; k = next++) assemblePart(k);
+            });
+        pool.join();
+    }
+    fint = Eigen::VectorXd::Zero(q.neq);
+    fintFixed = Eigen::VectorXd::Zero(nfix);
+    std::size_t total = 0;
+    for (const Part& p : parts) total += p.t.size();
+    std::vector<T> all;
+    all.reserve(total);
+    for (Part& p : parts) {
+        for (const auto& [i, v] : p.f) fint(i) += v;
+        for (const auto& [i, v] : p.fd) fintFixed(i) += v;
+        all.insert(all.end(), p.t.begin(), p.t.end());
+        p.t = {};
+    }
+    K.resize(q.neq, q.neq);
+    K.setFromTriplets(all.begin(), all.end());
+}
+
+bool SolidProblem3::solveLarge(const Options3& o, QString* error)
+{
+    Field3& f = field();
+    const Space3& sp = *f.space;
+    const int n = sp.size();
+    const QString name = a_node->name();
+    Equations q;
+    buildEquations(q);
+    if (q.neq == 0 && q.fixedKey.empty()) {
+        *error = tr("%1 has nothing to solve").arg(name);
+        return false;
+    }
+    Eigen::VectorXd ud(Eigen::Index(q.fixedKey.size()));
+    for (std::size_t k = 0; k < q.fixedKey.size(); ++k) {
+        const int key = q.fixedKey[k], a = key / n, dof = key % n;
+        const int face = q.fixedFace[k];
+        ud(Eigen::Index(k)) = face >= 0 ? evalAt(a_constraints[std::size_t(face)].value[a], sp.point(dof)) : 0.0;
+        if (!std::isfinite(ud(Eigen::Index(k)))) ud(Eigen::Index(k)) = 0;
+    }
+    // Its loads (dead: the reference's area and normal) and an oblique
+    // roller's springs, as at small strain.
+    Assembled a;
+    assemble(q, a, nullptr, false);
+    if (q.fixedKey.empty() && a.P.nonZeros() == 0) {
+        *error = tr("%1 is held nowhere: a Fixed Constraint, a Prescribed Displacement or Rollers against every rigid motion are needed")
+                     .arg(name);
+        return false;
+    }
+    std::vector<double> u(std::size_t(3 * n), 0.0);
+    const double tol = std::max(o.tolerance, 1e-12);
+    // Newton's method in load steps: the loads and held displacements
+    // scaled by λ, from nought to 1; a step that does not converge halved.
+    double lambda = 0, step = 1;
+    int steps = 0, iterations = 0, halvings = 0;
+    const QString solver = o.solver == QLatin1String("iterative") ? QStringLiteral("iterative") : QStringLiteral("direct");
+    while (lambda < 1) {
+        if (o.cancelled && o.cancelled()) {
+            *error = tr("cancelled");
+            return false;
+        }
+        const double target = std::min(1.0, lambda + step);
+        std::vector<double> trial = u;
+        for (std::size_t k = 0; k < q.fixedKey.size(); ++k) trial[std::size_t(q.fixedKey[k])] = target * ud(Eigen::Index(k));
+        o.tell(tr("%1: load %2 %, Newton's method").arg(name).arg(qRound(100 * target)));
+        bool converged = false;
+        for (int it = 0; it < std::max(1, o.maxIterations); ++it) {
+            Eigen::SparseMatrix<double> K;
+            Eigen::VectorXd fi, fd;
+            assembleLarge(q, trial, K, fi, fd);
+            Eigen::VectorXd x(q.neq);
+            for (std::size_t k = 0; k < q.eq.size(); ++k)
+                if (q.eq[k] >= 0) x(q.eq[k]) = trial[k];
+            const Eigen::VectorXd r = fi + a.P * x - target * a.F;
+            if (!r.allFinite()) break;
+            if (a.P.nonZeros() > 0) K += a.P;
+            System3 sys;
+            QString why;
+            QStringList quiet;
+            if (!sys.factorize(K, solver, 1, tol, name, &quiet, &why) && !sys.factorize(K, solver, 1, tol, name, &quiet, &why, false)) break;
+            Eigen::VectorXd dx = Eigen::VectorXd::Zero(q.neq);
+            if (!sys.solve(-r, dx, name, &quiet, &why) || !dx.allFinite()) break;
+            ++iterations;
+            for (std::size_t k = 0; k < q.eq.size(); ++k)
+                if (q.eq[k] >= 0) trial[k] += dx(q.eq[k]);
+            // (Converged: its step a tolerance's share of where it is.)
+            double scale = 0;
+            for (double v : trial) scale = std::max(scale, std::abs(v));
+            if (dx.lpNorm<Eigen::Infinity>() <= tol * std::max(scale, 1e-300)) {
+                converged = true;
+                break;
+            }
+        }
+        if (converged) {
+            u = std::move(trial);
+            lambda = target;
+            ++steps;
+            step = std::min(2 * step, 1.0);
+        } else {
+            step /= 2;
+            ++halvings;
+            if (step < 1.0 / 1024) {
+                *error = tr("%1: Newton's method did not converge at %2 % of its load, its step 1/1024 - past a buckling, or a load too large "
+                            "for its supports")
+                             .arg(name)
+                             .arg(formatNumber(100 * lambda, 4));
+                return false;
+            }
+        }
+    }
+    f.values = u;
+    // The reactions: the internal forces where it is held, less its loads
+    // there.
+    {
+        Eigen::SparseMatrix<double> K;
+        Eigen::VectorXd fi, fd;
+        assembleLarge(q, u, K, fi, fd);
+        for (double& r : a_reaction) r = 0;
+        for (double& r : a_reactionIm) r = 0;
+        const Eigen::VectorXd rr = fd - a.Fd;
+        for (std::size_t k = 0; k < q.fixedKey.size(); ++k) a_reaction[q.fixedKey[k] / n] += rr(Eigen::Index(k));
+        if (a.P.nonZeros() > 0) {
+            Eigen::VectorXd x(q.neq);
+            for (std::size_t k = 0; k < q.eq.size(); ++k)
+                if (q.eq[k] >= 0) x(q.eq[k]) = u[k];
+            const Eigen::VectorXd rp = a.P * x;
+            for (std::size_t k = 0; k < q.eq.size(); ++k)
+                if (q.eq[k] >= 0) a_reaction[k / std::size_t(n)] += rp(q.eq[k]);
+        }
+    }
+    a_s.log << tr("%1: large deformation, %2 unknowns - %3 load steps (%4 halved), %5 Newton iterations")
+                   .arg(name)
+                   .arg(q.neq)
+                   .arg(steps)
+                   .arg(halvings)
+                   .arg(iterations);
+    a_harmonic = false;
+    f.solved = true;
+    return true;
 }
 
 // ------------------------------------------------------- Harmonic response
@@ -1447,6 +1739,43 @@ bool solidStateAt(PointEvaluator3& ev, int f, SolidState& out)
     if (!m.valid) return false;
     double C6[6][6], S0[6], SP[6];
     m.eval(&ev, C6, S0, SP);
+    // Large deformation: the Green-Lagrange strain (engineering shears), its
+    // energy ½ E·C E a volume at rest, and the Cauchy stress (1/J) F S Fᵀ.
+    if (const auto it = coef.named.find(QStringLiteral("large")); it != coef.named.end() && d >= 0 && d < int(it->second.size()) && it->second[std::size_t(d)].isValid()) {
+        double F[3][3];
+        for (int a = 0; a < 3; ++a)
+            for (int k = 0; k < 3; ++k) F[a][k] = (a == k ? 1.0 : 0.0) + G[a][k];
+        double Cg[3][3];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) Cg[i][j] = F[0][i] * F[0][j] + F[1][i] * F[1][j] + F[2][i] * F[2][j];
+        const double Ev[6] = {0.5 * (Cg[0][0] - 1), 0.5 * (Cg[1][1] - 1), 0.5 * (Cg[2][2] - 1), Cg[1][2], Cg[0][2], Cg[0][1]};
+        double Sv[6];
+        out.energy = 0;
+        for (int I = 0; I < 6; ++I) {
+            Sv[I] = 0;
+            for (int J = 0; J < 6; ++J) Sv[I] += C6[I][J] * Ev[J];
+            out.energy += 0.5 * Ev[I] * Sv[I];
+            out.strain[I] = Ev[I];
+        }
+        const double St[3][3] = {{Sv[0], Sv[5], Sv[4]}, {Sv[5], Sv[1], Sv[3]}, {Sv[4], Sv[3], Sv[2]}};
+        const double J = F[0][0] * (F[1][1] * F[2][2] - F[1][2] * F[2][1]) - F[0][1] * (F[1][0] * F[2][2] - F[1][2] * F[2][0])
+                         + F[0][2] * (F[1][0] * F[2][1] - F[1][1] * F[2][0]);
+        double sig[3][3];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) {
+                double v = 0;
+                for (int k = 0; k < 3; ++k)
+                    for (int l = 0; l < 3; ++l) v += F[i][k] * St[k][l] * F[j][l];
+                sig[i][j] = J != 0 ? v / J : NaN;
+            }
+        out.stress[0] = sig[0][0];
+        out.stress[1] = sig[1][1];
+        out.stress[2] = sig[2][2];
+        out.stress[3] = sig[1][2];
+        out.stress[4] = sig[0][2];
+        out.stress[5] = sig[0][1];
+        return true;
+    }
     double* S = out.strain;
     S[0] = G[0][0];
     S[1] = G[1][1];
