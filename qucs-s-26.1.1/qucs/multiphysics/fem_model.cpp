@@ -1258,7 +1258,18 @@ QList<NodeKind> makeKinds()
                           tr("An expression: T (a heat physics' field), ht.T, or a value")),
                   QStringLiteral("thermal=true")),
           shownIf(spatial(QStringLiteral("Tref"), tr("Strain-free temperature Tref"), QStringLiteral("K"), QStringLiteral("293.15[K]")),
-                  QStringLiteral("thermal=true"))},
+                  QStringLiteral("thermal=true")),
+          inSpaces(flag(QStringLiteral("plastic"), tr("Plasticity"), false,
+                        tr("von Mises (J2) plasticity, isotropic hardening linear: past its yield stress it flows, the strain it "
+                           "keeps solid.epeq - small strain, an isotropic material, in load steps of a tenth")),
+                   Spaces::ThreeD),
+          inSpaces(shownIf(expr(QStringLiteral("sigmay"), tr("Yield stress σy"), QStringLiteral("Pa"), QStringLiteral("250[MPa]")),
+                           QStringLiteral("plastic=true")),
+                   Spaces::ThreeD),
+          inSpaces(shownIf(expr(QStringLiteral("Et"), tr("Tangent modulus Et"), QStringLiteral("Pa"), QStringLiteral("0[Pa]"),
+                                tr("The stress-strain curve's slope past yield, uniaxial (0: perfectly plastic); less than E")),
+                           QStringLiteral("plastic=true")),
+                   Spaces::ThreeD)},
          {}, {}, false, false, QStringLiteral("lemm"),
          tr("Hooke's law on its domains: E and ν (and α) from their material or as given - or an anisotropic crystal's stiffness "
             "Cij (silicon's cubic one, lithium niobate's trigonal one), turned by its orientation: plane strain takes its xx, yy, "
@@ -1352,7 +1363,7 @@ QList<NodeKind> makeKinds()
                    Spaces::TwoD)},
          {QStringLiteral("magnetic/ampere"), QStringLiteral("magnetic/current"), QStringLiteral("magnetic/coil"),
           QStringLiteral("magnetic/magnet"), QStringLiteral("magnetic/insulation"), QStringLiteral("magnetic/potential"),
-          QStringLiteral("magnetic/pmc"), QStringLiteral("magnetic/surfacecurrent")},
+          QStringLiteral("magnetic/pmc"), QStringLiteral("magnetic/surfacecurrent"), QStringLiteral("magnetic/force")},
          {QStringLiteral("magnetic/ampere"), QStringLiteral("magnetic/insulation")}, false, false, QStringLiteral("mf"),
          tr("The magnetic vector potential A out of the plane (round the axis): ∇×(µ⁻¹ ∇×A) = J, with B-H curves at rest "
             "and eddy currents (jωσA) in the frequency domain. Coils give an inductance or impedance matrix. In 3D, A on edge "
@@ -1484,6 +1495,17 @@ QList<NodeKind> makeKinds()
           inSpaces(spatial(QStringLiteral("Jsy"), tr("Jsy"), QStringLiteral("A/m"), QStringLiteral("0[A/m]")), Spaces::ThreeD),
           inSpaces(spatial(QStringLiteral("Jsz"), tr("Jsz"), QStringLiteral("A/m"), QStringLiteral("0[A/m]")), Spaces::ThreeD)},
          {}, {}, false, false, QStringLiteral("scd"), tr("A current sheet on the boundary, out of the plane.")});
+    add({QStringLiteral("magnetic/force"), tr("Force Calculation"), QStringLiteral("mf"), QStringLiteral("domainfeature"), Level::Domain,
+         {selectionProp(none), text(QStringLiteral("name"), tr("Name"), QStringLiteral("body"), tr("Its globals' suffix: mf.Fx_<name>, mf.T_<name>...")),
+          expr(QStringLiteral("x0"), tr("Torque about x"), QStringLiteral("m"), QStringLiteral("0[m]")),
+          expr(QStringLiteral("y0"), tr("Torque about y"), QStringLiteral("m"), QStringLiteral("0[m]")),
+          expr(QStringLiteral("z0"), tr("Torque about z"), QStringLiteral("m"), QStringLiteral("0[m]")),
+          expr(QStringLiteral("ax"), tr("Axis x"), QString(), QStringLiteral("0")), expr(QStringLiteral("ay"), tr("Axis y"), QString(), QStringLiteral("0")),
+          expr(QStringLiteral("az"), tr("Axis z"), QString(), QStringLiteral("1"), tr("The torque along it: mf.T_<name>"))},
+         {}, {}, false, false, QStringLiteral("fcal"),
+         tr("The force and torque on its domains - iron, magnets, coils - by Maxwell's stress tensor over their faces with the "
+            "domains round them, the field read there: mf.Fx_<name>, Fy_, Fz_, the torque about its point mf.Tx_<name>... and "
+            "along its axis mf.T_<name>; a time average in the frequency domain.")});
 
     // Electromagnetic waves: a cross-section's modes, waves in the plane.
     auto waveEquation = [&add, &none, &source](const QString& physics, const QString& title) {
@@ -4600,7 +4622,8 @@ QList<NodeKind> makeKinds()
         if (kind.type == QLatin1String("surface") || kind.type == QLatin1String("meshplot") || kind.type == QLatin1String("deformation"))
             kind.spaces = Spaces::All;
         // (A solid's frequency response is a 3D model's alone.)
-        if (kind.type == QLatin1String("solid/damping") || kind.type == QLatin1String("solid/contact")) kind.spaces = Spaces::ThreeD;
+        if (kind.type == QLatin1String("solid/damping") || kind.type == QLatin1String("solid/contact") || kind.type == QLatin1String("magnetic/force"))
+            kind.spaces = Spaces::ThreeD;
         // Derived values of a 3D solution: globals, integrals, averages and
         // extrema over its domains, faces or edges, values at points - an
         // axisymmetric model's revolution the plane's.

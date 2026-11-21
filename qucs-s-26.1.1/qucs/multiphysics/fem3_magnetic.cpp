@@ -219,6 +219,19 @@ private:
     std::vector<std::vector<std::array<Expression, 3>>> a_sheets;      // by face
     std::vector<std::vector<std::array<Expression, 3>>> a_external;    // by domain
     std::vector<Coil> a_coils;
+    /// A Force Calculation: its domains, the point its torque is about and
+    /// the axis its torque along is of.
+    struct ForceCalc {
+        QString name;
+        std::vector<char> on;    // by domain
+        Vec3 point, axis{0, 0, 1};
+    };
+    std::vector<ForceCalc> a_forces;
+    /// Each Force Calculation's force and torque (about its point) by
+    /// Maxwell's stress tensor over its domains' faces with another's - the
+    /// field read on the other side -, its time average in the frequency
+    /// domain; set as globals.
+    void setForceGlobals(bool harmonic);
     bool a_nonlinear = false;
     bool a_magnets = false;
     double a_energy = 0;
@@ -286,6 +299,7 @@ bool MagneticProblem3::setup(QString* error)
     a_sheets.assign(F, {});
     a_external.assign(D, {});
     a_coils.clear();
+    a_forces.clear();
     a_nonlinear = false;
     a_magnets = false;
     a_sigma.assign(D, {});
@@ -323,6 +337,27 @@ bool MagneticProblem3::setup(QString* error)
             if (vector3(feature, keys, QStringLiteral("0[A/m^2]"), &j))
                 for (int d : picked)
                     if (d >= 0 && d < int(D)) a_external[std::size_t(d)].push_back(j);
+        } else if (t == QLatin1String("magnetic/force")) {
+            ForceCalc fc;
+            fc.name = feature.text(QStringLiteral("name")).trimmed();
+            if (fc.name.isEmpty()) fc.name = feature.name();
+            fc.on.assign(D, 0);
+            for (int d : picked)
+                if (d >= 0 && d < int(D)) fc.on[std::size_t(d)] = 1;
+            double c[6] = {0, 0, 0, 0, 0, 1};
+            static const char* const keys[6] = {"x0", "y0", "z0", "ax", "ay", "az"};
+            for (int k = 0; k < 6; ++k) {
+                const QString text = feature.text(QString::fromLatin1(keys[k])).trimmed();
+                if (text.isEmpty()) continue;
+                const Expression e = compile(text, feature, QString::fromLatin1(keys[k]), false);
+                if (e.isValid() && e.isConstant()) c[k] = e.constant();
+                else if (e.isValid()) problem(tr("%1: its %2 must be a constant").arg(feature.name(), QString::fromLatin1(keys[k])));
+            }
+            fc.point = Vec3{c[0], c[1], c[2]};
+            const double len = std::sqrt(c[3] * c[3] + c[4] * c[4] + c[5] * c[5]);
+            if (!(len > 0)) problem(tr("%1: its axis is nought").arg(feature.name()));
+            else fc.axis = Vec3{c[3] / len, c[4] / len, c[5] / len};
+            a_forces.push_back(fc);
         } else if (t == QLatin1String("magnetic/coil")) {
             Coil c;
             c.name = feature.text(QStringLiteral("name"));
@@ -2202,6 +2237,7 @@ void MagneticProblem3::setHarmonicGlobals()
     s.setGlobal(p + QStringLiteral("W"), a_energy, Dim::of(2, 1, -2), tr("magnetic energy, its time average"));
     s.setGlobal(p + QStringLiteral("P"), a_losses, Dim::power(), tr("resistive losses, their time average"));
     s.setGlobal(p + QStringLiteral("Pm"), a_magneticLosses, Dim::power(), tr("magnetic losses (a core's, of its µr''), their time average"));
+    setForceGlobals(true);
     for (int c = 0; c < int(a_coils.size()) && c < int(a_U.size()); ++c) {
         const Coil& coil = a_coils[std::size_t(c)];
         const QString n = coil.name;
@@ -2311,6 +2347,95 @@ void MagneticProblem3::setGlobals()
             s.setGlobal(p + QStringLiteral("L_") + a + QLatin1Char('_') + b, l, henry, tr("inductance matrix, %1 %2").arg(a, b));
             if (a.size() == 1 && b.size() == 1) s.setGlobal(p + QStringLiteral("L") + a + b, l, henry, tr("inductance matrix, %1 %2").arg(a, b));
         }
+    setForceGlobals(false);
+}
+
+void MagneticProblem3::setForceGlobals(bool harmonic)
+{
+    if (a_forces.empty()) return;
+    Solution3& s = a_s;
+    Field3& f = field();
+    if (!f.space) return;
+    const Space3& sp = *f.space;
+    const Mesh3& mesh = s.mesh();
+    const QString p = f.tag + QLatin1Char('.');
+    const Dim force = Dim::of(1, 1, -2), torque = Dim::of(2, 1, -2);
+    const PrismRule& rule = f.edges && f.edges->order() == 2 ? prismRule(4, 3) : prismRule(2, 2);
+    PointEvaluator3 ev(s);
+    for (const ForceCalc& fc : a_forces) {
+        // Maxwell's stress tensor weighted (Arkkio's, Coulomb's virtual
+        // work): F = -∫ T ∇ψ over the domains round its body, ψ 1 at the
+        // body's nodes and 0 at the rest, linear in each prism - its faces'
+        // integral ∮ T n moved into the first layer of elements round them,
+        // the field read inside them, not at the body's edges and corners
+        // (the surface's 2 % off a fed bar's Lorentz force, this 0.1 %).
+        // T ∇ψ = B (H·∇ψ) - ½ (B·H) ∇ψ; time averaged ½ Re(B (H*·∇ψ)) - ¼
+        // Re(B·H*) ∇ψ. The torque about its point -∫ r × (T ∇ψ).
+        std::vector<char> psi(mesh.nodes.size(), 0);
+        for (int e = 0; e < int(mesh.prisms.size()); ++e) {
+            const int d = mesh.domain[std::size_t(e)];
+            if (d >= 0 && d < int(fc.on.size()) && fc.on[std::size_t(d)])
+                for (int n : mesh.prisms[std::size_t(e)]) psi[std::size_t(n)] = 1;
+        }
+        double F[3] = {0, 0, 0}, T[3] = {0, 0, 0};
+        int faces = 0;
+        for (int e = 0; e < int(mesh.prisms.size()); ++e) {
+            const int d = mesh.domain[std::size_t(e)];
+            if (d < 0 || (d < int(fc.on.size()) && fc.on[std::size_t(d)]) || d >= int(f.domains.size()) || !f.domains[std::size_t(d)]) continue;
+            const std::array<int, 6>& g = mesh.prisms[std::size_t(e)];
+            bool touches = false;
+            for (int n : g) touches = touches || psi[std::size_t(n)];
+            if (!touches) continue;
+            ++faces;
+            for (const auto& qp : rule.points) {
+                const Space3::Map mp = sp.map(e, qp[0], qp[1], qp[2]);
+                PrismShape sh;
+                prismShapeAt(1, qp[0], qp[1], qp[2], sh);
+                double gp[3] = {0, 0, 0};
+                for (int k = 0; k < 6; ++k) {
+                    if (!psi[std::size_t(g[std::size_t(k)])]) continue;
+                    double gk[3];
+                    Space3::gradient(mp, sh.dxi[k], sh.deta[k], sh.dzeta[k], gk);
+                    for (int c = 0; c < 3; ++c) gp[c] += gk[c];
+                }
+                ev.at(e, qp[0], qp[1], qp[2], mp.x);
+                MagneticState st;
+                if (!magneticStateAt(ev, a_fi, st)) continue;
+                double t[3];
+                if (harmonic && st.harmonic) {
+                    const double hn = st.H[0] * gp[0] + st.H[1] * gp[1] + st.H[2] * gp[2], hni = st.Hi[0] * gp[0] + st.Hi[1] * gp[1] + st.Hi[2] * gp[2];
+                    const double bh = st.B[0] * st.H[0] + st.B[1] * st.H[1] + st.B[2] * st.H[2] + st.Bi[0] * st.Hi[0] + st.Bi[1] * st.Hi[1] + st.Bi[2] * st.Hi[2];
+                    for (int k = 0; k < 3; ++k) t[k] = 0.5 * (st.B[k] * hn + st.Bi[k] * hni) - 0.25 * bh * gp[k];
+                } else {
+                    const double hn = st.H[0] * gp[0] + st.H[1] * gp[1] + st.H[2] * gp[2];
+                    const double bh = st.B[0] * st.H[0] + st.B[1] * st.H[1] + st.B[2] * st.H[2];
+                    for (int k = 0; k < 3; ++k) t[k] = st.B[k] * hn - 0.5 * bh * gp[k];
+                }
+                if (!std::isfinite(t[0]) || !std::isfinite(t[1]) || !std::isfinite(t[2])) continue;
+                const double w = qp[3] * std::abs(mp.det);
+                const double r[3] = {mp.x.x - fc.point.x, mp.x.y - fc.point.y, mp.x.z - fc.point.z};
+                for (int k = 0; k < 3; ++k) F[k] -= w * t[k];
+                T[0] -= w * (r[1] * t[2] - r[2] * t[1]);
+                T[1] -= w * (r[2] * t[0] - r[0] * t[2]);
+                T[2] -= w * (r[0] * t[1] - r[1] * t[0]);
+            }
+        }
+        if (faces == 0) {
+            const QString said = tr("%1's Force Calculation %2 has no domain round it the field is solved in: no force").arg(a_node->name(), fc.name);
+            s.log << said;
+            if (!s.warnings.contains(said)) s.warnings << said;
+        }
+        static const char* const axes[3] = {"x", "y", "z"};
+        const QString avg = harmonic ? tr(", its time average") : QString();
+        for (int k = 0; k < 3; ++k) {
+            s.setGlobal(p + QStringLiteral("F") + QString::fromLatin1(axes[k]) + QLatin1Char('_') + fc.name, F[k], force,
+                        tr("the force on %1 (Maxwell's stress), %2 component%3").arg(fc.name, QString::fromLatin1(axes[k]), avg));
+            s.setGlobal(p + QStringLiteral("T") + QString::fromLatin1(axes[k]) + QLatin1Char('_') + fc.name, T[k], torque,
+                        tr("the torque on %1 about its point, %2 component%3").arg(fc.name, QString::fromLatin1(axes[k]), avg));
+        }
+        s.setGlobal(p + QStringLiteral("T_") + fc.name, T[0] * fc.axis.x + T[1] * fc.axis.y + T[2] * fc.axis.z, torque,
+                    tr("the torque on %1 along its axis%2").arg(fc.name, avg));
+    }
 }
 
 } // namespace

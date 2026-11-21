@@ -32,6 +32,7 @@
 #include <atomic>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <thread>
 
 namespace qucs_s::fem::detail3 {
@@ -322,6 +323,12 @@ private:
     void assembleLarge(const Equations& q, const std::vector<double>& u, Eigen::SparseMatrix<double>& K, Eigen::VectorXd& fint,
                        Eigen::VectorXd& fintFixed) const;
     bool solveLarge(const Options3& o, QString* error);
+    /// Plasticity (small strain, J2): its tangent and internal forces at
+    /// displacement \a u, its loads scaled by \a load (its free strains),
+    /// its points' history \a before (Field3::internal's layout) and \a after.
+    void assemblePlastic(const Equations& q, const std::vector<double>& u, double load, const std::vector<double>& before,
+                         std::vector<double>& after, Eigen::SparseMatrix<double>& K, Eigen::VectorXd& fint, Eigen::VectorXd& fintFixed) const;
+    bool solvePlastic(const Options3& o, QString* error);
     /// Contact (a Contact feature's faces): each point of a face chosen
     /// against the face of another domain facing it, found once at rest
     /// (small sliding) - its prism and reference coordinates on both sides,
@@ -357,6 +364,7 @@ private:
     bool a_harmonic = false;   // solved in the frequency domain last
     bool a_large = false;      // large deformation asked
     bool a_neoHookean = false; // its material neo-Hookean (else Saint Venant-Kirchhoff's)
+    bool a_plastic = false;    // a domain's Plasticity asked
     std::vector<char> a_contactFace;                    // by face: a Contact's
     double a_contactPenalty = 100, a_contactSearch = 0; // its factor, its search distance (m; 0 automatic)
     std::vector<ContactPoint> a_contactPoints;
@@ -393,7 +401,7 @@ bool SolidProblem3::setup(QString* error)
     coef.capacity.assign(D, Expression());
     coef.named.clear();
     QStringList keys = {QStringLiteral("E"), QStringLiteral("nu"), QStringLiteral("alpha"), QStringLiteral("dT"), QStringLiteral("rho"),
-                        QStringLiteral("large")};
+                        QStringLiteral("large"), QStringLiteral("sigmay"), QStringLiteral("Et")};
     for (int I = 1; I <= 6; ++I) {
         for (int J = 1; J <= 6; ++J) keys << QStringLiteral("C%1%2").arg(I).arg(J);
         keys << QStringLiteral("alpha%1").arg(I) << QStringLiteral("sp%1").arg(I);
@@ -407,6 +415,7 @@ bool SolidProblem3::setup(QString* error)
     a_neoHookean = a_large && a_node->text(QStringLiteral("hyperelastic")) == QLatin1String("neohookean");
     a_contactFace.assign(F, 0);
     a_contact = false;
+    a_plastic = false;
     const Scope& params = a_s.parameters().scope;
     std::vector<const Node*> elasticOf(D, nullptr), piezoOf(D, nullptr);
     int order = 0;
@@ -656,6 +665,27 @@ bool SolidProblem3::setup(QString* error)
         }
     }
     if (a_emax == 0) a_emax = 1e11;
+    // Plasticity: a domain's yield stress and tangent modulus, constants; an
+    // isotropic material's, at small strain, without a piezoelectric stress.
+    for (int d = 0; d < int(D); ++d) {
+        const Node* e = elasticOf[std::size_t(d)];
+        if (!f.domains[std::size_t(d)] || !e || !e->flag(QStringLiteral("plastic"))) continue;
+        a_plastic = true;
+        const QString object = topo.objectNames.value(topo.domains[std::size_t(d)].owner);
+        const Expression sy = compile(e->text(QStringLiteral("sigmay")), *e, QStringLiteral("sigmay"), false);
+        const Expression et = compile(e->text(QStringLiteral("Et")).trimmed().isEmpty() ? QStringLiteral("0[Pa]") : e->text(QStringLiteral("Et")), *e,
+                                      QStringLiteral("Et"), false);
+        const Expression& E = coef.named[QStringLiteral("E")][std::size_t(d)];
+        if (!E.isValid()) problem(tr("domain %1 (%2): plasticity is an isotropic material's (E, ν)").arg(d + 1).arg(object));
+        if (a_large) problem(tr("domain %1 (%2): plasticity is small strain's - not with large deformation").arg(d + 1).arg(object));
+        if (piezoOf[std::size_t(d)]) problem(tr("domain %1 (%2): plasticity takes no piezoelectric stress").arg(d + 1).arg(object));
+        if (sy.isValid() && (!sy.isConstant() || !(sy.constant() > 0))) problem(tr("domain %1 (%2): its yield stress must be a constant more than 0").arg(d + 1).arg(object));
+        if (et.isValid() && (!et.isConstant() || !(et.constant() >= 0))) problem(tr("domain %1 (%2): its tangent modulus must be a constant, 0 or more").arg(d + 1).arg(object));
+        if (et.isValid() && et.isConstant() && E.isValid() && E.isConstant() && !(et.constant() < E.constant()))
+            problem(tr("domain %1 (%2): its tangent modulus must be less than its Young's modulus").arg(d + 1).arg(object));
+        coef.named[QStringLiteral("sigmay")][std::size_t(d)] = sy;
+        coef.named[QStringLiteral("Et")][std::size_t(d)] = et;
+    }
     // Large deformation: its strain Green-Lagrange's, said to the results; no
     // thermal strain or piezoelectric stress in it (small strain's).
     if (a_large) {
@@ -1010,6 +1040,9 @@ bool SolidProblem3::solve(const Options3& o, QString* error)
 {
     if (o.frequency > 0) return solveHarmonic(o, error);
     if (a_large) return solveLarge(o, error);
+    if (a_plastic) return solvePlastic(o, error);
+    field().internal.clear();
+    field().internalStride = 0;
     a_harmonic = false;
     for (double& r : a_reactionIm) r = 0;
     Field3& f = field();
@@ -1264,6 +1297,8 @@ bool SolidProblem3::assembleMass(const Equations& q, Mass& out, const std::vecto
 void SolidProblem3::buildContact()
 {
     a_contactPoints.clear();
+    a_contactForce = 0;
+    a_gapMin = 0;
     const Field3& f = a_s.fields()[std::size_t(a_fi)];
     const Space3& sp = *f.space;
     const Mesh3& mesh = a_s.mesh();
@@ -1364,13 +1399,14 @@ void SolidProblem3::buildContact()
             sides.push_back(s);
         }
     }
-    if (sides.empty()) return;
     double search = a_contactSearch;
     if (!(search > 0)) {
         const Box3& b = topo.bounds;
         search = 0.05 * std::max({b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0}) * mesh.unitScale;
     }
     a_contactReach = search;
+    std::set<int> domains;
+    for (const Side& sd : sides) domains.insert(sd.domain);
     // A point x's place on side t: its reference coordinates in t's prism,
     // its gap along t's normal; false where it falls outside t.
     auto project = [&sp](const Side& t, const Vec3& x, double ref[3], double* gap) {
@@ -1403,6 +1439,7 @@ void SolidProblem3::buildContact()
     // Each side's points against every side of another domain facing it:
     // the nearest it falls on within the search distance (both ways - each
     // side pushes on the other).
+    double nearest = std::numeric_limits<double>::infinity();
     for (const Side& s : sides) {
         const std::vector<Space3::FacePoint> pts = sp.facePoints(s.face, sp.order() == 1 ? 2 : 4, s.domain);
         for (const Space3::FacePoint& p : pts) {
@@ -1425,7 +1462,17 @@ void SolidProblem3::buildContact()
                 best.size = t.size;
                 found = true;
             }
-            if (!found) continue;
+            if (!found) {
+                // (The nearest beyond the search distance, said if nothing
+                // pairs.)
+                for (const Side& t : sides) {
+                    if (t.domain == s.domain) continue;
+                    if (s.normal.x * t.normal.x + s.normal.y * t.normal.y + s.normal.z * t.normal.z > -0.5) continue;
+                    double ref[3], gap = 0;
+                    if (project(t, p.x, ref, &gap)) nearest = std::min(nearest, std::abs(gap));
+                }
+                continue;
+            }
             best.sPrism = p.prism;
             best.sRef[0] = p.xi;
             best.sRef[1] = p.eta;
@@ -1435,6 +1482,20 @@ void SolidProblem3::buildContact()
             best.kappa = a_contactPenalty * a_emax / std::max(std::min(best.size, s.size), 1e-30);
             a_contactPoints.push_back(best);
         }
+    }
+    // Nothing paired: said, and why where it can be told.
+    if (a_contactPoints.empty()) {
+        QString why;
+        if (domains.size() < 2)
+            why = sides.empty() ? tr("its faces are none of the solid's outer faces") : tr("its faces are all one domain's - a contact is between two");
+        else if (std::isfinite(nearest))
+            why = tr("none of its faces lie within its search distance of %1 of another's facing it - the nearest %2 apart")
+                      .arg(formatQuantity(search, Dim::length()), formatQuantity(nearest, Dim::length()));
+        else
+            why = tr("none of its faces lies over another's facing it");
+        const QString said = tr("%1: its Contact pairs nothing - %2").arg(a_node->name(), why);
+        a_s.log << said;
+        if (!a_s.warnings.contains(said)) a_s.warnings << said;
     }
 }
 
@@ -1539,6 +1600,343 @@ void SolidProblem3::contactResults(const Equations& q, const Eigen::VectorXd& x,
         if (g < 0) a_contactForce += c.kappa * c.w * (-g);
     }
     if (!std::isfinite(a_gapMin)) a_gapMin = 0;
+}
+
+// ------------------------------------------------------------- Plasticity
+
+namespace {
+
+/// J2 plasticity with linear isotropic hardening at one point, by radial
+/// return from the elastic trial: \a C6 an isotropic stiffness, \a eps the
+/// total strain less the free one (Voigt's, engineering shears), \a ep and
+/// \a alpha the plastic strain (the same) and its equivalent before - after,
+/// where it yields; \a sigmay the yield stress, \a H the plastic modulus
+/// (E Et/(E - Et)). The stress \a sig and the consistent tangent \a D (of
+/// engineering shears).
+void returnMap(const double C6[6][6], const double eps[6], double ep[6], double& alpha, double sigmay, double H, double sig[6], double D[6][6])
+{
+    double ee[6];
+    for (int I = 0; I < 6; ++I) ee[I] = eps[I] - ep[I];
+    for (int I = 0; I < 6; ++I) {
+        sig[I] = 0;
+        for (int J = 0; J < 6; ++J) {
+            sig[I] += C6[I][J] * ee[J];
+            D[I][J] = C6[I][J];
+        }
+    }
+    const double G = C6[3][3], K = C6[0][1] + 2 * G / 3;
+    const double p = (sig[0] + sig[1] + sig[2]) / 3;
+    const double s[6] = {sig[0] - p, sig[1] - p, sig[2] - p, sig[3], sig[4], sig[5]};
+    const double ss = s[0] * s[0] + s[1] * s[1] + s[2] * s[2] + 2 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]);
+    const double q = std::sqrt(1.5 * ss);
+    const double f = q - (sigmay + H * alpha);
+    if (!(f > 0) || !(q > 0)) return;
+    const double dg = f / (3 * G + H);
+    const double beta = 1 - 3 * G * dg / q;
+    for (int I = 0; I < 6; ++I) {
+        sig[I] = (I < 3 ? p : 0.0) + beta * s[I];
+        // (Its flow (3/2) s/q, a tensor's - engineering shears twice it.)
+        ep[I] += dg * 1.5 * s[I] / q * (I < 3 ? 1.0 : 2.0);
+    }
+    alpha += dg;
+    // D = K m m + 2 G β Idev - 2 G γ n n, n = s/|s|, γ = 3G/(3G + H) - (1 - β);
+    // Idev of engineering shears: δ - 1/3 among the normal, ½ δ among the
+    // shears.
+    const double norm = std::sqrt(ss), gamma = 3 * G / (3 * G + H) - (1 - beta);
+    double n[6];
+    for (int I = 0; I < 6; ++I) n[I] = s[I] / norm;
+    for (int I = 0; I < 6; ++I)
+        for (int J = 0; J < 6; ++J) {
+            const double m = (I < 3 && J < 3) ? K : 0.0;
+            const double dev = I < 3 && J < 3 ? (I == J ? 1.0 : 0.0) - 1.0 / 3 : (I >= 3 && I == J ? 0.5 : 0.0);
+            D[I][J] = m + 2 * G * beta * dev - 2 * G * gamma * n[I] * n[J];
+        }
+}
+
+} // namespace
+
+void SolidProblem3::assemblePlastic(const Equations& q, const std::vector<double>& u, double load, const std::vector<double>& before,
+                                    std::vector<double>& after, Eigen::SparseMatrix<double>& K, Eigen::VectorXd& fint, Eigen::VectorXd& fintFixed) const
+{
+    const Field3& f = a_s.fields()[std::size_t(a_fi)];
+    const Space3& sp = *f.space;
+    const Mesh3& mesh = a_s.mesh();
+    const Topology3& topo = a_s.topology();
+    const Solution3::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
+    const int n = sp.size();
+    const int nfix = int(q.fixedKey.size());
+    const int per = sp.perElement(), m = 3 * per;
+    const PrismRule& rule = sp.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+    const int nq = int(rule.points.size());
+    using T = Eigen::Triplet<double>;
+    std::vector<Material> mats(topo.domains.size());
+    std::vector<double> yieldOf(topo.domains.size(), -1), hardOf(topo.domains.size(), 0);
+    for (int d = 0; d < int(mats.size()); ++d) {
+        if (!f.domains[std::size_t(d)]) continue;
+        mats[std::size_t(d)] = materialOf(coef, d);
+        const auto sy = coef.named.find(QStringLiteral("sigmay"));
+        const auto et = coef.named.find(QStringLiteral("Et"));
+        if (sy != coef.named.end() && sy->second[std::size_t(d)].isValid()) {
+            yieldOf[std::size_t(d)] = sy->second[std::size_t(d)].constant();
+            hardOf[std::size_t(d)] = et->second[std::size_t(d)].isValid() ? et->second[std::size_t(d)].constant() : 0.0;
+        }
+    }
+    after = before;
+    struct Part {
+        std::vector<T> t;
+        std::vector<std::pair<int, double>> f, fd;
+    };
+    const int E = sp.elements();
+    const int asked = assemblyParts();
+    const int partCount = std::clamp(asked > 0 ? asked : E / 2000, 1, asked > 0 ? std::max(1, E) : 64);
+    std::vector<Part> parts(static_cast<std::size_t>(partCount));
+    const auto assemblePart = [&, partCount](int k) {
+        Part& part = parts[std::size_t(k)];
+        const int from = int(qint64(E) * k / partCount), to = int(qint64(E) * (k + 1) / partCount);
+        PointEvaluator3 ev(a_s);
+        std::vector<double> Ke(static_cast<std::size_t>(m * m)), Fe(static_cast<std::size_t>(m)), grads(static_cast<std::size_t>(3 * per));
+        std::vector<std::array<double, 18>> B(static_cast<std::size_t>(per)), DB(static_cast<std::size_t>(per));
+        for (int e = from; e < to; ++e) {
+            const int d = mesh.domain[std::size_t(e)];
+            if (d < 0 || !f.domains[std::size_t(d)]) continue;
+            const Material& mat = mats[std::size_t(d)];
+            std::fill(Ke.begin(), Ke.end(), 0.0);
+            std::fill(Fe.begin(), Fe.end(), 0.0);
+            const int* dofs = sp.dofs(e);
+            for (int qi = 0; qi < nq; ++qi) {
+                const auto& qp = rule.points[std::size_t(qi)];
+                const Space3::Map mp = sp.map(e, qp[0], qp[1], qp[2]);
+                const double w = qp[3] * std::abs(mp.det);
+                PrismShape s;
+                prismShapeAt(sp.order(), qp[0], qp[1], qp[2], s);
+                if (!mat.constant) ev.at(e, qp[0], qp[1], qp[2], mp.x);
+                double C6[6][6], S0[6], SP[6];
+                mat.eval(mat.constant ? nullptr : &ev, C6, S0, SP);
+                double eps[6] = {0, 0, 0, 0, 0, 0};
+                for (int i = 0; i < per; ++i) {
+                    double* g = &grads[std::size_t(3 * i)];
+                    Space3::gradient(mp, s.dxi[i], s.deta[i], s.dzeta[i], g);
+                    double b[6][3];
+                    strainColumns(g, b);
+                    for (int I = 0; I < 6; ++I)
+                        for (int a = 0; a < 3; ++a) {
+                            B[std::size_t(i)][std::size_t(3 * I + a)] = b[I][a];
+                            eps[I] += b[I][a] * u[std::size_t(a * n + dofs[i])];
+                        }
+                }
+                for (int I = 0; I < 6; ++I) eps[I] -= load * S0[I];
+                const std::size_t at = (std::size_t(e) * std::size_t(nq) + std::size_t(qi)) * 7;
+                double sig[6], D[6][6];
+                if (yieldOf[std::size_t(d)] >= 0) {
+                    double ep[6];
+                    for (int I = 0; I < 6; ++I) ep[I] = before[at + std::size_t(I)];
+                    double alpha = before[at + 6];
+                    const double G = C6[3][3], Kb = C6[0][1] + 2 * G / 3, Ey = 9 * Kb * G / (3 * Kb + G), Et = hardOf[std::size_t(d)];
+                    returnMap(C6, eps, ep, alpha, yieldOf[std::size_t(d)], Ey * Et / (Ey - Et), sig, D);
+                    for (int I = 0; I < 6; ++I) after[at + std::size_t(I)] = ep[I];
+                    after[at + 6] = alpha;
+                } else {
+                    for (int I = 0; I < 6; ++I) {
+                        sig[I] = 0;
+                        for (int J = 0; J < 6; ++J) {
+                            sig[I] += C6[I][J] * eps[J];
+                            D[I][J] = C6[I][J];
+                        }
+                    }
+                }
+                for (int I = 0; I < 6; ++I) sig[I] -= load * SP[I];
+                for (int i = 0; i < per; ++i)
+                    for (int I = 0; I < 6; ++I)
+                        for (int a = 0; a < 3; ++a) {
+                            double v = 0;
+                            for (int J = 0; J < 6; ++J) v += D[I][J] * B[std::size_t(i)][std::size_t(3 * J + a)];
+                            DB[std::size_t(i)][std::size_t(3 * I + a)] = v;
+                        }
+                for (int i = 0; i < per; ++i)
+                    for (int a = 0; a < 3; ++a) {
+                        const int li = 3 * i + a;
+                        double fv = 0;
+                        for (int I = 0; I < 6; ++I) fv += B[std::size_t(i)][std::size_t(3 * I + a)] * sig[I];
+                        Fe[std::size_t(li)] += w * fv;
+                        for (int j = 0; j < per; ++j)
+                            for (int b2 = 0; b2 < 3; ++b2) {
+                                double v = 0;
+                                for (int I = 0; I < 6; ++I) v += B[std::size_t(i)][std::size_t(3 * I + a)] * DB[std::size_t(j)][std::size_t(3 * I + b2)];
+                                Ke[std::size_t(li * m + 3 * j + b2)] += w * v;
+                            }
+                    }
+            }
+            for (int i = 0; i < m; ++i) {
+                const int ki = (i % 3) * n + dofs[i / 3];
+                const int ei = q.eq[std::size_t(ki)], fi = q.fixed[std::size_t(ki)];
+                if (ei >= 0) part.f.emplace_back(ei, Fe[std::size_t(i)]);
+                else if (fi >= 0) part.fd.emplace_back(fi, Fe[std::size_t(i)]);
+                if (ei < 0) continue;
+                for (int j = 0; j < m; ++j) {
+                    const int kj = (j % 3) * n + dofs[j / 3];
+                    const int ej = q.eq[std::size_t(kj)];
+                    const double v = Ke[std::size_t(i * m + j)];
+                    if (ej >= 0 && v != 0) part.t.emplace_back(ei, ej, v);
+                }
+            }
+        }
+    };
+    if (partCount == 1) assemblePart(0);
+    else {
+        const int threads = std::clamp(int(std::thread::hardware_concurrency()), 1, std::min(16, partCount));
+        std::atomic<int> next{0};
+        detail::Threads pool;
+        for (int t = 0; t < threads; ++t)
+            pool.start([&next, &assemblePart, partCount] {
+                for (int k = next++; k < partCount; k = next++) assemblePart(k);
+            });
+        pool.join();
+    }
+    fint = Eigen::VectorXd::Zero(q.neq);
+    fintFixed = Eigen::VectorXd::Zero(nfix);
+    std::vector<T> all;
+    for (Part& p : parts) {
+        for (const auto& [i, v] : p.f) fint(i) += v;
+        for (const auto& [i, v] : p.fd) fintFixed(i) += v;
+        all.insert(all.end(), p.t.begin(), p.t.end());
+        p.t = {};
+    }
+    K.resize(q.neq, q.neq);
+    K.setFromTriplets(all.begin(), all.end());
+}
+
+bool SolidProblem3::solvePlastic(const Options3& o, QString* error)
+{
+    Field3& f = field();
+    const Space3& sp = *f.space;
+    const int n = sp.size();
+    const QString name = a_node->name();
+    Equations q;
+    buildEquations(q);
+    if (q.neq == 0 && q.fixedKey.empty()) {
+        *error = tr("%1 has nothing to solve").arg(name);
+        return false;
+    }
+    Eigen::VectorXd ud(Eigen::Index(q.fixedKey.size()));
+    for (std::size_t k = 0; k < q.fixedKey.size(); ++k) {
+        const int key = q.fixedKey[k], a = key / n, dof = key % n;
+        const int face = q.fixedFace[k];
+        ud(Eigen::Index(k)) = face >= 0 ? evalAt(a_constraints[std::size_t(face)].value[a], sp.point(dof)) : 0.0;
+        if (!std::isfinite(ud(Eigen::Index(k)))) ud(Eigen::Index(k)) = 0;
+    }
+    // Its loads (its thermal strain in the points' own strain, scaled with
+    // them) and an oblique roller's springs.
+    Assembled a;
+    assemble(q, a, nullptr, false);
+    if (q.fixedKey.empty() && a.P.nonZeros() == 0) {
+        *error = tr("%1 is held nowhere: a Fixed Constraint, a Prescribed Displacement or Rollers against every rigid motion are needed")
+                     .arg(name);
+        return false;
+    }
+    const PrismRule& rule = sp.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+    const std::size_t nq = rule.points.size();
+    std::vector<double> committed(std::size_t(sp.elements()) * nq * 7, 0.0), trialHistory;
+    std::vector<double> u(std::size_t(3 * n), 0.0);
+    const double tol = std::max(o.tolerance, 1e-12);
+    // Load steps of a tenth at most (its history taken along the path), a
+    // step that does not converge halved.
+    double lambda = 0, step = 0.1;
+    int steps = 0, iterations = 0, halvings = 0;
+    const QString solver = o.solver == QLatin1String("iterative") ? QStringLiteral("iterative") : QStringLiteral("direct");
+    while (lambda < 1) {
+        if (o.cancelled && o.cancelled()) {
+            *error = tr("cancelled");
+            return false;
+        }
+        // (A tenth's sum short of 1 by rounding: 1.)
+        double target = std::min(1.0, lambda + step);
+        if (1 - target < 1e-9) target = 1;
+        std::vector<double> trial = u;
+        for (std::size_t k = 0; k < q.fixedKey.size(); ++k) trial[std::size_t(q.fixedKey[k])] = target * ud(Eigen::Index(k));
+        o.tell(tr("%1: load %2 %, plasticity").arg(name).arg(qRound(100 * target)));
+        bool converged = false;
+        for (int it = 0; it < std::max(1, o.maxIterations); ++it) {
+            Eigen::SparseMatrix<double> K;
+            Eigen::VectorXd fi, fd;
+            assemblePlastic(q, trial, target, committed, trialHistory, K, fi, fd);
+            Eigen::VectorXd x(q.neq);
+            for (std::size_t k = 0; k < q.eq.size(); ++k)
+                if (q.eq[k] >= 0) x(q.eq[k]) = trial[k];
+            const Eigen::VectorXd r = fi + a.P * x - target * a.F;
+            if (!r.allFinite()) break;
+            if (a.P.nonZeros() > 0) K += a.P;
+            System3 sys;
+            QString why;
+            QStringList quiet;
+            if (!sys.factorize(K, solver, 1, tol, name, &quiet, &why) && !sys.factorize(K, solver, 1, tol, name, &quiet, &why, false)) break;
+            Eigen::VectorXd dx = Eigen::VectorXd::Zero(q.neq);
+            if (!sys.solve(-r, dx, name, &quiet, &why) || !dx.allFinite()) break;
+            ++iterations;
+            for (std::size_t k = 0; k < q.eq.size(); ++k)
+                if (q.eq[k] >= 0) trial[k] += dx(q.eq[k]);
+            double scale = 0;
+            for (double v : trial) scale = std::max(scale, std::abs(v));
+            if (dx.lpNorm<Eigen::Infinity>() <= tol * std::max(scale, 1e-300)) {
+                converged = true;
+                break;
+            }
+        }
+        if (converged) {
+            // (Its history at where it converged.)
+            Eigen::SparseMatrix<double> K;
+            Eigen::VectorXd fi, fd;
+            assemblePlastic(q, trial, target, committed, trialHistory, K, fi, fd);
+            committed = trialHistory;
+            u = std::move(trial);
+            lambda = target;
+            ++steps;
+            step = std::min(2 * step, 0.1);
+        } else {
+            step /= 2;
+            ++halvings;
+            if (step < 1e-4) {
+                *error = tr("%1: Newton's method did not converge at %2 % of its load - past what it can carry (a perfectly plastic "
+                            "solid's limit load)")
+                             .arg(name)
+                             .arg(formatNumber(100 * lambda, 4));
+                return false;
+            }
+        }
+    }
+    f.values = u;
+    f.internal = committed;
+    f.internalStride = int(nq) * 7;
+    // The reactions: its points' stresses where it is held, less its loads.
+    {
+        Eigen::SparseMatrix<double> K;
+        Eigen::VectorXd fi, fd;
+        std::vector<double> again;
+        assemblePlastic(q, u, 1.0, committed, again, K, fi, fd);
+        for (double& r : a_reaction) r = 0;
+        for (double& r : a_reactionIm) r = 0;
+        const Eigen::VectorXd rr = fd - a.Fd;
+        for (std::size_t k = 0; k < q.fixedKey.size(); ++k) a_reaction[q.fixedKey[k] / n] += rr(Eigen::Index(k));
+        if (a.P.nonZeros() > 0) {
+            Eigen::VectorXd x(q.neq);
+            for (std::size_t k = 0; k < q.eq.size(); ++k)
+                if (q.eq[k] >= 0) x(q.eq[k]) = u[k];
+            const Eigen::VectorXd rp = a.P * x;
+            for (std::size_t k = 0; k < q.eq.size(); ++k)
+                if (q.eq[k] >= 0) a_reaction[k / std::size_t(n)] += rp(q.eq[k]);
+        }
+    }
+    double most = 0;
+    for (std::size_t k = 6; k < committed.size(); k += 7) most = std::max(most, committed[k]);
+    a_s.log << tr("%1: plasticity, %2 unknowns - %3 load steps (%4 halved), %5 Newton iterations, its largest equivalent plastic strain %6")
+                   .arg(name)
+                   .arg(q.neq)
+                   .arg(steps)
+                   .arg(halvings)
+                   .arg(iterations)
+                   .arg(formatNumber(most, 4));
+    a_harmonic = false;
+    f.solved = true;
+    return true;
 }
 
 // ---------------------------------------------------- Geometric stiffness
@@ -1925,6 +2323,7 @@ bool SolidProblem3::solveHarmonic(const Options3& o, QString* error)
         return false;
     }
     if (a_contact) a_s.log << tr("%1: its Contact is a solve at rest's - not in the frequency domain (its faces free)").arg(name);
+    if (a_plastic) a_s.log << tr("%1: its plasticity is a solve at rest's - elastic in the frequency domain").arg(name);
     // The held dofs' amplitudes (a prescribed displacement's: a base
     // shaken), in phase.
     Eigen::VectorXcd ud(Eigen::Index(q.fixedKey.size()));
@@ -2046,6 +2445,7 @@ bool SolidProblem3::eigenmodes(const Options3& o, int count, double shift, std::
         return false;
     }
     if (a_contact) a_s.log << tr("%1: its Contact is a solve at rest's - not in its modes (its faces free)").arg(name);
+    if (a_plastic) a_s.log << tr("%1: its plasticity is a solve at rest's - its modes elastic").arg(name);
     // Its stiffness (what holds it: those dofs nought), and its consistent
     // mass ∫ ρ φi φj, each component's own.
     Assembled a;
@@ -2188,7 +2588,10 @@ void SolidProblem3::setGlobals()
     a_s.setGlobal(p + QStringLiteral("Rz"), a_reaction[2], force, tr("reaction force where it is held, z component"));
     if (a_contact) {
         a_s.setGlobal(p + QStringLiteral("Fn"), a_contactForce, force, tr("contact: its total normal force"));
-        a_s.setGlobal(p + QStringLiteral("gapmin"), a_gapMin, Dim::length(), tr("contact: its least gap (below 0: interpenetrating, the penalty's)"));
+        // (Its least gap where it pairs points: none where nothing pairs -
+        // no gap measured, not nought.)
+        if (!a_contactPoints.empty())
+            a_s.setGlobal(p + QStringLiteral("gapmin"), a_gapMin, Dim::length(), tr("contact: its least gap (below 0: interpenetrating, the penalty's)"));
     }
     if (a_harmonic) {
         static const char* axes[3] = {"x", "y", "z"};
@@ -2300,6 +2703,31 @@ bool solidStateAt(PointEvaluator3& ev, int f, SolidState& out, bool imaginary)
         out.stress[5] = sig[0][1];
         return true;
     }
+    // A plastic solid's plastic strain at its prism's nearest quadrature
+    // point, taken from the strain.
+    double ep[6] = {0, 0, 0, 0, 0, 0};
+    const Field3& field = s.fields()[std::size_t(f)];
+    if (!field.internal.empty() && field.internalStride > 0 && !imaginary) {
+        const int prism = ev.prism();
+        const PrismRule& rule = field.space->order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+        const int nq = int(rule.points.size());
+        if (prism >= 0 && field.internalStride == 7 * nq && std::size_t(prism + 1) * std::size_t(field.internalStride) <= field.internal.size()) {
+            int best = 0;
+            double near = 1e300;
+            for (int k = 0; k < nq; ++k) {
+                const auto& p = rule.points[std::size_t(k)];
+                const double d2 = (p[0] - ev.xi()) * (p[0] - ev.xi()) + (p[1] - ev.eta()) * (p[1] - ev.eta()) + (p[2] - ev.zeta()) * (p[2] - ev.zeta());
+                if (d2 < near) {
+                    near = d2;
+                    best = k;
+                }
+            }
+            const std::size_t at = (std::size_t(prism) * std::size_t(nq) + std::size_t(best)) * 7;
+            for (int I = 0; I < 6; ++I) ep[I] = field.internal[at + std::size_t(I)];
+            out.epeq = field.internal[at + 6];
+        }
+    }
+    for (int I = 0; I < 6; ++I) S0[I] += ep[I];
     double* S = out.strain;
     S[0] = G[0][0];
     S[1] = G[1][1];

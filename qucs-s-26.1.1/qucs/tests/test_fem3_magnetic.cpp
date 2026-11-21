@@ -535,6 +535,78 @@ private slots:
         }
     }
 
+    // Force Calculation, Maxwell's stress tensor over a body's faces with the
+    // air round it, weighted (Arkkio's). A bar fed 2 A along z (an External
+    // Current Density) in a uniform 0.5 T along y: its force I l B0 along x,
+    // as the Lorentz force ∫ J × B of the same field - two ways, to 0.2 %
+    // (0.0001 % found; its faces' integral alone, the first version, 2 %
+    // off). In a Frequency Domain step at 50 Hz, nothing conducting, the time
+    // average half of it. A rod magnetized
+    // along x (Br 1 T, radius 1 mm, uniform in z) in a uniform B0 0.5 T
+    // along y: its torque about z m × B0 = (Br/µ0) π a² h B0 - its own
+    // field's image parallel to it, no torque -, along its axis the same,
+    // to 2 %; its force nought (under 1 % of the torque over the radius).
+    void forceByMaxwellStress()
+    {
+        for (bool harmonic : {false, true}) {
+            Model m = model3d(0.2);
+            addBox(m, QStringLiteral("air"), -2, -2, 0, 4, 4, 1);
+            addBox(m, QStringLiteral("bar"), -0.2, -0.2, 0, 0.4, 0.4, 1);
+            for (const char* o : {"air", "bar"}) zDivisions(m, QString::fromLatin1(o), 1);
+            const QString mf = addMagnetic(m, 2);
+            addFeature(m, mf, QStringLiteral("magnetic/current"), objects(QStringLiteral("bar")),
+                       {{QStringLiteral("Jez"), QStringLiteral("2[A]/0.16[mm^2]")}});
+            addFeature(m, mf, QStringLiteral("magnetic/potential"), rule(R"({"exterior": true})"), {{QStringLiteral("A0z"), QStringLiteral("-0.5[T]*x")}});
+            addFeature(m, mf, QStringLiteral("magnetic/insulation"), normal(0, 0, 1));
+            addFeature(m, mf, QStringLiteral("magnetic/insulation"), normal(0, 0, -1));
+            addFeature(m, mf, QStringLiteral("magnetic/force"), objects(QStringLiteral("bar")), {{QStringLiteral("name"), QStringLiteral("bar")}});
+            if (harmonic)
+                for (Node& st : m.root.children)
+                    if (st.type == QLatin1String("study")) {
+                        for (Node& step : st.children) step.enabled = false;
+                        Node fr = m.make(QStringLiteral("frequency"));
+                        fr.props.insert(QStringLiteral("frequencies"), QStringLiteral("50[Hz]"));
+                        st.children.push_back(fr);
+                    }
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            // (J along z, B along y: J × B along -x, I l B0 = 1e-3 N; its time
+            // average half of it.)
+            const double share = harmonic ? 0.5 : 1.0;
+            const double fx = global(sv.s(), QStringLiteral("mf.Fx_bar")), fy = global(sv.s(), QStringLiteral("mf.Fy_bar"));
+            const double lorentz = harmonic ? -share * 1e-3 : -integral(sv.s(), QStringLiteral("mf.Jz*mf.By"));
+            const QString said = QStringLiteral("a fed bar%1: Maxwell's (%2, %3) N, ∫ J × B %4 N, I l B0 %5 N")
+                                     .arg(harmonic ? QStringLiteral(" at 50 Hz, its time average") : QString()).arg(fx).arg(fy).arg(lorentz).arg(-share * 1e-3);
+            QVERIFY2(std::abs(fx - lorentz) < 2e-3 * std::abs(lorentz) && std::abs(fx + share * 1e-3) < 2e-3 * 1e-3 && std::abs(fy) < 2e-3 * 1e-3, qPrintable(said));
+            info(said);
+        }
+        {
+            const double a = 1, R = 6, h = 0.25, B0 = 0.5;
+            Model m = model3d(0.25);
+            addCylinder(m, QStringLiteral("air"), R, h);
+            addCylinder(m, QStringLiteral("rod"), a, h);
+            zDivisions(m, QStringLiteral("air"), 1);
+            zDivisions(m, QStringLiteral("rod"), 1);
+            const QString mf = addMagnetic(m, 2);
+            addFeature(m, mf, QStringLiteral("magnetic/magnet"), objects(QStringLiteral("rod")),
+                       {{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("Br"), QStringLiteral("1[T]")}, {QStringLiteral("dx"), QStringLiteral("1")},
+                        {QStringLiteral("dy"), QStringLiteral("0")}, {QStringLiteral("dz"), QStringLiteral("0")}});
+            addFeature(m, mf, QStringLiteral("magnetic/potential"), rule(R"({"exterior": true})"), {{QStringLiteral("A0z"), QStringLiteral("-0.5[T]*x")}});
+            addFeature(m, mf, QStringLiteral("magnetic/insulation"), normal(0, 0, 1));
+            addFeature(m, mf, QStringLiteral("magnetic/insulation"), normal(0, 0, -1));
+            addFeature(m, mf, QStringLiteral("magnetic/force"), objects(QStringLiteral("rod")), {{QStringLiteral("name"), QStringLiteral("rod")}});
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const double want = 1 / Mu0 * M_PI * (a * 1e-3) * (a * 1e-3) * (h * 1e-3) * B0;
+            const double tz = global(sv.s(), QStringLiteral("mf.Tz_rod")), t = global(sv.s(), QStringLiteral("mf.T_rod"));
+            const double fx = global(sv.s(), QStringLiteral("mf.Fx_rod")), fy = global(sv.s(), QStringLiteral("mf.Fy_rod"));
+            const QString said = QStringLiteral("a magnet in a field: torque %1 (along its axis %2) N m against m × B0 %3; force (%4, %5) N")
+                                     .arg(tz).arg(t).arg(want).arg(fx).arg(fy);
+            QVERIFY2(std::abs(tz - want) < 2e-2 * want && std::abs(t - tz) < 1e-12 * want && std::hypot(fx, fy) < 1e-2 * want / (a * 1e-3), qPrintable(said));
+            info(said);
+        }
+    }
+
     // A coaxial line, 1 mm long: 1 A along z in its core (0.5 mm) and back
     // in its shell (1.5 to 1.8 mm), its outer wall and ends insulated: its
     // energy L' l I²/2, L' µ0/2π (ln(b/a) + 1/4 + c⁴ ln(c/b)/(c² - b²)² -

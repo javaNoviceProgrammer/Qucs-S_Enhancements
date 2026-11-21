@@ -307,6 +307,11 @@ void Solution3::defineSolid(int f)
         return std::sqrt(0.5 * ((s[0] - s[1]) * (s[0] - s[1]) + (s[1] - s[2]) * (s[1] - s[2]) + (s[2] - s[0]) * (s[2] - s[0]))
                          + 3 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]));
     });
+    define(p + QStringLiteral("epeq"), Dim(), tr("equivalent plastic strain (a plastic solid's; nought elsewhere)"), K::Derived, f, 0, 1,
+           [f](PointEvaluator3& e) {
+               detail3::SolidState st;
+               return detail3::solidStateAt(e, f, st) ? st.epeq : NaN;
+           });
     // Its von Mises stress's peak over a cycle (the frequency domain's; at
     // rest von Mises itself): σ(t) = A cos t - B sin t of its parts A and B,
     // q = σ_vm² a quadratic form - q(t) = q(A) cos² t + q(B) sin² t - 2 b(A,
@@ -581,6 +586,7 @@ Solution3::Snapshot Solution3::snapshotNow() const
         s.values.push_back(f.values);
         s.terminals.push_back(f.terminals);
         s.matrices.push_back(f.matrix);
+        s.internals.push_back(f.internal);
     }
     s.globals = a_globals;
     return s;
@@ -609,6 +615,7 @@ void Solution3::select(int i)
         a_fields[f].values = s.values[f];
         a_fields[f].terminals = s.terminals[f];
         a_fields[f].matrix = s.matrices[f];
+        if (f < s.internals.size()) a_fields[f].internal = s.internals[f];
     }
     for (const auto& [name, g] : s.globals) {
         a_globals[name] = g;
@@ -2355,6 +2362,8 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
     s->log << tr("Solved in %1 s").arg(s->seconds, 0, 'f', 2);
     out.solution = s;
     out.log = s->log;
+    for (const QString& w : s->warnings)
+        if (!out.warnings.contains(w)) out.warnings << w;
     return out;
 }
 
