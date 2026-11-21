@@ -1934,19 +1934,23 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
     // Its plots drawn where the solid has moved: a Deformation's
     // displacement, scaled.
     std::optional<Deformation3> deformation;
+    QString drawnBy;
     for (const Node& p : g.children)
         if (p.enabled && p.type == QLatin1String("deformation")) {
+            // (One a group: a later one's over an earlier one's, said.)
+            if (!drawnBy.isEmpty()) a_plotProblems << tr("%1: only one Deformation a group is drawn - %2 left out").arg(p.name(), drawnBy);
+            drawnBy = p.name();
             const std::array<Expression, 3> u{Expression::compile(p.text(QStringLiteral("x")), sol->scope()),
                                               Expression::compile(p.text(QStringLiteral("y")), sol->scope()),
                                               Expression::compile(p.text(QStringLiteral("z")), sol->scope())};
-            double scale = 0;
+            std::optional<double> scale;
             if (p.text(QStringLiteral("scaling")) == QLatin1String("manual"))
                 scale = evaluateConstant(p.text(QStringLiteral("scale")), sol->parameters().scope, Dim()).value_or(1);
             Deformation3 d = deformation3(*sol, u, scale);
             if (!d.error.isEmpty()) a_plotProblems << tr("%1: %2").arg(p.name(), d.error);
             else deformation = std::move(d);
         }
-    const Deformation3* def = deformation && deformation->used > 0 ? &*deformation : nullptr;
+    const Deformation3* def = deformation && deformation->used != 0 ? &*deformation : nullptr;
     auto nodeAt = [&m, def](int n) { return def ? def->node(m, n) : m.nodes[std::size_t(n)]; };
     auto moved = [&m, def](const auto& st, int k) {
         return def ? def->at(m, st.prism, st.ref[std::size_t(k)], st.p[std::size_t(k)]) : st.p[std::size_t(k)];

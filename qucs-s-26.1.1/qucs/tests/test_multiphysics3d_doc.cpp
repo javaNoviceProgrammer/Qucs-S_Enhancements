@@ -1746,8 +1746,35 @@ private slots:
                 if (v.x > 3.9) tipTop = std::max(tipTop, v.z);
         QVERIFY2(tipTop < 0.7, qPrintable(QString::number(tipTop)));
         QVERIFY(doc->view()->scene().bounds.z0 <= lowest() + 1e-12);
+        // A manual scale of 0: at rest. A second Deformation (the model adds
+        // one a group; a file edited by hand may hold two): the first left
+        // out, said.
         Model m = doc->model();
-        m.find(deformation)->enabled = false;
+        m.find(deformation)->props.insert(QStringLiteral("scaling"), QStringLiteral("manual"));
+        m.find(deformation)->props.insert(QStringLiteral("scale"), QStringLiteral("0"));
+        QVERIFY(doc->setModel(m, QStringLiteral("scale 0")));
+        QTRY_VERIFY(std::abs(lowest()) < 1e-12);
+        QVERIFY(!doc->view()->legend().title.contains(QStringLiteral("deformed")));
+        m = doc->model();
+        FNode twice = m.make(QStringLiteral("deformation"));
+        twice.label = QStringLiteral("Again");
+        const QString group = [&] {
+            for (const FNode& c : m.results().children)
+                for (const FNode& p : c.children)
+                    if (p.tag == deformation) return c.tag;
+            return QString();
+        }();
+        QVERIFY(!m.add(group, twice));
+        for (FNode& c : m.results().children)
+            if (c.tag == group) c.children.push_back(twice);
+        QVERIFY(doc->setModel(m, QStringLiteral("two deformations")));
+        QTRY_VERIFY2(doc->plotProblems().join(QLatin1Char(' ')).contains(QStringLiteral("only one Deformation a group")),
+                     qPrintable(doc->plotProblems().join(QStringLiteral("; "))));
+        QVERIFY(lowest() < -0.35);
+        m = doc->model();
+        for (FNode& c : m.results().children)
+            for (FNode& p : c.children)
+                if (p.type == QLatin1String("deformation")) p.enabled = false;
         QVERIFY(doc->setModel(m, QStringLiteral("at rest")));
         QTRY_VERIFY(std::abs(lowest()) < 1e-12);
         QVERIFY(!doc->view()->legend().title.contains(QStringLiteral("deformed")));
