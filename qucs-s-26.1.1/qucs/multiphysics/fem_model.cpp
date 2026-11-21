@@ -4029,7 +4029,13 @@ QList<NodeKind> makeKinds()
                      {tr("None"), tr("Across x"), tr("Across y"), tr("Across z")}, QStringLiteral("none"),
                      tr("What lies beyond a plane cut away - its cut face drawn as the group's first surface or slice is coloured")),
               shownIf(expr(QStringLiteral("clipat"), tr("Clip at"), QStringLiteral("length"), QStringLiteral("0"), tr("In the geometry's unit")),
-                      QStringLiteral("clip!=none"))},
+                      QStringLiteral("clip!=none")),
+              choice(QStringLiteral("phasemode"), tr("Phase"), {QStringLiteral("fixed"), QStringLiteral("largest")},
+                     {tr("As given"), tr("Where the solid moves most (each frequency's own)")}, QStringLiteral("fixed"),
+                     tr("Of a frequency domain's solid: each part drawn as Re(û e^{jφ}) - its displacement, strain, stress and "
+                        "Deformation at one moment of the cycle; its amplitude solid.disp and the peak of its von Mises "
+                        "solid.misespeak at any")),
+              shownIf(expr(QStringLiteral("phase"), tr("Phase φ"), QString(), QStringLiteral("0"), tr("In degrees")), QStringLiteral("phasemode=fixed"))},
              {QStringLiteral("surface"), QStringLiteral("slice"), QStringLiteral("isosurface"), QStringLiteral("arrowvolume"), QStringLiteral("meshplot"),
               QStringLiteral("deformation")},
              {}, false, false, QStringLiteral("pg3d"),

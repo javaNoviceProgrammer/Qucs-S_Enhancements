@@ -851,6 +851,93 @@ private slots:
         }
     }
 
+    // At its resonance (c/4L, a loss factor 0.02) the bar's response is a
+    // quarter cycle out of phase with its load: its real parts some 1 % of
+    // what moves (the review of 6328b364). Its
+    // amplitude solid.disp and the peak of its von Mises over a cycle
+    // solid.misespeak are the exact |σ0 cos kx / cos kL| (5e-3, a stress's
+    // order); read at the phase where it moves most (largestPhase()) its
+    // tip's u is its amplitude and its von Mises the peak's; at φ = 90°
+    // each part is minus its imaginary part at 0; at rest misespeak is von
+    // Mises.
+    void harmonicAtResonance()
+    {
+        using cd = std::complex<double>;
+        const double L = 10e-3, E = 200e9, rho = 7850, s0 = 1e6, eta = 0.02;
+        const double fa = std::sqrt(E / rho) / (4 * L);
+        Model m = model3d(0.5);
+        addBox(m, QStringLiteral("bar"), 0, 0, 0, 10, 1, 1);
+        zDivisions(m, QStringLiteral("bar"), 2);
+        const QString solid = addSolid(m, 2, {{QStringLiteral("E"), QStringLiteral("200[GPa]")}, {QStringLiteral("nu"), QStringLiteral("0")},
+                                              {QStringLiteral("rho"), QStringLiteral("7850[kg/m^3]")}});
+        addFeature(m, solid, QStringLiteral("solid/fixed"), ofSide(QStringLiteral("bar"), QStringLiteral("left")));
+        addFeature(m, solid, QStringLiteral("solid/load"), ofSide(QStringLiteral("bar"), QStringLiteral("right")), {{QStringLiteral("Fx"), QStringLiteral("1[MPa]")}});
+        addFeature(m, solid, QStringLiteral("solid/damping"), objects(QStringLiteral("bar")),
+                   {{QStringLiteral("kind"), QStringLiteral("loss")}, {QStringLiteral("eta"), QString::number(eta)}});
+        for (Node& st : m.root.children)
+            if (st.type == QLatin1String("study")) {
+                for (Node& step : st.children) step.enabled = false;
+                Node fr = m.make(QStringLiteral("frequency"));
+                fr.props.insert(QStringLiteral("frequencies"), QStringLiteral("0[Hz], %1[Hz], %2[Hz]").arg(fa, 0, 'g', 17).arg(0.99 * fa, 0, 'g', 17));
+                st.children.push_back(fr);
+            }
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+        Solution3& s = sv.s();
+        QCOMPARE(s.snapshotCount(), 3);
+        // At rest: the peak von Mises itself.
+        s.select(0);
+        QCOMPARE(valueAt(s, QStringLiteral("solid.misespeak"), 5, 0.5, 0.5), valueAt(s, QStringLiteral("solid.mises"), 5, 0.5, 0.5));
+        s.select(1);
+        const cd Es = E * cd(1, eta), k = 2 * M_PI * fa * std::sqrt(rho / Es);
+        const cd tip = s0 * std::sin(k * L) / (Es * k * std::cos(k * L));
+        QString said;
+        for (double x : {0.5, 5.0}) {
+            const double want = std::abs(s0 * std::cos(k * x * 1e-3) / std::cos(k * L));
+            const double peak = valueAt(s, QStringLiteral("solid.misespeak"), x, 0.5, 0.5), real = valueAt(s, QStringLiteral("solid.mises"), x, 0.5, 0.5);
+            said += QStringLiteral(" x %1 mm: peak %2 MPa against %3, von Mises of the real parts %4;").arg(x).arg(peak / 1e6).arg(want / 1e6).arg(real / 1e6);
+            QVERIFY2(std::abs(peak - want) < 5e-3 * want && real < 0.05 * want, qPrintable(said));
+        }
+        const double amp = valueAt(s, QStringLiteral("solid.disp"), 10, 0.5, 0.5);
+        QVERIFY2(std::abs(amp - std::abs(tip)) < 1e-4 * std::abs(tip), qPrintable(said));
+        // At the phase where it moves most.
+        const int fi = s.fieldIndex(solid);
+        const double phi = largestPhase(s, fi);
+        s.setPhase(phi);
+        const double u = valueAt(s, QStringLiteral("solid.u"), 10, 0.5, 0.5), vm = valueAt(s, QStringLiteral("solid.mises"), 0.5, 0.5, 0.5);
+        const double want = std::abs(s0 * std::cos(k * 0.5e-3) / std::cos(k * L));
+        said += QStringLiteral(" at φ %1°: tip u %2 m against %3, von Mises %4 MPa").arg(phi * 180 / M_PI).arg(u).arg(std::abs(tip)).arg(vm / 1e6);
+        QVERIFY2(std::abs(std::abs(u) - std::abs(tip)) < 1e-3 * std::abs(tip) && std::abs(vm - want) < 1e-2 * want, qPrintable(said));
+        // A quarter cycle on: each part minus the imaginary part at 0.
+        s.setPhase(0);
+        const double im0 = valueAt(s, QStringLiteral("solid.u_im"), 10, 0.5, 0.5), re0 = valueAt(s, QStringLiteral("solid.u"), 10, 0.5, 0.5);
+        s.setPhase(M_PI / 2);
+        QVERIFY(std::abs(valueAt(s, QStringLiteral("solid.u"), 10, 0.5, 0.5) + im0) < 1e-12 * std::abs(im0));
+        QVERIFY(std::abs(valueAt(s, QStringLiteral("solid.u_im"), 10, 0.5, 0.5) - re0) < 1e-12 * std::abs(im0) + 1e-20);
+        const std::vector<double> nodal = nodalValues(s, Expression::compile(QStringLiteral("solid.u"), s.pointScope()));
+        double most = 0;
+        for (double v : nodal)
+            if (std::isfinite(v)) most = std::max(most, std::abs(v));
+        // (The largest at the nodes, beside the tip's middle: its corners
+        // move a millionth more.)
+        QVERIFY2(std::abs(most - std::abs(im0)) < 1e-5 * std::abs(im0), qPrintable(QStringLiteral("%1 against %2").arg(most, 0, 'g', 12).arg(im0, 0, 'g', 12)));
+        s.setPhase(0);
+        // A hundredth below it, some way out of phase (45°): where it moves
+        // most - all its nodes', not its tip's alone: 1e-4 -, its tip's u its
+        // amplitude.
+        s.select(2);
+        const double re2 = valueAt(s, QStringLiteral("solid.u"), 10, 0.5, 0.5), im2 = valueAt(s, QStringLiteral("solid.u_im"), 10, 0.5, 0.5);
+        const double phi2 = largestPhase(s, fi);
+        s.setPhase(phi2);
+        const double u2 = valueAt(s, QStringLiteral("solid.u"), 10, 0.5, 0.5);
+        s.setPhase(0);
+        said += QStringLiteral("; at 0.99 fa: û %1%2j, φ %3°, u there %4").arg(re2).arg(im2, 0, 'g', 6, QLatin1Char('+')).arg(phi2 * 180 / M_PI).arg(u2);
+        QVERIFY2(std::abs(re2) > 0.2 * std::hypot(re2, im2) && std::abs(im2) > 0.2 * std::hypot(re2, im2)
+                     && std::abs(std::abs(u2) - std::hypot(re2, im2)) < 1e-4 * std::hypot(re2, im2),
+                 qPrintable(said));
+        info(said);
+    }
+
     // Prestress in the eigenfrequencies: a beam 20 mm long, 1 mm square, E
     // 200 GPa, ν 0, clamped at both ends and its right end pulled (or pushed)
     // 2 µm - σ0 = ±20 MPa along it, a hundredth of its buckling stress. Its

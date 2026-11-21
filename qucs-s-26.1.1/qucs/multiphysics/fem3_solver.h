@@ -32,6 +32,11 @@
 namespace qucs_s::fem {
 
 /// One physics solved in 3D: its field on its space, and what was found.
+struct Field3;
+/// Whether field \a f's values hold its imaginary parts after its real ones
+/// (a solid's harmonic response).
+bool harmonicLayout(const Field3& f);
+
 struct Field3 {
     QString tag;           ///< es, ec, ht, solid
     QString type;          ///< electrostatics, currents, heat, solid
@@ -125,6 +130,11 @@ public:
     /// The frequency the globals are of (Hz; 0: none).
     double frequency() const { return a_frequency; }
     void setFrequency(double f) { a_frequency = f; }
+    /// The phase φ (rad) a frequency domain's solid is read at: each of its
+    /// parts Re(û e^{jφ}) - its displacement, strain, stress, a Deformation
+    /// -, its _im parts Im(û e^{jφ}). 0: as solved.
+    double phase() const { return a_phase; }
+    void setPhase(double radians) { a_phase = radians; }
     /// An eigenmode expansion's results, by physics: its device as read, and
     /// its S-parameters and ports' modes at each wavelength solved (the
     /// snapshots' order). A full-wave solve's (Electromagnetic Waves,
@@ -217,6 +227,7 @@ private:
     std::vector<Coefficients> a_coefficients;
     double a_time = 0;
     double a_frequency = 0;
+    double a_phase = 0;
     std::unique_ptr<Scope> a_pointScope, a_globalScope;
     std::vector<VariableDef> a_defs;
     struct Global {

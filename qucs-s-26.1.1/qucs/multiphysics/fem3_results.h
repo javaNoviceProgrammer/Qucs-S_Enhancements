@@ -94,6 +94,11 @@ struct Deformation3 {
 };
 Deformation3 deformation3(const Solution3& solution, const std::array<Expression, 3>& u, std::optional<double> scale);
 
+/// The phase (rad) at which field \a f - a frequency domain's solid, its
+/// imaginary parts after its real ones - moves most: Σ |Re(û e^{jφ})|² its
+/// greatest. 0 where it holds no imaginary parts.
+double largestPhase(const Solution3& solution, int f);
+
 /// One solution of a 3D study's, as results take it: its sweep's point and
 /// its output time.
 struct Instance3 {

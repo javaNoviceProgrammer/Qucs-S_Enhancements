@@ -251,7 +251,10 @@ struct SolidState {
     double energy = 0;
 };
 /// Field \a f's (a solid's) at \a ev's point; false where it is not solved.
-bool solidStateAt(PointEvaluator3& ev, int f, SolidState& out);
+/// \a imaginary: a frequency domain's imaginary parts' (at the solution's
+/// phase) - C ε alone, its sources' stresses being in phase; false where it
+/// holds none.
+bool solidStateAt(PointEvaluator3& ev, int f, SolidState& out, bool imaginary = false);
 
 } // namespace qucs_s::fem::detail3
 

@@ -51,12 +51,22 @@ std::vector<double> nodalValues(const Solution3& s, const Expression& e)
     int part = 0;
     if (const int f = ownVariable(s, e, &part); f >= 0) {
         const Field3& field = s.fields()[std::size_t(f)];
-        const std::size_t offset = field.space ? std::size_t(part) * std::size_t(field.space->size()) : 0;
+        // (At a phase, its real and imaginary parts turned - as
+        // PointEvaluator3::field() reads them.)
+        const double phi = s.phase();
+        const bool turned = phi != 0 && harmonicLayout(field) && part < field.count();
+        const std::size_t size = field.space ? std::size_t(field.space->size()) : 0;
+        const std::size_t offset = std::size_t(part) * size, offsetIm = std::size_t(part + field.count()) * size;
+        const double c = std::cos(phi), sn = std::sin(phi);
         for (std::size_t p = 0; p < m.prisms.size(); ++p) {
             const int d = m.domain[p];
             if (d < 0 || d >= int(field.domains.size()) || !field.domains[std::size_t(d)]) continue;
-            for (int n : m.prisms[p])
-                if (offset + std::size_t(n) < field.values.size()) out[std::size_t(n)] = field.values[offset + std::size_t(n)];
+            for (int n : m.prisms[p]) {
+                if (offset + std::size_t(n) >= field.values.size()) continue;
+                double v = field.values[offset + std::size_t(n)];
+                if (turned) v = c * v - sn * field.values[offsetIm + std::size_t(n)];
+                out[std::size_t(n)] = v;
+            }
         }
         return out;
     }
@@ -343,6 +353,24 @@ std::vector<Arrow3> arrows3(const Solution3& s, const std::array<Expression, 3>&
 }
 
 // ------------------------------------------------------------ Deformation
+
+double largestPhase(const Solution3& s, int f)
+{
+    // Σ |Re(û e^{jφ})|² = a cos² φ + b sin² φ - 2 c sin φ cos φ (a = Σ re²,
+    // b = Σ im², c = Σ re im): greatest at φ = ½ atan2(-2c, a - b).
+    if (f < 0 || f >= int(s.fields().size())) return 0;
+    const Field3& field = s.fields()[std::size_t(f)];
+    if (!harmonicLayout(field)) return 0;
+    const std::size_t half = std::size_t(field.space->size()) * std::size_t(field.count());
+    double a = 0, b = 0, c = 0;
+    for (std::size_t k = 0; k < half; ++k) {
+        const double re = field.values[k], im = field.values[k + half];
+        a += re * re;
+        b += im * im;
+        c += re * im;
+    }
+    return 0.5 * std::atan2(-2 * c, a - b);
+}
 
 Vec3 Deformation3::node(const Mesh3& m, int n) const
 {
