@@ -241,10 +241,27 @@ void Solution3::defineSolid(int f)
         u[c] = definePart(p + name, Dim::length(), tr("displacement, %1 component").arg(QString::fromLatin1(axis[c])), f, c);
         definePart(name, Dim::length(), tr("displacement, %1 component (%2)").arg(QString::fromLatin1(axis[c]), field.tag), f, c);
     }
-    define(p + QStringLiteral("disp"), Dim::length(), tr("displacement, magnitude"), K::Derived, f, 0, 1, [u](PointEvaluator3& e) {
-        const double a = e.value(u[0]), b = e.value(u[1]), c = e.value(u[2]);
-        return std::sqrt(a * a + b * b + c * c);
-    });
+    // (In the frequency domain each its real part; _im its imaginary, nought
+    // at rest - the field's values the real parts by component, then the
+    // imaginary ones.)
+    int ui[3];
+    for (int c = 0; c < 3; ++c)
+        ui[c] = define(p + field.components.value(c) + QStringLiteral("_im"), Dim::length(),
+                       tr("displacement, %1 component, its imaginary part (the frequency domain's)").arg(QString::fromLatin1(axis[c])), K::Derived, f,
+                       0, 1, [f, c](PointEvaluator3& e) {
+                           double v = 0, g[3];
+                           if (e.field(f, c + 3, v, g)) return v;
+                           return e.field(f, c, v, g) ? 0.0 : NaN;
+                       });
+    define(p + QStringLiteral("disp"), Dim::length(), tr("displacement, magnitude (its amplitude in the frequency domain)"), K::Derived, f, 0, 1,
+           [u, ui](PointEvaluator3& e) {
+               double s = 0;
+               for (int c = 0; c < 3; ++c) {
+                   const double a = e.value(u[c]), b = e.value(ui[c]);
+                   s += a * a + (std::isfinite(b) ? b * b : 0.0);
+               }
+               return std::sqrt(s);
+           });
     // (Its strain and stress at the point, Voigt's order xx, yy, zz, yz, xz,
     // xy: a tensor's shear strain half the engineering one.)
     struct Out {
@@ -701,7 +718,12 @@ bool PointEvaluator3::field(int f, int part, double& u, double g[3])
     if (f < 0 || f >= int(a_s.fields().size()) || a_prism < 0) return false;
     const Field3& field = a_s.fields()[std::size_t(f)];
     if (!field.space || a_domain < 0 || a_domain >= int(field.domains.size()) || !field.domains[std::size_t(a_domain)]
-        || field.values.size() < std::size_t(field.space->size()) * std::size_t(field.count()) || part < 0 || part >= field.count())
+        || field.values.size() < std::size_t(field.space->size()) * std::size_t(field.count()) || part < 0)
+        return false;
+    // (Past its components: the frequency domain's imaginary parts, where
+    // its values hold them - a solid's harmonic response.)
+    if (part >= field.count()
+        && (part >= 2 * field.count() || field.values.size() < 2 * std::size_t(field.space->size()) * std::size_t(field.count())))
         return false;
     const Space3& sp = *field.space;
     PrismShape s;
@@ -1538,22 +1560,27 @@ bool wavelengthStep3(Solution3& s, const Node& step, const std::function<bool(do
 /// it: a coil's currents physics); and of each semiconductor's small signal
 /// about its solution at rest - its contacts' admittance, <tag>.G_<k>_<l>
 /// and <tag>.C_<k>_<l> (its real part, and its imaginary over ω), <tag>.Gkl,
-/// <tag>.Ckl where both contacts' names are one letter.
+/// <tag>.Ckl where both contacts' names are one letter; and each solid's
+/// harmonic response, (K (1 + jη) + jω (αM + βK) - ω² M) u = F.
 bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const detail3::Options3& o, const std::vector<int>& subset, QString* error)
 {
     std::vector<int> semis, rest;
-    bool magnetic = false;
+    bool magnetic = false, solid = false;
+    const auto harmonicType = [](const QString& type) { return type == QLatin1String("magnetic") || type == QLatin1String("solid"); };
     for (int i : subset) {
         const QString& type = s.fields()[std::size_t(i)].type;
         if (type == QLatin1String("semiconductor")) semis.push_back(i);
         else {
             rest.push_back(i);
             magnetic = magnetic || type == QLatin1String("magnetic");
+            solid = solid || type == QLatin1String("solid");
         }
     }
-    if (semis.empty() && !magnetic) {
-        *error = tr("%1: a Frequency Domain step in 3D solves magnetic fields' eddy currents or a semiconductor's small signal - its physics have "
-                    "neither")
+    // (What is solved harmonically: magnetic fields and solids.)
+    const bool harmonic = magnetic || solid;
+    if (semis.empty() && !harmonic) {
+        *error = tr("%1: a Frequency Domain step in 3D solves magnetic fields' eddy currents, a solid's harmonic response or a semiconductor's "
+                    "small signal - its physics have none of them")
                      .arg(node.name());
         return false;
     }
@@ -1576,9 +1603,9 @@ bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const d
     // What changes with the frequency: the magnetic fields, and what reads
     // them (a heat physics of their losses).
     std::vector<int> varying;
-    if (magnetic) {
+    if (harmonic) {
         std::vector<char> v(problems.size(), 0);
-        for (int i : rest) v[std::size_t(i)] = s.fields()[std::size_t(i)].type == QLatin1String("magnetic");
+        for (int i : rest) v[std::size_t(i)] = harmonicType(s.fields()[std::size_t(i)].type);
         for (bool grew = true; grew;) {
             grew = false;
             for (int i : rest)
@@ -1602,7 +1629,7 @@ bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const d
     const auto atFrequency = [&](std::size_t n, bool solve, int magneticField) -> bool {
         const double f = (*listed)[n];
         s.setFrequency(f);
-        if (magnetic) {
+        if (harmonic) {
             if (o.cancelled && o.cancelled()) {
                 *error = tr("cancelled");
                 return false;
@@ -1697,9 +1724,9 @@ bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const d
         for (std::size_t n = 0; n < listed->size(); ++n)
             if (!atFrequency(n, true, -1)) return false;
     if (!semis.empty()) s.log << tr("%1: the contacts' admittance at %2 frequencies").arg(node.name()).arg(listed->size());
-    if (magnetic)
-        s.log << tr("%1: the magnetic fields at %2 frequencies, from %3 to %4")
-                     .arg(node.name())
+    if (harmonic)
+        s.log << tr("%1: %2 at %3 frequencies, from %4 to %5")
+                     .arg(node.name(), magnetic && solid ? tr("the magnetic fields and solids") : magnetic ? tr("the magnetic fields") : tr("the solids"))
                      .arg(listed->size())
                      .arg(formatQuantity(listed->front(), hertz), formatQuantity(listed->back(), hertz));
     return true;
@@ -2099,6 +2126,7 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
             }
             if (nonzeros[order] < 0) nonzeros[order] = patternNonzeros(*f.space);
             Estimate3 e = estimateOn(*f.space, nonzeros[order], solver, componentsOf(f.type));
+            if (f.type == QLatin1String("solid")) solidHarmonic(e, harmonicFrequencies(*study, s->parameters().scope));
             e.physics = f.tag;
             if (const Node* p = s->model().find(f.tag)) e.name = p->name();
             s->log << tr("Estimated: %1").arg(estimateText(e));

@@ -122,6 +122,11 @@ void magneticComplexFactor(double* seconds, double* bytes);
 /// The frequencies above 0 of a study's enabled Frequency Domain steps
 /// (their magnetic fields solved harmonically at each), in \a scope.
 int harmonicFrequencies(const Node& study, const Scope& scope);
+/// A solid's estimate \a e made for its harmonic response at \a frequencies
+/// (more than 0: none changed otherwise) - a complex LDLᵀ at each, its
+/// factors and matrix twice the real ones' bytes and some four times their
+/// work; no iterative solve of it.
+void solidHarmonic(Estimate3& e, int frequencies);
 
 /// This machine's memory (bytes; 0 not known).
 double physicalMemory();

@@ -29,6 +29,7 @@
 #include <QtTest>
 
 #include <cmath>
+#include <complex>
 
 using namespace qucs_s::fem;
 
@@ -726,6 +727,128 @@ private slots:
         // (The axial mode: its tip moves along x, scaled to 1.)
         QVERIFY2(std::abs(std::abs(valueAt(s, QStringLiteral("solid.u"), 10, 0.5, 0.5)) - 1) < 2e-2, qPrintable(QString::number(valueAt(s, QStringLiteral("solid.u"), 10, 0.5, 0.5))));
         info(all);
+    }
+
+    // A bar's harmonic response (a Frequency Domain step): 10 mm along x,
+    // 1 mm square, E 200 GPa, ν 0 (one-dimensional exactly), ρ 7850 kg/m³ -
+    // its first axial resonance c/4L at 126 kHz. Its left end fixed, 1 MPa
+    // pulling its right: u(x) = σ0 sin kx / (E k cos kL), k = ω √(ρ/E), its
+    // reaction -σ0 A / cos kL - below the resonance and above it, at 0 Hz
+    // the static one. With a loss factor η, E (1 + jη) in both; with
+    // Rayleigh's αdM and βdK, ρ (1 - jα/ω) and E (1 + jωβ). Its left end
+    // shaken instead (a prescribed u0, the rest free): u0 cos k(L - x) /
+    // cos kL - the held dofs' mass in the load. A domain with no density,
+    // and a loss factor that is not a constant, refused.
+    void harmonicResponse()
+    {
+        using cd = std::complex<double>;
+        const double L = 10e-3, E = 200e9, rho = 7850, s0 = 1e6, A = 1e-6;
+        const std::vector<double> fs = {0, 30e3, 100e3, 200e3};
+        enum Drive { Pulled, Shaken };
+        struct Case {
+            Drive drive;
+            QString damping;   // "", "loss", "rayleigh"
+        };
+        const double eta = 0.02, alpha = 3000, beta = 2e-8;
+        auto exact = [&](const Case& c, double f, double x) {
+            const double w = 2 * M_PI * f;
+            cd Es = E, rs = rho;
+            if (c.damping == QLatin1String("loss")) Es = E * cd(1, eta);
+            if (c.damping == QLatin1String("rayleigh")) {
+                Es = E * cd(1, w * beta);
+                rs = rho * cd(1, -alpha / w);
+            }
+            const cd k = w * std::sqrt(rs / Es);
+            if (c.drive == Pulled) return f == 0 ? cd(s0 * x / E) : s0 * std::sin(k * x) / (Es * k * std::cos(k * L));
+            return 1e-6 * std::cos(k * (L - x)) / std::cos(k * L);
+        };
+        auto model = [&](const Case& c, const std::vector<double>& freqs, bool density = true) {
+            Model m = model3d(0.5);
+            addBox(m, QStringLiteral("bar"), 0, 0, 0, 10, 1, 1);
+            zDivisions(m, QStringLiteral("bar"), 2);
+            QJsonObject props{{QStringLiteral("E"), QStringLiteral("200[GPa]")}, {QStringLiteral("nu"), QStringLiteral("0")}};
+            props.insert(QStringLiteral("rho"), density ? QStringLiteral("7850[kg/m^3]") : QString());
+            const QString solid = addSolid(m, 2, props);
+            if (c.drive == Pulled) {
+                addFeature(m, solid, QStringLiteral("solid/fixed"), ofSide(QStringLiteral("bar"), QStringLiteral("left")));
+                addFeature(m, solid, QStringLiteral("solid/load"), ofSide(QStringLiteral("bar"), QStringLiteral("right")),
+                           {{QStringLiteral("Fx"), QStringLiteral("1[MPa]")}});
+            } else {
+                addFeature(m, solid, QStringLiteral("solid/displacement"), ofSide(QStringLiteral("bar"), QStringLiteral("left")),
+                           {{QStringLiteral("x"), true}, {QStringLiteral("u0"), QStringLiteral("1[um]")}});
+            }
+            if (c.damping == QLatin1String("loss"))
+                addFeature(m, solid, QStringLiteral("solid/damping"), objects(QStringLiteral("bar")),
+                           {{QStringLiteral("kind"), QStringLiteral("loss")}, {QStringLiteral("eta"), QString::number(eta)}});
+            else if (c.damping == QLatin1String("rayleigh"))
+                addFeature(m, solid, QStringLiteral("solid/damping"), objects(QStringLiteral("bar")),
+                           {{QStringLiteral("kind"), QStringLiteral("rayleigh")}, {QStringLiteral("alphadM"), QStringLiteral("3000[1/s]")},
+                            {QStringLiteral("betadK"), QStringLiteral("2e-8[s]")}});
+            QStringList texts;
+            for (double f : freqs) texts << QStringLiteral("%1[Hz]").arg(f, 0, 'g', 17);
+            for (Node& st : m.root.children)
+                if (st.type == QLatin1String("study")) {
+                    for (Node& step : st.children) step.enabled = false;
+                    Node fr = m.make(QStringLiteral("frequency"));
+                    fr.props.insert(QStringLiteral("frequencies"), texts.join(QLatin1String(", ")));
+                    st.children.push_back(fr);
+                }
+            return m;
+        };
+        for (const Case& c : {Case{Pulled, QString()}, Case{Pulled, QStringLiteral("loss")}, Case{Pulled, QStringLiteral("rayleigh")},
+                              Case{Shaken, QString()}}) {
+            std::vector<double> freqs = fs;
+            if (c.drive == Shaken || c.damping == QLatin1String("rayleigh")) freqs.erase(freqs.begin());   // (free, or α/ω: f > 0)
+            const Solved sv = solve(model(c, freqs));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            Solution3& s = sv.s();
+            QCOMPARE(s.snapshotCount(), int(freqs.size()));
+            for (int k = 0; k < int(freqs.size()); ++k) {
+                s.select(k);
+                const double f = freqs[std::size_t(k)];
+                QString all;
+                double worst = 0, scale = 0;
+                for (double x : {2.5, 5.0, 10.0}) {
+                    const cd want = exact(c, f, x * 1e-3);
+                    const cd got(valueAt(s, QStringLiteral("solid.u"), x, 0.5, 0.5), valueAt(s, QStringLiteral("solid.u_im"), x, 0.5, 0.5));
+                    worst = std::max(worst, std::abs(got - want));
+                    scale = std::max(scale, std::abs(want));
+                    all += QStringLiteral(" x %1: %2%3j against %4%5j;").arg(x).arg(got.real()).arg(got.imag(), 0, 'g', 6, QLatin1Char('+')).arg(want.real()).arg(want.imag(), 0, 'g', 6, QLatin1Char('+'));
+                }
+                const QString said = QStringLiteral("case %1/%2 at %3 Hz:%4").arg(int(c.drive)).arg(c.damping).arg(f).arg(all);
+                QVERIFY2(worst < 3e-5 * scale, qPrintable(QStringLiteral("%1 (%2 of the largest)").arg(said).arg(worst / scale)));
+                // (Its amplitude, the norm of both parts.)
+                const double amp = valueAt(s, QStringLiteral("solid.disp"), 10, 0.5, 0.5);
+                QVERIFY2(std::abs(amp - std::abs(exact(c, f, L))) < 3e-5 * scale, qPrintable(said));
+                if (c.drive == Pulled) {
+                    const double w = 2 * M_PI * f;
+                    cd Es = E, rs = rho;
+                    if (c.damping == QLatin1String("loss")) Es = E * cd(1, eta);
+                    if (c.damping == QLatin1String("rayleigh")) {
+                        Es = E * cd(1, w * beta);
+                        rs = rho * cd(1, -alpha / w);
+                    }
+                    const cd R = f == 0 ? cd(-s0 * A) : -s0 * A / std::cos(w * std::sqrt(rs / Es) * L);
+                    const cd gotR(global(s, QStringLiteral("solid.Rx")), f == 0 ? 0.0 : global(s, QStringLiteral("solid.Rx_im")));
+                    QVERIFY2(std::abs(gotR - R) < 3e-5 * std::abs(R),
+                             qPrintable(QStringLiteral("%1 reaction %2%3j against %4%5j").arg(said).arg(gotR.real()).arg(gotR.imag()).arg(R.real()).arg(R.imag())));
+                }
+                if (f == 0) QCOMPARE(valueAt(s, QStringLiteral("solid.u_im"), 10, 0.5, 0.5), 0.0);
+                if (k == int(freqs.size()) - 1) info(said);
+            }
+        }
+        // Refused: no density; a loss factor not a constant.
+        {
+            const Solved sv = solve(model(Case{Pulled, QString()}, {1e3}, false));
+            QVERIFY2(sv.error.contains(QStringLiteral("no density rho")), qPrintable(sv.error));
+        }
+        {
+            Model m = model(Case{Pulled, QStringLiteral("loss")}, {1e3});
+            for (Node& c : m.find(QStringLiteral("solid"))->children)
+                if (c.type == QLatin1String("solid/damping")) c.props.insert(QStringLiteral("eta"), QStringLiteral("0.01*x[1/m]"));
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.contains(QStringLiteral("must be a constant")), qPrintable(sv.error));
+        }
     }
 
     // A piezoelectric block - e33 15 C/m², a stiffness of E 100 GPa and ν 0,

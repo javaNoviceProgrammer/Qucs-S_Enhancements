@@ -124,6 +124,16 @@ int harmonicFrequencies(const Node& study, const Scope& scope)
     return n;
 }
 
+void solidHarmonic(Estimate3& e, int frequencies)
+{
+    if (frequencies <= 0) return;
+    e.method = QStringLiteral("direct");
+    e.directBytes *= 2;
+    e.directSeconds *= 4.0 * frequencies;
+    e.iterativeBytes = e.directBytes;
+    e.iterativeSeconds = e.directSeconds;
+}
+
 Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order, int frequencies)
 {
     Estimate3 e;
@@ -267,7 +277,7 @@ std::vector<Estimate3> estimate3(const Model& model, std::shared_ptr<const Mesh3
 {
     std::vector<Estimate3> out;
     if (!mesh || mesh->prisms.empty()) return out;
-    // (The most frequencies a study solves its magnetic fields at.)
+    // (The most frequencies a study solves its magnetic fields and solids at.)
     int frequencies = 0;
     {
         std::shared_ptr<ParameterScope> ps;
@@ -288,6 +298,7 @@ std::vector<Estimate3> estimate3(const Model& model, std::shared_ptr<const Mesh3
         }
         Estimate3 e = p->type == QLatin1String("magnetic") ? estimateMagnetic3(mesh, order, frequencies)
                                                            : estimateOn(*spaces[order], nonzeros[order], solver, componentsOf(p->type));
+        if (p->type == QLatin1String("solid")) solidHarmonic(e, frequencies);
         e.physics = p->tag;
         e.name = p->name();
         out.push_back(e);
