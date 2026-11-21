@@ -20,6 +20,8 @@
 
 #include <algorithm>
 #include <numeric>
+#include <unordered_map>
+#include <vector>
 #include <array>
 #include <cmath>
 #include <limits>
@@ -815,21 +817,46 @@ void conform(QList<MeshCell>& cells, const QList<int>& conductor)
         for (MeshCell& c : cells)
             for (QPointF& p : c.outline) p = QPointF(snapped(xs, xFirst, p.x()), snapped(ys, yFirst, p.y()));
     }
-    // The corners on each line along x (by y) and along y (by x), each line's
-    // sorted, by layer and conductor: a line's key its coordinate in units of
-    // the tolerance, its neighbours' looked in too.
-    const auto keyOf = [](const QString& layer, int c, bool alongX, qint64 at) {
-        return QStringLiteral("%1|%2|%3|%4").arg(layer).arg(c).arg(alongX ? 'x' : 'y').arg(at);
-    };
-    QHash<QString, QList<QPointF>> lines;
-    for (int i = 0; i < cells.size(); ++i)
-        for (const QPointF& p : std::as_const(cells.at(i).outline)) {
-            lines[keyOf(cells.at(i).layer, conductor.at(i), true, std::llround(p.y() / tol))] << p;
-            lines[keyOf(cells.at(i).layer, conductor.at(i), false, std::llround(p.x() / tol))] << p;
+    // The corners on each line along x (by y) and along y (by x), by layer and
+    // conductor: snapped, a line's corners have its coordinate exactly, its
+    // key. Each line's positions sorted once, a side's corners strictly
+    // inside it found by halving: walked whole for each side, a mesh of
+    // 91,204 cells took four times as long as made without (the review of
+    // eba10a28).
+    QHash<QString, int> layers;
+    for (const MeshCell& c : std::as_const(cells))
+        if (!layers.contains(c.layer)) layers.insert(c.layer, int(layers.size()));
+    struct Line {
+        int layer, conductor;
+        bool alongX;
+        double at;
+        bool operator==(const Line& o) const
+        {
+            return layer == o.layer && conductor == o.conductor && alongX == o.alongX && at == o.at;
         }
+    };
+    struct LineHash {
+        std::size_t operator()(const Line& l) const noexcept
+        {
+            return std::hash<double>()(l.at) ^ (std::size_t(l.layer) * 0x9e3779b97f4a7c15ULL) ^ (std::size_t(l.conductor) << 20)
+                   ^ (l.alongX ? 0x5bd1e995ULL : 0);
+        }
+    };
+    std::unordered_map<Line, std::vector<double>, LineHash> lines;
+    for (int i = 0; i < cells.size(); ++i) {
+        const int layer = layers.value(cells.at(i).layer);
+        for (const QPointF& p : std::as_const(cells.at(i).outline)) {
+            lines[Line{layer, conductor.at(i), true, p.y()}].push_back(p.x());
+            lines[Line{layer, conductor.at(i), false, p.x()}].push_back(p.y());
+        }
+    }
+    for (auto& [line, at] : lines) {
+        std::sort(at.begin(), at.end());
+        at.erase(std::unique(at.begin(), at.end()), at.end());
+    }
     for (int index = 0; index < cells.size(); ++index) {
         MeshCell& cell = cells[index];
-        const int c = conductor.at(index);
+        const int c = conductor.at(index), layer = layers.value(cell.layer);
         QPolygonF o = cell.outline;
         if (o.size() > 1 && o.first() == o.last()) o.removeLast();
         const int n = int(o.size());
@@ -838,19 +865,18 @@ void conform(QList<MeshCell>& cells, const QList<int>& conductor)
         for (int i = 0; i < n; ++i) {
             const QPointF a = o.at(i), b = o.at((i + 1) % n);
             out << a;
-            const bool alongX = std::abs(b.y() - a.y()) <= tol, alongY = std::abs(b.x() - a.x()) <= tol;
+            // (Along x or y exactly: snapped, a side along one has its two
+            //  ends' coordinate the same.)
+            const bool alongX = b.y() == a.y(), alongY = b.x() == a.x();
             if (alongX == alongY) continue;
-            const double from = alongX ? a.x() : a.y(), to = alongX ? b.x() : b.y(), at = alongX ? a.y() : a.x();
-            QList<double> on;
-            const qint64 k = std::llround(at / tol);
-            for (const qint64 near : {k - 1, k, k + 1})
-                for (const QPointF& p : lines.value(keyOf(cell.layer, c, alongX, near))) {
-                    if (std::abs((alongX ? p.y() : p.x()) - at) > tol) continue;
-                    const double t = alongX ? p.x() : p.y();
-                    if (t > std::min(from, to) + tol && t < std::max(from, to) - tol) on << t;
-                }
-            if (on.isEmpty()) continue;
-            std::sort(on.begin(), on.end());
+            const auto found = lines.find(Line{layer, c, alongX, alongX ? a.y() : a.x()});
+            if (found == lines.end()) continue;
+            const std::vector<double>& at = found->second;
+            const double from = alongX ? a.x() : a.y(), to = alongX ? b.x() : b.y();
+            const auto lo = std::upper_bound(at.begin(), at.end(), std::min(from, to) + tol);
+            const auto hi = std::lower_bound(lo, at.end(), std::max(from, to) - tol);
+            if (lo == hi) continue;
+            QList<double> on(lo, hi);
             if (to < from) std::reverse(on.begin(), on.end());
             for (const double t : std::as_const(on)) {
                 const QPointF p = alongX ? QPointF(t, a.y()) : QPointF(a.x(), t);
