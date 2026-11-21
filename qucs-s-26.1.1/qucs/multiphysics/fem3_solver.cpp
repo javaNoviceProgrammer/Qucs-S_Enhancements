@@ -1923,6 +1923,7 @@ bool transientStep3(Problems3& problems, Solution3& s, const Node& node, const d
             if (!problems[std::size_t(i)]->solve(o, error)) return false;
             s.fields()[std::size_t(i)].solved = true;
         }
+    for (int i : stepped) problems[std::size_t(i)]->beginStepping();
     setSolvedGlobals(problems, subset);
     s.addSnapshot();
     s.timeDependent = true;
