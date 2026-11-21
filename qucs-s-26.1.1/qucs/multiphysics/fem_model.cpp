@@ -1217,6 +1217,14 @@ QList<NodeKind> makeKinds()
                         tr("Geometric nonlinearity: the Green-Lagrange strain, Saint Venant-Kirchhoff's stress of it, by Newton's "
                            "method in load steps - large rotations and stretches (its loads dead: the body at rest's area and "
                            "normal). At rest; its frequency response and modes about where it is at rest")),
+                   Spaces::ThreeD),
+          inSpaces(shownIf(choice(QStringLiteral("hyperelastic"), tr("Material"), {QStringLiteral("svk"), QStringLiteral("neohookean")},
+                                  {tr("Saint Venant-Kirchhoff (its linear material of the Green-Lagrange strain)"),
+                                   tr("Neo-Hookean, compressible (of its E and ν; rubber, large strains)")},
+                                  QStringLiteral("svk"),
+                                  tr("Neo-Hookean: ψ = µ/2 (I1 - 3) - µ ln J + λ/2 (ln J)², λ and µ of its E and ν - stiffening in "
+                                     "compression where Saint Venant-Kirchhoff's softens")),
+                           QStringLiteral("large=true")),
                    Spaces::ThreeD)},
          {QStringLiteral("solid/elastic"), QStringLiteral("solid/free"), QStringLiteral("solid/fixed"), QStringLiteral("solid/displacement"),
           QStringLiteral("solid/roller"), QStringLiteral("solid/load"), QStringLiteral("solid/bodyload"), QStringLiteral("solid/piezo"),

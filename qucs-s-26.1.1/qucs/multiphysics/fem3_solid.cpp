@@ -174,6 +174,63 @@ Material materialOf(const Solution3::Coefficients& coef, int d)
     return m;
 }
 
+/// Large deformation's material at deformation \a F: its Green-Lagrange
+/// strain \a Ev (Voigt's, engineering shears), its second Piola-Kirchhoff
+/// stress \a Sv (Voigt's) and its tangent \a D = dS/dE (Voigt's, of E's
+/// engineering shears) - Saint Venant-Kirchhoff's, S = C E; or (\a
+/// neoHookean) the compressible neo-Hookean's of λ = C12 and µ = C44, ψ = µ/2
+/// (I1 - 3) - µ ln J + λ/2 (ln J)²: S = µ (I - C⁻¹) + λ ln J C⁻¹, D = λ
+/// C⁻¹ ⊗ C⁻¹ + (µ - λ ln J)(C⁻¹ik C⁻¹jl + C⁻¹il C⁻¹jk). False where J is not
+/// above 0 (turned inside out).
+bool largeStress(bool neoHookean, const double C6[6][6], const double F[3][3], double Ev[6], double Sv[6], double D[6][6])
+{
+    double Cg[3][3];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) Cg[i][j] = F[0][i] * F[0][j] + F[1][i] * F[1][j] + F[2][i] * F[2][j];
+    Ev[0] = 0.5 * (Cg[0][0] - 1);
+    Ev[1] = 0.5 * (Cg[1][1] - 1);
+    Ev[2] = 0.5 * (Cg[2][2] - 1);
+    Ev[3] = Cg[1][2];
+    Ev[4] = Cg[0][2];
+    Ev[5] = Cg[0][1];
+    if (!neoHookean) {
+        for (int I = 0; I < 6; ++I) {
+            Sv[I] = 0;
+            for (int J = 0; J < 6; ++J) {
+                Sv[I] += C6[I][J] * Ev[J];
+                D[I][J] = C6[I][J];
+            }
+        }
+        return true;
+    }
+    const double J = F[0][0] * (F[1][1] * F[2][2] - F[1][2] * F[2][1]) - F[0][1] * (F[1][0] * F[2][2] - F[1][2] * F[2][0])
+                     + F[0][2] * (F[1][0] * F[2][1] - F[1][1] * F[2][0]);
+    if (!(J > 0)) return false;
+    const double lambda = C6[0][1], mu = C6[3][3], lnJ = std::log(J);
+    // C⁻¹ by its cofactors (det C = J²).
+    double Ci[3][3];
+    const double det = J * J;
+    Ci[0][0] = (Cg[1][1] * Cg[2][2] - Cg[1][2] * Cg[2][1]) / det;
+    Ci[0][1] = (Cg[0][2] * Cg[2][1] - Cg[0][1] * Cg[2][2]) / det;
+    Ci[0][2] = (Cg[0][1] * Cg[1][2] - Cg[0][2] * Cg[1][1]) / det;
+    Ci[1][1] = (Cg[0][0] * Cg[2][2] - Cg[0][2] * Cg[2][0]) / det;
+    Ci[1][2] = (Cg[0][2] * Cg[1][0] - Cg[0][0] * Cg[1][2]) / det;
+    Ci[2][2] = (Cg[0][0] * Cg[1][1] - Cg[0][1] * Cg[1][0]) / det;
+    Ci[1][0] = Ci[0][1];
+    Ci[2][0] = Ci[0][2];
+    Ci[2][1] = Ci[1][2];
+    static const int vi[6] = {0, 1, 2, 1, 0, 0}, vj[6] = {0, 1, 2, 2, 2, 1};
+    for (int I = 0; I < 6; ++I) {
+        const int i = vi[I], j = vj[I];
+        Sv[I] = mu * ((i == j ? 1.0 : 0.0) - Ci[i][j]) + lambda * lnJ * Ci[i][j];
+        for (int K = 0; K < 6; ++K) {
+            const int k = vi[K], l = vj[K];
+            D[I][K] = lambda * Ci[i][j] * Ci[k][l] + (mu - lambda * lnJ) * (Ci[i][k] * Ci[j][l] + Ci[i][l] * Ci[j][k]);
+        }
+    }
+    return true;
+}
+
 /// The strain-displacement matrix's columns of a shape function of gradient
 /// \a g: B[I][a], Voigt's rows (xx, yy, zz, yz, xz, xy), its displacement's
 /// components a.
@@ -299,6 +356,7 @@ private:
     double a_reactionIm[3] = {0, 0, 0};
     bool a_harmonic = false;   // solved in the frequency domain last
     bool a_large = false;      // large deformation asked
+    bool a_neoHookean = false; // its material neo-Hookean (else Saint Venant-Kirchhoff's)
     std::vector<char> a_contactFace;                    // by face: a Contact's
     double a_contactPenalty = 100, a_contactSearch = 0; // its factor, its search distance (m; 0 automatic)
     std::vector<ContactPoint> a_contactPoints;
@@ -346,6 +404,7 @@ bool SolidProblem3::setup(QString* error)
     a_body.assign(D, {});
     a_damping.assign(D, Damping());
     a_large = a_node->flag(QStringLiteral("large"));
+    a_neoHookean = a_large && a_node->text(QStringLiteral("hyperelastic")) == QLatin1String("neohookean");
     a_contactFace.assign(F, 0);
     a_contact = false;
     const Scope& params = a_s.parameters().scope;
@@ -602,8 +661,12 @@ bool SolidProblem3::setup(QString* error)
     if (a_large) {
         for (int d = 0; d < int(D); ++d) {
             if (!f.domains[std::size_t(d)]) continue;
-            coef.named[QStringLiteral("large")][std::size_t(d)] = Expression::compile(QStringLiteral("1"), a_s.pointScope());
+            // (1 Saint Venant-Kirchhoff's, 2 neo-Hookean: an isotropic
+            // material's alone.)
+            coef.named[QStringLiteral("large")][std::size_t(d)] = Expression::compile(a_neoHookean ? QStringLiteral("2") : QStringLiteral("1"), a_s.pointScope());
             const Node* e = elasticOf[std::size_t(d)];
+            if (a_neoHookean && !coef.named[QStringLiteral("E")][std::size_t(d)].isValid())
+                problem(tr("%1: a neo-Hookean material is an isotropic one's (E, ν) - domain %2 is anisotropic").arg(a_node->name()).arg(d + 1));
             if ((e && e->flag(QStringLiteral("thermal"))) || piezoOf[std::size_t(d)])
                 problem(tr("%1: large deformation takes no thermal strain or piezoelectric stress (domain %2)").arg(a_node->name()).arg(d + 1));
         }
@@ -1594,16 +1657,15 @@ void SolidProblem3::assembleLarge(const Equations& q, const std::vector<double>&
                         for (int kk = 0; kk < 3; ++kk) F[a][kk] += ua * g[kk];
                     }
                 }
-                // Green-Lagrange's E (Voigt's, engineering shears) and the
-                // second Piola-Kirchhoff stress S = C E.
-                double Cg[3][3];
-                for (int i2 = 0; i2 < 3; ++i2)
-                    for (int j2 = 0; j2 < 3; ++j2) Cg[i2][j2] = F[0][i2] * F[0][j2] + F[1][i2] * F[1][j2] + F[2][i2] * F[2][j2];
-                const double Ev[6] = {0.5 * (Cg[0][0] - 1), 0.5 * (Cg[1][1] - 1), 0.5 * (Cg[2][2] - 1), Cg[1][2], Cg[0][2], Cg[0][1]};
-                double Sv[6];
-                for (int I = 0; I < 6; ++I) {
-                    Sv[I] = 0;
-                    for (int J = 0; J < 6; ++J) Sv[I] += C6[I][J] * Ev[J];
+                // Green-Lagrange's E (Voigt's, engineering shears), the
+                // second Piola-Kirchhoff stress and its tangent - Saint
+                // Venant-Kirchhoff's or neo-Hookean (a point turned inside
+                // out: not finite, its Newton's step refused).
+                double Ev[6], Sv[6], Dm[6][6];
+                if (!largeStress(a_neoHookean, C6, F, Ev, Sv, Dm)) {
+                    for (double& v : Sv) v = NaN;
+                    for (auto& row : Dm)
+                        for (double& v : row) v = 0;
                 }
                 const double St[3][3] = {{Sv[0], Sv[5], Sv[4]}, {Sv[5], Sv[1], Sv[3]}, {Sv[4], Sv[3], Sv[2]}};
                 for (int i = 0; i < per; ++i) {
@@ -1620,7 +1682,7 @@ void SolidProblem3::assembleLarge(const Equations& q, const std::vector<double>&
                     for (int I = 0; I < 6; ++I)
                         for (int a = 0; a < 3; ++a) {
                             double v = 0;
-                            for (int J = 0; J < 6; ++J) v += C6[I][J] * B[std::size_t(i)][std::size_t(3 * J + a)];
+                            for (int J = 0; J < 6; ++J) v += Dm[I][J] * B[std::size_t(i)][std::size_t(3 * J + a)];
                             CB[std::size_t(i)][std::size_t(3 * I + a)] = v;
                         }
                 }
@@ -2203,17 +2265,21 @@ bool solidStateAt(PointEvaluator3& ev, int f, SolidState& out, bool imaginary)
         double F[3][3];
         for (int a = 0; a < 3; ++a)
             for (int k = 0; k < 3; ++k) F[a][k] = (a == k ? 1.0 : 0.0) + G[a][k];
-        double Cg[3][3];
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j) Cg[i][j] = F[0][i] * F[0][j] + F[1][i] * F[1][j] + F[2][i] * F[2][j];
-        const double Ev[6] = {0.5 * (Cg[0][0] - 1), 0.5 * (Cg[1][1] - 1), 0.5 * (Cg[2][2] - 1), Cg[1][2], Cg[0][2], Cg[0][1]};
-        double Sv[6];
+        const Expression& kind = it->second[std::size_t(d)];
+        const bool neo = kind.isConstant() && kind.constant() == 2;
+        double Ev[6], Sv[6], Dm[6][6];
+        if (!largeStress(neo, C6, F, Ev, Sv, Dm)) return false;
         out.energy = 0;
         for (int I = 0; I < 6; ++I) {
-            Sv[I] = 0;
-            for (int J = 0; J < 6; ++J) Sv[I] += C6[I][J] * Ev[J];
             out.energy += 0.5 * Ev[I] * Sv[I];
             out.strain[I] = Ev[I];
+        }
+        if (neo) {
+            // (Its stored energy ψ itself.)
+            const double J = F[0][0] * (F[1][1] * F[2][2] - F[1][2] * F[2][1]) - F[0][1] * (F[1][0] * F[2][2] - F[1][2] * F[2][0])
+                             + F[0][2] * (F[1][0] * F[2][1] - F[1][1] * F[2][0]);
+            const double I1 = 3 + 2 * (Ev[0] + Ev[1] + Ev[2]), lambda = C6[0][1], mu = C6[3][3];
+            out.energy = 0.5 * mu * (I1 - 3) - mu * std::log(J) + 0.5 * lambda * std::log(J) * std::log(J);
         }
         const double St[3][3] = {{Sv[0], Sv[5], Sv[4]}, {Sv[5], Sv[1], Sv[3]}, {Sv[4], Sv[3], Sv[2]}};
         const double J = F[0][0] * (F[1][1] * F[2][2] - F[1][2] * F[2][1]) - F[0][1] * (F[1][0] * F[2][2] - F[1][2] * F[2][0])

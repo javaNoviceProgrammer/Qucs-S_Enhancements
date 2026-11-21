@@ -1194,6 +1194,80 @@ private slots:
         info(said);
     }
 
+    // A neo-Hookean solid (large deformation): a block 2 x 1 x 1 mm, E 200
+    // GPa, ν 0.3, rollers on its three faces through the origin, a dead load
+    // P along x on its far end - uniaxial, homogeneous, exact on any mesh:
+    // its stretches λ1 along and λ2 across from S22 = µ (1 - 1/λ2²) + λ ln J
+    // /λ2² = 0 and P = λ1 S11 (J = λ1 λ2²), solved here by Newton's method;
+    // its tip, its side, its Cauchy stress λ1 P/J and its stored energy ψ -
+    // pulled by 40 GPa and pushed by 40 GPa (where Saint Venant-Kirchhoff's
+    // softens). A neo-Hookean anisotropic solid refused.
+    void neoHookean()
+    {
+        const double E = 200e9, nu = 0.3, mu = E / (2 * (1 + nu)), lam = E * nu / ((1 + nu) * (1 - 2 * nu));
+        auto exact = [&](double P, double* l1, double* l2) {
+            double a = 1 + P / E, b = 1 - nu * P / E;
+            for (int k = 0; k < 100; ++k) {
+                auto res = [&](double x, double y, double r[2]) {
+                    const double J = x * y * y, L = std::log(J);
+                    const double S11 = mu * (1 - 1 / (x * x)) + lam * L / (x * x), S22 = mu * (1 - 1 / (y * y)) + lam * L / (y * y);
+                    r[0] = x * S11 - P;
+                    r[1] = S22;
+                };
+                double r[2], ra[2], rb[2];
+                res(a, b, r);
+                const double h = 1e-7;
+                res(a + h, b, ra);
+                res(a, b + h, rb);
+                const double j00 = (ra[0] - r[0]) / h, j10 = (ra[1] - r[1]) / h, j01 = (rb[0] - r[0]) / h, j11 = (rb[1] - r[1]) / h;
+                const double det = j00 * j11 - j01 * j10;
+                a -= (r[0] * j11 - r[1] * j01) / det;
+                b -= (j00 * r[1] - j10 * r[0]) / det;
+            }
+            *l1 = a;
+            *l2 = b;
+        };
+        auto model = [&](double P, bool anisotropic) {
+            Model m = model3d(0.5);
+            addBox(m, QStringLiteral("blk"), 0, 0, 0, 2, 1, 1);
+            const QString solid = anisotropic ? addSolid(m, 2, {{QStringLiteral("anisotropy"), QStringLiteral("anisotropic")},
+                                                                {QStringLiteral("C"), QStringLiteral("C11=166[GPa]; C12=64[GPa]; C44=80[GPa]; C22=166[GPa]; C33=166[GPa]; C13=64[GPa]; C23=64[GPa]; C55=80[GPa]; C66=80[GPa]")}})
+                                              : addSolid(m, 2, {{QStringLiteral("E"), QStringLiteral("200[GPa]")}, {QStringLiteral("nu"), QStringLiteral("0.3")}});
+            m.find(solid)->props.insert(QStringLiteral("large"), true);
+            m.find(solid)->props.insert(QStringLiteral("hyperelastic"), QStringLiteral("neohookean"));
+            for (const char* side : {"left", "front", "bottom"}) addFeature(m, solid, QStringLiteral("solid/roller"), ofSide(QStringLiteral("blk"), QString::fromLatin1(side)));
+            addFeature(m, solid, QStringLiteral("solid/load"), ofSide(QStringLiteral("blk"), QStringLiteral("right")),
+                       {{QStringLiteral("Fx"), QStringLiteral("%1[Pa]").arg(P, 0, 'g', 17)}});
+            for (Node& c : m.root.children)
+                if (c.type == QLatin1String("study")) {
+                    c.children.clear();
+                    c.children.push_back(m.make(QStringLiteral("stationary")));
+                }
+            return m;
+        };
+        for (double P : {40e9, -40e9}) {
+            double l1 = 0, l2 = 0;
+            exact(P, &l1, &l2);
+            const Solved sv = solve(model(P, false));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const Solution3& s = sv.s();
+            const double J = l1 * l2 * l2, L = std::log(J);
+            const double tip = valueAt(s, QStringLiteral("solid.u"), 2, 0.5, 0.5), side = valueAt(s, QStringLiteral("solid.v"), 1, 1, 0.5);
+            const double sx = valueAt(s, QStringLiteral("solid.sx"), 1, 0.5, 0.5), W = valueAt(s, QStringLiteral("solid.Ws"), 1, 0.5, 0.5);
+            const double psi = 0.5 * mu * (l1 * l1 + 2 * l2 * l2 - 3) - mu * L + 0.5 * lam * L * L;
+            const QString said = QStringLiteral("P %1 GPa: λ1 %2, λ2 %3 - tip %4 mm against %5, side %6 against %7, Cauchy %8 GPa against %9, ψ %10 against %11")
+                                     .arg(P / 1e9).arg(l1, 0, 'g', 10).arg(l2, 0, 'g', 10).arg(tip * 1e3, 0, 'g', 10).arg((l1 - 1) * 2, 0, 'g', 10)
+                                     .arg(side * 1e3, 0, 'g', 10).arg(l2 - 1, 0, 'g', 10).arg(sx / 1e9, 0, 'g', 10).arg(l1 * P / J / 1e9, 0, 'g', 10)
+                                     .arg(W, 0, 'g', 10).arg(psi, 0, 'g', 10);
+            QVERIFY2(std::abs(tip - (l1 - 1) * 2e-3) < 1e-9 * 2e-3 && std::abs(side - (l2 - 1) * 1e-3) < 1e-9 * 1e-3
+                         && std::abs(sx - l1 * P / J) < 1e-7 * std::abs(P) && std::abs(W - psi) < 1e-7 * std::abs(psi),
+                     qPrintable(said));
+            info(said);
+        }
+        const Solved bad = solve(model(1e9, true));
+        QVERIFY2(bad.error.contains(QStringLiteral("neo-Hookean")), qPrintable(bad.error));
+    }
+
     // Contact (frictionless, by a penalty). Two blocks 1 mm a side, E 200
     // GPa, ν 0, 10 µm apart along z: the lower's foot fixed, the upper's top
     // pushed down d. At 20 µm they touch and press: each compressed by
