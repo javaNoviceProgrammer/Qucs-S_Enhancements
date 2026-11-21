@@ -1470,6 +1470,23 @@ private slots:
         const double tip = doc->solution()->global(QStringLiteral("solid.dmax")).value_or(0);
         QVERIFY2(std::abs(tip - 5.84e-4) < 3e-5, qPrintable(QString::number(tip)));
         shoot(app, "14-bimetal");
+        // A manual scale of 0: drawn at rest, as the 3D view draws it.
+        Model m = doc->model();
+        QString group;
+        for (auto& g : m.results().children)
+            for (auto& p : g.children)
+                if (p.type == QLatin1String("deformation")) {
+                    p.props.insert(QStringLiteral("scaling"), QStringLiteral("manual"));
+                    p.props.insert(QStringLiteral("scale"), QStringLiteral("0"));
+                    group = g.tag;
+                }
+        QVERIFY(!group.isEmpty());
+        QVERIFY(doc->setModel(m, QStringLiteral("scale 0")));
+        QVERIFY(doc->showPlotGroup(group));
+        QVERIFY2(!doc->plotScene()->title.contains("deformed"), qPrintable(doc->plotScene()->title));
+        low = 0;
+        for (QPointF p : doc->plotScene()->values.points) low = std::min(low, p.y());
+        QVERIFY2(low > -1e-9, qPrintable(QString::number(low)));
     }
 
     // About an axis: the via's capacitance, round it whole.

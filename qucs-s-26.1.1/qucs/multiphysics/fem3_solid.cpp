@@ -1555,7 +1555,18 @@ bool SolidProblem3::eigenmodes(const Options3& o, int count, double shift, std::
             *error = tr("%1: prestressed, but not solved at rest first").arg(name);
             return false;
         }
-        a.A += geometricStiffness(q);
+        if (a_large) {
+            // Large deformation: the tangent about where it was solved,
+            // assembleLarge()'s - its material part at F and its geometric
+            // part of S -, and an oblique roller's springs.
+            Eigen::SparseMatrix<double> K;
+            Eigen::VectorXd fi, fd;
+            const std::vector<double> at(f.values.begin(), f.values.begin() + 3 * n);
+            assembleLarge(q, at, K, fi, fd);
+            a.A = K + a.P;
+        } else {
+            a.A += geometricStiffness(q);
+        }
     }
     Mass mass;
     if (!assembleMass(q, mass, nullptr, error)) return false;
@@ -1619,7 +1630,8 @@ bool SolidProblem3::eigenmodes(const Options3& o, int count, double shift, std::
             }
         if (most > 0)
             for (double& x : values) x /= most;
-        frequencies->push_back(std::sqrt(std::max(md.lambda, 0.0)) / (2 * M_PI));
+        // (ω² below 0: buckled - said by its sign.)
+        frequencies->push_back((md.lambda < 0 ? -1.0 : 1.0) * std::sqrt(std::abs(md.lambda)) / (2 * M_PI));
         modes->push_back(std::move(values));
     }
     for (double& rr : a_reaction) rr = 0;
@@ -1644,7 +1656,7 @@ void SolidProblem3::setGlobals()
     }
     // (In the frequency domain its amplitude: the imaginary parts after
     // the real ones.)
-    const bool harmonic = f.values.size() >= std::size_t(6 * n);
+    const bool harmonic = harmonicLayout(f);
     for (int i = 0; i < n; ++i) {
         if (!on[std::size_t(i)] || f.values.size() < std::size_t(3 * n)) continue;
         double d2 = 0;

@@ -344,8 +344,8 @@ SurfaceData surfaceData(const Solution& solution, const QString& expression, con
         for (QPointF d : moved) largest = std::max(largest, std::hypot(d.x(), d.y()));
         const QRectF b = mesh.bounds();
         const double size = std::max(b.width(), b.height()) * s;
-        double scale = deformation->scale;
-        if (!(scale > 0)) scale = largest > 0 ? 0.1 * size / largest : 1;
+        double scale = deformation->scale ? (std::isfinite(*deformation->scale) ? *deformation->scale : 0.0)
+                                          : largest > 0 ? 0.1 * size / largest : 1;
         deformation->used = scale;
         deformation->largest = largest;
         for (std::size_t i = 0; i < moved.size(); ++i) out.points[i] += moved[i] * (scale / s);

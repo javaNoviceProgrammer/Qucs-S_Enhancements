@@ -730,7 +730,11 @@ bool PointEvaluator3::at(const Vec3& x)
 
 bool harmonicLayout(const Field3& f)
 {
-    return f.space && f.values.size() >= 2 * std::size_t(f.space->size()) * std::size_t(f.count());
+    // (Exactly twice its components' values: a magnetic field's edges and
+    // gauge, a semiconductor's contacts after its nodes, never come to that -
+    // a 3D mesh has more edges than nodes -, as a flag a snapshot does not
+    // keep would; the review of 0e82cc50.)
+    return f.space && f.values.size() == 2 * std::size_t(f.space->size()) * std::size_t(f.count());
 }
 
 bool PointEvaluator3::field(int f, int part, double& u, double g[3])
@@ -746,9 +750,7 @@ bool PointEvaluator3::field(int f, int part, double& u, double g[3])
         return false;
     // (Past its components: the frequency domain's imaginary parts, where
     // its values hold them - a solid's harmonic response.)
-    if (part >= field.count()
-        && (part >= 2 * field.count() || field.values.size() < 2 * std::size_t(field.space->size()) * std::size_t(field.count())))
-        return false;
+    if (part >= field.count() && (part >= 2 * field.count() || !harmonicLayout(field))) return false;
     const Space3& sp = *field.space;
     PrismShape s;
     prismShapeAt(sp.order(), a_xi, a_eta, a_zeta, s);
@@ -1772,7 +1774,7 @@ bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const d
 /// a snapshot of its eigenfrequency - the solid's field the mode (scaled to
 /// a largest displacement of 1), its globals <tag>.freq and <tag>.omega.
 bool eigenStep3(Problems3& problems, Solution3& s, const Node& node, const detail3::Options3& o, const std::vector<int>& subset,
-                QString* error)
+                QStringList* warnings, QString* error)
 {
     std::vector<int> atRest, modal;
     for (int i : subset) (s.fields()[std::size_t(i)].type == QLatin1String("solid") ? modal : atRest).push_back(i);
@@ -1820,15 +1822,28 @@ bool eigenStep3(Problems3& problems, Solution3& s, const Node& node, const detai
     const QString tag = f.tag + QLatin1Char('.');
     s.eigen = true;
     for (std::size_t k = 0; k < frequencies.size(); ++k) {
+        // (A frequency below 0: ω² below 0, buckled - its prestress past a
+        // critical load; its frequency 0, said, ω² kept.)
+        const double fk = frequencies[k], w2 = (fk < 0 ? -1.0 : 1.0) * std::pow(2 * M_PI * fk, 2);
+        const double shown = std::max(fk, 0.0);
         f.values = modes[k];
-        s.setFrequency(frequencies[k]);
+        s.setFrequency(shown);
         for (int i : atRest) problems[std::size_t(i)]->setGlobals();
         p.setGlobals();
-        s.setGlobal(tag + QStringLiteral("freq"), frequencies[k], Dim::of(0, 0, -1), tr("eigenfrequency"));
-        s.setGlobal(tag + QStringLiteral("omega"), 2 * M_PI * frequencies[k], Dim::of(0, 0, -1), tr("angular eigenfrequency"));
+        s.setGlobal(tag + QStringLiteral("freq"), shown, Dim::of(0, 0, -1), tr("eigenfrequency"));
+        s.setGlobal(tag + QStringLiteral("omega"), 2 * M_PI * shown, Dim::of(0, 0, -1), tr("angular eigenfrequency"));
+        s.setGlobal(tag + QStringLiteral("omega2"), w2, Dim::of(0, 0, -2), tr("its eigenvalue ω² (below 0: buckled)"));
         s.setGlobal(tag + QStringLiteral("mode"), double(k + 1), Dim(), tr("the mode's number, lowest first"));
         s.addSnapshot();
-        s.log << tr("%1: mode %2 at %3").arg(node.name()).arg(k + 1).arg(formatQuantity(frequencies[k], Dim::of(0, 0, -1), 6));
+        if (fk < 0) {
+            const QString said = tr("%1: mode %2 has ω² = %3 below 0 - buckled, its prestress past a critical load (shown at 0 Hz)")
+                                     .arg(node.name())
+                                     .arg(k + 1)
+                                     .arg(formatQuantity(w2, Dim::of(0, 0, -2), 4));
+            s.log << said;
+            if (warnings) *warnings << said;
+        } else
+            s.log << tr("%1: mode %2 at %3").arg(node.name()).arg(k + 1).arg(formatQuantity(fk, Dim::of(0, 0, -1), 6));
     }
     return true;
 }
@@ -2289,7 +2304,7 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
                 return out;
             }
         } else if (modal) {
-            if (!eigenStep3(problems, *s, step, o, subset, &why)) {
+            if (!eigenStep3(problems, *s, step, o, subset, &out.warnings, &why)) {
                 out.error = why;
                 out.log = s->log;
                 return out;

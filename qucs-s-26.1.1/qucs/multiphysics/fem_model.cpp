@@ -3904,7 +3904,9 @@ QList<NodeKind> makeKinds()
               inSpaces(spatial(QStringLiteral("z"), tr("z component"), QStringLiteral("m"), QStringLiteral("solid.w")), Spaces::ThreeD),
               choice(QStringLiteral("scaling"), tr("Scale"), {QStringLiteral("auto"), QStringLiteral("manual")},
                      {tr("Automatic: the largest a tenth of the model"), tr("Manual")}, QStringLiteral("auto")),
-              shownIf(expr(QStringLiteral("scale"), tr("Scale factor"), QString(), QStringLiteral("1")), QStringLiteral("scaling=manual"))},
+              shownIf(expr(QStringLiteral("scale"), tr("Scale factor"), QString(), QStringLiteral("1"),
+                           tr("The displacement times this: 0 at rest, less than 0 the other way")),
+                      QStringLiteral("scaling=manual"))},
              {}, {}, false, true, QStringLiteral("def"),
              tr("The plot group's plots drawn where the solid has moved, its displacement scaled to be seen.")});
         P dataset;
