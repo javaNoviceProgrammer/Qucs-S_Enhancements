@@ -766,7 +766,7 @@ bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi
  * 9acb72fd). Shared further, the lines moved meshes that must stay as they
  * are - a line inside its pads meshed as drawn alone.
  */
-void conform(QList<MeshCell>& cells, const QList<int>& conductor)
+void conform(QList<MeshCell>& cells, QList<int>& conductor)
 {
     if (cells.isEmpty() || conductor.size() != cells.size()) return;
     // (A nanometre, as edgeKey() rounds: corners nearer than that are one,
@@ -820,6 +820,31 @@ void conform(QList<MeshCell>& cells, const QList<int>& conductor)
         };
         for (MeshCell& c : cells)
             for (QPointF& p : c.outline) p = QPointF(snapped(xs, xFirst, p.x()), snapped(ys, yFirst, p.y()));
+        // Each cell's corners once, and a cell narrower than a nanometre -
+        // left with no width by the snap - taken out: its neighbours either
+        // side then have its line in common, and meet. Kept, its two sides on
+        // one line had one middle with theirs, three cells to a side that
+        // the solve leaves out as none's, and a ring with feeds was in
+        // pieces.
+        QList<MeshCell> kept;
+        QList<int> keptConductor;
+        for (int i = 0; i < cells.size(); ++i) {
+            MeshCell c = cells.at(i);
+            QPolygonF o;
+            for (const QPointF& p : std::as_const(c.outline))
+                if (o.isEmpty() || p != o.last()) o << p;
+            while (o.size() > 1 && o.first() == o.last()) o.removeLast();
+            // (Its mean thickness, its area over its longer side, under half
+            //  a nanometre: on one line, the shoelace's rounding leaves it an
+            //  area of 1e-14 µm² and not nought.)
+            const QRectF box = o.boundingRect();
+            if (o.size() < 3 || !(std::abs(areaOf(o)) > 0.5 * tol * std::max(box.width(), box.height()))) continue;
+            c.outline = o;
+            kept << c;
+            keptConductor << conductor.at(i);
+        }
+        cells = kept;
+        conductor = keptConductor;
     }
     // The corners on each line along x (by y) and along y (by x), by layer and
     // conductor: snapped, a line's corners have its coordinate exactly, its
@@ -1330,6 +1355,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             }
             if (!slabs.isEmpty()) {
                 ++slantedFrom;
+                const double reach = std::hypot(bounds.width(), bounds.height());
                 for (const Slab& slab : slabs) {
                     Piece piece;
                     piece.conductor = c;
@@ -1337,6 +1363,35 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     piece.rectangle = slab.rectangle;
                     if (!slab.rectangle) piece.outline = slab.outline;
                     if (!slab.rectangle || slab.along >= 0) piece.feature = slab.feature;
+                    // A sliver along a slanted side meshed by how wide the
+                    // conductor is there, not by how deep the part is: the
+                    // conductor's shortest chord through the part's middle,
+                    // along x, along y and across each of its slanted sides
+                    // (a strip at an angle its own width). By its own depth,
+                    // a part of a circle's cap 0.002 µm deep had its cells so
+                    // fine, and its lines taken by its neighbours, that a disc
+                    // of 100 µm was 37,000 cells of down to 1e-6 µm² - a review's -, and cells under a
+                    // nanometre wide its P57.
+                    if (!slab.rectangle && piece.feature > 0) {
+                        const QPointF middle = centroidOf(slab.outline, areaOf(slab.outline));
+                        double width = std::numeric_limits<double>::infinity();
+                        QList<QPointF> ways{QPointF(1, 0), QPointF(0, 1)};
+                        for (int k = 0, m = int(slab.outline.size()); k < m; ++k) {
+                            const QPointF d = slab.outline.at((k + 1) % m) - slab.outline.at(k);
+                            const double length = std::hypot(d.x(), d.y());
+                            if (length > 0 && std::abs(d.x()) > 1e-9 * length && std::abs(d.y()) > 1e-9 * length)
+                                ways << QPointF(-d.y(), d.x()) / length;
+                        }
+                        for (const QPointF& way : std::as_const(ways)) {
+                            const double chord = breadthAcross({outline}, middle, way, reach);
+                            if (chord > 0) width = std::min(width, chord);
+                        }
+                        // (Where the conductor is four times as wide as the
+                        //  part says or more: a part as wide as its own slab,
+                        //  a triangle's trapezoid by its mean width, is its
+                        //  own.)
+                        if (std::isfinite(width) && width >= 4 * piece.feature) piece.feature = width;
+                    }
                     piece.along = slab.along;
                     pieces << piece;
                     ++(slab.rectangle ? slantedRectangles : slantedParts);
@@ -1839,10 +1894,16 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         // or nearer, are one where two pieces meet (shareLines()): no cell
         // made by sharing is narrower than a quarter of the narrowest one
         // asked for.
+        // (Of the spaces a piece's own grid cuts it into, not of a piece
+        //  thinner that way than the finest cell any piece asked for - a part
+        //  of a curve's cap 0.002 µm deep, its edge's grading halving its
+        //  depth, no space anyone asked for. Taken as the finest, next to
+        //  nothing was merged, and a ring of 100 µm with feeds meshed at 5 µm
+        //  was 32,000 cells, 19,700 with it.)
         double finestSpace = 0;
         for (const Piece& p : std::as_const(pieces))
             for (const QList<double>* lines : {&p.xs, &p.ys})
-                for (int k = 1; k < lines->size(); ++k)
+                for (int k = 1; lines->size() > 1 && lines->last() - lines->first() >= 0.5 * finest && k < lines->size(); ++k)
                     if (const double d = lines->at(k) - lines->at(k - 1); d > tol && (finestSpace <= 0 || d < finestSpace))
                         finestSpace = d;
         const double merge = kMergeShare * finestSpace;
