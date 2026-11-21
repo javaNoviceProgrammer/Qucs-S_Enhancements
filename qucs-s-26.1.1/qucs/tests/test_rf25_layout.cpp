@@ -9,6 +9,7 @@
 #include <QTemporaryDir>
 
 #include <cmath>
+#include <numeric>
 #include <functional>
 #include <random>
 
@@ -907,6 +908,88 @@ private slots:
         QList<double> areas{std::abs(rf::areaOf(loops.at(0))), std::abs(rf::areaOf(loops.at(1)))};
         std::sort(areas.begin(), areas.end());
         QCOMPARE(areas, (QList<double>{1600.0, 10000.0}));
+    }
+
+    // A circle or a ring joined by a feed is meshed whole, the feed at 0, 30,
+    // 45 or 90 degrees, as the tab meshes them: no side held by three cells or
+    // twice by one - which the solve leaves out as none's -, and the cells one
+    // piece, joined side to side as the solve joins them (by their sides'
+    // middles, to a nanometre). Parts of the curve's cap a few nanometres deep
+    // had cells under a nanometre wide, which the snap to a nanometre left
+    // with no width: 300 sides "could not be told apart", and the loop and
+    // the full wave found the disc in pieces, an open circuit. circleOf()'s side counts, odd at these radii
+    // (703 and 497), put no corner where the feed meets the curve. Each in
+    // fewer than 12,000 cells, where its slivers made some 37,000, and the
+    // ring fed at 90 degrees, meshed at 5 µm, in fewer than 25,000, where it
+    // was 31,000 (P59).
+    void aCurveJoinedByAFeedIsMeshedWhole()
+    {
+        for (const bool ring : {false, true})
+            for (const double degrees : {0.0, 30.0, 45.0, 90.0, -90.0}) {
+                // (-90: the ring fed at 90 degrees as the review meshed it, no
+                //  cells across and 5 µm cells at most.)
+                const bool coarse = degrees < 0;
+                if (coarse && !ring) continue;
+                rf::Model m = stacked();
+                m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes")));
+                const QString shapes = m.layout().child(QStringLiteral("rf_shapes"))->tag;
+                rf::Node round = m.make(QStringLiteral("rf_shape"));
+                round.props = ring ? QJsonObject{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"}, {"inner_radius", "50[um]"}}
+                                   : QJsonObject{{"layer", "M1"}, {"shape", "circle"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"}};
+                m.add(shapes, round);
+                // Two feeds 20 µm wide from 95 to 150 µm out, either side.
+                const double a = std::abs(degrees) * M_PI / 180;
+                const QPointF along(std::cos(a), std::sin(a)), across(-std::sin(a), std::cos(a));
+                for (const double side : {1.0, -1.0}) {
+                    QJsonArray rows;
+                    for (const QPointF& p : {side * 95 * along + 10 * across, side * 150 * along + 10 * across, side * 150 * along - 10 * across,
+                                             side * 95 * along - 10 * across})
+                        rows.append(QJsonArray{QString::number(p.x(), 'g', 12) + "[um]", QString::number(p.y(), 'g', 12) + "[um]"});
+                    rf::Node feed = m.make(QStringLiteral("rf_shape"));
+                    feed.props = QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}};
+                    m.add(shapes, feed);
+                }
+                m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"1", "0", "M1"});
+                qucs_s::layout::Layout empty;
+                qucs_s::layout::Cell top;
+                top.name = QStringLiteral("TOP");
+                empty.cells << top;
+                empty.byName.insert(top.name, 0);
+                const rf::Processed processed = rf::processRead(m, empty, QStringLiteral("none"));
+                QCOMPARE(int(processed.conductors.size()), 1);
+                rf::MeshSettings how;
+                if (coarse) {
+                    how.cellsAcross = 0;
+                    how.maximum = 5e-6;
+                }
+                const rf::Mesh mesh = rf::meshOf(processed.conductors, how, m.solveStack(), 1e9);
+                QVERIFY(!mesh.cells.isEmpty());
+                const QString what = QStringLiteral("%1 fed at %2 degrees").arg(ring ? "a ring" : "a circle").arg(degrees);
+                QHash<QString, QList<int>> sides;
+                for (int c = 0; c < mesh.cells.size(); ++c) {
+                    const QPolygonF& o = mesh.cells.at(c).outline;
+                    for (int i = 0; i < o.size(); ++i) {
+                        const QPointF mid = (o.at(i) + o.at((i + 1) % o.size())) / 2;
+                        sides[QStringLiteral("%1,%2").arg(std::llround(mid.x() * 1e3)).arg(std::llround(mid.y() * 1e3))] << c;
+                    }
+                }
+                QVector<int> parent(mesh.cells.size());
+                std::iota(parent.begin(), parent.end(), 0);
+                std::function<int(int)> find = [&](int x) { return parent[x] == x ? x : parent[x] = find(parent[x]); };
+                int clashes = 0;
+                for (auto it = sides.cbegin(); it != sides.cend(); ++it) {
+                    if (it.value().size() > 2 || (it.value().size() == 2 && it.value().at(0) == it.value().at(1))) ++clashes;
+                    else if (it.value().size() == 2) parent[find(it.value().at(0))] = find(it.value().at(1));
+                }
+                QSet<int> pieces;
+                for (int c = 0; c < mesh.cells.size(); ++c) pieces.insert(find(c));
+                QVERIFY2(clashes == 0, qPrintable(QStringLiteral("%1: %2 sides held by three cells or twice by one").arg(what).arg(clashes)));
+                QVERIFY2(pieces.size() == 1, qPrintable(QStringLiteral("%1: %2 pieces").arg(what).arg(pieces.size())));
+                // (And not meshed as finely as its slivers would have it: a
+                //  part of the cap meshed by its own depth, its lines taken by
+                //  its neighbours - P59 of the same review.)
+                QVERIFY2(mesh.cells.size() < (coarse ? 25000 : 12000), qPrintable(QStringLiteral("%1: %2 cells").arg(what).arg(mesh.cells.size())));
+            }
     }
 
     // A circle and a ring of the model's own, by their centre and radii, each

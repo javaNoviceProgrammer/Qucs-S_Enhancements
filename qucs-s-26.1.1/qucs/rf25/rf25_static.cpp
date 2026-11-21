@@ -1374,7 +1374,13 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         // them. Past its cap of pairs (nearPairs() then gives none) the
         // reach halved, to half a side, and past that the diagonal alone - a
         // weaker preconditioner, the operator whole either way, said.
-        const qint64 mostPairs = control != nullptr && control->mostNearPairs > 0 ? control->mostNearPairs : 20000000;
+        // (A hundred to a cell at most, past which the reach is halved: a
+        //  uniform mesh has some twelve to twenty-five. A mesh of slivers
+        //  beside large cells had 408 to a cell, 13.4 million pairs under the
+        //  cap of 20 million, and their LU crashed the app on a disc of 50 µm
+        //  alone.)
+        const qint64 mostPairs = control != nullptr && control->mostNearPairs > 0 ? control->mostNearPairs
+                                                                                  : std::min<qint64>(20000000, 100 * qint64(n));
         double reach = 2.0;
         bool over = false;
         QList<QPair<int, int>> pairs = nearPairs(boxes, nullptr, reach, mostPairs, &over);
