@@ -347,14 +347,14 @@ std::vector<Arrow3> arrows3(const Solution3& s, const std::array<Expression, 3>&
 Vec3 Deformation3::node(const Mesh3& m, int n) const
 {
     const Vec3& x = m.nodes[std::size_t(n)];
-    if (nodal[0].size() != m.nodes.size() || !(used > 0)) return x;
+    if (nodal[0].size() != m.nodes.size() || used == 0 || !std::isfinite(used)) return x;
     const double s = used / m.unitScale;
     return Vec3{x.x + s * nodal[0][std::size_t(n)], x.y + s * nodal[1][std::size_t(n)], x.z + s * nodal[2][std::size_t(n)]};
 }
 
 Vec3 Deformation3::at(const Mesh3& m, int prism, const std::array<double, 3>& ref, const Vec3& x) const
 {
-    if (nodal[0].size() != m.nodes.size() || !(used > 0) || prism < 0 || prism >= int(m.prisms.size())) return x;
+    if (nodal[0].size() != m.nodes.size() || used == 0 || !std::isfinite(used) || prism < 0 || prism >= int(m.prisms.size())) return x;
     // The linear prism's six: the triangle's (1 - ξ - η, ξ, η) times
     // (1 - ζ) below, ζ above.
     const double l[3] = {1 - ref[0] - ref[1], ref[0], ref[1]}, z = ref[2];
@@ -371,7 +371,7 @@ Vec3 Deformation3::at(const Mesh3& m, int prism, const std::array<double, 3>& re
     return Vec3{x.x + s * d.x, x.y + s * d.y, x.z + s * d.z};
 }
 
-Deformation3 deformation3(const Solution3& s, const std::array<Expression, 3>& u, double scale)
+Deformation3 deformation3(const Solution3& s, const std::array<Expression, 3>& u, std::optional<double> scale)
 {
     Deformation3 out;
     const Mesh3& m = s.mesh();
@@ -387,8 +387,8 @@ Deformation3 deformation3(const Solution3& s, const std::array<Expression, 3>& u
     for (std::size_t n = 0; n < m.nodes.size(); ++n)
         out.largest = std::max(out.largest, std::sqrt(out.nodal[0][n] * out.nodal[0][n] + out.nodal[1][n] * out.nodal[1][n]
                                                       + out.nodal[2][n] * out.nodal[2][n]));
-    if (scale > 0 && std::isfinite(scale)) {
-        out.used = scale;
+    if (scale) {
+        out.used = std::isfinite(*scale) ? *scale : 0.0;
     } else if (out.largest > 0 && m.topology) {
         const Box3& b = m.topology->bounds;
         const double side = std::max({b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0}) * m.unitScale;

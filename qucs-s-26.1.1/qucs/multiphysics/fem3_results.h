@@ -78,8 +78,9 @@ struct Arrow3 {
 std::vector<Arrow3> arrows3(const Solution3& solution, const std::array<Expression, 3>& v, const Box3& box, int nx, int ny, int nz);
 
 /// Plots drawn where a solid has moved: each node's displacement (m), the
-/// x, y and z of a Deformation plot's expressions, times a scale - asked, or
-/// (\a scale 0) the largest a tenth of the model's largest side.
+/// x, y and z of a Deformation plot's expressions, times a scale - asked (0:
+/// drawn at rest; less than 0, the other way), or (none) the largest a
+/// tenth of the model's largest side.
 struct Deformation3 {
     std::array<std::vector<double>, 3> nodal;   ///< by node (NaN read as 0)
     double used = 0;                            ///< the scale drawn with
@@ -91,7 +92,7 @@ struct Deformation3 {
     /// moved: the nodes' displacements interpolated linearly across it.
     Vec3 at(const Mesh3& mesh, int prism, const std::array<double, 3>& ref, const Vec3& x) const;
 };
-Deformation3 deformation3(const Solution3& solution, const std::array<Expression, 3>& u, double scale);
+Deformation3 deformation3(const Solution3& solution, const std::array<Expression, 3>& u, std::optional<double> scale);
 
 /// One solution of a 3D study's, as results take it: its sweep's point and
 /// its output time.

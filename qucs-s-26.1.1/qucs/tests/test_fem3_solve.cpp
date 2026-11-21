@@ -1368,13 +1368,18 @@ private slots:
         }
         QVERIFY2(corners > 1000 && worst < 1e-12, qPrintable(QStringLiteral("%1 points, one %2 mm off").arg(corners).arg(worst)));
         // Automatic: the largest a tenth of 2 mm.
-        const Deformation3 a = deformation3(sv.s(), u, 0);
+        const Deformation3 a = deformation3(sv.s(), u, std::nullopt);
         QVERIFY2(a.largest > 0 && std::abs(a.used * a.largest - 0.2e-3) < 1e-15, qPrintable(QStringLiteral("%1 by %2").arg(a.largest).arg(a.used)));
         // None moving: nothing moved; one that does not read, said.
         const Deformation3 still = deformation3(sv.s(), {Expression::compile(QStringLiteral("0"), sc), Expression::compile(QStringLiteral("0"), sc),
-                                                         Expression::compile(QStringLiteral("0"), sc)}, 0);
+                                                         Expression::compile(QStringLiteral("0"), sc)}, std::nullopt);
         QVERIFY(still.used == 0 && off(still.node(mesh, 5), mesh.nodes[5]) == 0);
-        const Deformation3 bad = deformation3(sv.s(), {Expression::compile(QStringLiteral("solid.u"), sc), u[1], u[2]}, 0);
+        // A scale of 0 asked: at rest; less than 0, the other way.
+        const Deformation3 rest = deformation3(sv.s(), u, 0.0), back = deformation3(sv.s(), u, -2.0);
+        QVERIFY(rest.used == 0 && off(rest.node(mesh, 5), mesh.nodes[5]) == 0);
+        const Vec3 x5 = mesh.nodes[5], e5 = expected(x5);
+        QVERIFY(off(back.node(mesh, 5), Vec3{2 * x5.x - e5.x, 2 * x5.y - e5.y, 2 * x5.z - e5.z}) < 1e-12);
+        const Deformation3 bad = deformation3(sv.s(), {Expression::compile(QStringLiteral("solid.u"), sc), u[1], u[2]}, std::nullopt);
         QVERIFY(!bad.error.isEmpty() && bad.used == 0);
     }
 

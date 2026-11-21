@@ -851,6 +851,73 @@ private slots:
         }
     }
 
+    // Prestress in the eigenfrequencies: a beam 20 mm long, 1 mm square, E
+    // 200 GPa, ν 0, clamped at both ends and its right end pulled (or pushed)
+    // 2 µm - σ0 = ±20 MPa along it, a hundredth of its buckling stress. Its
+    // first bending pair's ω² moves by σ0/ρ ∫φ'²/∫φ², φ the clamped beam's
+    // first mode (Euler-Bernoulli): the half-difference of the tension's
+    // and the compression's (its second order gone) to 1 % (0.27 % in
+    // fact: the beam's shear), the tension's
+    // up and the compression's down. Not prestressed, the same pull leaves
+    // its frequencies as they are.
+    void prestressedModes()
+    {
+        const double L = 20e-3, E = 200e9, rho = 7850, s0 = 20e6;
+        // ∫φ'²/∫φ² of the clamped-clamped beam's first mode, by Simpson's rule.
+        const double bL = 4.730040744862704, b = bL / L;
+        const double sg = (std::cosh(bL) - std::cos(bL)) / (std::sinh(bL) - std::sin(bL));
+        auto phi = [&](double x) { return std::cosh(b * x) - std::cos(b * x) - sg * (std::sinh(b * x) - std::sin(b * x)); };
+        auto dphi = [&](double x) { return b * (std::sinh(b * x) + std::sin(b * x) - sg * (std::cosh(b * x) - std::cos(b * x))); };
+        double i1 = 0, i0 = 0;
+        const int N = 2000;
+        for (int k = 0; k <= N; ++k) {
+            const double x = L * k / N, w = (k == 0 || k == N) ? 1 : (k % 2 ? 4 : 2);
+            i1 += w * dphi(x) * dphi(x);
+            i0 += w * phi(x) * phi(x);
+        }
+        const double shift = s0 / rho * i1 / i0;   // Δω² of +σ0
+        auto modes = [&](double u0, bool prestress) {
+            Model m = model3d(slowBuild() ? 1.0 : 0.5);
+            addBox(m, QStringLiteral("beam"), 0, 0, 0, 20, 1, 1);
+            zDivisions(m, QStringLiteral("beam"), 2);
+            const QString solid = addSolid(m, 2, {{QStringLiteral("E"), QStringLiteral("200[GPa]")}, {QStringLiteral("nu"), QStringLiteral("0")},
+                                                  {QStringLiteral("rho"), QStringLiteral("7850[kg/m^3]")}});
+            addFeature(m, solid, QStringLiteral("solid/fixed"), ofSide(QStringLiteral("beam"), QStringLiteral("left")));
+            addFeature(m, solid, QStringLiteral("solid/displacement"), ofSide(QStringLiteral("beam"), QStringLiteral("right")),
+                       {{QStringLiteral("x"), true}, {QStringLiteral("y"), true}, {QStringLiteral("z"), true},
+                        {QStringLiteral("u0"), QStringLiteral("%1[um]").arg(u0 * 1e6)}});
+            for (Node& c : m.root.children)
+                if (c.type == QLatin1String("study")) {
+                    c.children.clear();
+                    Node e = m.make(QStringLiteral("eigenfrequency"));
+                    e.props.insert(QStringLiteral("count"), 2);
+                    e.props.insert(QStringLiteral("prestress"), prestress);
+                    c.children.push_back(e);
+                }
+            const Solved sv = solve(m);
+            std::vector<double> w2;
+            if (!sv.error.isEmpty()) {
+                qWarning("%s", qPrintable(why(sv)));
+                return w2;
+            }
+            for (int k = 0; k < sv.s().snapshotCount(); ++k) w2.push_back(std::pow(2 * M_PI * sv.s().snapshotFrequency(k), 2));
+            return w2;
+        };
+        const double u0 = s0 * L / E;
+        const std::vector<double> rest = modes(0, true), pulled = modes(u0, true), pushed = modes(-u0, true), plain = modes(u0, false);
+        QVERIFY(rest.size() == 2 && pulled.size() == 2 && pushed.size() == 2 && plain.size() == 2);
+        for (int k = 0; k < 2; ++k) {
+            const double up = pulled[std::size_t(k)] - rest[std::size_t(k)], down = pushed[std::size_t(k)] - rest[std::size_t(k)];
+            const double first = 0.5 * (up - down);
+            const QString said = QStringLiteral("mode %1: ω² %2 at rest, %3 pulled, %4 pushed; first order %5 against %6 (%7)")
+                                     .arg(k + 1).arg(rest[std::size_t(k)]).arg(pulled[std::size_t(k)]).arg(pushed[std::size_t(k)]).arg(first).arg(shift)
+                                     .arg(first / shift - 1);
+            QVERIFY2(up > 0 && down < 0 && std::abs(first - shift) < 1e-2 * shift, qPrintable(said));
+            QVERIFY2(std::abs(plain[std::size_t(k)] - rest[std::size_t(k)]) < 1e-8 * rest[std::size_t(k)], qPrintable(said));
+            info(said);
+        }
+    }
+
     // A piezoelectric block - e33 15 C/m², a stiffness of E 100 GPa and ν 0,
     // εr 1000 - between a grounded bottom and a top at 10 V, free to grow:
     // its strain e33 E3 / C33 (its top moves -e33 V / C33), its charge the

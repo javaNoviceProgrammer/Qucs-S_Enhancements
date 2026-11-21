@@ -1768,9 +1768,18 @@ bool eigenStep3(Problems3& problems, Solution3& s, const Node& node, const detai
     }
     const int fi = modal.front();
     detail3::Problem3& p = *problems[std::size_t(fi)];
+    // Prestressed: the solid solved at rest first (with what it reads), its
+    // stress the geometric stiffness's.
+    detail3::Options3 eo = o;
+    if (node.flag(QStringLiteral("prestress"))) {
+        if (!solveTogether(problems, {fi}, [&o](int) { return o; }, s, node.name(), error)) return false;
+        p.releaseFactors();
+        eo.prestress = true;
+        s.log << tr("%1: prestressed - %2 solved at rest first, its stress stiffening its modes").arg(node.name(), p.node()->name());
+    }
     std::vector<double> frequencies;
     std::vector<std::vector<double>> modes;
-    if (!p.eigenmodes(o, count, shift, &frequencies, &modes, error)) return false;
+    if (!p.eigenmodes(eo, count, shift, &frequencies, &modes, error)) return false;
     Field3& f = s.fields()[std::size_t(fi)];
     f.solved = true;
     const QString tag = f.tag + QLatin1Char('.');

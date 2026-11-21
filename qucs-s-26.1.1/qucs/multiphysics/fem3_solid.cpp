@@ -255,6 +255,9 @@ private:
         Eigen::SparseMatrix<double> M, Mc, Mr, Md;
     };
     bool assembleMass(const Equations& q, Mass& out, const std::vector<double>* scale, QString* error) const;
+    /// The geometric stiffness of the stress as solved (its values now):
+    /// ∫ ∇φiᵀ σ0 ∇φj, each component's own, among the equations.
+    Eigen::SparseMatrix<double> geometricStiffness(const Equations& q) const;
     bool solveHarmonic(const Options3& o, QString* error);
     /// Each domain's damping (a Damping feature's): its loss factor η and
     /// Rayleigh's αdM (1/s) and βdK (s).
@@ -1053,6 +1056,65 @@ bool SolidProblem3::assembleMass(const Equations& q, Mass& out, const std::vecto
     return true;
 }
 
+// ---------------------------------------------------- Geometric stiffness
+
+Eigen::SparseMatrix<double> SolidProblem3::geometricStiffness(const Equations& q) const
+{
+    const Field3& f = a_s.fields()[std::size_t(a_fi)];
+    const Space3& sp = *f.space;
+    const Mesh3& mesh = a_s.mesh();
+    const int n = sp.size();
+    const int per = sp.perElement();
+    const PrismRule& rule = sp.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+    using T = Eigen::Triplet<double>;
+    std::vector<T> t;
+    PointEvaluator3 ev(a_s);
+    std::vector<double> Ke(std::size_t(per * per)), grads(std::size_t(3 * per));
+    for (int e = 0; e < sp.elements(); ++e) {
+        const int d = mesh.domain[std::size_t(e)];
+        if (d < 0 || !f.domains[std::size_t(d)]) continue;
+        std::fill(Ke.begin(), Ke.end(), 0.0);
+        for (const auto& qp : rule.points) {
+            const Space3::Map mp = sp.map(e, qp[0], qp[1], qp[2]);
+            ev.at(e, qp[0], qp[1], qp[2], mp.x);
+            SolidState st;
+            if (!solidStateAt(ev, a_fi, st)) continue;
+            // (Voigt's xx, yy, zz, yz, xz, xy as a tensor.)
+            const double* v = st.stress;
+            const double S[3][3] = {{v[0], v[5], v[4]}, {v[5], v[1], v[3]}, {v[4], v[3], v[2]}};
+            bool finite = true;
+            for (int I = 0; I < 6; ++I) finite = finite && std::isfinite(v[I]);
+            if (!finite) continue;
+            PrismShape s;
+            prismShapeAt(sp.order(), qp[0], qp[1], qp[2], s);
+            for (int i = 0; i < per; ++i) Space3::gradient(mp, s.dxi[i], s.deta[i], s.dzeta[i], &grads[std::size_t(3 * i)]);
+            const double w = qp[3] * std::abs(mp.det);
+            for (int i = 0; i < per; ++i) {
+                const double* gi = &grads[std::size_t(3 * i)];
+                const double Sg[3] = {S[0][0] * gi[0] + S[0][1] * gi[1] + S[0][2] * gi[2], S[1][0] * gi[0] + S[1][1] * gi[1] + S[1][2] * gi[2],
+                                      S[2][0] * gi[0] + S[2][1] * gi[1] + S[2][2] * gi[2]};
+                for (int j = 0; j < per; ++j) {
+                    const double* gj = &grads[std::size_t(3 * j)];
+                    Ke[std::size_t(i * per + j)] += w * (Sg[0] * gj[0] + Sg[1] * gj[1] + Sg[2] * gj[2]);
+                }
+            }
+        }
+        const int* dofs = sp.dofs(e);
+        for (int c = 0; c < 3; ++c)
+            for (int i = 0; i < per; ++i) {
+                const int ei = q.eq[std::size_t(c * n + dofs[i])];
+                if (ei < 0) continue;
+                for (int j = 0; j < per; ++j) {
+                    const int ej = q.eq[std::size_t(c * n + dofs[j])];
+                    if (ej >= 0 && Ke[std::size_t(i * per + j)] != 0) t.emplace_back(ei, ej, Ke[std::size_t(i * per + j)]);
+                }
+            }
+    }
+    Eigen::SparseMatrix<double> out(q.neq, q.neq);
+    out.setFromTriplets(t.begin(), t.end());
+    return out;
+}
+
 // ------------------------------------------------------- Harmonic response
 
 bool SolidProblem3::solveHarmonic(const Options3& o, QString* error)
@@ -1194,6 +1256,15 @@ bool SolidProblem3::eigenmodes(const Options3& o, int count, double shift, std::
     // mass ∫ ρ φi φj, each component's own.
     Assembled a;
     assemble(q, a);
+    if (o.prestress) {
+        // The geometric stiffness of the stress as solved: ∫ ∇φiᵀ σ0 ∇φj,
+        // each component's own.
+        if (f.values.size() < std::size_t(3 * n)) {
+            *error = tr("%1: prestressed, but not solved at rest first").arg(name);
+            return false;
+        }
+        a.A += geometricStiffness(q);
+    }
     Mass mass;
     if (!assembleMass(q, mass, nullptr, error)) return false;
     const Eigen::SparseMatrix<double>& M = mass.M;
