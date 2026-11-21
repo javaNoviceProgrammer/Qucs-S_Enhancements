@@ -282,8 +282,13 @@ struct ExtractControl {
     /// solve to the dense one on one mesh.
     int mostDense = 0;
     /// The most pairs the compressed solve's near field may hold (nought:
-    /// the build's, 20,000,000) - tests set it lower, to reach the cap.
+    /// the build's, the smaller of 20,000,000 and a hundred to a cell) -
+    /// tests set it lower, to reach the cap.
     qint64 mostNearPairs = 0;
+    /// The most entries that near field's LU may be estimated to hold
+    /// (nought: the build's, kMostNearFill in rf25_static.cpp) - tests set
+    /// it lower, to reach the bound.
+    qint64 mostNearFill = 0;
     std::atomic_int* step = nullptr;   ///< a Step
     std::atomic_int* done = nullptr;
     std::atomic_int* all = nullptr;

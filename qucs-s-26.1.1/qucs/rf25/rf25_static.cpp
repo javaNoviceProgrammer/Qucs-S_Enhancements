@@ -24,12 +24,15 @@
 
 #include <functional>
 
+#include "multiphysics/fem_sparse.h"
+
 #include <Eigen/Dense>
+#include <Eigen/OrderingMethods>
 #include <Eigen/SparseCore>
-#include <Eigen/SparseLU>
 
 #include <algorithm>
 #include <cmath>
+#include <new>
 
 namespace qucs_s::rf25 {
 
@@ -632,6 +635,76 @@ Eigen::MatrixXd inductance2D(const QList<Box2D>& boxes, const QList<int>& signal
         }
     }
     return c.inverse() / (kLightSpeed * kLightSpeed);
+}
+
+/// The most entries the compressed charge solve's near field's LU may be
+/// estimated to hold (ExtractControl::mostNearFill: tests'), past which its
+/// reach is halved as past its cap of pairs: some 1.2 GB of factors. A
+/// uniform mesh's comes to some 170 to 310 a cell, a ring's or a disc's
+/// slivers some 580 - at kMostCompressedCells, 23 million -, and Eigen's
+/// int indices run out past 2,147 million.
+constexpr qint64 kMostNearFill = 100000000;
+
+/*!
+ * The entries an LU of the \a n by \a n near field of \a pairs (each
+ * (i, j) with i <= j, its (j, i) too) would hold, estimated before it is
+ * made: twice its Cholesky factor's under the minimum degree ordering of its
+ * pattern, less the diagonal - its pattern symmetric, and P's near field
+ * pivoted little. Counted row by row along the elimination tree (Davis,
+ * "Direct Methods for Sparse Linear Systems", SIAM 2006, sections 4.1 and
+ * 4.4), which takes as long as the factor has entries: stopped past \a most,
+ * and then most + 1.
+ */
+qint64 nearFillOf(int n, const QList<QPair<int, int>>& pairs, qint64 most)
+{
+    if (n <= 0) return 0;
+    std::vector<Eigen::Triplet<double>> entries;
+    entries.reserve(std::size_t(2 * pairs.size() + n));
+    for (const auto& [a, b] : pairs)
+        if (a != b) {
+            entries.emplace_back(a, b, 1.0);
+            entries.emplace_back(b, a, 1.0);
+        }
+    for (int i = 0; i < n; ++i) entries.emplace_back(i, i, 1.0);
+    Eigen::SparseMatrix<double> pattern(n, n);
+    pattern.setFromTriplets(entries.begin(), entries.end());
+    entries = {};
+    // (Eigen's ordering gives the inverse permutation, as its Cholesky
+    //  takes it: a cell's place in the order is its inverse's.)
+    Eigen::PermutationMatrix<Eigen::Dynamic, Eigen::Dynamic, int> inverse;
+    Eigen::AMDOrdering<int>()(pattern, inverse);
+    const Eigen::PermutationMatrix<Eigen::Dynamic, Eigen::Dynamic, int> order = inverse.inverse();
+    const Eigen::VectorXi& place = order.indices();
+    // Each column's rows above the diagonal, in the order.
+    std::vector<std::vector<int>> above(static_cast<std::size_t>(n));
+    for (const auto& [a, b] : pairs) {
+        if (a == b) continue;
+        const int i = place(a), j = place(b);
+        above[std::size_t(std::max(i, j))].push_back(std::min(i, j));
+    }
+    // The elimination tree (with its ancestors' paths compressed).
+    std::vector<int> parent(std::size_t(n), -1), ancestor(std::size_t(n), -1);
+    for (int k = 0; k < n; ++k)
+        for (int i : above[std::size_t(k)])
+            while (i != -1 && i < k) {
+                const int next = ancestor[std::size_t(i)];
+                ancestor[std::size_t(i)] = k;
+                if (next == -1) parent[std::size_t(i)] = k;
+                i = next;
+            }
+    // Row k of the factor: the nodes on the tree's paths from each of its
+    // entries up to k, each once.
+    std::vector<int> mark(std::size_t(n), -1);
+    qint64 factor = n;
+    for (int k = 0; k < n; ++k) {
+        mark[std::size_t(k)] = k;
+        for (int i : above[std::size_t(k)])
+            for (; i != -1 && mark[std::size_t(i)] != k; i = parent[std::size_t(i)]) {
+                mark[std::size_t(i)] = k;
+                if (2 * ++factor - n > most) return most + 1;
+            }
+    }
+    return 2 * factor - n;
 }
 
 /*!
@@ -1381,14 +1454,27 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         //  alone.)
         const qint64 mostPairs = control != nullptr && control->mostNearPairs > 0 ? control->mostNearPairs
                                                                                   : std::min<qint64>(20000000, 100 * qint64(n));
+        // And past the entries its LU would hold, estimated before it is
+        // made (nearFillOf()), the same: the pairs bound what the LU is
+        // given, not what it fills to - Eigen's indices are int, and a fill
+        // past memory crashes where it should be said.
+        const qint64 mostFill = control != nullptr && control->mostNearFill > 0 ? control->mostNearFill : kMostNearFill;
         double reach = 2.0;
-        bool over = false;
-        QList<QPair<int, int>> pairs = nearPairs(boxes, nullptr, reach, mostPairs, &over);
-        while (over && reach > 0.5) {
-            reach /= 2;
+        bool over = false, full = false;
+        qint64 fill = 0;
+        QList<QPair<int, int>> pairs;
+        const auto gather = [&] {
             pairs = nearPairs(boxes, nullptr, reach, mostPairs, &over);
+            fill = over ? 0 : nearFillOf(n, pairs, mostFill);
+            full = fill > mostFill;
+        };
+        gather();
+        const bool pairsFirst = over;
+        while ((over || full) && reach > 0.5) {
+            reach /= 2;
+            gather();
         }
-        if (over) {
+        if (over || full) {
             reach = 0;
             pairs.clear();
         }
@@ -1404,9 +1490,19 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             if (!seen.contains(i)) near.emplace_back(i, i, entry(i, i));
         Eigen::SparseMatrix<double> m(n, n);
         m.setFromTriplets(near.begin(), near.end());
-        Eigen::SparseLU<Eigen::SparseMatrix<double>> lu;
-        lu.compute(m);
-        const bool factored = lu.info() == Eigen::Success;
+        // (fem::SparseLu: Accelerate's or MUMPS's LU, their column starts
+        //  long, where the build has them and from their sizes up; Eigen's
+        //  below. Memory that runs out on the way said as not factored.)
+        fem::SparseLu<double> lu;
+        bool factored = false;
+        if (reach > 0) {
+            try {
+                lu.compute(m);
+                factored = lu.info() == Eigen::Success;
+            } catch (const std::bad_alloc&) {
+                factored = false;
+            }
+        }
         const Eigen::VectorXd diagonal = m.diagonal();
         *hint = diagonal.maxCoeff() / std::max(1e-300, diagonal.minCoeff());
         // (GMRES's vectors stay real, the right side, P and the
@@ -1459,19 +1555,25 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                          .arg(h.bytes() / (1024 * 1024), 0, 'f', 1)
                          .arg(h.denseBytes() / (1024 * 1024), 0, 'f', 1)
                          .arg(pairs.size())
-                         .arg(factored ? QString() : tr(" (not factored: its diagonal instead)"))
+                         .arg(factored ? tr(", some %1 entries estimated, %2").arg(fill).arg(lu.name())
+                                       : tr(" (not factored: its diagonal instead)"))
                          .arg(most)
                          .arg(worst, 0, 'g', 2)
                          .arg(heldAt.cols())
                          .arg(clock.elapsed() / 1000.0, 0, 'f', 1);
-        if (reach < 2.0)
-            out.lines << (reach > 0 ? tr("The near field past its cap of %1 pairs within two sides of each cell: held within %2 of "
-                                         "a side instead, a weaker preconditioner (the solve itself whole).")
-                                          .arg(mostPairs)
+        if (reach < 2.0) {
+            // (Which bound it met within two sides: the pairs', or its LU's.)
+            const QString past = pairsFirst ? tr("The near field past its cap of %1 pairs within two sides of each cell").arg(mostPairs)
+                                            : tr("The near field's LU past its bound of %1 entries within two sides of each cell (its "
+                                                 "fill estimated before it is made)")
+                                                  .arg(mostFill);
+            out.lines << (reach > 0 ? tr("%1: held within %2 of a side instead, a weaker preconditioner (the solve itself whole).")
+                                          .arg(past)
                                           .arg(reach)
-                                    : tr("The near field past its cap of %1 pairs even within half a side of each cell: P's "
-                                         "diagonal alone the preconditioner, GMRES slower (the solve itself whole).")
-                                          .arg(mostPairs));
+                                    : tr("%1, and even within half a side: P's diagonal alone the preconditioner, GMRES slower "
+                                         "(the solve itself whole).")
+                                          .arg(past));
+        }
         return true;
     };
     const auto solve = [&](const std::function<const Green&(const QString&, const QString&)>& greenOf,
