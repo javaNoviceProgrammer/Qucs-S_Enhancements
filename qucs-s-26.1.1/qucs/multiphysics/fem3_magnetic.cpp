@@ -111,7 +111,21 @@ public:
     {
         a_lu.reset();
         a_factored = Eigen::SparseMatrix<double>();
+        a_stepping.reset();
+        a_steppingLu.reset();
     }
+    /// In time where it conducts: eddy currents σ (∂A/∂t + ∇V) - its
+    /// domains' σ, or a single conductor's coil (its currents physics' σ,
+    /// read as its conductors are built).
+    bool hasMass() const override
+    {
+        for (std::size_t d = 0; d < a_sigma.size(); ++d)
+            if (conducts(int(d))) return true;
+        for (const Coil& c : a_coils)
+            if (c.single) return true;
+        return false;
+    }
+    void beginStepping() override;
 
 private:
     using cd = std::complex<double>;
@@ -172,6 +186,18 @@ private:
         double assembled = 0;       // s
     };
     bool prepareHarmonic(const Options3& o, Harmonic& hs, QString* error);
+    /// A Time Dependent step's step: K0 X + K1 Ẋ = b(t), the frequency
+    /// domain's matrices, Ẋ = c0 X - the history (Options3::mass, ::history)
+    /// - its values (A, the multiplier, ψ, the coils' ψ) and Ȧ and V
+    /// (Field3::internal), the coils' current and voltage now.
+    bool solveTransient(const Options3& o, QString* error);
+    std::unique_ptr<Harmonic> a_stepping;          // its matrices, a stepping's
+    std::unique_ptr<SparseRealLdlt> a_steppingLu;  // K0 + c0 K1's factors
+    double a_steppingMass = 0;
+    Eigen::VectorXd a_steppingR;                    // its sources' part of b, where none reads t
+    bool a_steppingVaries = true;                   // one of them reads t: assembled at each step
+    std::vector<Eigen::VectorXd> a_steppingVolt;    // by coil fed a voltage: its part of b at 1 V (empty: none)
+    bool a_inTime = false;                          // solved last in time
     /// [the solution, each port's] at ω, by a factorization of K0 + jω K1;
     /// and (\a moments 1, 2) their first and second derivatives in ω after
     /// them, each a solve of the same factors - x' = A⁻¹ (b' - j K1 x), x''
@@ -984,6 +1010,8 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
     // (A Frequency Domain step's: harmonic, eddy currents in its
     // conductors.)
     if (o.frequency > 0) return solveHarmonic(o, error);
+    if (o.mass > 0 && o.history && hasMass()) return solveTransient(o, error);
+    a_inTime = false;
     a_omega = 0;
     a_harmonic = false;
     f.terminals.clear();
@@ -2034,6 +2062,278 @@ void MagneticProblem3::finishHarmonic(const Options3& o, const Harmonic& hs, dou
     }
 }
 
+// ------------------------------------------------------------- In time
+
+void MagneticProblem3::beginStepping()
+{
+    // Its values the stepping's: A and the gauge's multiplier as they were
+    // (at rest, or nought), ψ - the conductors' potential's time integral -
+    // and each coil's nought; Ȧ and V nought.
+    Field3& f = field();
+    a_stepping.reset();
+    if (!f.edges || !f.space) return;
+    const std::size_t nE = std::size_t(f.edges->size()), nN = std::size_t(f.space->size()), nc = a_coils.size();
+    std::vector<double> v(nE + 2 * nN + nc, 0.0);
+    if (f.values.size() == nE + nN || f.values.size() == v.size())
+        for (std::size_t k = 0; k < nE + nN; ++k) v[k] = f.values[k];
+    if (f.values.size() == v.size()) v = f.values;
+    f.values = std::move(v);
+    f.internal.assign(nE + nN, 0.0);
+    f.internalStride = 0;
+}
+
+bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
+{
+    Field3& f = field();
+    const EdgeSpace3& es = *f.edges;
+    const Space3& ns = *f.space;
+    const QString name = a_node->name();
+    const std::size_t nE = std::size_t(es.size()), nN = std::size_t(ns.size());
+    const int nc = int(a_coils.size());
+    // (Its matrices the frequency domain's: K0 X + K1 Ẋ = b(t), X = (A,
+    // its multiplier, ψ, the coils' ψ) - jω there d/dt here, ψ the
+    // conductors' potential's time integral, V = ψ̇ -, assembled once a
+    // stepping.)
+    if (!a_stepping) {
+        bool magneticLoss = false;
+        const Solution3::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
+        if (const auto it = coef.named.find(QStringLiteral("murIm")); it != coef.named.end())
+            for (const Expression& e : it->second) magneticLoss = magneticLoss || (e.isValid() && !(e.isConstant() && e.constant() == 0));
+        if (magneticLoss) a_s.log << tr("%1: µr'' (a core's losses) is the frequency domain's - left out in time").arg(name);
+        auto hs = std::make_unique<Harmonic>();
+        Options3 po = o;
+        po.sweep = false;
+        if (!prepareHarmonic(po, *hs, error)) return false;
+        hs->K0 = hs->K0.real().cast<cd>();
+        a_stepping = std::move(hs);
+        a_steppingMass = 0;
+        // (Its sources' and held voltages' part of b assembled once where none
+        // reads t - each step's assembly over every element the most of a
+        // step's work otherwise; a coil's current fed is added at each.)
+        a_steppingR = Eigen::VectorXd();
+        a_steppingVaries = false;
+        for (const auto& j : sourcesOf(-1))
+            for (const Expression& e : j) a_steppingVaries = a_steppingVaries || (e.isValid() && a_s.varies(e));
+        for (const auto& face : a_sheets)
+            for (const auto& j : face)
+                for (const Expression& e : j) a_steppingVaries = a_steppingVaries || (e.isValid() && a_s.varies(e));
+        // (The voltages held: their part of b linear in each - its terminal's
+        // nodes at 1 V, its grounds' at nought -, assembled once by coil and
+        // taken times its voltage at each step.)
+        a_steppingVolt.assign(a_coils.size(), Eigen::VectorXd());
+        const Conductors& hc = a_stepping->h;
+        const std::vector<double> zero(nE, 0.0);
+        const std::vector<std::array<Expression, 3>> J0 = sourcesOf(-1);
+        for (int c = 0; c < nc; ++c) {
+            if (a_coils[std::size_t(c)].role != Coil::Voltage) continue;
+            std::vector<cd> unitV(nN, cd(0));
+            bool any = false;
+            for (std::size_t k = 0; k < nN; ++k)
+                if (hc.eqV[k] == -3 && hc.terminalOf[k] == c) {
+                    unitV[k] = 1.0;
+                    any = true;
+                }
+            if (!any) continue;
+            Eigen::SparseMatrix<cd> unusedM;
+            Eigen::VectorXcd rv;
+            assembleHarmonic(a_stepping->q, hc, 2, zero, unitV, J0, false, false, unusedM, rv, a_stepping->gaugeScale);
+            a_steppingVolt[std::size_t(c)] = rv.real();
+        }
+    }
+    Harmonic& hs = *a_stepping;
+    Conductors& h = hs.h;
+    const Equations& q = hs.q;
+    const int oV = hs.oV;
+    const double c0 = o.mass;
+    const std::vector<double> none;
+    const std::vector<double>& hist = o.history ? *o.history : none;
+    const auto histAt = [&hist](std::size_t k) { return k < hist.size() ? hist[k] : 0.0; };
+    // Its right-hand side at this time: the sources, the voltages held, the
+    // currents held - and K1 times the history.
+    for (std::size_t k = 0; k < nN; ++k) {
+        if (h.eqV[k] != -3) continue;
+        const int c = h.terminalOf[k];
+        if (c >= 0 && a_coils[std::size_t(c)].role == Coil::Voltage) h.heldV[k] = evalAt(a_coils[std::size_t(c)].voltage, Vec3{});
+    }
+    if (a_steppingVaries || a_steppingR.size() != hs.n) {
+        o.tell(tr("%1: assembling at t = %2").arg(name, formatQuantity(a_s.time(), Dim::of(0, 0, 1))));
+        const std::vector<std::array<Expression, 3>> J = sourcesOf(-1);
+        const std::vector<cd> noneV(nN, cd(0));
+        Eigen::SparseMatrix<cd> unused;
+        Eigen::VectorXcd r0;
+        assembleHarmonic(q, h, 1, hs.held, noneV, J, false, true, unused, r0, hs.gaugeScale);
+        a_steppingR = r0.real();
+    }
+    Eigen::VectorXd b = a_steppingR;
+    for (int c = 0; c < nc && c < int(a_steppingVolt.size()); ++c)
+        if (a_steppingVolt[std::size_t(c)].size() == hs.n) b += evalAt(a_coils[std::size_t(c)].voltage, Vec3{}) * a_steppingVolt[std::size_t(c)];
+    for (int c = 0; c < nc; ++c)
+        if (h.eqU[std::size_t(c)] >= 0 && a_coils[std::size_t(c)].role == Coil::Current) b(oV + h.eqU[std::size_t(c)]) += evalAt(a_coils[std::size_t(c)].current, Vec3{});
+    Eigen::VectorXd hx = Eigen::VectorXd::Zero(hs.n);
+    for (std::size_t k = 0; k < nE; ++k)
+        if (q.eqA[k] >= 0) hx(q.eqA[k]) = histAt(k);
+    for (std::size_t k = 0; k < nN; ++k)
+        if (h.eqV[k] >= 0) hx(oV + h.eqV[k]) = histAt(nE + nN + k);
+    for (int c = 0; c < nc; ++c)
+        if (h.eqU[std::size_t(c)] >= 0) hx(oV + h.eqU[std::size_t(c)]) = histAt(nE + 2 * nN + std::size_t(c));
+    const Eigen::SparseMatrix<double> K1 = hs.K1.real();
+    b += K1 * hx;
+    // K0 + c0 K1, factorized again where c0 changed.
+    if (!a_steppingLu || std::abs(a_steppingMass - c0) > 1e-12 * c0) {
+        o.tell(tr("%1: factorizing, %2 unknowns").arg(name).arg(hs.n));
+        const Eigen::SparseMatrix<double> M = Eigen::SparseMatrix<double>(hs.K0.real()) + c0 * K1;
+        a_steppingLu = std::make_unique<SparseRealLdlt>();
+        a_steppingLu->compute(M);
+        if (a_steppingLu->info() != Eigen::Success) {
+            *error = tr("%1: its system in time could not be factorized (%2)").arg(name, QString::fromStdString(a_steppingLu->lastErrorMessage()));
+            a_steppingLu.reset();
+            return false;
+        }
+        a_steppingMass = c0;
+        a_s.log << tr("%1: in time, %2 unknowns (%3 of the conductors' potential), factorized for a step of %4 (%5)")
+                       .arg(name)
+                       .arg(hs.n)
+                       .arg(h.nV)
+                       .arg(formatQuantity(1 / c0, Dim::of(0, 0, 1)), a_steppingLu->name());
+    }
+    const Eigen::VectorXd x = a_steppingLu->solve(b);
+    if (!x.allFinite()) {
+        *error = tr("%1: its solve in time is not finite").arg(name);
+        return false;
+    }
+    // Its values: A, the multiplier, ψ (a voltage held: integrated, (V +
+    // the history)/c0), the coils' ψ; then Ȧ and V = ψ̇.
+    f.values.assign(nE + 2 * nN + std::size_t(nc), 0.0);
+    f.internal.assign(nE + nN, 0.0);
+    f.internalStride = 0;
+    for (std::size_t k = 0; k < nE; ++k) {
+        const double A = q.eqA[k] >= 0 ? x(q.eqA[k]) : q.eqA[k] == -3 ? hs.held[k] : 0.0;
+        f.values[k] = A;
+        f.internal[k] = c0 * A - histAt(k);
+    }
+    for (std::size_t k = 0; k < nN; ++k) {
+        f.values[nE + k] = q.eqP[k] >= 0 ? x(q.nA + q.eqP[k]) / hs.gaugeScale : 0.0;
+        double psi = 0, V = 0;
+        if (h.eqV[k] >= 0) {
+            psi = x(oV + h.eqV[k]);
+            V = c0 * psi - histAt(nE + nN + k);
+        } else if (h.eqV[k] == -3) {
+            V = h.heldV[k].real();
+            psi = (V + histAt(nE + nN + k)) / c0;
+        }
+        f.values[nE + nN + k] = psi;
+        f.internal[nE + k] = V;
+    }
+    for (int c = 0; c < nc; ++c)
+        if (h.eqU[std::size_t(c)] >= 0) f.values[nE + 2 * nN + std::size_t(c)] = x(oV + h.eqU[std::size_t(c)]);
+    // Each coil's current and voltage now: a single conductor's current fed,
+    // or what flows in at its terminal, ∫ σ (Ȧ + ∇V)·∇h; its voltage held,
+    // or ψ̇ of its terminal; turns' voltage ∫ Ȧ·j, j their current density
+    // at 1 A.
+    a_omega = 0;
+    a_U.assign(std::size_t(nc), cd(0));
+    a_I.assign(std::size_t(nc), cd(0));
+    a_flux.assign(std::size_t(nc), cd(0));
+    const Mesh3& mesh = a_s.mesh();
+    const PrismRule& rule = es.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+    std::vector<double> found(std::size_t(nc), 0.0), turns(std::size_t(nc), 0.0);
+    {
+        PointEvaluator3 ev(a_s);
+        for (int e = 0; e < es.elements(); ++e) {
+            const int d = mesh.domain[std::size_t(e)];
+            if (d < 0 || !f.domains[std::size_t(d)]) continue;
+            const int* nd = ns.dofs(e);
+            const int* ed = es.dofs(e);
+            const bool conducting = h.conducting[std::size_t(d)];
+            int which = -1;
+            if (conducting)
+                for (int k = 0; k < ns.perElement() && which < 0; ++k) which = h.terminalOf[std::size_t(nd[k])];
+            bool anyTurns = false;
+            for (int c = 0; c < nc; ++c)
+                if (!a_coils[std::size_t(c)].single) {
+                    const auto& ju = hs.unit[std::size_t(c)][std::size_t(d)];
+                    anyTurns = anyTurns || ju[0].isValid() || ju[1].isValid() || ju[2].isValid();
+                }
+            if (which < 0 && !anyTurns) continue;
+            const int t = mesh.prismTriangle[std::size_t(e)], layer = mesh.prismLayer[std::size_t(e)];
+            const AffineMap am = affineMap(es.planNodes(), t);
+            const double hz = es.z(layer + 1) - es.z(layer);
+            const std::array<Expression, 9>& sg = a_sigma[std::size_t(d)];
+            for (const auto& qp : rule.points) {
+                EdgeSpace3::Basis bb;
+                es.basis(e, qp[0], qp[1], qp[2], bb);
+                ev.at(e, qp[0], qp[1], qp[2], bb.x);
+                PrismShape s;
+                prismShapeAt(ns.order(), qp[0], qp[1], qp[2], s);
+                double g[18][3];
+                nodalGradients(s, am, hz, g);
+                double Ad[3] = {0, 0, 0};
+                for (int i = 0; i < bb.count; ++i)
+                    if (ed[i] >= 0)
+                        for (int k = 0; k < 3; ++k) Ad[k] += bb.v[i][k] * f.internal[std::size_t(ed[i])];
+                const double w = qp[3] * bb.det;
+                for (int c = 0; c < nc; ++c) {
+                    if (a_coils[std::size_t(c)].single) continue;
+                    const auto& ju = hs.unit[std::size_t(c)][std::size_t(d)];
+                    for (int k = 0; k < 3; ++k)
+                        if (ju[std::size_t(k)].isValid()) turns[std::size_t(c)] += w * Ad[k] * ev.eval(ju[std::size_t(k)]);
+                }
+                if (which < 0) continue;
+                double E[3] = {Ad[0], Ad[1], Ad[2]};   // Ȧ + ∇V: -E
+                for (int k = 0; k < s.count; ++k)
+                    for (int m = 0; m < 3; ++m) E[m] += g[k][m] * f.internal[nE + std::size_t(nd[k])];
+                double s9[9];
+                for (int k = 0; k < 9; ++k) {
+                    s9[k] = sg[std::size_t(k)].isValid() ? ev.eval(sg[std::size_t(k)]) : 0.0;
+                    if (!std::isfinite(s9[k])) s9[k] = 0;
+                }
+                for (int c = 0; c < nc; ++c) {
+                    double gh[3] = {0, 0, 0};
+                    bool any = false;
+                    for (int k = 0; k < s.count; ++k)
+                        if (h.terminalOf[std::size_t(nd[k])] == c) {
+                            any = true;
+                            for (int m = 0; m < 3; ++m) gh[m] += g[k][m];
+                        }
+                    if (!any) continue;
+                    double v = 0;
+                    for (int i = 0; i < 3; ++i)
+                        for (int j = 0; j < 3; ++j) v += gh[i] * s9[3 * i + j] * E[j];
+                    found[std::size_t(c)] += w * v;
+                }
+            }
+        }
+    }
+    f.terminals.clear();
+    for (int c = 0; c < nc; ++c) {
+        const Coil& coil = a_coils[std::size_t(c)];
+        double I = 0, U = 0;
+        if (coil.single) {
+            I = coil.role == Coil::Current ? evalAt(coil.current, Vec3{}) : coil.role == Coil::Floating ? 0.0 : found[std::size_t(c)];
+            if (h.eqU[std::size_t(c)] >= 0) U = c0 * f.values[nE + 2 * nN + std::size_t(c)] - histAt(nE + 2 * nN + std::size_t(c));
+            else
+                for (std::size_t k = 0; k < nN; ++k)
+                    if (h.terminalOf[k] == c) {
+                        U = f.internal[nE + k];
+                        break;
+                    }
+        } else {
+            I = evalAt(coil.current, Vec3{});
+            U = turns[std::size_t(c)];
+        }
+        a_I[std::size_t(c)] = I;
+        a_U[std::size_t(c)] = U;
+        Field3::Terminal tm;
+        tm.name = coil.name;
+        tm.potential = U;
+        tm.charge = I;
+        f.terminals.push_back(tm);
+    }
+    a_inTime = true;
+    f.solved = true;
+    return true;
+}
+
 bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
 {
     Harmonic hs;
@@ -2348,6 +2648,28 @@ void MagneticProblem3::setGlobals()
             if (a.size() == 1 && b.size() == 1) s.setGlobal(p + QStringLiteral("L") + a + b, l, henry, tr("inductance matrix, %1 %2").arg(a, b));
         }
     setForceGlobals(false);
+    // In time: each coil's current and voltage now, and the resistive losses
+    // ∫ σ |E|² now.
+    if (a_inTime) {
+        for (int c = 0; c < int(a_coils.size()) && c < int(a_I.size()); ++c) {
+            const QString n = a_coils[std::size_t(c)].name;
+            s.setGlobal(p + QStringLiteral("I_") + n, a_I[std::size_t(c)].real(), Dim::current(), tr("coil %1's current now").arg(n));
+            s.setGlobal(p + QStringLiteral("V_") + n, a_U[std::size_t(c)].real(), Dim::voltage(), tr("coil %1's voltage now (its EMF and its conductor's drop)").arg(n));
+        }
+        double P = 0;
+        for (int e = 0; e < es.elements(); ++e) {
+            const int d = mesh.domain[std::size_t(e)];
+            if (d < 0 || !f.domains[std::size_t(d)] || !conducts(d)) continue;
+            for (const auto& qp : rule.points) {
+                EdgeSpace3::Basis b;
+                es.basis(e, qp[0], qp[1], qp[2], b);
+                ev.at(e, qp[0], qp[1], qp[2], b.x);
+                MagneticState st;
+                if (magneticStateAt(ev, a_fi, st, true) && std::isfinite(st.q)) P += qp[3] * b.det * st.q;
+            }
+        }
+        s.setGlobal(p + QStringLiteral("P"), P, Dim::power(), tr("resistive losses now (its eddy currents')"));
+    }
 }
 
 void MagneticProblem3::setForceGlobals(bool harmonic)
@@ -2402,7 +2724,7 @@ void MagneticProblem3::setForceGlobals(bool harmonic)
                     if (e.isValid() && !(e.isConstant() && e.constant() == want)) return false;
                     if (!e.isValid() && want == 1.0) return false;
                 }
-            if (harmonic && conducts(d)) return false;
+            if ((harmonic || a_inTime) && conducts(d)) return false;
             return true;
         };
         for (int e = 0; e < int(mesh.prisms.size()); ++e) {
@@ -2644,6 +2966,53 @@ bool magneticStateAt(PointEvaluator3& ev, int f, MagneticState& out, bool curren
         }
     }
     out.sigma = diagonal / 3;
+    // Solved in time: in a conductor E = -Ȧ - ∇V, J its sources' and σE,
+    // the losses σ |E|² (Ȧ and V in Field3::internal, after A, its
+    // multiplier, ψ and the coils' ψ in its values).
+    if (currents && field.space && field.internal.size() == nE + nN && field.values.size() > nE + nN && field.values.size() != 2 * nE + 3 * nN) {
+        double s9[9];
+        bool conducting = false;
+        for (int k = 0; k < 9; ++k) {
+            s9[k] = 0;
+            const auto it = coef.named.find(QStringLiteral("sigma%1").arg(k));
+            if (it != coef.named.end() && d < int(it->second.size()) && it->second[std::size_t(d)].isValid()) {
+                s9[k] = ev.eval(it->second[std::size_t(d)]);
+                if (!std::isfinite(s9[k])) s9[k] = 0;
+                conducting = true;
+            }
+        }
+        if (conducting) {
+            const Mesh3& mesh = s.mesh();
+            const int e = ev.prism();
+            const Space3& ns = *field.space;
+            const int t = mesh.prismTriangle[std::size_t(e)], layer = mesh.prismLayer[std::size_t(e)];
+            const AffineMap am = affineMap(es.planNodes(), t);
+            PrismShape sh;
+            prismShapeAt(ns.order(), ev.xi(), ev.eta(), ev.zeta(), sh);
+            double g[18][3];
+            nodalGradients(sh, am, es.z(layer + 1) - es.z(layer), g);
+            const int* nd = ns.dofs(e);
+            double Ad[3] = {0, 0, 0}, gv[3] = {0, 0, 0};
+            for (int i = 0; i < b.count; ++i) {
+                if (ed[i] < 0) continue;
+                for (int k = 0; k < 3; ++k) Ad[k] += b.v[i][k] * field.internal[std::size_t(ed[i])];
+            }
+            out.V = 0;
+            for (int k = 0; k < sh.count; ++k) {
+                const double v = field.internal[nE + std::size_t(nd[k])];
+                out.V += sh.n[k] * v;
+                for (int m = 0; m < 3; ++m) gv[m] += g[k][m] * v;
+            }
+            out.q = 0;
+            for (int k = 0; k < 3; ++k) out.E[k] = -Ad[k] - gv[k];
+            for (int i = 0; i < 3; ++i) {
+                double j = 0;
+                for (int k = 0; k < 3; ++k) j += s9[3 * i + k] * out.E[k];
+                out.J[i] += j;
+                out.q += out.E[i] * j;
+            }
+        }
+    }
     return true;
 }
 

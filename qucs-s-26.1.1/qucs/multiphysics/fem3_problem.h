@@ -147,6 +147,11 @@ public:
     /// Whether a step in time starts from its solution at rest at its first
     /// time (a semiconductor's), not from its field as it is.
     virtual bool solvedAtRestFirst() const { return false; }
+    /// Before a Time Dependent step's first step: its field's values put in
+    /// the layout its steps keep (a magnetic field's: its conductors'
+    /// potential's time integral after A), so that each step's values and
+    /// the history are alike.
+    virtual void beginStepping() {}
     /// Its \a count eigenfrequencies nearest \a shift (Hz) and their modes
     /// (its field's values, each scaled to a largest value of 1), lowest
     /// first - a solid's, K x = ω² M x; false and why (one that has none). A

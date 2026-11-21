@@ -337,6 +337,25 @@ class TestFem3Magnetic : public QObject
     Q_OBJECT
 
 private slots:
+    // QUCS_TEST_PART 1 those before magneticsInTimeSine, 2 it and those
+    // after (magnetic fields in time, the refusals) - by their place here,
+    // so that one added lands in a part -, unset all. Together past 900 s
+    // under ASan once fields in time came.
+    void init()
+    {
+        const QByteArray part = qgetenv("QUCS_TEST_PART");
+        if (part.isEmpty()) return;
+        const QMetaObject* mo = metaObject();
+        int second = -1, here = -1;
+        for (int k = mo->methodOffset(); k < mo->methodCount(); ++k) {
+            const QByteArray name = mo->method(k).name();
+            if (name == "magneticsInTimeSine") second = k;
+            if (name == QTest::currentTestFunction()) here = k;
+        }
+        if (second < 0 || here < 0) return;
+        if (part != QByteArray::number(here >= second ? 2 : 1)) QSKIP("in the test's other part (QUCS_TEST_PART)");
+    }
+
     // A sanitized build with MUMPS (CI's Linux job): its LDLTs MUMPS's
     // whatever their size, not only from 20,000 unknowns - the library is
     // the distribution's, optimized, where Eigen's LU is compiled into the
@@ -633,6 +652,7 @@ private slots:
             info(said);
         }
     }
+
 
     // A coaxial line, 1 mm long: 1 A along z in its core (0.5 mm) and back
     // in its shell (1.5 to 1.8 mm), its outer wall and ends insulated: its
@@ -976,6 +996,142 @@ private slots:
             info(QStringLiteral("ring: r %1 mm, H %2 A/m, |B| %3 T, curve %4 T").arg(r).arg(H).arg(got).arg(want));
             QVERIFY2(std::abs(got - want) < 1.5e-2 * want, qPrintable(QStringLiteral("r %1: |B| %2 T, the curve's %3 T").arg(r).arg(got).arg(want)));
         }
+    }
+
+    // Magnetic fields in time (a Time Dependent step: eddy currents σ (∂A/∂t
+    // + ∇V), the frequency domain's matrices stepped by BDF). The shorted
+    // coax (copper, its core 0.5 mm: µ0 σ a² 18 µs) fed 1 A at 20 kHz,
+    // sin(ωt) from rest: once its start has died away (its slowest mode some
+    // 3 µs, magneticsInTimeSteps), its voltage the frequency domain's Re(V̂
+    // e^{jωt}) at 20 kHz - its skin effect's resistance and inductance - at
+    // four times of its second period, to 2 % of |V̂| (0.5 % found); its
+    // losses some.
+    void magneticsInTimeSine()
+    {
+        using cd = std::complex<double>;
+        const double f = 20e3, w = 2 * M_PI * f;
+        QString et, mf;
+        auto coax = [&] { return shortedCoax(slowBuild() ? 0.4 : 0.3, 1, &et, &mf); };
+        auto coilOf = [&](Model& m) -> Node* {
+            for (Node& c : m.find(mf)->children)
+                if (c.type == QLatin1String("magnetic/coil")) return &c;
+            return nullptr;
+        };
+        auto stepOf = [&](Model& m, const QString& type, const QString& key, const QString& value) {
+            for (Node& c : m.root.children)
+                if (c.type == QLatin1String("study")) {
+                    c.children.clear();
+                    Node st = m.make(type);
+                    st.props.insert(key, value);
+                    // (Fixed steps of 1 µs, a period's 50th - a sanitized
+                    // build's 2 µs: BDF2's matrix the same at each step
+                    // after its first two - factorized three times.)
+                    if (type == QLatin1String("transient")) {
+                        st.props.insert(QStringLiteral("stepping"), QStringLiteral("fixed"));
+                        st.props.insert(QStringLiteral("dt"), slowBuild() ? QStringLiteral("2[us]") : QStringLiteral("1[us]"));
+                    }
+                    c.children.push_back(st);
+                }
+        };
+        // The frequency domain at 20 kHz.
+        Model mh = coax();
+        coilOf(mh)->props.insert(QStringLiteral("I0"), QStringLiteral("1[A]"));
+        stepOf(mh, QStringLiteral("frequency"), QStringLiteral("frequencies"), QStringLiteral("20[kHz]"));
+        const Solved sh = solve(mh);
+        QVERIFY2(sh.error.isEmpty(), qPrintable(why(sh)));
+        const cd V(global(sh.s(), QStringLiteral("mf.V_1")), global(sh.s(), QStringLiteral("mf.V_1_im")));
+        // In time, sin(ωt) = Re(-j e^{jωt}): its voltage Re(-j V̂ e^{jωt}).
+        Model mt = coax();
+        coilOf(mt)->props.insert(QStringLiteral("I0"), QStringLiteral("1[A]*sin(2*pi*20[kHz]*t)"));
+        stepOf(mt, QStringLiteral("transient"), QStringLiteral("times"), QStringLiteral("0, 40[us], 45[us], 50[us], 55[us]"));
+        const Solved st = solve(mt);
+        QVERIFY2(st.error.isEmpty(), qPrintable(why(st)));
+        Solution3& s = st.s();
+        QCOMPARE(s.snapshotCount(), 5);
+        QString said = QStringLiteral("V̂ at 20 kHz %1%2j V;").arg(V.real()).arg(V.imag(), 0, 'g', 6, QLatin1Char('+'));
+        for (int k = 1; k < 5; ++k) {
+            s.select(k);
+            const double t = s.time(), want = (cd(0, -1) * V * std::exp(cd(0, w * t))).real(), got = global(s, QStringLiteral("mf.V_1"));
+            const double I = global(s, QStringLiteral("mf.I_1"));
+            said += QStringLiteral(" t %1 µs: %2 V against %3 (I %4 A);").arg(t * 1e6).arg(got, 0, 'g', 6).arg(want, 0, 'g', 6).arg(I, 0, 'g', 6);
+            // (A sanitized build's coarser steps: 3 %.)
+            QVERIFY2(std::abs(got - want) < (slowBuild() ? 3e-2 : 2e-2) * std::abs(V) && std::abs(I - std::sin(w * t)) < 1e-9, qPrintable(said));
+            QVERIFY(global(s, QStringLiteral("mf.P")) > 0);
+        }
+        info(said);
+    }
+
+    // A step of 1 A into the shorted coax: its voltage at first its core's
+    // skin's, higher, falling to its DC resistance's (the frequency domain's
+    // at 10 Hz) - its slowest mode µ0 σ a²/α1², α1 J0's first zero, some 3
+    // µs -: to 1e-3 at 50 µs. Fed a voltage instead, its current found.
+    void magneticsInTimeSteps()
+    {
+        QString et, mf;
+        auto coax = [&] { return shortedCoax(slowBuild() ? 0.4 : 0.3, 1, &et, &mf); };
+        auto coilOf = [&](Model& m) -> Node* {
+            for (Node& c : m.find(mf)->children)
+                if (c.type == QLatin1String("magnetic/coil")) return &c;
+            return nullptr;
+        };
+        auto stepOf = [&](Model& m, const QString& type, const QString& key, const QString& value) {
+            for (Node& c : m.root.children)
+                if (c.type == QLatin1String("study")) {
+                    c.children.clear();
+                    Node st = m.make(type);
+                    st.props.insert(key, value);
+                    // (Fixed steps of 1 µs, a period's 50th - a sanitized
+                    // build's 2 µs: BDF2's matrix the same at each step
+                    // after its first two - factorized three times.)
+                    if (type == QLatin1String("transient")) {
+                        st.props.insert(QStringLiteral("stepping"), QStringLiteral("fixed"));
+                        st.props.insert(QStringLiteral("dt"), slowBuild() ? QStringLiteral("2[us]") : QStringLiteral("1[us]"));
+                    }
+                    c.children.push_back(st);
+                }
+        };
+        Model mr = coax();
+        coilOf(mr)->props.insert(QStringLiteral("I0"), QStringLiteral("1[A]"));
+        stepOf(mr, QStringLiteral("frequency"), QStringLiteral("frequencies"), QStringLiteral("10[Hz]"));
+        const Solved rest = solve(mr);
+        QVERIFY2(rest.error.isEmpty(), qPrintable(why(rest)));
+        const double R = global(rest.s(), QStringLiteral("mf.R_1"));
+        Model ms = coax();
+        coilOf(ms)->props.insert(QStringLiteral("I0"), QStringLiteral("1[A]"));
+        stepOf(ms, QStringLiteral("transient"), QStringLiteral("times"), QStringLiteral("0, 2[us], 50[us]"));
+        const Solved sst = solve(ms);
+        QVERIFY2(sst.error.isEmpty(), qPrintable(why(sst)));
+        // (Its values at the start in its steps' layout - a step's error
+        // reads them against its own.)
+        const int fi = sst.s().fieldIndex(mf);
+        sst.s().select(0);
+        const std::size_t first = sst.s().fields()[std::size_t(fi)].values.size();
+        sst.s().select(1);
+        QVERIFY2(first > 0 && first == sst.s().fields()[std::size_t(fi)].values.size(),
+                 qPrintable(QStringLiteral("%1 values at the start, %2 after").arg(first).arg(sst.s().fields()[std::size_t(fi)].values.size())));
+        const double early = global(sst.s(), QStringLiteral("mf.V_1"));
+        sst.s().select(2);
+        const double late = global(sst.s(), QStringLiteral("mf.V_1"));
+        const QString said2 = QStringLiteral("a step of 1 A: %1 V at 2 µs, %2 V at 50 µs against its DC resistance's %3 V").arg(early).arg(late).arg(R);
+        QVERIFY2(std::abs(late - R) < 1e-3 * R && early > 1.2 * late, qPrintable(said2));
+        info(said2);
+        // Fed a voltage instead (its role), R volts reached in a ramp over 10
+        // µs (a voltage of t: its part of each step's right-hand side
+        // assembled again at each): its current found, rising to 1 A (its
+        // L/R some 6 µs) - to 1e-3 at 100 µs.
+        Model mv = coax();
+        coilOf(mv)->props.insert(QStringLiteral("role"), QStringLiteral("voltage"));
+        coilOf(mv)->props.insert(QStringLiteral("V0"), QStringLiteral("%1[V]*((t < 10[us])*t/10[us] + (t >= 10[us]))").arg(R, 0, 'g', 17));
+        stepOf(mv, QStringLiteral("transient"), QStringLiteral("times"), QStringLiteral("0, 2[us], 100[us]"));
+        const Solved sv = solve(mv);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+        sv.s().select(1);
+        const double i0 = global(sv.s(), QStringLiteral("mf.I_1"));
+        sv.s().select(2);
+        const double i1 = global(sv.s(), QStringLiteral("mf.I_1")), v1 = global(sv.s(), QStringLiteral("mf.V_1"));
+        const QString said3 = QStringLiteral("fed R volts by a ramp: its current %1 A at 2 µs, %2 A at 100 µs (its voltage %3 V)").arg(i0).arg(i1).arg(v1);
+        QVERIFY2(std::abs(i1 - 1) < 1e-3 && i0 < 0.2 && std::abs(v1 - R) < 1e-12 * R, qPrintable(said3));
+        info(said3);
     }
 
     // What is refused: a coil whose currents physics is not there; Magnetic
