@@ -5,7 +5,10 @@
  *                  an anisotropic crystal's turned into the model's axes,
  *                  ε0 a thermal strain α (T - Tref); constraints fixed,
  *                  prescribed or rolling on the geometry's faces, loads on
- *                  faces and in domains, the reactions where it is held
+ *                  faces and in domains, the reactions where it is held;
+ *                  its eigenfrequencies, and its harmonic response in a
+ *                  Frequency Domain step - (K (1 + jη) + jω (αM + βK) -
+ *                  ω² M) u = F, a complex symmetric system
  *
  * This file is part of Qucs-S.
  *
@@ -20,9 +23,12 @@
 #include "fem_problem.h"
 #include "fem_tensor.h"
 
+#include "fem_sparse.h"
+
 #include <Eigen/Dense>
 
 #include <algorithm>
+#include <complex>
 #include <atomic>
 #include <cmath>
 #include <limits>
@@ -237,13 +243,33 @@ private:
         Eigen::SparseMatrix<double> A, Kc, R, Rd, P;
         Eigen::VectorXd F, Fd;
     };
-    void assemble(const Equations& q, Assembled& out) const;
+    /// Its stiffness and loads; \a scale (by domain) its elements'
+    /// stiffness alone scaled, a domain of 0 left out - no loads, no faces;
+    /// \a thermal false: no thermal strain (the frequency domain's).
+    void assemble(const Equations& q, Assembled& out, const std::vector<double>* scale = nullptr, bool thermal = true) const;
+    /// Its consistent mass ∫ ρ φi φj, each component's own: M among the
+    /// equations, Mc theirs against the held dofs, Mr and Md the held ones'
+    /// rows; \a scale (by domain) multiplying ρ, a domain of 0 left out.
+    /// False and why (a domain with no density).
+    struct Mass {
+        Eigen::SparseMatrix<double> M, Mc, Mr, Md;
+    };
+    bool assembleMass(const Equations& q, Mass& out, const std::vector<double>* scale, QString* error) const;
+    bool solveHarmonic(const Options3& o, QString* error);
+    /// Each domain's damping (a Damping feature's): its loss factor η and
+    /// Rayleigh's αdM (1/s) and βdK (s).
+    struct Damping {
+        double eta = 0, alpha = 0, beta = 0;
+    };
 
     std::vector<Constraint> a_constraints;              // by face
     std::vector<std::vector<Load>> a_loads;             // by face
     std::vector<std::vector<std::array<Expression, 3>>> a_body;   // by domain
+    std::vector<Damping> a_damping;                     // by domain
     double a_emax = 0;
     double a_reaction[3] = {0, 0, 0};
+    double a_reactionIm[3] = {0, 0, 0};
+    bool a_harmonic = false;   // solved in the frequency domain last
 };
 
 // ------------------------------------------------------------------ Setup
@@ -282,6 +308,7 @@ bool SolidProblem3::setup(QString* error)
     a_constraints.assign(F, Constraint());
     a_loads.assign(F, {});
     a_body.assign(D, {});
+    a_damping.assign(D, Damping());
     const Scope& params = a_s.parameters().scope;
     std::vector<const Node*> elasticOf(D, nullptr), piezoOf(D, nullptr);
     int order = 0;
@@ -299,6 +326,27 @@ bool SolidProblem3::setup(QString* error)
         } else if (t == QLatin1String("solid/piezo")) {
             for (int d : picked)
                 if (d >= 0 && d < int(D)) piezoOf[std::size_t(d)] = &feature;
+        } else if (t == QLatin1String("solid/damping")) {
+            // (Constants: its parameters', not the point's.)
+            Damping dm;
+            auto constant = [&](const QString& key, double* out) {
+                const Expression e = compile(feature.text(key), feature, key, false);
+                if (!e.isValid()) return;
+                if (!e.isConstant()) {
+                    problem(tr("%1: its %2 must be a constant").arg(feature.name(), key));
+                    return;
+                }
+                *out = e.constant();
+                if (!(*out >= 0) || !std::isfinite(*out)) problem(tr("%1: its %2 must be 0 or more").arg(feature.name(), key));
+            };
+            if (feature.text(QStringLiteral("kind")) == QLatin1String("rayleigh")) {
+                constant(QStringLiteral("alphadM"), &dm.alpha);
+                constant(QStringLiteral("betadK"), &dm.beta);
+            } else {
+                constant(QStringLiteral("eta"), &dm.eta);
+            }
+            for (int d : picked)
+                if (d >= 0 && d < int(D)) a_damping[std::size_t(d)] = dm;
         } else if (t == QLatin1String("solid/bodyload")) {
             std::array<Expression, 3> b;
             static const char* keys3[3] = {"fx", "fy", "fz"};
@@ -585,7 +633,7 @@ void SolidProblem3::buildEquations(Equations& q) const
 
 // --------------------------------------------------------------- Assembly
 
-void SolidProblem3::assemble(const Equations& q, Assembled& out) const
+void SolidProblem3::assemble(const Equations& q, Assembled& out, const std::vector<double>* scale, bool thermal) const
 {
     const Field3& f = a_s.fields()[std::size_t(a_fi)];
     const Space3& sp = *f.space;
@@ -634,7 +682,7 @@ void SolidProblem3::assemble(const Equations& q, Assembled& out) const
     const int asked = assemblyParts();
     const int partCount = std::clamp(asked > 0 ? asked : E / 2000, 1, asked > 0 ? std::max(1, E) : 64);
     std::vector<Part> parts(static_cast<std::size_t>(partCount));
-    const auto assemblePart = [this, &parts, &sp, &mesh, &f, &mats, &rule, &scatter, E, partCount, per, m](int k) {
+    const auto assemblePart = [this, &parts, &sp, &mesh, &f, &mats, &rule, &scatter, E, partCount, per, m, scale, thermal](int k) {
         Part& part = parts[std::size_t(k)];
         const int from = int(qint64(E) * k / partCount), to = int(qint64(E) * (k + 1) / partCount);
         part.ta.reserve(std::size_t(to - from) * std::size_t(m) * std::size_t(m));
@@ -646,8 +694,11 @@ void SolidProblem3::assemble(const Equations& q, Assembled& out) const
         for (int e = from; e < to; ++e) {
             const int d = mesh.domain[std::size_t(e)];
             if (d < 0 || !f.domains[std::size_t(d)]) continue;
+            const double factor = scale ? (*scale)[std::size_t(d)] : 1.0;
+            if (factor == 0) continue;
             const Material& mat = mats[std::size_t(d)];
-            const std::vector<std::array<Expression, 3>>& body = a_body[std::size_t(d)];
+            static const std::vector<std::array<Expression, 3>> noBody;
+            const std::vector<std::array<Expression, 3>>& body = scale ? noBody : a_body[std::size_t(d)];
             std::fill(K.begin(), K.end(), 0.0);
             std::fill(Fe.begin(), Fe.end(), 0.0);
             const int* dofs = sp.dofs(e);
@@ -660,6 +711,13 @@ void SolidProblem3::assemble(const Equations& q, Assembled& out) const
                 if (here) ev.at(e, qp[0], qp[1], qp[2], mp.x);
                 double C6[6][6], S0[6], SP[6];
                 mat.eval(here ? &ev : nullptr, C6, S0, SP);
+                if (!thermal || scale)
+                    for (double& v : S0) v = 0;
+                if (scale)
+                    for (int I = 0; I < 6; ++I) {
+                        SP[I] = 0;
+                        for (int J = 0; J < 6; ++J) C6[I][J] *= factor;
+                    }
                 double sigma0[6];
                 for (int I = 0; I < 6; ++I) {
                     sigma0[I] = SP[I];
@@ -716,12 +774,13 @@ void SolidProblem3::assemble(const Equations& q, Assembled& out) const
             });
         pool.join();
     }
-    // The faces: loads, and an oblique roller's penalty along its normal.
+    // The faces: loads, and an oblique roller's penalty along its normal
+    // (none where the stiffness alone is scaled).
     Part faces;
     std::vector<T> penalty;
     PointEvaluator3 ev(a_s);
     const int degree = sp.order() == 1 ? 2 : 4;
-    for (int fi = 0; fi < int(mesh.faces.size()); ++fi) {
+    for (int fi = 0; fi < int(mesh.faces.size()) && !scale; ++fi) {
         const Mesh3::Face& mf = mesh.faces[std::size_t(fi)];
         const int face = mf.face;
         const std::vector<Load>& loads = a_loads[std::size_t(face)];
@@ -818,6 +877,9 @@ void SolidProblem3::assemble(const Equations& q, Assembled& out) const
 
 bool SolidProblem3::solve(const Options3& o, QString* error)
 {
+    if (o.frequency > 0) return solveHarmonic(o, error);
+    a_harmonic = false;
+    for (double& r : a_reactionIm) r = 0;
     Field3& f = field();
     const Space3& sp = *f.space;
     const int n = sp.size();
@@ -914,6 +976,205 @@ bool SolidProblem3::solve(const Options3& o, QString* error)
     return true;
 }
 
+// ------------------------------------------------------------------- Mass
+
+bool SolidProblem3::assembleMass(const Equations& q, Mass& out, const std::vector<double>* scale, QString* error) const
+{
+    const Field3& f = a_s.fields()[std::size_t(a_fi)];
+    const Space3& sp = *f.space;
+    const Mesh3& mesh = a_s.mesh();
+    const int n = sp.size();
+    const int nfix = int(q.fixedKey.size());
+    const Solution3::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
+    const auto rhoIt = coef.named.find(QStringLiteral("rho"));
+    using T = Eigen::Triplet<double>;
+    std::vector<T> tm, tc, trows, td;
+    PointEvaluator3 ev(a_s);
+    const PrismRule& rule = sp.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+    const int per = sp.perElement();
+    std::vector<double> Me(std::size_t(per * per));
+    for (int e = 0; e < sp.elements(); ++e) {
+        const int d = mesh.domain[std::size_t(e)];
+        if (d < 0 || !f.domains[std::size_t(d)]) continue;
+        const double factor = scale ? (*scale)[std::size_t(d)] : 1.0;
+        if (factor == 0) continue;
+        const Expression rho = rhoIt != coef.named.end() ? rhoIt->second[std::size_t(d)] : Expression();
+        if (!rho.isValid()) {
+            const Topology3& topo = a_s.topology();
+            *error = tr("%1: domain %2 (%3) has no density rho: its mass is needed (an Eigenfrequency or a Frequency Domain step)")
+                         .arg(a_node->name())
+                         .arg(d + 1)
+                         .arg(topo.objectNames.value(topo.domains[std::size_t(d)].owner));
+            return false;
+        }
+        std::fill(Me.begin(), Me.end(), 0.0);
+        for (const auto& qp : rule.points) {
+            const Space3::Map mp = sp.map(e, qp[0], qp[1], qp[2]);
+            double r = 0;
+            if (rho.isConstant()) r = rho.constant();
+            else {
+                ev.at(e, qp[0], qp[1], qp[2], mp.x);
+                r = ev.eval(rho);
+            }
+            PrismShape s;
+            prismShapeAt(sp.order(), qp[0], qp[1], qp[2], s);
+            const double w = qp[3] * std::abs(mp.det) * (std::isfinite(r) ? r : 0) * factor;
+            for (int i = 0; i < per; ++i)
+                for (int j = 0; j < per; ++j) Me[std::size_t(i * per + j)] += w * s.n[i] * s.n[j];
+        }
+        const int* dofs = sp.dofs(e);
+        for (int c = 0; c < 3; ++c)
+            for (int i = 0; i < per; ++i) {
+                const std::size_t ki = std::size_t(c * n + dofs[i]);
+                const int ei = q.eq[ki], fi = q.fixed[ki];
+                if (ei < 0 && fi < 0) continue;
+                for (int j = 0; j < per; ++j) {
+                    const std::size_t kj = std::size_t(c * n + dofs[j]);
+                    const int ej = q.eq[kj], fj = q.fixed[kj];
+                    const double v = Me[std::size_t(i * per + j)];
+                    if (ei >= 0) {
+                        if (ej >= 0) tm.emplace_back(ei, ej, v);
+                        else if (fj >= 0) tc.emplace_back(ei, fj, v);
+                    } else {
+                        if (ej >= 0) trows.emplace_back(fi, ej, v);
+                        else if (fj >= 0) td.emplace_back(fi, fj, v);
+                    }
+                }
+            }
+    }
+    out.M.resize(q.neq, q.neq);
+    out.M.setFromTriplets(tm.begin(), tm.end());
+    out.Mc.resize(q.neq, nfix);
+    out.Mc.setFromTriplets(tc.begin(), tc.end());
+    out.Mr.resize(nfix, q.neq);
+    out.Mr.setFromTriplets(trows.begin(), trows.end());
+    out.Md.resize(nfix, nfix);
+    out.Md.setFromTriplets(td.begin(), td.end());
+    return true;
+}
+
+// ------------------------------------------------------- Harmonic response
+
+bool SolidProblem3::solveHarmonic(const Options3& o, QString* error)
+{
+    using cd = std::complex<double>;
+    using CMatrix = Eigen::SparseMatrix<cd>;
+    Field3& f = field();
+    const Space3& sp = *f.space;
+    const int n = sp.size();
+    const QString name = a_node->name();
+    const double w = 2 * M_PI * o.frequency;
+    Equations q;
+    buildEquations(q);
+    if (q.neq == 0 && q.fixedKey.empty()) {
+        *error = tr("%1 has nothing to solve").arg(name);
+        return false;
+    }
+    // The held dofs' amplitudes (a prescribed displacement's: a base
+    // shaken), in phase.
+    Eigen::VectorXcd ud(Eigen::Index(q.fixedKey.size()));
+    for (std::size_t k = 0; k < q.fixedKey.size(); ++k) {
+        const int key = q.fixedKey[k], a = key / n, dof = key % n;
+        const int face = q.fixedFace[k];
+        double v = face >= 0 ? evalAt(a_constraints[std::size_t(face)].value[a], sp.point(dof)) : 0.0;
+        if (!std::isfinite(v)) v = 0;
+        ud(Eigen::Index(k)) = v;
+    }
+    // K (1 + jη) + jω (αM + βK) - ω² M: the stiffness, its imaginary part
+    // by domain (η + ωβ), the mass, and its imaginary part (ωα).
+    o.tell(tr("%1: assembling at %2").arg(name, formatQuantity(o.frequency, Dim::of(0, 0, -1))));
+    Assembled a;
+    assemble(q, a, nullptr, false);
+    const std::size_t D = a_damping.size();
+    std::vector<double> kScale(D, 0.0), mScale(D, 0.0);
+    bool anyK = false, anyM = false;
+    for (std::size_t d = 0; d < D; ++d) {
+        kScale[d] = a_damping[d].eta + w * a_damping[d].beta;
+        mScale[d] = w * a_damping[d].alpha;
+        anyK = anyK || kScale[d] != 0;
+        anyM = anyM || mScale[d] != 0;
+    }
+    Assembled ai;
+    if (anyK) assemble(q, ai, &kScale);
+    Mass mass, massI;
+    if (!assembleMass(q, mass, nullptr, error)) return false;
+    if (anyM && !assembleMass(q, massI, &mScale, error)) return false;
+    const auto complexOf = [w](const Eigen::SparseMatrix<double>& k, const Eigen::SparseMatrix<double>& m, const Eigen::SparseMatrix<double>* ki,
+                               const Eigen::SparseMatrix<double>* mi) {
+        Eigen::SparseMatrix<double> re = k - (w * w) * m;
+        CMatrix out = re.cast<cd>();
+        if (ki && ki->nonZeros() > 0) out += cd(0, 1) * ki->cast<cd>();
+        if (mi && mi->nonZeros() > 0) out += cd(0, 1) * mi->cast<cd>();
+        return out;
+    };
+    const CMatrix A = complexOf(a.A, mass.M, anyK ? &ai.A : nullptr, anyM ? &massI.M : nullptr);
+    const CMatrix Ac = complexOf(a.Kc, mass.Mc, anyK ? &ai.Kc : nullptr, anyM ? &massI.Mc : nullptr);
+    Eigen::VectorXcd b = a.F.cast<cd>();
+    if (ud.size() > 0) b -= Ac * ud;
+    if (q.fixedKey.empty() && a.P.nonZeros() == 0 && !(w > 0)) {
+        *error = tr("%1 is held nowhere").arg(name);
+        return false;
+    }
+    Eigen::VectorXcd x = Eigen::VectorXcd::Zero(q.neq);
+    if (q.neq > 0) {
+        o.tell(tr("%1: factorizing").arg(name));
+        SparseComplexLdlt ldlt;
+        ldlt.compute(A);
+        if (ldlt.info() != Eigen::Success) {
+            *error = tr("%1: its harmonic system at %2 could not be factorized (%3) - at a resonance with no damping it is singular")
+                         .arg(name, formatQuantity(o.frequency, Dim::of(0, 0, -1)), QString::fromStdString(ldlt.lastErrorMessage()));
+            return false;
+        }
+        if (o.cancelled && o.cancelled()) {
+            *error = tr("cancelled");
+            return false;
+        }
+        x = ldlt.solve(b);
+        // (A resonance undamped: the factors' solve not finite, or not the
+        // system's.)
+        const double rb = (A * x - b).norm(), nb = b.norm();
+        if (!x.allFinite() || !(rb <= 1e-6 * std::max(nb, 1e-300))) {
+            *error = tr("%1: its harmonic system at %2 is singular to rounding - a resonance with no damping (give a Damping)")
+                         .arg(name, formatQuantity(o.frequency, Dim::of(0, 0, -1)));
+            return false;
+        }
+        a_s.log << tr("%1: %2 unknowns at %3, by %4").arg(name).arg(q.neq).arg(formatQuantity(o.frequency, Dim::of(0, 0, -1)), ldlt.name());
+    }
+    // Its values: the real parts by component, then the imaginary ones.
+    f.values.assign(std::size_t(6 * n), 0.0);
+    for (std::size_t k = 0; k < q.eq.size(); ++k) {
+        cd v = 0;
+        if (q.eq[k] >= 0) v = x(q.eq[k]);
+        else if (q.fixed[k] >= 0) v = ud(q.fixed[k]);
+        f.values[k] = v.real();
+        f.values[k + std::size_t(3 * n)] = v.imag();
+    }
+    // The reactions, in phase and in quadrature: the held dofs' rows of the
+    // whole system.
+    for (double& r : a_reaction) r = 0;
+    for (double& r : a_reactionIm) r = 0;
+    if (!q.fixedKey.empty()) {
+        const CMatrix R = complexOf(a.R, mass.Mr, anyK ? &ai.R : nullptr, anyM ? &massI.Mr : nullptr);
+        const CMatrix Rd = complexOf(a.Rd, mass.Md, anyK ? &ai.Rd : nullptr, anyM ? &massI.Md : nullptr);
+        const Eigen::VectorXcd r = R * x + Rd * ud - a.Fd.cast<cd>();
+        for (std::size_t k = 0; k < q.fixedKey.size(); ++k) {
+            a_reaction[q.fixedKey[k] / n] += r(Eigen::Index(k)).real();
+            a_reactionIm[q.fixedKey[k] / n] += r(Eigen::Index(k)).imag();
+        }
+    }
+    if (a.P.nonZeros() > 0) {
+        const Eigen::VectorXcd r = a.P.cast<cd>() * x;
+        for (std::size_t k = 0; k < q.eq.size(); ++k)
+            if (q.eq[k] >= 0) {
+                a_reaction[k / std::size_t(n)] += r(q.eq[k]).real();
+                a_reactionIm[k / std::size_t(n)] += r(q.eq[k]).imag();
+            }
+    }
+    a_harmonic = true;
+    f.solved = true;
+    return true;
+}
+
 // ------------------------------------------------------- Eigenfrequencies
 
 bool SolidProblem3::eigenmodes(const Options3& o, int count, double shift, std::vector<double>* frequencies,
@@ -921,7 +1182,6 @@ bool SolidProblem3::eigenmodes(const Options3& o, int count, double shift, std::
 {
     Field3& f = field();
     const Space3& sp = *f.space;
-    const Mesh3& mesh = a_s.mesh();
     const int n = sp.size();
     const QString name = a_node->name();
     Equations q;
@@ -934,56 +1194,9 @@ bool SolidProblem3::eigenmodes(const Options3& o, int count, double shift, std::
     // mass ∫ ρ φi φj, each component's own.
     Assembled a;
     assemble(q, a);
-    const Solution3::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
-    const auto rhoIt = coef.named.find(QStringLiteral("rho"));
-    using T = Eigen::Triplet<double>;
-    std::vector<T> tm;
-    {
-        PointEvaluator3 ev(a_s);
-        const PrismRule& rule = sp.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
-        const int per = sp.perElement();
-        std::vector<double> Me(std::size_t(per * per));
-        for (int e = 0; e < sp.elements(); ++e) {
-            const int d = mesh.domain[std::size_t(e)];
-            if (d < 0 || !f.domains[std::size_t(d)]) continue;
-            const Expression rho = rhoIt != coef.named.end() ? rhoIt->second[std::size_t(d)] : Expression();
-            if (!rho.isValid()) {
-                const Topology3& topo = a_s.topology();
-                *error = tr("%1: domain %2 (%3) has no density rho: an Eigenfrequency step needs it")
-                             .arg(name)
-                             .arg(d + 1)
-                             .arg(topo.objectNames.value(topo.domains[std::size_t(d)].owner));
-                return false;
-            }
-            std::fill(Me.begin(), Me.end(), 0.0);
-            for (const auto& qp : rule.points) {
-                const Space3::Map mp = sp.map(e, qp[0], qp[1], qp[2]);
-                double r = 0;
-                if (rho.isConstant()) r = rho.constant();
-                else {
-                    ev.at(e, qp[0], qp[1], qp[2], mp.x);
-                    r = ev.eval(rho);
-                }
-                PrismShape s;
-                prismShapeAt(sp.order(), qp[0], qp[1], qp[2], s);
-                const double w = qp[3] * std::abs(mp.det) * (std::isfinite(r) ? r : 0);
-                for (int i = 0; i < per; ++i)
-                    for (int j = 0; j < per; ++j) Me[std::size_t(i * per + j)] += w * s.n[i] * s.n[j];
-            }
-            const int* dofs = sp.dofs(e);
-            for (int c = 0; c < 3; ++c)
-                for (int i = 0; i < per; ++i) {
-                    const int ei = q.eq[std::size_t(c * n + dofs[i])];
-                    if (ei < 0) continue;
-                    for (int j = 0; j < per; ++j) {
-                        const int ej = q.eq[std::size_t(c * n + dofs[j])];
-                        if (ej >= 0) tm.emplace_back(ei, ej, Me[std::size_t(i * per + j)]);
-                    }
-                }
-        }
-    }
-    Eigen::SparseMatrix<double> M(q.neq, q.neq);
-    M.setFromTriplets(tm.begin(), tm.end());
+    Mass mass;
+    if (!assembleMass(q, mass, nullptr, error)) return false;
+    const Eigen::SparseMatrix<double>& M = mass.M;
     // Shift and invert about σ = (2π f)² - 1 s⁻² (a free solid's rigid
     // motions, at nought, then not singular): (K - σ M)⁻¹ M, its largest
     // eigenvalues θ those of K x = λ M x nearest σ, λ = σ + 1/θ.
@@ -1066,10 +1279,14 @@ void SolidProblem3::setGlobals()
         if (d < 0 || !f.domains[std::size_t(d)]) continue;
         for (int i = 0; i < sp.perElement(); ++i) on[std::size_t(sp.dofs(e)[i])] = 1;
     }
+    // (In the frequency domain its amplitude: the imaginary parts after
+    // the real ones.)
+    const bool harmonic = f.values.size() >= std::size_t(6 * n);
     for (int i = 0; i < n; ++i) {
         if (!on[std::size_t(i)] || f.values.size() < std::size_t(3 * n)) continue;
-        const double u = f.values[std::size_t(i)], v = f.values[std::size_t(n + i)], w = f.values[std::size_t(2 * n + i)];
-        dmax = std::max(dmax, std::sqrt(u * u + v * v + w * w));
+        double d2 = 0;
+        for (int c = 0; c < (harmonic ? 6 : 3); ++c) d2 += f.values[std::size_t(c * n + i)] * f.values[std::size_t(c * n + i)];
+        dmax = std::max(dmax, std::sqrt(d2));
     }
     double energy = 0;
     {
@@ -1092,6 +1309,12 @@ void SolidProblem3::setGlobals()
     a_s.setGlobal(p + QStringLiteral("Rx"), a_reaction[0], force, tr("reaction force where it is held, x component"));
     a_s.setGlobal(p + QStringLiteral("Ry"), a_reaction[1], force, tr("reaction force where it is held, y component"));
     a_s.setGlobal(p + QStringLiteral("Rz"), a_reaction[2], force, tr("reaction force where it is held, z component"));
+    if (a_harmonic) {
+        static const char* axes[3] = {"x", "y", "z"};
+        for (int a = 0; a < 3; ++a)
+            a_s.setGlobal(p + QStringLiteral("R%1_im").arg(QString::fromLatin1(axes[a])), a_reactionIm[a], force,
+                          tr("reaction force where it is held, %1 component, its imaginary part (the frequency domain's)").arg(QString::fromLatin1(axes[a])));
+    }
 }
 
 } // namespace

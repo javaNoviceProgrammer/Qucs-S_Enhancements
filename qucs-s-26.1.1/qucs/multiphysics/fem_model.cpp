@@ -1214,7 +1214,8 @@ QList<NodeKind> makeKinds()
           choice(QStringLiteral("order"), tr("Element order"), {QStringLiteral("1"), QStringLiteral("2")}, {tr("Linear"), tr("Quadratic")},
                  QStringLiteral("2"))},
          {QStringLiteral("solid/elastic"), QStringLiteral("solid/free"), QStringLiteral("solid/fixed"), QStringLiteral("solid/displacement"),
-          QStringLiteral("solid/roller"), QStringLiteral("solid/load"), QStringLiteral("solid/bodyload"), QStringLiteral("solid/piezo")},
+          QStringLiteral("solid/roller"), QStringLiteral("solid/load"), QStringLiteral("solid/bodyload"), QStringLiteral("solid/piezo"),
+          QStringLiteral("solid/damping")},
          {QStringLiteral("solid/elastic"), QStringLiteral("solid/free")}, false, false, QStringLiteral("solid"),
          tr("The displacement (u, v) of a linear elastic solid: -∇·σ = f, σ = D (ε - ε0), ε0 a thermal strain. In the plane, "
             "in plane strain or plane stress; about an axis, axisymmetric (the component's space); in 3D (u, v, w) on prisms, "
@@ -1303,6 +1304,18 @@ QList<NodeKind> makeKinds()
                            tr("A 3D model's weight is along -z: -rho*g_const")),
                    Spaces::ThreeD)},
          {}, {}, false, false, QStringLiteral("bl"), tr("A force per volume: weight, an inertial force.")});
+    add({QStringLiteral("solid/damping"), tr("Damping"), QStringLiteral("solid"), QStringLiteral("domainfeature"), Level::Domain,
+         {selectionProp(none),
+          choice(QStringLiteral("kind"), tr("Damping"), {QStringLiteral("loss"), QStringLiteral("rayleigh")},
+                 {tr("Loss factor: the stiffness E (1 + jη)"), tr("Rayleigh: αdM + βdK")}, QStringLiteral("loss")),
+          shownIf(expr(QStringLiteral("eta"), tr("Loss factor η"), QString(), QStringLiteral("0.01"),
+                       tr("Of a resonance, 1/Q: its half-power width over its frequency")),
+                  QStringLiteral("kind=loss")),
+          shownIf(expr(QStringLiteral("alphadM"), tr("Mass damping αdM"), QStringLiteral("1/s"), QStringLiteral("0[1/s]")), QStringLiteral("kind=rayleigh")),
+          shownIf(expr(QStringLiteral("betadK"), tr("Stiffness damping βdK"), QStringLiteral("s"), QStringLiteral("0[s]")), QStringLiteral("kind=rayleigh"))},
+         {}, {}, false, false, QStringLiteral("dmp"),
+         tr("A solid's damping in a Frequency Domain step: (K (1 + jη) + jω (αdM M + βdK K) - ω² M) u = F. At rest and in its "
+            "eigenfrequencies it does nothing.")});
 
     // Magnetic fields.
     add({QStringLiteral("magnetic"), tr("Magnetic Fields"), QStringLiteral("physics"), QStringLiteral("mf"), Level::Domain,
@@ -3381,8 +3394,8 @@ QList<NodeKind> makeKinds()
                           "again")),
               adaptSteps, adaptPhysics},
              {}, {}, false, false, QStringLiteral("freq"),
-             tr("The fields at each frequency: magnetic fields with their eddy currents, waves in the plane (complex: their "
-                "real and imaginary parts), the other physics at rest at each; kept at each frequency.")});
+             tr("The fields at each frequency: magnetic fields with their eddy currents, waves in the plane, a 3D solid's harmonic "
+                "response (complex: their real and imaginary parts), the other physics at rest at each; kept at each frequency.")});
         add({QStringLiteral("wavelength"), tr("Wavelength Domain"), QStringLiteral("step"), QStringLiteral("wavelength"), Level::None,
              {physics,
               text(QStringLiteral("wavelengths"), tr("Wavelengths"), QStringLiteral("1550[nm]"),
@@ -4550,6 +4563,8 @@ QList<NodeKind> makeKinds()
             kind.spaces = Spaces::ThreeD;
         if (kind.type == QLatin1String("surface") || kind.type == QLatin1String("meshplot") || kind.type == QLatin1String("deformation"))
             kind.spaces = Spaces::All;
+        // (A solid's frequency response is a 3D model's alone.)
+        if (kind.type == QLatin1String("solid/damping")) kind.spaces = Spaces::ThreeD;
         // Derived values of a 3D solution: globals, integrals, averages and
         // extrema over its domains, faces or edges, values at points - an
         // axisymmetric model's revolution the plane's.
