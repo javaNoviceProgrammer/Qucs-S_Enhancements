@@ -2434,7 +2434,7 @@ bool MultiphysicsDoc::showPlotGroup(const QString& tag, QString* error)
             Deformation d;
             d.x = p.text(QStringLiteral("x"));
             d.y = p.text(QStringLiteral("y"));
-            d.scale = 0;
+            d.scale.reset();
             if (p.text(QStringLiteral("scaling")) == QLatin1String("manual"))
                 d.scale = evaluateConstant(p.text(QStringLiteral("scale")), sol->parameters().scope, Dim()).value_or(1);
             deformation = d;
@@ -2535,7 +2535,7 @@ bool MultiphysicsDoc::showPlotGroup(const QString& tag, QString* error)
         }
     }
     if (!label.isEmpty()) scene->title += QStringLiteral(" - ") + label;
-    if (deform && deform->used > 0) scene->title += tr(" (deformed %1×)").arg(formatNumber(deform->used, 3));
+    if (deform && deform->used != 0) scene->title += tr(" (deformed %1×)").arg(formatNumber(deform->used, 3));
     if (solutionStale(study)) scene->title += tr(" (an old solution)");
     a_scene = scene;
     a_plotGroup = tag;

@@ -149,7 +149,9 @@ public:
     virtual bool solvedAtRestFirst() const { return false; }
     /// Its \a count eigenfrequencies nearest \a shift (Hz) and their modes
     /// (its field's values, each scaled to a largest value of 1), lowest
-    /// first - a solid's, K x = ω² M x; false and why (one that has none).
+    /// first - a solid's, K x = ω² M x; false and why (one that has none). A
+    /// mode of ω² below 0 (prestressed past a buckling) its frequency
+    /// -√(-ω²)/2π, less than 0.
     virtual bool eigenmodes(const Options3& options, int count, double shift, std::vector<double>* frequencies,
                             std::vector<std::vector<double>>* modes, QString* error)
     {

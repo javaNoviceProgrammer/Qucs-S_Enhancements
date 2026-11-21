@@ -1115,6 +1115,85 @@ private slots:
         }
     }
 
+    // The review of 2cc93286 and b7e80cc3. Pushed
+    // past its buckling (-2 GPa, the clamped beam's Euler stress some 1.6
+    // GPa) the beam's first modes have ω² below 0: shown at 0 Hz, said in
+    // the warnings, solid.omega2 below 0. And prestressed after a large
+    // deformation solve, its modes about where it was solved
+    // (assembleLarge()'s tangent): a bar of ν 0 stretched by a dead 20 GPa
+    // to λ 1.088 - its axial tangent modulus E (3λ² - 1)/2 - its first
+    // axial mode √((3λ² - 1)/2) times the unstretched one's (1.1295; the
+    // stiffness at rest with the Cauchy stress's would give √1.1, 1.0488).
+    void buckledAndLargePrestressed()
+    {
+        {
+            Model m = model3d(slowBuild() ? 1.0 : 0.5);
+            addBox(m, QStringLiteral("beam"), 0, 0, 0, 20, 1, 1);
+            zDivisions(m, QStringLiteral("beam"), 2);
+            const QString solid = addSolid(m, 2, {{QStringLiteral("E"), QStringLiteral("200[GPa]")}, {QStringLiteral("nu"), QStringLiteral("0")},
+                                                  {QStringLiteral("rho"), QStringLiteral("7850[kg/m^3]")}});
+            addFeature(m, solid, QStringLiteral("solid/fixed"), ofSide(QStringLiteral("beam"), QStringLiteral("left")));
+            addFeature(m, solid, QStringLiteral("solid/displacement"), ofSide(QStringLiteral("beam"), QStringLiteral("right")),
+                       {{QStringLiteral("x"), true}, {QStringLiteral("y"), true}, {QStringLiteral("z"), true}, {QStringLiteral("u0"), QStringLiteral("-200[um]")}});
+            for (Node& c : m.root.children)
+                if (c.type == QLatin1String("study")) {
+                    c.children.clear();
+                    Node e = m.make(QStringLiteral("eigenfrequency"));
+                    e.props.insert(QStringLiteral("count"), 3);
+                    e.props.insert(QStringLiteral("prestress"), true);
+                    c.children.push_back(e);
+                }
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            Solution3& s = sv.s();
+            s.select(0);
+            const QString said = sv.r.warnings.join(QLatin1Char(' '));
+            QVERIFY2(said.contains(QStringLiteral("buckled")) && global(s, QStringLiteral("solid.omega2")) < 0 && global(s, QStringLiteral("solid.freq")) == 0
+                         && s.snapshotFrequency(0) == 0,
+                     qPrintable(said + QStringLiteral(" ω² %1").arg(global(s, QStringLiteral("solid.omega2")))));
+            info(said);
+        }
+        // λ³ - λ = 0.2.
+        double l = 1.1;
+        for (int k = 0; k < 50; ++k) l -= (l * l * l - l - 0.2) / (3 * l * l - 1);
+        const double ratio = std::sqrt((3 * l * l - 1) / 2);
+        auto axial = [&](bool loaded) {
+            Model m = model3d(0.5);
+            addBox(m, QStringLiteral("bar"), 0, 0, 0, 10, 1, 1);
+            const QString solid = addSolid(m, 2, {{QStringLiteral("E"), QStringLiteral("200[GPa]")}, {QStringLiteral("nu"), QStringLiteral("0")},
+                                                  {QStringLiteral("rho"), QStringLiteral("7850[kg/m^3]")}});
+            m.find(solid)->props.insert(QStringLiteral("large"), true);
+            addFeature(m, solid, QStringLiteral("solid/fixed"), ofSide(QStringLiteral("bar"), QStringLiteral("left")));
+            if (loaded)
+                addFeature(m, solid, QStringLiteral("solid/load"), ofSide(QStringLiteral("bar"), QStringLiteral("right")), {{QStringLiteral("Fx"), QStringLiteral("20[GPa]")}});
+            const double fa = std::sqrt(200e9 / 7850) / (4 * 10e-3) * (loaded ? ratio : 1.0);
+            for (Node& c : m.root.children)
+                if (c.type == QLatin1String("study")) {
+                    c.children.clear();
+                    Node e = m.make(QStringLiteral("eigenfrequency"));
+                    e.props.insert(QStringLiteral("count"), 4);
+                    e.props.insert(QStringLiteral("fshift"), QStringLiteral("%1[Hz]").arg(fa, 0, 'g', 17));
+                    e.props.insert(QStringLiteral("prestress"), true);
+                    c.children.push_back(e);
+                }
+            const Solved sv = solve(m);
+            if (!sv.error.isEmpty()) {
+                qWarning("%s", qPrintable(why(sv)));
+                return 0.0;
+            }
+            // (The axial one: its tip moving along x, scaled to 1.)
+            for (int k = 0; k < sv.s().snapshotCount(); ++k) {
+                sv.s().select(k);
+                if (std::abs(std::abs(valueAt(sv.s(), QStringLiteral("solid.u"), 10, 0.5, 0.5)) - 1) < 0.05) return sv.s().snapshotFrequency(k);
+            }
+            return 0.0;
+        };
+        const double rest = axial(false), stretched = axial(true);
+        const QString said = QStringLiteral("axial mode %1 Hz at rest, %2 Hz stretched to λ %3: %4 times against %5").arg(rest).arg(stretched).arg(l).arg(stretched / rest).arg(ratio);
+        QVERIFY2(rest > 0 && std::abs(stretched / rest - ratio) < 1e-3 * ratio, qPrintable(said));
+        info(said);
+    }
+
     // A piezoelectric block - e33 15 C/m², a stiffness of E 100 GPa and ν 0,
     // εr 1000 - between a grounded bottom and a top at 10 V, free to grow:
     // its strain e33 E3 / C33 (its top moves -e33 V / C33), its charge the

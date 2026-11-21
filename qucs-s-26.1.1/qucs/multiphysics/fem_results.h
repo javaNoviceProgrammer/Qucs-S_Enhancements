@@ -84,7 +84,9 @@ DisplayUnit displayUnitOf(const Solution& solution, const QString& expression, c
 /// expressions, in metres) times a scale.
 struct Deformation {
     QString x, y;
-    double scale = 1;        ///< 0: automatic - the largest a tenth of the model's size
+    /// As given (0: at rest; less than 0, the other way), or none: automatic
+    /// - the largest a tenth of the model's size.
+    std::optional<double> scale;
     double used = 0;         ///< the scale it was drawn with
     double largest = 0;      ///< the largest displacement (m)
 };
