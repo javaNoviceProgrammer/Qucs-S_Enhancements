@@ -67,6 +67,11 @@ struct Field3 {
     std::vector<std::vector<double>> matrix;
     double initial = 0;           ///< its value before it is solved
     bool solved = false;
+    /// Its state at its elements' quadrature points (a plastic solid's
+    /// plastic strain, Voigt's with engineering shears, and its equivalent:
+    /// 7 a point), \a internalStride a prism's; empty: none.
+    std::vector<double> internal;
+    int internalStride = 0;
 };
 
 class PointEvaluator3;
@@ -204,6 +209,9 @@ public:
     bool reads(const Expression& e, int f) const;
 
     QStringList log;
+    /// What its physics warn of as they solve (a Contact that pairs nothing),
+    /// the study's warnings at its end.
+    QStringList warnings;
     QString studyTag;
     double seconds = 0;
     /// Of a sweep: the parameters' values this solution is of ("w = 2 mm"),
@@ -243,6 +251,7 @@ private:
         std::vector<std::vector<double>> values;                  // by field
         std::vector<std::vector<Field3::Terminal>> terminals;     // by field
         std::vector<std::vector<std::vector<double>>> matrices;   // by field
+        std::vector<std::vector<double>> internals;               // by field
         std::map<QString, Global> globals;
     };
     Snapshot snapshotNow() const;

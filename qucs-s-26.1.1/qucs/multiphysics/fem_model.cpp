@@ -1258,7 +1258,18 @@ QList<NodeKind> makeKinds()
                           tr("An expression: T (a heat physics' field), ht.T, or a value")),
                   QStringLiteral("thermal=true")),
           shownIf(spatial(QStringLiteral("Tref"), tr("Strain-free temperature Tref"), QStringLiteral("K"), QStringLiteral("293.15[K]")),
-                  QStringLiteral("thermal=true"))},
+                  QStringLiteral("thermal=true")),
+          inSpaces(flag(QStringLiteral("plastic"), tr("Plasticity"), false,
+                        tr("von Mises (J2) plasticity, isotropic hardening linear: past its yield stress it flows, the strain it "
+                           "keeps solid.epeq - small strain, an isotropic material, in load steps of a tenth")),
+                   Spaces::ThreeD),
+          inSpaces(shownIf(expr(QStringLiteral("sigmay"), tr("Yield stress σy"), QStringLiteral("Pa"), QStringLiteral("250[MPa]")),
+                           QStringLiteral("plastic=true")),
+                   Spaces::ThreeD),
+          inSpaces(shownIf(expr(QStringLiteral("Et"), tr("Tangent modulus Et"), QStringLiteral("Pa"), QStringLiteral("0[Pa]"),
+                                tr("The stress-strain curve's slope past yield, uniaxial (0: perfectly plastic); less than E")),
+                           QStringLiteral("plastic=true")),
+                   Spaces::ThreeD)},
          {}, {}, false, false, QStringLiteral("lemm"),
          tr("Hooke's law on its domains: E and ν (and α) from their material or as given - or an anisotropic crystal's stiffness "
             "Cij (silicon's cubic one, lithium niobate's trigonal one), turned by its orientation: plane strain takes its xx, yy, "

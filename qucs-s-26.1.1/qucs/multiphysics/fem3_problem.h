@@ -251,6 +251,7 @@ struct SolidState {
     double strain[6] = {0, 0, 0, 0, 0, 0};
     double stress[6] = {0, 0, 0, 0, 0, 0};
     double energy = 0;
+    double epeq = 0;   ///< a plastic solid's equivalent plastic strain (at its prism's nearest quadrature point)
 };
 /// Field \a f's (a solid's) at \a ev's point; false where it is not solved.
 /// \a imaginary: a frequency domain's imaginary parts' (at the solution's

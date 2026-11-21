@@ -595,7 +595,7 @@ QString formatText3D()
         "them, after a large solve its tangent there; solid.freq, solid.omega2 - below 0 buckled, said), and \"large\": true on the solid - large deformation (\"hyperelastic\": svk or neohookean; Green-Lagrange strain, its stress "
         "Cauchy's, "
         "loads dead; Newton's method in load steps); \"solid/contact\" on faces (frictionless, a \"penalty\" factor, a \"search\" "
-        "distance; solid.Fn, solid.gapmin); a study's \"stationary\" and \"transient\" steps and a \"sweep\". At a point x, y, z, T, "
+        "distance; solid.Fn, solid.gapmin); a Linear Elastic Material's \"plastic\": true (J2, \"sigmay\", \"Et\"; solid.epeq); a study's \"stationary\" and \"transient\" steps and a \"sweep\". At a point x, y, z, T, "
         "V, ht.qz, es.Ez, ec.Jz, solid.w, solid.mises, solid.sxz, mf.Bz, mf.normB, mf.Hx...; globals as a 2D model's (solid.dmax, solid.W, solid.Rz, "
         "mf.W, mf.L_<coil>, mf.Fy_<coil>). Magnetic fields (\"magnetic\") at rest: A on edge elements; External Current Density's "
         "Jex, Jey, Jez (ec.Jx: a currents physics'), a Coil's \"ec\" and \"terminal\" (its J N I0 / I_ec times ec.J), Magnetization's "

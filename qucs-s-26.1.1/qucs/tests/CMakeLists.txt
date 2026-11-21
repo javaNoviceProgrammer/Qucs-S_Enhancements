@@ -108,7 +108,16 @@ qucs_add_fem_test(test_fem3_mesh)
 qucs_add_fem_test(test_fem3_cad)
 qucs_add_fem_test(test_fem3_fe)
 qucs_add_fem_test(test_fem3_solve)
+# test_fem3_solid as two ctest entries, each its own 900 s: QUCS_TEST_PART 1
+# its functions before largeDeformation, 2 it and those after (large
+# deformation, hyperelasticity, plasticity, contact, Hertz's) - by their place
+# in the test, its init(). Together past 900 s under ASan.
 qucs_add_fem_test(test_fem3_solid)
+set_property(TEST test_fem3_solid APPEND PROPERTY ENVIRONMENT "QUCS_TEST_PART=1")
+add_test(NAME test_fem3_solid_nonlinear COMMAND test_fem3_solid)
+set_tests_properties(test_fem3_solid_nonlinear PROPERTIES
+  ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;QUCS_TEST_PART=2"
+  TIMEOUT 900)
 qucs_add_fem_test(test_fem3_magnetic)
 # test_fem3_eddy as two ctest entries, each its own 900 s: QUCS_TEST_PART 1
 # its functions before aDiscUnderARing, 2 it and those after (the disc, the

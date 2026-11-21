@@ -226,6 +226,25 @@ class TestFem3Solid : public QObject
     Q_OBJECT
 
 private slots:
+    // QUCS_TEST_PART 1 those before largeDeformation, 2 it and those after
+    // (large deformation, hyperelasticity, plasticity, contact, Hertz's) -
+    // by their place here, so that one added lands in a part -, unset all.
+    // Together past 900 s under ASan once contact and plasticity came.
+    void init()
+    {
+        const QByteArray part = qgetenv("QUCS_TEST_PART");
+        if (part.isEmpty()) return;
+        const QMetaObject* mo = metaObject();
+        int second = -1, here = -1;
+        for (int k = mo->methodOffset(); k < mo->methodCount(); ++k) {
+            const QByteArray name = mo->method(k).name();
+            if (name == "largeDeformation") second = k;
+            if (name == QTest::currentTestFunction()) here = k;
+        }
+        if (second < 0 || here < 0) return;
+        if (part != QByteArray::number(here >= second ? 2 : 1)) QSKIP("in the test's other part (QUCS_TEST_PART)");
+    }
+
     // A uniform strain held on every face - u, v, w linear in x, y, z - is
     // order 1's at every degree of freedom, its stress C ε everywhere; a
     // quadratic displacement u = a x² held, with the body load that balances
@@ -1268,6 +1287,79 @@ private slots:
         QVERIFY2(bad.error.contains(QStringLiteral("neo-Hookean")), qPrintable(bad.error));
     }
 
+    // J2 plasticity, linear isotropic hardening (small strain): E 200 GPa,
+    // ν 0.3, σy 250 MPa, Et 20 GPa - its plastic modulus H = E Et/(E - Et).
+    // A block on rollers through the origin pulled by a dead 375 MPa
+    // (uniaxial, homogeneous, exact on any mesh): its plastic strain (σ -
+    // σy)/H along, its strain σ/E + εp along and -ν σ/E - εp/2 across, its
+    // von Mises the load. Sheared by its faces held at u = γ y (γ 5e-3,
+    // homogeneous): τ = G (γ - γp), γp = (γ - τy/G)/(1 + H/3G), τy = σy/√3,
+    // its equivalent plastic strain γp/√3; perfectly plastic (Et 0), τ = τy.
+    // Refused: with large deformation, anisotropic, Et not under E.
+    void plasticity()
+    {
+        const double E = 200e9, nu = 0.3, sy = 250e6, G = E / (2 * (1 + nu));
+        auto model = [&](bool shear, double Et, bool large, bool anisotropic) {
+            Model m = model3d(0.5);
+            addBox(m, QStringLiteral("blk"), 0, 0, 0, 2, 1, 1);
+            QJsonObject props = anisotropic ? QJsonObject{{QStringLiteral("anisotropy"), QStringLiteral("anisotropic")},
+                                                          {QStringLiteral("C"), QStringLiteral("C11=166[GPa]; C12=64[GPa]; C44=80[GPa]; C22=166[GPa]; C33=166[GPa]; "
+                                                                                               "C13=64[GPa]; C23=64[GPa]; C55=80[GPa]; C66=80[GPa]")}}
+                                            : QJsonObject{{QStringLiteral("E"), QStringLiteral("200[GPa]")}, {QStringLiteral("nu"), QStringLiteral("0.3")}};
+            props.insert(QStringLiteral("plastic"), true);
+            props.insert(QStringLiteral("sigmay"), QStringLiteral("250[MPa]"));
+            props.insert(QStringLiteral("Et"), QStringLiteral("%1[Pa]").arg(Et, 0, 'g', 17));
+            const QString solid = addSolid(m, 2, props);
+            if (large) m.find(solid)->props.insert(QStringLiteral("large"), true);
+            if (shear) {
+                addFeature(m, solid, QStringLiteral("solid/displacement"), rule(R"({"exterior": true})"),
+                           {{QStringLiteral("x"), true}, {QStringLiteral("y"), true}, {QStringLiteral("z"), true},
+                            {QStringLiteral("u0"), QStringLiteral("5e-3*y")}, {QStringLiteral("v0"), QStringLiteral("0[m]")}, {QStringLiteral("w0"), QStringLiteral("0[m]")}});
+            } else {
+                for (const char* side : {"left", "front", "bottom"}) addFeature(m, solid, QStringLiteral("solid/roller"), ofSide(QStringLiteral("blk"), QString::fromLatin1(side)));
+                addFeature(m, solid, QStringLiteral("solid/load"), ofSide(QStringLiteral("blk"), QStringLiteral("right")), {{QStringLiteral("Fx"), QStringLiteral("375[MPa]")}});
+            }
+            for (Node& c : m.root.children)
+                if (c.type == QLatin1String("study")) {
+                    c.children.clear();
+                    c.children.push_back(m.make(QStringLiteral("stationary")));
+                }
+            return m;
+        };
+        {
+            const double Et = 20e9, H = E * Et / (E - Et), sig = 375e6, ep = (sig - sy) / H;
+            const Solved sv = solve(model(false, Et, false, false));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const Solution3& s = sv.s();
+            const double tip = valueAt(s, QStringLiteral("solid.u"), 2, 0.5, 0.5), side = valueAt(s, QStringLiteral("solid.v"), 1, 1, 0.5);
+            const double vm = valueAt(s, QStringLiteral("solid.mises"), 1, 0.5, 0.5), eq = valueAt(s, QStringLiteral("solid.epeq"), 1, 0.5, 0.5);
+            const double wantTip = 2e-3 * (sig / E + ep), wantSide = 1e-3 * (-nu * sig / E - ep / 2);
+            const QString said = QStringLiteral("uniaxial 375 MPa: tip %1 µm against %2, side %3 µm against %4, von Mises %5 MPa, equivalent plastic strain %6 against %7; %8")
+                                     .arg(tip * 1e6, 0, 'g', 10).arg(wantTip * 1e6, 0, 'g', 10).arg(side * 1e6, 0, 'g', 10).arg(wantSide * 1e6, 0, 'g', 10)
+                                     .arg(vm / 1e6, 0, 'g', 10).arg(eq, 0, 'g', 10).arg(ep, 0, 'g', 10)
+                                     .arg(sv.r.log.filter(QStringLiteral("plasticity")).join(QLatin1Char(' ')));
+            QVERIFY2(std::abs(tip - wantTip) < 1e-8 * wantTip && std::abs(side - wantSide) < 1e-8 * std::abs(wantSide) && std::abs(vm - sig) < 1e-7 * sig
+                         && std::abs(eq - ep) < 1e-8 * ep,
+                     qPrintable(said));
+            info(said);
+        }
+        for (double Et : {20e9, 0.0}) {
+            const double H = E * Et / (E - Et), g = 5e-3, ty = sy / std::sqrt(3.0);
+            const double gp = (g - ty / G) / (1 + H / (3 * G)), tau = G * (g - gp);
+            const Solved sv = solve(model(true, Et, false, false));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const Solution3& s = sv.s();
+            const double sxy = valueAt(s, QStringLiteral("solid.sxy"), 1, 0.5, 0.5), eq = valueAt(s, QStringLiteral("solid.epeq"), 1, 0.5, 0.5);
+            const QString said = QStringLiteral("sheared 5e-3, Et %1 GPa: τ %2 MPa against %3, equivalent plastic strain %4 against %5")
+                                     .arg(Et / 1e9).arg(sxy / 1e6, 0, 'g', 10).arg(tau / 1e6, 0, 'g', 10).arg(eq, 0, 'g', 10).arg(gp / std::sqrt(3.0), 0, 'g', 10);
+            QVERIFY2(std::abs(sxy - tau) < 1e-7 * tau && std::abs(eq - gp / std::sqrt(3.0)) < 1e-7 * gp, qPrintable(said));
+            info(said);
+        }
+        QVERIFY(solve(model(false, 20e9, true, false)).error.contains(QStringLiteral("not with large deformation")));
+        QVERIFY(solve(model(false, 20e9, false, true)).error.contains(QStringLiteral("an isotropic material's")));
+        QVERIFY(solve(model(false, 250e9, false, false)).error.contains(QStringLiteral("less than its Young's modulus")));
+    }
+
     // Contact (frictionless, by a penalty). Two blocks 1 mm a side, E 200
     // GPa, ν 0, 10 µm apart along z: the lower's foot fixed, the upper's top
     // pushed down d. At 20 µm they touch and press: each compressed by
@@ -1280,7 +1372,7 @@ private slots:
     // 2 = -(d - g)/1 mm.
     void contactBetweenBlocks()
     {
-        auto model = [&](double d, double dx, bool large) {
+        auto model = [&](double d, double dx, bool large, const QJsonObject& only = {}, const QString& search = {}) {
             Model m = model3d(0.5);
             addBox(m, QStringLiteral("lower"), 0, 0, 0, 1, 1, 1);
             addBox(m, QStringLiteral("upper"), 0, 0, 1.01, 1, 1, 1);
@@ -1290,7 +1382,9 @@ private slots:
             addFeature(m, solid, QStringLiteral("solid/displacement"), ofSide(QStringLiteral("upper"), QStringLiteral("top")),
                        {{QStringLiteral("x"), true}, {QStringLiteral("y"), true}, {QStringLiteral("z"), true},
                         {QStringLiteral("u0"), QStringLiteral("%1[um]").arg(dx)}, {QStringLiteral("w0"), QStringLiteral("%1[um]").arg(-d)}});
-            addFeature(m, solid, QStringLiteral("solid/contact"), boxRule(-0.1, -0.1, 0.99, 1.1, 1.1, 1.02), {{QStringLiteral("penalty"), QStringLiteral("1e4")}});
+            QJsonObject props{{QStringLiteral("penalty"), QStringLiteral("1e4")}};
+            if (!search.isEmpty()) props.insert(QStringLiteral("search"), search);
+            addFeature(m, solid, QStringLiteral("solid/contact"), only.isEmpty() ? boxRule(-0.1, -0.1, 0.99, 1.1, 1.1, 1.02) : only, props);
             for (Node& c : m.root.children)
                 if (c.type == QLatin1String("study")) {
                     c.children.clear();
@@ -1332,6 +1426,26 @@ private slots:
             const QString said = QStringLiteral("large: force %1 N against %2").arg(F).arg(-want);
             QVERIFY2(std::abs(F + want) < 2e-3 * std::abs(want), qPrintable(said));
             info(said);
+        }
+        // A Contact that pairs nothing (the review of 5fa21e07): said, in the
+        // log and the warnings, and why - a search distance under the gap,
+        // the nearest named; one domain's face alone -, its least gap not
+        // nought but none.
+        {
+            const Solved sv = solve(model(20, 0, false, {}, QStringLiteral("1[um]")));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const QString said = sv.r.warnings.join(QLatin1Char(' '));
+            QVERIFY2(said.contains(QStringLiteral("pairs nothing")) && said.contains(QStringLiteral("search distance")) && said.contains(QStringLiteral("10 µm apart")),
+                     qPrintable(said));
+            QVERIFY(!sv.s().global(QStringLiteral("solid.gapmin")) && global(sv.s(), QStringLiteral("solid.Fn")) == 0);
+            info(said);
+        }
+        {
+            const Solved sv = solve(model(20, 0, false, ofSide(QStringLiteral("lower"), QStringLiteral("top"))));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const QString said = sv.r.warnings.join(QLatin1Char(' '));
+            QVERIFY2(said.contains(QStringLiteral("pairs nothing")) && said.contains(QStringLiteral("one domain's")), qPrintable(said));
+            QVERIFY(!sv.s().global(QStringLiteral("solid.gapmin")));
         }
     }
 
