@@ -774,7 +774,7 @@ void conform(QList<MeshCell>& cells, const QList<int>& conductor)
     //  taper's lines 0.3 nm off a line's were put in its cells' sides, and
     //  the slivers they made paired with nothing.)
     const double tol = 1e-3;
-    // Each coordinate within a nanometre of another taken as that one - the
+    // Each coordinate within a nanometre of the next taken as one - the
     // value most corners of the run have, so that a line's own grid stays as
     // it is beside a taper's lines 0.3 nm off it -: sides that are one then
     // have one middle. Rounded by edgeKey() as they were, the two sides of a
@@ -791,8 +791,12 @@ void conform(QList<MeshCell>& cells, const QList<int>& conductor)
             std::sort(values.begin(), values.end());
             QList<double> taken(values.size());   // (each value's run's most common, at every value of it)
             for (int i = 0; i < values.size();) {
+                // (A run by the gaps between its values, each a nanometre or
+                //  less: from its first value, 0, 0.0007 and 0.0014 were two
+                //  runs, and the corners 0.7 nm apart two lines - the review of
+                //  68c22cd9.)
                 int j = i + 1;
-                while (j < values.size() && values.at(j) - values.at(i) <= tol) ++j;
+                while (j < values.size() && values.at(j) - values.at(j - 1) <= tol) ++j;
                 double most = values.at(i);
                 int count = 0;
                 for (int k = i; k < j;) {
