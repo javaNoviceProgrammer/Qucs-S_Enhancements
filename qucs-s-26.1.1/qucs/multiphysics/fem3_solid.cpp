@@ -265,6 +265,25 @@ private:
     void assembleLarge(const Equations& q, const std::vector<double>& u, Eigen::SparseMatrix<double>& K, Eigen::VectorXd& fint,
                        Eigen::VectorXd& fintFixed) const;
     bool solveLarge(const Options3& o, QString* error);
+    /// Contact (a Contact feature's faces): each point of a face chosen
+    /// against the face of another domain facing it, found once at rest
+    /// (small sliding) - its prism and reference coordinates on both sides,
+    /// its weight, the other side's normal (out of it), its gap there and its
+    /// penalty stiffness.
+    struct ContactPoint {
+        int sPrism = -1, mPrism = -1;
+        double sRef[3] = {0, 0, 0}, mRef[3] = {0, 0, 0};
+        double w = 0, kappa = 0, g0 = 0, size = 0;
+        Vec3 n;
+    };
+    void buildContact();
+    void contactGradient(const Equations& q, const ContactPoint& c, std::vector<std::pair<int, double>>& eq,
+                         std::vector<std::pair<int, double>>& fixed) const;
+    bool contactTerms(const Equations& q, const Eigen::VectorXd& x, const Eigen::VectorXd& ud, Eigen::SparseMatrix<double>& K,
+                      Eigen::VectorXd& r, Eigen::VectorXd& rFixed, std::vector<char>& active, bool start) const;
+    /// Its contact's total normal force (each pair counted once) and least
+    /// gap, at (x, ud) and the points in contact.
+    void contactResults(const Equations& q, const Eigen::VectorXd& x, const Eigen::VectorXd& ud);
     /// Each domain's damping (a Damping feature's): its loss factor η and
     /// Rayleigh's αdM (1/s) and βdK (s).
     struct Damping {
@@ -280,6 +299,12 @@ private:
     double a_reactionIm[3] = {0, 0, 0};
     bool a_harmonic = false;   // solved in the frequency domain last
     bool a_large = false;      // large deformation asked
+    std::vector<char> a_contactFace;                    // by face: a Contact's
+    double a_contactPenalty = 100, a_contactSearch = 0; // its factor, its search distance (m; 0 automatic)
+    std::vector<ContactPoint> a_contactPoints;
+    double a_contactForce = 0, a_gapMin = 0;
+    double a_contactReach = 0;                          // the search distance used (m)
+    bool a_contact = false;
 };
 
 // ------------------------------------------------------------------ Setup
@@ -321,6 +346,8 @@ bool SolidProblem3::setup(QString* error)
     a_body.assign(D, {});
     a_damping.assign(D, Damping());
     a_large = a_node->flag(QStringLiteral("large"));
+    a_contactFace.assign(F, 0);
+    a_contact = false;
     const Scope& params = a_s.parameters().scope;
     std::vector<const Node*> elasticOf(D, nullptr), piezoOf(D, nullptr);
     int order = 0;
@@ -338,6 +365,24 @@ bool SolidProblem3::setup(QString* error)
         } else if (t == QLatin1String("solid/piezo")) {
             for (int d : picked)
                 if (d >= 0 && d < int(D)) piezoOf[std::size_t(d)] = &feature;
+        } else if (t == QLatin1String("solid/contact")) {
+            for (int b : picked)
+                if (b >= 0 && b < int(F)) a_contactFace[std::size_t(b)] = 1;
+            a_contact = true;
+            const Expression pf = compile(feature.text(QStringLiteral("penalty")), feature, QStringLiteral("penalty"), false);
+            if (pf.isValid()) {
+                if (!pf.isConstant() || !(pf.constant() > 0)) problem(tr("%1: its penalty factor must be a constant more than 0").arg(feature.name()));
+                else a_contactPenalty = pf.constant();
+            }
+            const QString search = feature.text(QStringLiteral("search")).trimmed();
+            a_contactSearch = 0;
+            if (!search.isEmpty()) {
+                const Expression se = compile(search, feature, QStringLiteral("search"), false);
+                if (se.isValid()) {
+                    if (!se.isConstant() || !(se.constant() > 0)) problem(tr("%1: its search distance must be a constant more than 0").arg(feature.name()));
+                    else a_contactSearch = se.constant();
+                }
+            }
         } else if (t == QLatin1String("solid/damping")) {
             // (Constants: its parameters', not the point's.)
             Damping dm;
@@ -973,12 +1018,86 @@ bool SolidProblem3::solve(const Options3& o, QString* error)
     Eigen::VectorXd x = Eigen::VectorXd::Zero(q.neq);
     for (std::size_t k = 0; k < q.eq.size(); ++k)
         if (q.eq[k] >= 0 && k < f.values.size()) x(q.eq[k]) = f.values[k];
-    if (!sys.factorize(a.A, o.solver, 1, o.tolerance, name, &a_s.log, error)) return false;
-    if (o.cancelled && o.cancelled()) {
-        *error = tr("cancelled");
-        return false;
+    Eigen::VectorXd rcFixed = Eigen::VectorXd::Zero(Eigen::Index(q.fixedKey.size()));
+    if (a_contact) buildContact();
+    if (!a_contactPoints.empty()) {
+        // Contact: Newton's method on its energy, ½ xᵀ A x - bᵀ x + Σ ½ κ w
+        // min(g, 0)² (convex), each step's length halved till the energy
+        // falls (Armijo's) - full steps alone overshoot and the points in
+        // contact cycle (Hertz's contact did) -, the closest pairs taken in
+        // contact at the first so that a body held by its contact alone is
+        // not left free.
+        std::vector<char> active;
+        x.setZero();
+        const auto energy = [&](const Eigen::VectorXd& at) {
+            double e = 0.5 * at.dot(a.A * at) - b.dot(at);
+            std::vector<std::pair<int, double>> ge, gf;
+            for (const ContactPoint& c : a_contactPoints) {
+                contactGradient(q, c, ge, gf);
+                double g = c.g0;
+                for (const auto& [i, v] : ge) g += v * at(i);
+                for (const auto& [i, v] : gf) g += v * ud(i);
+                if (g < 0) e += 0.5 * c.kappa * c.w * g * g;
+            }
+            return e;
+        };
+        int steps = 0;
+        double scaleX = 0;
+        for (;; ++steps) {
+            if (steps >= 100) {
+                *error = tr("%1: its contact did not settle in 100 Newton steps").arg(name);
+                return false;
+            }
+            if (o.cancelled && o.cancelled()) {
+                *error = tr("cancelled");
+                return false;
+            }
+            Eigen::SparseMatrix<double> Kc;
+            Eigen::VectorXd rc;
+            const bool changed = contactTerms(q, x, ud, Kc, rc, rcFixed, active, steps == 0);
+            const Eigen::VectorXd grad = a.A * x - b + rc;
+            System3 csys;
+            QStringList quiet;
+            const Eigen::SparseMatrix<double> Ac = a.A + Kc;
+            if (!csys.factorize(Ac, o.solver == QLatin1String("iterative") ? o.solver : QStringLiteral("direct"), 1, o.tolerance, name, &quiet, error)
+                && !csys.factorize(Ac, QStringLiteral("direct"), 1, o.tolerance, name, &quiet, error, false))
+                return false;
+            Eigen::VectorXd dx = Eigen::VectorXd::Zero(q.neq);
+            if (!csys.solve(-grad, dx, name, &quiet, error)) return false;
+            // (The first step's direction its closest pairs': taken whole.)
+            double alpha = 1;
+            if (steps > 0) {
+                const double e0 = energy(x), slope = grad.dot(dx);
+                while (alpha > 1e-6 && energy(x + alpha * dx) > e0 + 1e-4 * alpha * slope) alpha *= 0.5;
+            }
+            x += alpha * dx;
+            scaleX = std::max(scaleX, x.lpNorm<Eigen::Infinity>());
+            // (Settled: Newton's whole step a tolerance's share of where it
+            // is - the points at the contact's edge may still flip, but they
+            // move nothing.)
+            if (steps > 0 && dx.lpNorm<Eigen::Infinity>() <= std::max(o.tolerance, 1e-12) * std::max(scaleX, 1e-300)) break;
+            (void)changed;
+        }
+        {
+            Eigen::SparseMatrix<double> Kc;
+            Eigen::VectorXd rc;
+            contactTerms(q, x, ud, Kc, rc, rcFixed, active, false);
+        }
+        const int turns = steps + 1;
+        contactResults(q, x, ud);
+        a_s.log << tr("%1: contact - %2 points paired, settled after %3 solves, its force %4")
+                       .arg(name)
+                       .arg(a_contactPoints.size())
+                       .arg(turns)
+                       .arg(formatQuantity(a_contactForce, Dim::of(1, 1, -2), 5));
+    } else {
+        if (!sys.factorize(a.A, o.solver, 1, o.tolerance, name, &a_s.log, error)) return false;
+        if (o.cancelled && o.cancelled()) {
+            *error = tr("cancelled");
+            return false;
+        }
+        if (!sys.solve(b, x, name, &a_s.log, error)) return false;
     }
-    if (!sys.solve(b, x, name, &a_s.log, error)) return false;
     f.values.assign(std::size_t(3 * n), 0.0);
     for (std::size_t k = 0; k < q.eq.size(); ++k) {
         if (q.eq[k] >= 0) f.values[k] = x(q.eq[k]);
@@ -988,7 +1107,7 @@ bool SolidProblem3::solve(const Options3& o, QString* error)
     // and an oblique roller's springs.
     for (double& r : a_reaction) r = 0;
     if (!q.fixedKey.empty()) {
-        const Eigen::VectorXd r = a.R * x + a.Rd * ud - a.Fd;
+        const Eigen::VectorXd r = a.R * x + a.Rd * ud - a.Fd + rcFixed;
         for (std::size_t k = 0; k < q.fixedKey.size(); ++k) a_reaction[q.fixedKey[k] / n] += r(Eigen::Index(k));
     }
     if (a.P.nonZeros() > 0) {
@@ -1075,6 +1194,288 @@ bool SolidProblem3::assembleMass(const Equations& q, Mass& out, const std::vecto
     out.Md.resize(nfix, nfix);
     out.Md.setFromTriplets(td.begin(), td.end());
     return true;
+}
+
+// ---------------------------------------------------------------- Contact
+
+void SolidProblem3::buildContact()
+{
+    a_contactPoints.clear();
+    const Field3& f = a_s.fields()[std::size_t(a_fi)];
+    const Space3& sp = *f.space;
+    const Mesh3& mesh = a_s.mesh();
+    const Topology3& topo = a_s.topology();
+    // Each face chosen, on its solid's side: its points (a rule's) and, as a
+    // face that is pushed on, how a point of it is found - a floor's
+    // triangle at its height, a wall's edge between its heights - in its
+    // prism's reference coordinates.
+    struct Side {
+        int face = -1, domain = -1, prism = -1;
+        bool floor = true;
+        double zeta = 0;              // a floor's
+        Vec3 c[3];                    // a floor's corners (m)
+        double a[2] = {0, 0}, b[2] = {0, 0};   // a wall's (ξ, η) = a + b s
+        Vec3 ea, eb;                  // a wall's edge at its foot (m)
+        double z0 = 0, z1 = 0;
+        Vec3 normal;                  // out of its domain
+        Vec3 lo, hi;                  // its box (m)
+        double size = 0;              // √ its area (m)
+    };
+    std::vector<Side> sides;
+    for (int fi = 0; fi < int(mesh.faces.size()); ++fi) {
+        const Mesh3::Face& mf = mesh.faces[std::size_t(fi)];
+        if (mf.face < 0 || !a_contactFace[std::size_t(mf.face)]) continue;
+        const Topology3::Face& tf = topo.faces[std::size_t(mf.face)];
+        for (int d : {tf.back, tf.front}) {
+            if (d < 0 || !f.domains[std::size_t(d)]) continue;
+            // (A face between two of its domains is inside it: no contact.)
+            const int other = d == tf.back ? tf.front : tf.back;
+            if (other >= 0 && f.domains[std::size_t(other)]) continue;
+            const std::vector<Space3::FacePoint> pts = sp.facePoints(fi, 2, d);
+            if (pts.empty() || pts.front().prism < 0 || mesh.domain[std::size_t(pts.front().prism)] != d) continue;
+            Side s;
+            s.face = fi;
+            s.domain = d;
+            s.prism = pts.front().prism;
+            s.floor = !mf.quad;
+            s.normal = outwardNormal3(sp, mf, pts.front());
+            double area = 0;
+            for (const auto& p : pts) area += p.weight;
+            s.size = std::sqrt(area);
+            if (s.floor) {
+                s.zeta = pts.front().zeta;
+                static const double ref[3][2] = {{0, 0}, {1, 0}, {0, 1}};
+                for (int k = 0; k < 3; ++k) s.c[k] = sp.map(s.prism, ref[k][0], ref[k][1], s.zeta).x;
+            } else {
+                // (Its points' s along the edge from their place, and (ξ, η)
+                // linear in it.)
+                const Space3::FacePoint& p0 = pts.front();
+                const Space3::FacePoint* p1 = nullptr;
+                for (const auto& p : pts)
+                    if (std::hypot(p.xi - p0.xi, p.eta - p0.eta) > 1e-9) p1 = &p;
+                if (!p1) continue;
+                // The edge's ends: where (ξ, η) runs from its corner to the
+                // next, along the line through the two points.
+                const double dxi = p1->xi - p0.xi, deta = p1->eta - p0.eta;
+                // (On an edge of the reference triangle each point is a
+                // corner's mix; take t along (ξ, η) from p0: t = 0 and 1 at
+                // the triangle's edge's ends.)
+                double t0 = -1e300, t1 = 1e300;
+                auto clip = [&](double v0, double dv, double lo, double hi) {
+                    if (std::abs(dv) < 1e-12) return;
+                    double a = (lo - v0) / dv, b = (hi - v0) / dv;
+                    if (a > b) std::swap(a, b);
+                    t0 = std::max(t0, a);
+                    t1 = std::min(t1, b);
+                };
+                clip(p0.xi, dxi, 0, 1);
+                clip(p0.eta, deta, 0, 1);
+                // (ξ + η ≤ 1.)
+                if (std::abs(dxi + deta) > 1e-12) {
+                    const double t = (1 - p0.xi - p0.eta) / (dxi + deta);
+                    if (dxi + deta > 0) t1 = std::min(t1, t);
+                    else t0 = std::max(t0, t);
+                }
+                s.a[0] = p0.xi + t0 * dxi;
+                s.a[1] = p0.eta + t0 * deta;
+                s.b[0] = (t1 - t0) * dxi;
+                s.b[1] = (t1 - t0) * deta;
+                s.ea = sp.map(s.prism, s.a[0], s.a[1], 0).x;
+                s.eb = sp.map(s.prism, s.a[0] + s.b[0], s.a[1] + s.b[1], 0).x;
+                s.z0 = s.ea.z;
+                s.z1 = sp.map(s.prism, s.a[0], s.a[1], 1).x.z;
+            }
+            s.lo = Vec3{1e300, 1e300, 1e300};
+            s.hi = Vec3{-1e300, -1e300, -1e300};
+            auto grow = [&s](const Vec3& x) {
+                s.lo = Vec3{std::min(s.lo.x, x.x), std::min(s.lo.y, x.y), std::min(s.lo.z, x.z)};
+                s.hi = Vec3{std::max(s.hi.x, x.x), std::max(s.hi.y, x.y), std::max(s.hi.z, x.z)};
+            };
+            if (s.floor)
+                for (const Vec3& c : s.c) grow(c);
+            else {
+                grow(s.ea);
+                grow(s.eb);
+                grow(Vec3{s.ea.x, s.ea.y, s.z1});
+            }
+            sides.push_back(s);
+        }
+    }
+    if (sides.empty()) return;
+    double search = a_contactSearch;
+    if (!(search > 0)) {
+        const Box3& b = topo.bounds;
+        search = 0.05 * std::max({b.x1 - b.x0, b.y1 - b.y0, b.z1 - b.z0}) * mesh.unitScale;
+    }
+    a_contactReach = search;
+    // A point x's place on side t: its reference coordinates in t's prism,
+    // its gap along t's normal; false where it falls outside t.
+    auto project = [&sp](const Side& t, const Vec3& x, double ref[3], double* gap) {
+        const double tol = 1e-9;
+        if (t.floor) {
+            const double x0 = t.c[0].x, y0 = t.c[0].y;
+            const double ax = t.c[1].x - x0, ay = t.c[1].y - y0, bx = t.c[2].x - x0, by = t.c[2].y - y0;
+            const double det = ax * by - ay * bx;
+            if (det == 0) return false;
+            const double px = x.x - x0, py = x.y - y0;
+            const double l1 = (px * by - py * bx) / det, l2 = (ax * py - ay * px) / det;
+            if (l1 < -tol || l2 < -tol || l1 + l2 > 1 + tol) return false;
+            ref[0] = std::clamp(l1, 0.0, 1.0);
+            ref[1] = std::clamp(l2, 0.0, 1.0 - ref[0]);
+            ref[2] = t.zeta;
+        } else {
+            const double ex = t.eb.x - t.ea.x, ey = t.eb.y - t.ea.y, len2 = ex * ex + ey * ey;
+            if (len2 == 0 || t.z1 == t.z0) return false;
+            const double s = ((x.x - t.ea.x) * ex + (x.y - t.ea.y) * ey) / len2, zeta = (x.z - t.z0) / (t.z1 - t.z0);
+            if (s < -tol || s > 1 + tol || zeta < -tol || zeta > 1 + tol) return false;
+            const double sc = std::clamp(s, 0.0, 1.0);
+            ref[0] = t.a[0] + sc * t.b[0];
+            ref[1] = t.a[1] + sc * t.b[1];
+            ref[2] = std::clamp(zeta, 0.0, 1.0);
+        }
+        const Vec3 on = sp.map(t.prism, ref[0], ref[1], ref[2]).x;
+        *gap = (x.x - on.x) * t.normal.x + (x.y - on.y) * t.normal.y + (x.z - on.z) * t.normal.z;
+        return true;
+    };
+    // Each side's points against every side of another domain facing it:
+    // the nearest it falls on within the search distance (both ways - each
+    // side pushes on the other).
+    for (const Side& s : sides) {
+        const std::vector<Space3::FacePoint> pts = sp.facePoints(s.face, sp.order() == 1 ? 2 : 4, s.domain);
+        for (const Space3::FacePoint& p : pts) {
+            if (p.prism < 0) continue;
+            bool found = false;
+            ContactPoint best;
+            double bestGap = 1e300;
+            for (const Side& t : sides) {
+                if (t.domain == s.domain) continue;
+                if (s.normal.x * t.normal.x + s.normal.y * t.normal.y + s.normal.z * t.normal.z > -0.5) continue;
+                if (p.x.x < t.lo.x - search || p.x.x > t.hi.x + search || p.x.y < t.lo.y - search || p.x.y > t.hi.y + search
+                    || p.x.z < t.lo.z - search || p.x.z > t.hi.z + search)
+                    continue;
+                double ref[3], gap = 0;
+                if (!project(t, p.x, ref, &gap) || std::abs(gap) > search || std::abs(gap) >= std::abs(bestGap)) continue;
+                bestGap = gap;
+                best.mPrism = t.prism;
+                for (int k = 0; k < 3; ++k) best.mRef[k] = ref[k];
+                best.n = t.normal;
+                best.size = t.size;
+                found = true;
+            }
+            if (!found) continue;
+            best.sPrism = p.prism;
+            best.sRef[0] = p.xi;
+            best.sRef[1] = p.eta;
+            best.sRef[2] = p.zeta;
+            best.w = p.weight;
+            best.g0 = bestGap;
+            best.kappa = a_contactPenalty * a_emax / std::max(std::min(best.size, s.size), 1e-30);
+            a_contactPoints.push_back(best);
+        }
+    }
+}
+
+void SolidProblem3::contactGradient(const Equations& q, const ContactPoint& c, std::vector<std::pair<int, double>>& eq,
+                                    std::vector<std::pair<int, double>>& fixed) const
+{
+    // ∂g/∂u: the slave's shape functions times n, the master's minus.
+    eq.clear();
+    fixed.clear();
+    const Space3& sp = *a_s.fields()[std::size_t(a_fi)].space;
+    const int n = sp.size();
+    for (int side = 0; side < 2; ++side) {
+        const int prism = side == 0 ? c.sPrism : c.mPrism;
+        const double* ref = side == 0 ? c.sRef : c.mRef;
+        const double sign = side == 0 ? 1.0 : -1.0;
+        PrismShape s;
+        prismShapeAt(sp.order(), ref[0], ref[1], ref[2], s);
+        const int* dofs = sp.dofs(prism);
+        const double nv[3] = {c.n.x, c.n.y, c.n.z};
+        for (int i = 0; i < sp.perElement(); ++i) {
+            if (s.n[i] == 0) continue;
+            for (int a = 0; a < 3; ++a) {
+                const double v = sign * s.n[i] * nv[a];
+                if (v == 0) continue;
+                const std::size_t key = std::size_t(a * n + dofs[i]);
+                if (q.eq[key] >= 0) eq.emplace_back(q.eq[key], v);
+                else if (q.fixed[key] >= 0) fixed.emplace_back(q.fixed[key], v);
+            }
+        }
+    }
+}
+
+bool SolidProblem3::contactTerms(const Equations& q, const Eigen::VectorXd& x, const Eigen::VectorXd& ud, Eigen::SparseMatrix<double>& K,
+                                 Eigen::VectorXd& r, Eigen::VectorXd& rFixed, std::vector<char>& active, bool start) const
+{
+    // At displacement (x, ud): each point's gap g = g0 + ∂g/∂u · u; where it
+    // is below 0 its penalty's ½ κ w g² - forces κ w g ∂g/∂u, stiffness
+    // κ w ∂g/∂u ∂g/∂uᵀ. True where the points in contact changed.
+    using T = Eigen::Triplet<double>;
+    std::vector<T> t;
+    r = Eigen::VectorXd::Zero(q.neq);
+    rFixed = Eigen::VectorXd::Zero(Eigen::Index(q.fixedKey.size()));
+    bool changed = active.size() != a_contactPoints.size();
+    active.resize(a_contactPoints.size(), 0);
+    std::vector<std::pair<int, double>> ge, gf;
+    // Each point's gap first: a change of the points in contact counted
+    // only where its gap is more than a hundredth of the deepest
+    // penetration - a point at the contact's edge, its gap all but nought,
+    // flipping back and forth with nothing pushing it, not a change (the
+    // turns cycled on Hertz's contact otherwise).
+    std::vector<double> gaps(a_contactPoints.size());
+    double deepest = 0;
+    for (std::size_t k = 0; k < a_contactPoints.size(); ++k) {
+        const ContactPoint& c = a_contactPoints[k];
+        contactGradient(q, c, ge, gf);
+        double g = c.g0;
+        for (const auto& [i, v] : ge) g += v * x(i);
+        for (const auto& [i, v] : gf) g += v * ud(i);
+        gaps[k] = g;
+        deepest = std::max(deepest, -g);
+    }
+    const double slack = 1e-2 * deepest;
+    // (At the start the closest pairs alone - the least gap, and a thousandth
+    // of the search distance more: a body held by its contact alone not left
+    // free, nor pulled across the gaps of every pair found.)
+    double closest = std::numeric_limits<double>::infinity();
+    for (const ContactPoint& c : a_contactPoints) closest = std::min(closest, c.g0);
+    const double startGap = closest + 1e-3 * a_contactReach;
+    for (std::size_t k = 0; k < a_contactPoints.size(); ++k) {
+        const ContactPoint& c = a_contactPoints[k];
+        contactGradient(q, c, ge, gf);
+        const double g = gaps[k];
+        const char now = (start && c.g0 <= startGap) || g < 0 ? 1 : 0;
+        if (now != active[k] && std::abs(g) > slack) changed = true;
+        active[k] = now;
+        if (!now) continue;
+        const double kw = c.kappa * c.w;
+        for (const auto& [i, v] : ge) {
+            r(i) += kw * g * v;
+            for (const auto& [j, w] : ge) t.emplace_back(i, j, kw * v * w);
+        }
+        for (const auto& [i, v] : gf) rFixed(i) += kw * g * v;
+    }
+    K.resize(q.neq, q.neq);
+    K.setFromTriplets(t.begin(), t.end());
+    return changed;
+}
+
+void SolidProblem3::contactResults(const Equations& q, const Eigen::VectorXd& x, const Eigen::VectorXd& ud)
+{
+    a_contactForce = 0;
+    a_gapMin = std::numeric_limits<double>::infinity();
+    std::vector<std::pair<int, double>> ge, gf;
+    for (const ContactPoint& c : a_contactPoints) {
+        contactGradient(q, c, ge, gf);
+        double g = c.g0;
+        for (const auto& [i, v] : ge) g += v * x(i);
+        for (const auto& [i, v] : gf) g += v * ud(i);
+        a_gapMin = std::min(a_gapMin, g);
+        // (Each face's points push on the other's, both at once - springs
+        // side by side: their forces added.)
+        if (g < 0) a_contactForce += c.kappa * c.w * (-g);
+    }
+    if (!std::isfinite(a_gapMin)) a_gapMin = 0;
 }
 
 // ---------------------------------------------------- Geometric stiffness
@@ -1317,6 +1718,11 @@ bool SolidProblem3::solveLarge(const Options3& o, QString* error)
     }
     std::vector<double> u(std::size_t(3 * n), 0.0);
     const double tol = std::max(o.tolerance, 1e-12);
+    // Contact: its points found at rest, those in contact by each
+    // iteration's gaps (its normals the rest's: small sliding).
+    if (a_contact) buildContact();
+    std::vector<char> active;
+    bool contactStart = true;
     // Newton's method in load steps: the loads and held displacements
     // scaled by λ, from nought to 1; a step that does not converge halved.
     double lambda = 0, step = 1;
@@ -1339,7 +1745,15 @@ bool SolidProblem3::solveLarge(const Options3& o, QString* error)
             Eigen::VectorXd x(q.neq);
             for (std::size_t k = 0; k < q.eq.size(); ++k)
                 if (q.eq[k] >= 0) x(q.eq[k]) = trial[k];
-            const Eigen::VectorXd r = fi + a.P * x - target * a.F;
+            Eigen::VectorXd r = fi + a.P * x - target * a.F;
+            if (!a_contactPoints.empty()) {
+                Eigen::SparseMatrix<double> Kc;
+                Eigen::VectorXd rc, rcf;
+                contactTerms(q, x, target * ud, Kc, rc, rcf, active, contactStart);
+                contactStart = false;
+                r += rc;
+                K += Kc;
+            }
             if (!r.allFinite()) break;
             if (a.P.nonZeros() > 0) K += a.P;
             System3 sys;
@@ -1351,10 +1765,23 @@ bool SolidProblem3::solveLarge(const Options3& o, QString* error)
             ++iterations;
             for (std::size_t k = 0; k < q.eq.size(); ++k)
                 if (q.eq[k] >= 0) trial[k] += dx(q.eq[k]);
-            // (Converged: its step a tolerance's share of where it is.)
+            // (Converged: its step a tolerance's share of where it is - and,
+            // in contact, the points in contact the same at it.)
             double scale = 0;
             for (double v : trial) scale = std::max(scale, std::abs(v));
             if (dx.lpNorm<Eigen::Infinity>() <= tol * std::max(scale, 1e-300)) {
+                if (!a_contactPoints.empty()) {
+                    Eigen::VectorXd xn(q.neq);
+                    for (std::size_t k = 0; k < q.eq.size(); ++k)
+                        if (q.eq[k] >= 0) xn(q.eq[k]) = trial[k];
+                    Eigen::SparseMatrix<double> Kc;
+                    Eigen::VectorXd rc, rcf;
+                    std::vector<char> again = active;
+                    if (contactTerms(q, xn, target * ud, Kc, rc, rcf, again, false)) {
+                        active = again;
+                        continue;
+                    }
+                }
                 converged = true;
                 break;
             }
@@ -1385,7 +1812,18 @@ bool SolidProblem3::solveLarge(const Options3& o, QString* error)
         assembleLarge(q, u, K, fi, fd);
         for (double& r : a_reaction) r = 0;
         for (double& r : a_reactionIm) r = 0;
-        const Eigen::VectorXd rr = fd - a.Fd;
+        Eigen::VectorXd rr = fd - a.Fd;
+        if (!a_contactPoints.empty()) {
+            Eigen::VectorXd x(q.neq);
+            for (std::size_t k = 0; k < q.eq.size(); ++k)
+                if (q.eq[k] >= 0) x(q.eq[k]) = u[k];
+            Eigen::SparseMatrix<double> Kc;
+            Eigen::VectorXd rc, rcf;
+            std::vector<char> again = active;
+            contactTerms(q, x, ud, Kc, rc, rcf, again, false);
+            rr += rcf;
+            contactResults(q, x, ud);
+        }
         for (std::size_t k = 0; k < q.fixedKey.size(); ++k) a_reaction[q.fixedKey[k] / n] += rr(Eigen::Index(k));
         if (a.P.nonZeros() > 0) {
             Eigen::VectorXd x(q.neq);
@@ -1424,6 +1862,7 @@ bool SolidProblem3::solveHarmonic(const Options3& o, QString* error)
         *error = tr("%1 has nothing to solve").arg(name);
         return false;
     }
+    if (a_contact) a_s.log << tr("%1: its Contact is a solve at rest's - not in the frequency domain (its faces free)").arg(name);
     // The held dofs' amplitudes (a prescribed displacement's: a base
     // shaken), in phase.
     Eigen::VectorXcd ud(Eigen::Index(q.fixedKey.size()));
@@ -1544,6 +1983,7 @@ bool SolidProblem3::eigenmodes(const Options3& o, int count, double shift, std::
         *error = tr("%1 has nothing free to move").arg(name);
         return false;
     }
+    if (a_contact) a_s.log << tr("%1: its Contact is a solve at rest's - not in its modes (its faces free)").arg(name);
     // Its stiffness (what holds it: those dofs nought), and its consistent
     // mass ∫ ρ φi φj, each component's own.
     Assembled a;
@@ -1684,6 +2124,10 @@ void SolidProblem3::setGlobals()
     a_s.setGlobal(p + QStringLiteral("Rx"), a_reaction[0], force, tr("reaction force where it is held, x component"));
     a_s.setGlobal(p + QStringLiteral("Ry"), a_reaction[1], force, tr("reaction force where it is held, y component"));
     a_s.setGlobal(p + QStringLiteral("Rz"), a_reaction[2], force, tr("reaction force where it is held, z component"));
+    if (a_contact) {
+        a_s.setGlobal(p + QStringLiteral("Fn"), a_contactForce, force, tr("contact: its total normal force"));
+        a_s.setGlobal(p + QStringLiteral("gapmin"), a_gapMin, Dim::length(), tr("contact: its least gap (below 0: interpenetrating, the penalty's)"));
+    }
     if (a_harmonic) {
         static const char* axes[3] = {"x", "y", "z"};
         for (int a = 0; a < 3; ++a)

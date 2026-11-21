@@ -1220,7 +1220,7 @@ QList<NodeKind> makeKinds()
                    Spaces::ThreeD)},
          {QStringLiteral("solid/elastic"), QStringLiteral("solid/free"), QStringLiteral("solid/fixed"), QStringLiteral("solid/displacement"),
           QStringLiteral("solid/roller"), QStringLiteral("solid/load"), QStringLiteral("solid/bodyload"), QStringLiteral("solid/piezo"),
-          QStringLiteral("solid/damping")},
+          QStringLiteral("solid/damping"), QStringLiteral("solid/contact")},
          {QStringLiteral("solid/elastic"), QStringLiteral("solid/free")}, false, false, QStringLiteral("solid"),
          tr("The displacement (u, v) of a linear elastic solid: -∇·σ = f, σ = D (ε - ε0), ε0 a thermal strain. In the plane, "
             "in plane strain or plane stress; about an axis, axisymmetric (the component's space); in 3D (u, v, w) on prisms, "
@@ -1309,6 +1309,17 @@ QList<NodeKind> makeKinds()
                            tr("A 3D model's weight is along -z: -rho*g_const")),
                    Spaces::ThreeD)},
          {}, {}, false, false, QStringLiteral("bl"), tr("A force per volume: weight, an inertial force.")});
+    add({QStringLiteral("solid/contact"), tr("Contact"), QStringLiteral("solid"), QStringLiteral("boundaryfeature"), Level::Boundary,
+         {selectionProp(none),
+          expr(QStringLiteral("penalty"), tr("Penalty factor"), QString(), QStringLiteral("100"),
+               tr("Its stiffness: this times the largest Young's modulus over the faces' size - larger, less interpenetration "
+                  "(solid.gapmin) and a stiffer system")),
+          expr(QStringLiteral("search"), tr("Search distance"), QStringLiteral("m"), QString(),
+               tr("How far apart faces are paired (empty: a twentieth of the model's largest side)"))},
+         {}, {}, false, false, QStringLiteral("cnt"),
+         tr("Frictionless contact between the faces chosen: each face of one domain against the faces of another that face "
+            "it, pushing them apart where they would pass into each other - by a penalty, the pairs found at rest (small "
+            "sliding). At rest, and in large deformation; solid.Fn its force.")});
     add({QStringLiteral("solid/damping"), tr("Damping"), QStringLiteral("solid"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(none),
           choice(QStringLiteral("kind"), tr("Damping"), {QStringLiteral("loss"), QStringLiteral("rayleigh")},
@@ -4581,7 +4592,7 @@ QList<NodeKind> makeKinds()
         if (kind.type == QLatin1String("surface") || kind.type == QLatin1String("meshplot") || kind.type == QLatin1String("deformation"))
             kind.spaces = Spaces::All;
         // (A solid's frequency response is a 3D model's alone.)
-        if (kind.type == QLatin1String("solid/damping")) kind.spaces = Spaces::ThreeD;
+        if (kind.type == QLatin1String("solid/damping") || kind.type == QLatin1String("solid/contact")) kind.spaces = Spaces::ThreeD;
         // Derived values of a 3D solution: globals, integrals, averages and
         // extrema over its domains, faces or edges, values at points - an
         // axisymmetric model's revolution the plane's.
