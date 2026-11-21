@@ -1115,7 +1115,7 @@ private slots:
         }
     }
 
-    // The review of 2cc93286 and b7e80cc3. Pushed
+    // The reviews of 2cc93286 and b7e80cc3. Pushed
     // past its buckling (-2 GPa, the clamped beam's Euler stress some 1.6
     // GPa) the beam's first modes have ω² below 0: shown at 0 Hz, said in
     // the warnings, solid.omega2 below 0. And prestressed after a large
@@ -1192,6 +1192,210 @@ private slots:
         const QString said = QStringLiteral("axial mode %1 Hz at rest, %2 Hz stretched to λ %3: %4 times against %5").arg(rest).arg(stretched).arg(l).arg(stretched / rest).arg(ratio);
         QVERIFY2(rest > 0 && std::abs(stretched / rest - ratio) < 1e-3 * ratio, qPrintable(said));
         info(said);
+    }
+
+    // A neo-Hookean solid (large deformation): a block 2 x 1 x 1 mm, E 200
+    // GPa, ν 0.3, rollers on its three faces through the origin, a dead load
+    // P along x on its far end - uniaxial, homogeneous, exact on any mesh:
+    // its stretches λ1 along and λ2 across from S22 = µ (1 - 1/λ2²) + λ ln J
+    // /λ2² = 0 and P = λ1 S11 (J = λ1 λ2²), solved here by Newton's method;
+    // its tip, its side, its Cauchy stress λ1 P/J and its stored energy ψ -
+    // pulled by 40 GPa and pushed by 40 GPa (where Saint Venant-Kirchhoff's
+    // softens). A neo-Hookean anisotropic solid refused.
+    void neoHookean()
+    {
+        const double E = 200e9, nu = 0.3, mu = E / (2 * (1 + nu)), lam = E * nu / ((1 + nu) * (1 - 2 * nu));
+        auto exact = [&](double P, double* l1, double* l2) {
+            double a = 1 + P / E, b = 1 - nu * P / E;
+            for (int k = 0; k < 100; ++k) {
+                auto res = [&](double x, double y, double r[2]) {
+                    const double J = x * y * y, L = std::log(J);
+                    const double S11 = mu * (1 - 1 / (x * x)) + lam * L / (x * x), S22 = mu * (1 - 1 / (y * y)) + lam * L / (y * y);
+                    r[0] = x * S11 - P;
+                    r[1] = S22;
+                };
+                double r[2], ra[2], rb[2];
+                res(a, b, r);
+                const double h = 1e-7;
+                res(a + h, b, ra);
+                res(a, b + h, rb);
+                const double j00 = (ra[0] - r[0]) / h, j10 = (ra[1] - r[1]) / h, j01 = (rb[0] - r[0]) / h, j11 = (rb[1] - r[1]) / h;
+                const double det = j00 * j11 - j01 * j10;
+                a -= (r[0] * j11 - r[1] * j01) / det;
+                b -= (j00 * r[1] - j10 * r[0]) / det;
+            }
+            *l1 = a;
+            *l2 = b;
+        };
+        auto model = [&](double P, bool anisotropic) {
+            Model m = model3d(0.5);
+            addBox(m, QStringLiteral("blk"), 0, 0, 0, 2, 1, 1);
+            const QString solid = anisotropic ? addSolid(m, 2, {{QStringLiteral("anisotropy"), QStringLiteral("anisotropic")},
+                                                                {QStringLiteral("C"), QStringLiteral("C11=166[GPa]; C12=64[GPa]; C44=80[GPa]; C22=166[GPa]; C33=166[GPa]; C13=64[GPa]; C23=64[GPa]; C55=80[GPa]; C66=80[GPa]")}})
+                                              : addSolid(m, 2, {{QStringLiteral("E"), QStringLiteral("200[GPa]")}, {QStringLiteral("nu"), QStringLiteral("0.3")}});
+            m.find(solid)->props.insert(QStringLiteral("large"), true);
+            m.find(solid)->props.insert(QStringLiteral("hyperelastic"), QStringLiteral("neohookean"));
+            for (const char* side : {"left", "front", "bottom"}) addFeature(m, solid, QStringLiteral("solid/roller"), ofSide(QStringLiteral("blk"), QString::fromLatin1(side)));
+            addFeature(m, solid, QStringLiteral("solid/load"), ofSide(QStringLiteral("blk"), QStringLiteral("right")),
+                       {{QStringLiteral("Fx"), QStringLiteral("%1[Pa]").arg(P, 0, 'g', 17)}});
+            for (Node& c : m.root.children)
+                if (c.type == QLatin1String("study")) {
+                    c.children.clear();
+                    c.children.push_back(m.make(QStringLiteral("stationary")));
+                }
+            return m;
+        };
+        for (double P : {40e9, -40e9}) {
+            double l1 = 0, l2 = 0;
+            exact(P, &l1, &l2);
+            const Solved sv = solve(model(P, false));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const Solution3& s = sv.s();
+            const double J = l1 * l2 * l2, L = std::log(J);
+            const double tip = valueAt(s, QStringLiteral("solid.u"), 2, 0.5, 0.5), side = valueAt(s, QStringLiteral("solid.v"), 1, 1, 0.5);
+            const double sx = valueAt(s, QStringLiteral("solid.sx"), 1, 0.5, 0.5), W = valueAt(s, QStringLiteral("solid.Ws"), 1, 0.5, 0.5);
+            const double psi = 0.5 * mu * (l1 * l1 + 2 * l2 * l2 - 3) - mu * L + 0.5 * lam * L * L;
+            const QString said = QStringLiteral("P %1 GPa: λ1 %2, λ2 %3 - tip %4 mm against %5, side %6 against %7, Cauchy %8 GPa against %9, ψ %10 against %11")
+                                     .arg(P / 1e9).arg(l1, 0, 'g', 10).arg(l2, 0, 'g', 10).arg(tip * 1e3, 0, 'g', 10).arg((l1 - 1) * 2, 0, 'g', 10)
+                                     .arg(side * 1e3, 0, 'g', 10).arg(l2 - 1, 0, 'g', 10).arg(sx / 1e9, 0, 'g', 10).arg(l1 * P / J / 1e9, 0, 'g', 10)
+                                     .arg(W, 0, 'g', 10).arg(psi, 0, 'g', 10);
+            QVERIFY2(std::abs(tip - (l1 - 1) * 2e-3) < 1e-9 * 2e-3 && std::abs(side - (l2 - 1) * 1e-3) < 1e-9 * 1e-3
+                         && std::abs(sx - l1 * P / J) < 1e-7 * std::abs(P) && std::abs(W - psi) < 1e-7 * std::abs(psi),
+                     qPrintable(said));
+            info(said);
+        }
+        const Solved bad = solve(model(1e9, true));
+        QVERIFY2(bad.error.contains(QStringLiteral("neo-Hookean")), qPrintable(bad.error));
+    }
+
+    // Contact (frictionless, by a penalty). Two blocks 1 mm a side, E 200
+    // GPa, ν 0, 10 µm apart along z: the lower's foot fixed, the upper's top
+    // pushed down d. At 20 µm they touch and press: each compressed by
+    // (d - g)/2, the contact's force E A (d - g)/(2 mm) = 1000 N (a penalty
+    // factor of 1e4: to 1e-3); at 5 µm they do not touch - no force, a gap
+    // of 5 µm left. Pushed 20 µm and moved 3 µm along x, it slides: no
+    // shear crosses (the lower block's top does not move along x), the
+    // force the same. In large deformation the force is Saint
+    // Venant-Kirchhoff's of the stretch each takes, (λ³ - λ) E A/2 with 2λ -
+    // 2 = -(d - g)/1 mm.
+    void contactBetweenBlocks()
+    {
+        auto model = [&](double d, double dx, bool large) {
+            Model m = model3d(0.5);
+            addBox(m, QStringLiteral("lower"), 0, 0, 0, 1, 1, 1);
+            addBox(m, QStringLiteral("upper"), 0, 0, 1.01, 1, 1, 1);
+            const QString solid = addSolid(m, 2, {{QStringLiteral("E"), QStringLiteral("200[GPa]")}, {QStringLiteral("nu"), QStringLiteral("0")}});
+            if (large) m.find(solid)->props.insert(QStringLiteral("large"), true);
+            addFeature(m, solid, QStringLiteral("solid/fixed"), ofSide(QStringLiteral("lower"), QStringLiteral("bottom")));
+            addFeature(m, solid, QStringLiteral("solid/displacement"), ofSide(QStringLiteral("upper"), QStringLiteral("top")),
+                       {{QStringLiteral("x"), true}, {QStringLiteral("y"), true}, {QStringLiteral("z"), true},
+                        {QStringLiteral("u0"), QStringLiteral("%1[um]").arg(dx)}, {QStringLiteral("w0"), QStringLiteral("%1[um]").arg(-d)}});
+            addFeature(m, solid, QStringLiteral("solid/contact"), boxRule(-0.1, -0.1, 0.99, 1.1, 1.1, 1.02), {{QStringLiteral("penalty"), QStringLiteral("1e4")}});
+            for (Node& c : m.root.children)
+                if (c.type == QLatin1String("study")) {
+                    c.children.clear();
+                    c.children.push_back(m.make(QStringLiteral("stationary")));
+                }
+            return m;
+        };
+        {
+            const Solved sv = solve(model(20, 0, false));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const Solution3& s = sv.s();
+            const double F = global(s, QStringLiteral("solid.Fn")), w = valueAt(s, QStringLiteral("solid.w"), 0.5, 0.5, 1);
+            const QString said = QStringLiteral("pressed 20 µm: force %1 N (1000), the lower's top %2 µm (-5), least gap %3 µm; %4")
+                                     .arg(F).arg(w * 1e6).arg(global(s, QStringLiteral("solid.gapmin")) * 1e6).arg(sv.r.log.filter(QStringLiteral("contact")).join(QLatin1Char(' ')));
+            QVERIFY2(std::abs(F - 1000) < 1e-3 * 1000 && std::abs(w + 5e-6) < 1e-3 * 5e-6, qPrintable(said));
+            info(said);
+        }
+        {
+            const Solved sv = solve(model(5, 0, false));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const Solution3& s = sv.s();
+            const QString said = QStringLiteral("pushed 5 µm: force %1 N, least gap %2 µm").arg(global(s, QStringLiteral("solid.Fn"))).arg(global(s, QStringLiteral("solid.gapmin")) * 1e6);
+            QVERIFY2(global(s, QStringLiteral("solid.Fn")) == 0 && std::abs(global(s, QStringLiteral("solid.gapmin")) - 5e-6) < 1e-9 * 5e-6 + 1e-15, qPrintable(said));
+        }
+        {
+            const Solved sv = solve(model(20, 3, false));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const Solution3& s = sv.s();
+            const double F = global(s, QStringLiteral("solid.Fn")), u = valueAt(s, QStringLiteral("solid.u"), 0.5, 0.5, 1);
+            const QString said = QStringLiteral("pressed and slid 3 µm: force %1 N, the lower's top along x %2 m").arg(F).arg(u);
+            QVERIFY2(std::abs(F - 1000) < 1e-3 * 1000 && std::abs(u) < 1e-12, qPrintable(said));
+        }
+        {
+            const Solved sv = solve(model(20, 0, true));
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            // Each block's stretch: λ = 1 - 5e-3 (the penalty's share aside).
+            const double l = 1 - 5e-3, want = (l * l * l - l) * 200e9 * 1e-6 / 2;
+            const double F = global(sv.s(), QStringLiteral("solid.Fn"));
+            const QString said = QStringLiteral("large: force %1 N against %2").arg(F).arg(-want);
+            QVERIFY2(std::abs(F + want) < 2e-3 * std::abs(want), qPrintable(said));
+            info(said);
+        }
+    }
+
+    // Hertz's line contact: a cylinder (radius 10 mm, along z) on a flat
+    // block, E 200 GPa, ν 0.3, in plane strain (rollers on the floors), half
+    // of it (a roller on x = 0), its weight P' = π E* b²/(4R) a length for
+    // a half-width b of 0.5 mm (E* = E/(2 (1 - ν²))). Under the contact, the
+    // block's σyy at depth y is -p0/√(1 + y²/b²), p0 = 2P'/(π b): at b and
+    // 2b to 3 % (0.1 and 2.4 % found); the contact's force P'/2 a length
+    // (half of it) to 1 % (0.6 %). A penalty factor of 10: its
+    // interpenetration some 0.07 % of b, a stiffer one's kinks slow
+    // Newton's method.
+    void hertzLineContact()
+    {
+        const double R = 10, E = 200e9, nu = 0.3, b = 0.5e-3;
+        const double Es = E / (2 * (1 - nu * nu)), P = M_PI * Es * b * b / (4 * R * 1e-3), p0 = 2 * P / (M_PI * b);
+        Model m = model3d(slowBuild() ? 2.0 : 1.5);
+        addCylinder(m, QStringLiteral("whole"), R, 1);
+        // (Moved up to touch y = 0, and halved.)
+        for (Node& g : m.geometry().children)
+            if (g.label == QLatin1String("whole")) g.props.insert(QStringLiteral("center"), pairOf(0, R));
+        addBox(m, QStringLiteral("cut"), -2 * R, -1, -1, 2 * R, 3 * R, 3);
+        Node d = m.make(QStringLiteral("difference"));
+        d.label = QStringLiteral("roller");
+        d.props.insert(QStringLiteral("input"), QJsonArray{QStringLiteral("whole")});
+        d.props.insert(QStringLiteral("tools"), QJsonArray{QStringLiteral("cut")});
+        m.add(m.geometry().tag, d);
+        addBox(m, QStringLiteral("block"), 0, -10, 0, 15, 10, 1);
+        Node size = m.make(QStringLiteral("mesh/size"));
+        size.props.insert(QStringLiteral("level"), QStringLiteral("point"));
+        size.props.insert(QStringLiteral("selection"), boxRule(-0.1, -0.1, -0.1, 0.1, 0.1, 1.1));
+        size.props.insert(QStringLiteral("hmax"), slowBuild() ? QStringLiteral("0.12") : QStringLiteral("0.08"));
+        m.add(m.mesh().tag, size);
+        const QString solid = addSolid(m, 2, {{QStringLiteral("E"), QStringLiteral("200[GPa]")}, {QStringLiteral("nu"), QStringLiteral("0.3")}});
+        addFeature(m, solid, QStringLiteral("solid/roller"), boxRule(-0.01, -11, -0.1, 0.01, 2 * R + 1, 1.1));
+        addFeature(m, solid, QStringLiteral("solid/roller"), boxRule(-1, -11, -0.01, R + 16, 2 * R + 1, 0.01));
+        addFeature(m, solid, QStringLiteral("solid/roller"), boxRule(-1, -11, 0.99, R + 16, 2 * R + 1, 1.01));
+        addFeature(m, solid, QStringLiteral("solid/fixed"), boxRule(-1, -10.01, -0.1, 16, -9.99, 1.1));
+        addFeature(m, solid, QStringLiteral("solid/bodyload"), objects(QStringLiteral("roller")),
+                   {{QStringLiteral("fy"), QStringLiteral("%1[N/m^3]").arg(-P / (M_PI * R * R * 1e-6), 0, 'g', 17)}});
+        // (The block's top and the roller's round face - and their floors,
+        // a millimetre apart: past the search distance asked.)
+        addFeature(m, solid, QStringLiteral("solid/contact"), boxRule(-0.1, -0.1, -0.1, 16, 2 * R + 0.1, 1.1),
+                   {{QStringLiteral("penalty"), QStringLiteral("10")}, {QStringLiteral("search"), QStringLiteral("0.5[mm]")}});
+        for (Node& c : m.root.children)
+            if (c.type == QLatin1String("study")) {
+                c.children.clear();
+                c.children.push_back(m.make(QStringLiteral("stationary")));
+            }
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+        const Solution3& s = sv.s();
+        const double F = global(s, QStringLiteral("solid.Fn"));
+        const double s1 = valueAt(s, QStringLiteral("solid.sy"), 0.001, -0.5, 0.5), s2 = valueAt(s, QStringLiteral("solid.sy"), 0.001, -1.0, 0.5);
+        const double w1 = -p0 / std::sqrt(2.0), w2 = -p0 / std::sqrt(5.0);
+        const QString said = QStringLiteral("Hertz: force %1 N against %2; σyy %3 and %4 MPa at b and 2b against %5 and %6; %7, %8 unknowns")
+                                 .arg(F).arg(P * 1e-3 / 2).arg(s1 / 1e6).arg(s2 / 1e6).arg(w1 / 1e6).arg(w2 / 1e6)
+                                 .arg(sv.r.log.filter(QStringLiteral("contact")).join(QLatin1Char(' ')))
+                                 .arg(3 * s.fields()[0].space->size());
+        info(said);
+        // (A sanitized build's coarser mesh: 8 % and 1.5 % - 6 % and 1 % found.)
+        const double ts = slowBuild() ? 8e-2 : 3e-2, tf = slowBuild() ? 1.5e-2 : 1e-2;
+        QVERIFY2(std::abs(F - P * 1e-3 / 2) < tf * P * 1e-3 / 2 && std::abs(s1 - w1) < ts * std::abs(w1) && std::abs(s2 - w2) < ts * std::abs(w2),
+                 qPrintable(said));
     }
 
     // A piezoelectric block - e33 15 C/m², a stiffness of E 100 GPa and ν 0,
