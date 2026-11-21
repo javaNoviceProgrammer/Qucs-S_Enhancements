@@ -1370,8 +1370,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     // (a strip at an angle its own width). By its own depth,
                     // a part of a circle's cap 0.002 µm deep had its cells so
                     // fine, and its lines taken by its neighbours, that a disc
-                    // of 100 µm was 37,000 cells of down to 1e-6 µm² - a review's -, and cells under a
-                    // nanometre wide its P57.
+                    // of 100 µm was 37,000 cells of down to 1e-6 µm², and cells under a nanometre wide.
                     if (!slab.rectangle && piece.feature > 0) {
                         const QPointF middle = centroidOf(slab.outline, areaOf(slab.outline));
                         double width = std::numeric_limits<double>::infinity();

@@ -262,6 +262,11 @@ bool says(const QStringList& lines, const char* words)
     return false;
 }
 
+bool says(const QStringList& lines, const QString& words)
+{
+    return says(lines, words.toUtf8().constData());
+}
+
 /// A MIM's stack: an oxide 5 µm thick under M1, the MIM dielectric (6.892,
 /// 40 nm) up to M2, and 2 µm of oxide over it.
 rf::Stack mimStack()
@@ -526,6 +531,46 @@ private slots:
                 for (int i = 0; i < 3; ++i)
                     for (int j = 0; j < 3; ++j) off = std::max(off, std::abs(e.c.at(i).at(j) - dense.c.at(i).at(j)));
                 QVERIFY2(off < 1e-4 * largest, qPrintable(QStringLiteral("cap %1: %2 apart, of %3").arg(cap).arg(off).arg(largest)));
+            }
+            // (At its cap exactly: all its pairs, factored.)
+            rf::ExtractControl atCap = held;
+            atCap.mostNearPairs = all;
+            const rf::Extraction e = rf::extract(mesh, line, stack, 1e-6, {}, &atCap);
+            QVERIFY2(e.ok() && says(e.lines, QStringLiteral("LU of %1 pairs, some").arg(all)) && !says(e.lines, "past its"),
+                     qPrintable((e.problems + e.lines).join(" | ")));
+        }
+        // (Its LU's fill estimated before it is made, and the pairs halved
+        //  past a bound on it as past the cap of pairs - the cap bounds what
+        //  the LU is given, not what it fills to (a near field under its cap whose LU
+        //  crashed the app). 326,302 entries on this mesh of 1,922 cells and
+        //  34,203 pairs, 155,140 within a side.)
+        {
+            const QRegularExpressionMatch at =
+                QRegularExpression(QStringLiteral("LU of (\\d+) pairs, some (\\d+) entries estimated, (\\w+)'s LU")).match(compressed.lines.join(' '));
+            QVERIFY2(at.hasMatch(), qPrintable(compressed.lines.join(" | ")));
+            const qint64 pairs = at.captured(1).toLongLong(), fill = at.captured(2).toLongLong();
+            // (Its L and U the pairs either side of the diagonal, the
+            //  diagonal, and what fills in: 326,302 on this mesh, where the
+            //  near field itself has 66,484 - the count along the
+            //  elimination tree's paths, L's and U's both.)
+            const qint64 n = mesh.cells.size();
+            QVERIFY2(fill > 2 * pairs - n && fill < n * n && std::abs(double(fill) / 326302 - 1) < 0.1, qPrintable(compressed.lines.join(" | ")));
+            for (const qint64 bound : {fill, fill - 1, n}) {
+                rf::ExtractControl bounded = held;
+                bounded.mostNearFill = bound;
+                const rf::Extraction e = rf::extract(mesh, line, stack, 1e-6, {}, &bounded);
+                QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+                const QString all = e.lines.join(" | ");
+                if (bound == fill) {
+                    QVERIFY2(!says(e.lines, "past its") && says(e.lines, QStringLiteral("LU of %1 pairs").arg(pairs)), qPrintable(all));
+                    continue;
+                }
+                QVERIFY2(says(e.lines, QStringLiteral("LU past its bound of %1 entries").arg(bound)), qPrintable(all));
+                QVERIFY2(says(e.lines, bound == n ? "diagonal alone the preconditioner" : "held within 1 of a side"), qPrintable(all));
+                double off = 0;
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j) off = std::max(off, std::abs(e.c.at(i).at(j) - dense.c.at(i).at(j)));
+                QVERIFY2(off < 1e-4 * largest, qPrintable(QStringLiteral("bound %1: %2 apart, of %3").arg(bound).arg(off).arg(largest)));
             }
         }
         // (A quasi-static study's mesh is held compressed, so the tab's mesh
