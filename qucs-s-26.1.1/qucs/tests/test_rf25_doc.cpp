@@ -3407,6 +3407,16 @@ private slots:
                     if (loop.boundingRect().center().y() > 250 && loop.boundingRect().center().x() > 100) ++strokedRings;
             }
             QCOMPARE(strokedRings, 2);
+            // And the processed shapes' outlines the same: the ring's two
+            // loops, not its slit (the review of 27cc932c).
+            QVERIFY(own->waitForPrepared(60000));
+            own->setProcessedShown(true);
+            int processedRings = 0;
+            for (const LayoutView::Overlay& o : own->view()->overlays())
+                if (o.name == QStringLiteral("M1, processed"))
+                    for (const QPolygonF& loop : o.shapes)
+                        if (loop.boundingRect().center().y() > 250 && loop.boundingRect().center().x() > 100) ++processedRings;
+            QCOMPARE(processedRings, 2);
         }
         QVERIFY(!own->drawShapes(QJsonArray{QJsonObject{{"add", "circle"}, {"layer", "M1"}, {"parametric", true}, {"at", QJsonArray{0, 0}}}},
                                  &done, &why));

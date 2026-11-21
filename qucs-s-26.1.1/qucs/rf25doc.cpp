@@ -1976,9 +1976,12 @@ void RF25Doc::showOverlays()
         // in that very colour, filled, and a tint of a fill is no line at
         // all. What the processing changed is then plain against the
         // original beneath it.
+        // (Each loop of its own - its outline and its holes -, not along a
+        //  keyhole's slit: a processed ring showed a line across itself, as
+        //  if cut - the review of 27cc932c.)
         QMap<QString, QList<QPolygonF>> byLayer;
         for (const Conductor& c : a_processed->conductors)
-            if (!hiddenLayer(c.layer)) byLayer[c.layer] << c.outline;
+            if (!hiddenLayer(c.layer)) byLayer[c.layer] += loopsOf(c.outline);
         for (auto it = byLayer.constBegin(); it != byLayer.constEnd(); ++it) {
             LayoutView::Overlay overlay;
             overlay.shapes = it.value();

@@ -11,6 +11,7 @@
 #include <QJsonArray>
 
 #include "rf25/rf25_model.h"
+#include "rf25/rf25_green.h"
 
 #include <tuple>
 
@@ -272,6 +273,26 @@ private slots:
             const double e40 = rf::djordjevicSarkar(11.9, 0.02, 2e9, 40e9).real();
             QVERIFY2(at40.layers.at(0).epsz > 1, qPrintable(QString::number(at40.layers.at(0).epsz)));
             QVERIFY(std::abs(at40.layers.at(0).epsz - (1 + 0.01 * (e40 - 1) / 10.9)) < 1e-12);
+            // The full wave's the same, its real part (the review of
+            // 27cc932c: it scaled eps_z itself, 0.29 % from the quasi-static's
+            // and under 1 for this one), with the plane's loss tangent.
+            u.layers[0].epsz = 1.01;
+            {
+                const rf::Layers slabs = rf::layersOf(u);
+                QVERIFY2(slabs.problems.isEmpty(), qPrintable(slabs.problems.join(" | ")));
+                const std::complex<double> z = slabs.slabs.at(0).permittivityZAt(40e9);
+                const std::complex<double> plane = slabs.slabs.at(0).permittivityAt(40e9);
+                QVERIFY2(std::abs(z.real() - at40.layers.at(0).epsz) < 1e-12, qPrintable(QStringLiteral("%1 against %2").arg(z.real()).arg(at40.layers.at(0).epsz)));
+                QVERIFY(std::abs(z.imag() / z.real() - plane.imag() / plane.real()) < 1e-12);
+            }
+            // Not dispersive: eps_z (1 - j tan d), as it was.
+            {
+                rf::Stack plain = u;
+                plain.layers[0].dispersion.clear();
+                plain.layers[0].epsz = 13;
+                const std::complex<double> z = rf::layersOf(plain).slabs.at(0).permittivityZAt(40e9);
+                QVERIFY(std::abs(z - std::complex<double>(13, -13 * 0.02)) < 1e-12);
+            }
             u.layers[0].epsz = 11.9;
             QVERIFY(std::abs(u.atFrequency(40e9).layers.at(0).epsz - e40) < 1e-12);
         }
