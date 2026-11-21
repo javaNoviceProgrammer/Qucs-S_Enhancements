@@ -1199,19 +1199,25 @@ bool Multiphysics3DDoc::addDefaultPlots(Model& m, const std::vector<Field3>& fie
         const QString variable = f.tag + QLatin1Char('.') + f.variable;
         if (f.type == QLatin1String("solid")) {
             // Its stress and displacement on its boundaries, drawn where it
-            // has moved (as the plane's are).
+            // has moved (as the plane's are). A frequency domain's: the peak
+            // of its von Mises over a cycle and its amplitude, drawn deformed
+            // where it moves most - what is coloured and what is drawn
+            // agreeing at a resonance, a quarter cycle out of phase.
             const QString t = f.tag;
-            const std::pair<QString, QString> two[2] = {{tr("Stress (%1)").arg(t), t + QStringLiteral(".mises")},
-                                                       {tr("Displacement (%1)").arg(t), t + QStringLiteral(".disp")}};
+            const bool harmonic = harmonicLayout(f);
+            const std::pair<QString, QString> two[2] = {
+                {tr("Stress (%1)").arg(t), t + (harmonic ? QStringLiteral(".misespeak") : QStringLiteral(".mises"))},
+                {tr("Displacement (%1)").arg(t), t + QStringLiteral(".disp")}};
             for (const auto& [label, expression] : two) {
                 Node g = m.make(QStringLiteral("plotgroup3d"));
                 g.label = label;
+                if (harmonic) g.props.insert(QStringLiteral("phasemode"), QStringLiteral("largest"));
                 const Node* added = m.add(results, g);
                 if (!added) continue;
                 const QString group = added->tag;
                 Node plot = m.make(QStringLiteral("surface"));
                 plot.props.insert(QStringLiteral("expression"), expression);
-                if (expression.endsWith(QLatin1String(".mises"))) plot.props.insert(QStringLiteral("unit"), QStringLiteral("MPa"));
+                if (expression.contains(QLatin1String(".mises"))) plot.props.insert(QStringLiteral("unit"), QStringLiteral("MPa"));
                 else plot.props.insert(QStringLiteral("colors"), QStringLiteral("viridis"));
                 m.add(group, plot);
                 Node moved = m.make(QStringLiteral("deformation"));
@@ -1282,6 +1288,7 @@ void Multiphysics3DDoc::fillPlotChoices()
         const QString p = f.tag + QLatin1Char('.');
         if (f.type == QLatin1String("solid")) {
             for (const char* v : {"disp", "mises", "u", "v", "w", "Ws"}) a_plotBox->addItem(p + QString::fromLatin1(v));
+            if (harmonicLayout(f)) a_plotBox->addItem(p + QStringLiteral("misespeak"));
             continue;
         }
         if (f.type == QLatin1String("semiconductor")) {
@@ -1891,6 +1898,26 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
     const Topology3* t = m.topology.get();
     const Box3 box = t ? t->bounds : Box3();
     const double k = m.unitScale;
+    // Its phase: a frequency domain's solid read at one moment of its cycle
+    // - as given (degrees), or where its first such solid moves most.
+    const double phaseBefore = sol->phase();
+    double phase = 0;
+    bool harmonicSolid = false;
+    for (int i = 0; i < int(sol->fields().size()); ++i)
+        if (sol->fields()[std::size_t(i)].type == QLatin1String("solid") && harmonicLayout(sol->fields()[std::size_t(i)])) {
+            harmonicSolid = true;
+            if (g.text(QStringLiteral("phasemode")) == QLatin1String("largest")) phase = largestPhase(*sol, i);
+            break;
+        }
+    if (g.text(QStringLiteral("phasemode")) != QLatin1String("largest")) {
+        QString why;
+        const QString text = g.text(QStringLiteral("phase")).trimmed();
+        if (!text.isEmpty()) {
+            if (const std::optional<double> v = evaluateConstant(text, sol->parameters().scope, Dim(), &why)) phase = *v * M_PI / 180;
+            else a_plotProblems << tr("%1's phase: %2").arg(g.name(), why);
+        }
+    }
+    sol->setPhase(phase);
     // Its clip: the axis, where across the model.
     const QString clip = g.text(QStringLiteral("clip"));
     *clipAxis = clip == QLatin1String("x") ? 0 : clip == QLatin1String("y") ? 1 : clip == QLatin1String("z") ? 2 : -1;
@@ -2128,6 +2155,8 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
         legend.shown = true;
         a_plotRange = {first->lo, first->hi};
         if (def) legend.title += tr(" (deformed %1×)").arg(formatNumber(def->used, 3));
+        if (harmonicSolid && (phase != 0 || g.text(QStringLiteral("phasemode")) == QLatin1String("largest")))
+            legend.title += tr(" at φ = %1°").arg(formatNumber(phase * 180 / M_PI, 3));
         // The clip's cut face, as the first coloured plot is.
         if (*clipAxis >= 0)
             for (const SliceTriangle& st : slice(*sol, first->e, *clipAxis, clipAt)) {
@@ -2159,6 +2188,7 @@ void Multiphysics3DDoc::plotGroupScene(const Node& g, Solution3& solution, View3
                 scene.bounds.z1 = std::max(scene.bounds.z1, x.z);
             }
     }
+    sol->setPhase(phaseBefore);
     if (sol->selected() != before && before >= 0) sol->select(before);
 }
 

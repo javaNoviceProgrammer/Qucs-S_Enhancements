@@ -1780,6 +1780,73 @@ private slots:
         QVERIFY(!doc->view()->legend().title.contains(QStringLiteral("deformed")));
     }
 
+    /// A solid's harmonic response through the tools (the beam, a loss
+    /// factor, a Frequency Domain step): its default plots the peak of its
+    /// von Mises over a cycle and its amplitude, each group drawn where it
+    /// moves most - the legend saying the phase.
+    void aSolidsHarmonicPlots()
+    {
+        std::optional<Model> m = Model::fromJson(QJsonDocument(loadedBeam()).toJson());
+        QVERIFY(m);
+        QString sm;
+        for (const FNode& c : m->component().children)
+            if (c.type == QLatin1String("solid")) sm = c.tag;
+        FNode damping = m->make(QStringLiteral("solid/damping"));
+        damping.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("all"), true}});
+        QVERIFY(m->add(sm, damping));
+        for (FNode& st : m->root.children)
+            if (st.type == QLatin1String("study")) {
+                for (FNode& step : st.children) step.enabled = false;
+                FNode fr = m->make(QStringLiteral("frequency"));
+                fr.props.insert(QStringLiteral("frequencies"), QStringLiteral("20[kHz]"));
+                st.children.push_back(fr);
+            }
+        const QString file = path(QStringLiteral("beam3dharmonic.qfem3d"));
+        QFile::remove(file);
+        QJsonObject r = call(QStringLiteral("fem_model"), {{"action", "new"}, {"model", QJsonDocument::fromJson(m->toJson()).object()}, {"path", "beam3dharmonic"}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        r = call(QStringLiteral("fem_solve"), {{"path", file}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        Multiphysics3DDoc* doc = front();
+        QVERIFY(doc);
+        QTRY_VERIFY(doc->solution() && !doc->solutionStale());
+        QString stress;
+        for (const FNode& c : doc->model().results().children)
+            if (c.type == QLatin1String("plotgroup3d")) {
+                QCOMPARE(c.text(QStringLiteral("phasemode")), QStringLiteral("largest"));
+                if (c.name() == QStringLiteral("Stress (%1)").arg(sm)) {
+                    QCOMPARE(c.children[0].text(QStringLiteral("expression")), sm + QStringLiteral(".misespeak"));
+                    stress = c.tag;
+                }
+            }
+        QVERIFY(!stress.isEmpty());
+        QVERIFY(doc->showPlotGroup(stress));
+        QVERIFY2(doc->view()->legend().title.contains(QStringLiteral("at φ")), qPrintable(doc->view()->legend().title));
+        QVERIFY(doc->plotRange().second > 0);
+        // A group's phase reaching its plots: w at 20 kHz, far below the
+        // beam's first mode, nearly in phase with its load - at φ = 90° a
+        // loss factor's share of it, where it moves most all of it.
+        Model mm = doc->model();
+        FNode g = mm.make(QStringLiteral("plotgroup3d"));
+        g.props.insert(QStringLiteral("phasemode"), QStringLiteral("fixed"));
+        g.props.insert(QStringLiteral("phase"), QStringLiteral("90"));
+        const FNode* added = mm.add(mm.results().tag, g);
+        QVERIFY(added);
+        const QString tag = added->tag;
+        FNode w = mm.make(QStringLiteral("surface"));
+        w.props.insert(QStringLiteral("expression"), sm + QStringLiteral(".w"));
+        QVERIFY(mm.add(tag, w));
+        QVERIFY(doc->setModel(mm, QStringLiteral("w at 90°")));
+        QVERIFY(doc->showPlotGroup(tag));
+        const double quarter = std::max(std::abs(doc->plotRange().first), std::abs(doc->plotRange().second));
+        mm = doc->model();
+        mm.find(tag)->props.insert(QStringLiteral("phasemode"), QStringLiteral("largest"));
+        QVERIFY(doc->setModel(mm, QStringLiteral("w where it moves most")));
+        QVERIFY(doc->showPlotGroup(tag));
+        const double most = std::max(std::abs(doc->plotRange().first), std::abs(doc->plotRange().second));
+        QVERIFY2(most > 20 * quarter && most > 0, qPrintable(QStringLiteral("%1 at 90°, %2 where it moves most").arg(quarter).arg(most)));
+    }
+
     /// A 3D magnetic field through Claude's tools: a bar of 1e8 A/m² along z
     /// in an insulated air box, made, solved and read - its energy positive,
     /// B round the bar, Plot offering mf.normB.

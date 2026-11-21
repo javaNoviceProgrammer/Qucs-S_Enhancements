@@ -1724,7 +1724,7 @@ std::unique_ptr<Problem3> makeSolidProblem3(Solution3& solution, int field)
     return std::make_unique<SolidProblem3>(solution, field);
 }
 
-bool solidStateAt(PointEvaluator3& ev, int f, SolidState& out)
+bool solidStateAt(PointEvaluator3& ev, int f, SolidState& out, bool imaginary)
 {
     const Solution3& s = ev.solution();
     if (f < 0 || f >= int(s.fields().size())) return false;
@@ -1733,12 +1733,14 @@ bool solidStateAt(PointEvaluator3& ev, int f, SolidState& out)
     double G[3][3];
     for (int c = 0; c < 3; ++c) {
         double u = 0;
-        if (!ev.field(f, c, u, G[c])) return false;
+        if (!ev.field(f, c + (imaginary ? 3 : 0), u, G[c])) return false;
     }
     const Material m = materialOf(coef, d);
     if (!m.valid) return false;
     double C6[6][6], S0[6], SP[6];
     m.eval(&ev, C6, S0, SP);
+    if (imaginary)
+        for (int I = 0; I < 6; ++I) S0[I] = SP[I] = 0;
     // Large deformation: the Green-Lagrange strain (engineering shears), its
     // energy ½ E·C E a volume at rest, and the Cauchy stress (1/J) F S Fᵀ.
     if (const auto it = coef.named.find(QStringLiteral("large")); it != coef.named.end() && d >= 0 && d < int(it->second.size()) && it->second[std::size_t(d)].isValid()) {

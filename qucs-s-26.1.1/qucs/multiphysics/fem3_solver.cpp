@@ -307,6 +307,25 @@ void Solution3::defineSolid(int f)
         return std::sqrt(0.5 * ((s[0] - s[1]) * (s[0] - s[1]) + (s[1] - s[2]) * (s[1] - s[2]) + (s[2] - s[0]) * (s[2] - s[0]))
                          + 3 * (s[3] * s[3] + s[4] * s[4] + s[5] * s[5]));
     });
+    // Its von Mises stress's peak over a cycle (the frequency domain's; at
+    // rest von Mises itself): σ(t) = A cos t - B sin t of its parts A and B,
+    // q = σ_vm² a quadratic form - q(t) = q(A) cos² t + q(B) sin² t - 2 b(A,
+    // B) sin t cos t, greatest (q(A) + q(B))/2 + √(((q(A) - q(B))/2)² + b²).
+    define(p + QStringLiteral("misespeak"), pressure, tr("von Mises stress, its peak over a cycle (the frequency domain's; at rest von Mises)"),
+           K::Derived, f, 0, 1, [f](PointEvaluator3& e) {
+               detail3::SolidState a, b;
+               if (!detail3::solidStateAt(e, f, a)) return NaN;
+               const double* A = a.stress;
+               const auto form = [](const double* x, const double* y) {
+                   return 0.5 * ((x[0] - x[1]) * (y[0] - y[1]) + (x[1] - x[2]) * (y[1] - y[2]) + (x[2] - x[0]) * (y[2] - y[0]))
+                          + 3 * (x[3] * y[3] + x[4] * y[4] + x[5] * y[5]);
+               };
+               const double qa = form(A, A);
+               if (!detail3::solidStateAt(e, f, b, true)) return std::sqrt(std::max(qa, 0.0));
+               const double* B = b.stress;
+               const double qb = form(B, B), ab = form(A, B);
+               return std::sqrt(std::max(0.0, 0.5 * (qa + qb) + std::sqrt(0.25 * (qa - qb) * (qa - qb) + ab * ab)));
+           });
     define(p + QStringLiteral("p"), pressure, tr("pressure: minus the mean of the normal stresses"), K::Derived, f, 0, 1, [f](PointEvaluator3& e) {
         detail3::SolidState st;
         return detail3::solidStateAt(e, f, st) ? -(st.stress[0] + st.stress[1] + st.stress[2]) / 3 : NaN;
@@ -709,6 +728,11 @@ bool PointEvaluator3::at(const Vec3& x)
     return true;
 }
 
+bool harmonicLayout(const Field3& f)
+{
+    return f.space && f.values.size() >= 2 * std::size_t(f.space->size()) * std::size_t(f.count());
+}
+
 bool PointEvaluator3::field(int f, int part, double& u, double g[3])
 {
     // (A field's values its nodes' by component, then any of its own after
@@ -730,11 +754,22 @@ bool PointEvaluator3::field(int f, int part, double& u, double g[3])
     prismShapeAt(sp.order(), a_xi, a_eta, a_zeta, s);
     const Space3::Map m = sp.map(a_prism, a_xi, a_eta, a_zeta);
     const int* d = sp.dofs(a_prism);
-    const std::size_t offset = std::size_t(part) * std::size_t(sp.size());
+    // (At a phase φ, of a field whose imaginary parts follow its real ones:
+    // Re(û e^{jφ}) = re cos φ - im sin φ, its imaginary part re sin φ + im
+    // cos φ.)
+    const double phi = a_s.phase();
+    const int count = field.count();
+    const bool turned = phi != 0 && harmonicLayout(field);
+    const int re = part % count;
+    const double wre = !turned ? 1.0 : part < count ? std::cos(phi) : std::sin(phi);
+    const double wim = !turned ? 0.0 : part < count ? -std::sin(phi) : std::cos(phi);
+    const std::size_t offset = std::size_t(turned ? re : part) * std::size_t(sp.size());
+    const std::size_t offsetIm = std::size_t(re + count) * std::size_t(sp.size());
     u = 0;
     g[0] = g[1] = g[2] = 0;
     for (int i = 0; i < s.count; ++i) {
-        const double v = field.values[offset + std::size_t(d[i])];
+        double v = wre * field.values[offset + std::size_t(d[i])];
+        if (turned) v += wim * field.values[offsetIm + std::size_t(d[i])];
         double gi[3];
         Space3::gradient(m, s.dxi[i], s.deta[i], s.dzeta[i], gi);
         u += s.n[i] * v;
