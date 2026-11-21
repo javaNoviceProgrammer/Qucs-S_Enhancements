@@ -654,6 +654,62 @@ private slots:
     }
 
 
+    // A coil of 10 turns on a bar (0.4 mm square, 1 mm long, its currents
+    // physics' J along it), 0.2 A, in a uniform 0.5 T across it: its wire's
+    // resistance ∫ |j1|²/(σw fill) = N² l/(σw fill A) (σw 6e7 S/m, fill 0.5:
+    // 0.0208333 Ω) at rest - its voltage R I0 -, and in the frequency domain
+    // (50 Hz, no eddy currents in turns) V/I's real part the same; its
+    // Lorentz force N I0 l B0 = 1 mN at rest, its time average half of it.
+    void coilWireAndAveragedForce()
+    {
+        const double R = 100 * 1e-3 / (6e7 * 0.5 * 0.16e-6);
+        for (bool harmonic : {false, true}) {
+            Model m = model3d(0.2);
+            addBox(m, QStringLiteral("air"), -2, -2, 0, 4, 4, 1);
+            addBox(m, QStringLiteral("bar"), -0.2, -0.2, 0, 0.4, 0.4, 1);
+            for (const char* o : {"air", "bar"}) zDivisions(m, QString::fromLatin1(o), 1);
+            Node ec = m.make(QStringLiteral("currents"));
+            ec.props.insert(QStringLiteral("order"), QStringLiteral("1"));
+            ec.props.insert(QStringLiteral("selection"), objects(QStringLiteral("bar")));
+            const QString et = ec.tag;
+            m.add(m.component().tag, ec);
+            for (Node& c : m.find(et)->children)
+                if (c.type == QLatin1String("currents/conservation")) {
+                    c.props.insert(QStringLiteral("source"), QStringLiteral("user"));
+                    c.props.insert(QStringLiteral("sigma"), QStringLiteral("6e7[S/m]"));
+                }
+            addFeature(m, et, QStringLiteral("currents/terminal"), ofSide(QStringLiteral("bar"), QStringLiteral("bottom")), {{QStringLiteral("name"), QStringLiteral("a")}});
+            addFeature(m, et, QStringLiteral("currents/ground"), ofSide(QStringLiteral("bar"), QStringLiteral("top")));
+            const QString mf = addMagnetic(m, 2);
+            addFeature(m, mf, QStringLiteral("magnetic/coil"), objects(QStringLiteral("bar")),
+                       {{QStringLiteral("name"), QStringLiteral("1")}, {QStringLiteral("ec"), QJsonArray{et}}, {QStringLiteral("terminal"), QStringLiteral("a")},
+                        {QStringLiteral("conductor"), QStringLiteral("multi")}, {QStringLiteral("N"), QStringLiteral("10")}, {QStringLiteral("I0"), QStringLiteral("0.2[A]")},
+                        {QStringLiteral("sigmaw"), QStringLiteral("6e7[S/m]")}, {QStringLiteral("fill"), QStringLiteral("0.5")}});
+            addFeature(m, mf, QStringLiteral("magnetic/potential"), rule(R"({"exterior": true})"), {{QStringLiteral("A0z"), QStringLiteral("0.5[T]*y")}});
+            addFeature(m, mf, QStringLiteral("magnetic/insulation"), normal(0, 0, 1));
+            addFeature(m, mf, QStringLiteral("magnetic/insulation"), normal(0, 0, -1));
+            if (harmonic)
+                for (Node& st : m.root.children)
+                    if (st.type == QLatin1String("study")) {
+                        for (Node& step : st.children) step.enabled = false;
+                        Node fr = m.make(QStringLiteral("frequency"));
+                        fr.props.insert(QStringLiteral("frequencies"), QStringLiteral("50[Hz]"));
+                        st.children.push_back(fr);
+                    }
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const double r = global(sv.s(), QStringLiteral("mf.R_1")), v = global(sv.s(), QStringLiteral("mf.V_1")), fy = global(sv.s(), QStringLiteral("mf.Fy_1"));
+            const double share = harmonic ? 0.5 : 1.0;
+            const QString said = QStringLiteral("a coil of turns%1: R %2 Ω against %3, V %4 V, Fy %5 N against %6")
+                                     .arg(harmonic ? QStringLiteral(" at 50 Hz") : QString()).arg(r, 0, 'g', 8).arg(R, 0, 'g', 8).arg(v, 0, 'g', 8).arg(fy).arg(share * 1e-3);
+            QVERIFY2(std::abs(r - R) < 1e-6 * R && std::abs(fy - share * 1e-3) < 2e-3 * 1e-3, qPrintable(said));
+            if (!harmonic) QVERIFY2(std::abs(v - R * 0.2) < 1e-9 * R, qPrintable(said));
+            // (Its impedance matrix's diagonal, the coil swept: R too.)
+            else QVERIFY2(std::abs(global(sv.s(), QStringLiteral("mf.R11")) - R) < 1e-6 * R, qPrintable(said + QStringLiteral(", R11 %1").arg(global(sv.s(), QStringLiteral("mf.R11")))));
+            info(said);
+        }
+    }
+
     // A coaxial line, 1 mm long: 1 A along z in its core (0.5 mm) and back
     // in its shell (1.5 to 1.8 mm), its outer wall and ends insulated: its
     // energy L' l I²/2, L' µ0/2π (ln(b/a) + 1/4 + c⁴ ln(c/b)/(c² - b²)² -
@@ -998,6 +1054,7 @@ private slots:
         }
     }
 
+
     // Magnetic fields in time (a Time Dependent step: eddy currents σ (∂A/∂t
     // + ∇V), the frequency domain's matrices stepped by BDF). The shorted
     // coax (copper, its core 0.5 mm: µ0 σ a² 18 µs) fed 1 A at 20 kHz,
@@ -1132,6 +1189,67 @@ private slots:
         const QString said3 = QStringLiteral("fed R volts by a ramp: its current %1 A at 2 µs, %2 A at 100 µs (its voltage %3 V)").arg(i0).arg(i1).arg(v1);
         QVERIFY2(std::abs(i1 - 1) < 1e-3 && i0 < 0.2 && std::abs(v1 - R) < 1e-12 * R, qPrintable(said3));
         info(said3);
+    }
+
+    // The iron ring in the frequency domain (50 Hz, nothing conducting): its
+    // B-H curve by its effective permeability - each element's B̂/(µ0 H1),
+    // H1 the fundamental of H for a sinusoidal B of amplitude B̂ -, solved in
+    // turn. Round the wire H's amplitude is N Î/(2π r) whatever the iron, so
+    // B̂ there is the root of H1(B̂) = Ĥ (H1 worked out here from the curve):
+    // at three radii to 2 % (0.04 % found, µr at each quadrature point; its
+    // element's middle's alone, 2.9 % off in saturation), and H's amplitude
+    // there Ĥ (to 5 %: the point's B over its nearest point's µr).
+    void ironRingInFrequency()
+    {
+        // (A sanitized build: a coarser mesh, µr to a hundredth.)
+        Model m = model3d(slowBuild() ? 0.15 : 0.1);
+        addCylinder(m, QStringLiteral("world"), 1.5, 0.3);
+        addCylinder(m, QStringLiteral("ringout"), 1.2, 0.3);
+        addCylinder(m, QStringLiteral("ringin"), 0.6, 0.3);
+        addCylinder(m, QStringLiteral("wire"), 0.3, 0.3);
+        for (const char* o : {"world", "ringout", "ringin", "wire"}) zDivisions(m, QString::fromLatin1(o), 1);
+        const QString mf = addMagnetic(m, 2);
+        addFeature(m, mf, QStringLiteral("magnetic/ampere"), QJsonObject{{QStringLiteral("objects"), QJsonArray{QStringLiteral("ringout")}}, {QStringLiteral("except"), objects(QStringLiteral("ringin"))}},
+                   {{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("constitutive"), QStringLiteral("bh")},
+                    {QStringLiteral("BH"), QJsonArray{QJsonArray{0.0, 0.0}, QJsonArray{0.5, 100.0}, QJsonArray{1.0, 300.0}, QJsonArray{1.4, 1500.0}, QJsonArray{1.7, 10000.0}, QJsonArray{2.0, 100000.0}}}});
+        addFeature(m, mf, QStringLiteral("magnetic/current"), objects(QStringLiteral("wire")), {{QStringLiteral("Jez"), QStringLiteral("50[A]/(pi*(0.3[mm])^2)")}});
+        for (Node& st : m.root.children)
+            if (st.type == QLatin1String("study")) {
+                for (Node& step : st.children) step.enabled = false;
+                Node fr = m.make(QStringLiteral("frequency"));
+                fr.props.insert(QStringLiteral("frequencies"), QStringLiteral("50[Hz]"));
+                if (slowBuild()) fr.props.insert(QStringLiteral("tolerance"), QStringLiteral("1e-2"));
+                st.children.push_back(fr);
+            }
+        const Solved sv = solve(m);
+        QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+        QString err;
+        const std::shared_ptr<const BHCurve> curve = BHCurve::make({{0, 0}, {0.5, 100}, {1.0, 300}, {1.4, 1500}, {1.7, 10000}, {2.0, 100000}}, &err);
+        QVERIFY(curve);
+        // H1(B̂), the fundamental by the trapezoid rule on a fine grid.
+        auto h1 = [&](double bhat) {
+            const int n = 2000;
+            double sum = 0;
+            for (int k = 1; k < n; ++k) {
+                const double th = M_PI * k / n;
+                sum += curve->H(bhat * std::sin(th)) * std::sin(th);
+            }
+            return 2 / M_PI * sum * (M_PI / n);
+        };
+        const double current = integral(sv.s(), QStringLiteral("mf.Jz")) / 0.3e-3;
+        QString said = sv.s().log.filter(QStringLiteral("effective permeability")).join(QLatin1Char(' '));
+        for (double r : {0.7, 0.9, 1.1}) {
+            const double H = current / (2 * M_PI * r * 1e-3);
+            double lo = 0, hi = 3;
+            for (int i = 0; i < 100; ++i) ((h1(0.5 * (lo + hi)) < H) ? lo : hi) = 0.5 * (lo + hi);
+            const double want = 0.5 * (lo + hi);
+            const double got = valueAt(sv.s(), QStringLiteral("mf.normB"), r * std::cos(0.4), r * std::sin(0.4), 0.15);
+            const double hgot = valueAt(sv.s(), QStringLiteral("mf.normH"), r * std::cos(0.4), r * std::sin(0.4), 0.15);
+            said += QStringLiteral("; r %1 mm: Ĥ %2 A/m (%3), B̂ %4 T against %5").arg(r).arg(H).arg(hgot).arg(got).arg(want);
+            // (H the point's own B over its nearest quadrature point's µr: 5 %.)
+            QVERIFY2(std::abs(got - want) < 2e-2 * want && std::abs(hgot - H) < 5e-2 * H, qPrintable(said));
+        }
+        info(said);
     }
 
     // What is refused: a coil whose currents physics is not there; Magnetic

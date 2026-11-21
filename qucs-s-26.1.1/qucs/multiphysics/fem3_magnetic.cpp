@@ -72,6 +72,8 @@ struct Coil {
     double scale = 0;            // N I0 / I_ec
     double flux = 0;             // its flux linkage as solved (Wb)
     double force[3] = {0, 0, 0}; // ∫ J × B over it (N)
+    Expression wireSigma;        // turns': their wire's conductivity (invalid: no resistance)
+    double fill = 1;             // turns': the wire's share of its section
 };
 
 /// The reference prism's nodal shape functions' gradients by a straight
@@ -99,6 +101,53 @@ bool reluctivity(const double mur[9], double nu[9])
         for (int j = 0; j < 3; ++j) nu[3 * i + j] = inv(i, j);
     return true;
 }
+
+/// A B-H curve's effective permeability for a sinusoidal B of amplitude \a
+/// bhat: B̂ / (µ0 H1), H1 the fundamental of H(t), (2/π) ∫ H(B̂ sin θ) sin θ
+/// dθ over [0, π] (Simpson's rule); its first slope's at nought.
+double effectiveMur(const BHCurve& curve, double bhat)
+{
+    if (!(bhat > 0)) return 1 / (Mu0 * curve.nu(0));
+    const int n = 200;
+    double sum = 0;
+    for (int k = 0; k <= n; ++k) {
+        const double th = M_PI * k / n, w = (k == 0 || k == n) ? 1 : (k % 2 ? 4 : 2);
+        sum += w * curve.H(bhat * std::sin(th)) * std::sin(th);
+    }
+    const double h1 = 2 / M_PI * sum * (M_PI / n) / 3;
+    return h1 > 0 ? bhat / (Mu0 * h1) : 1 / (Mu0 * curve.nu(0));
+}
+
+/// A curve's fundamental H1(B̂) tabulated (B̂ from 0 to past its last point),
+/// to read either way: µr of a B̂, and of an Ĥ (the B̂ whose H1 it is).
+struct EffectiveTable {
+    std::vector<double> b, h;   // rising
+    explicit EffectiveTable(const BHCurve& curve)
+    {
+        const double top = 1.5 * curve.B().back() + 1;
+        const int n = 400;
+        for (int k = 0; k <= n; ++k) {
+            const double bh = top * k / n;
+            b.push_back(bh);
+            h.push_back(k == 0 ? 0.0 : bh / (Mu0 * effectiveMur(curve, bh)));
+        }
+    }
+    static double at(const std::vector<double>& x, const std::vector<double>& y, double v)
+    {
+        if (v <= x.front()) return y.front();
+        if (v >= x.back()) return y.back() + (v - x.back()) * (y.back() - y[y.size() - 2]) / (x.back() - x[x.size() - 2]);
+        const std::size_t k = std::size_t(std::upper_bound(x.begin(), x.end(), v) - x.begin());
+        const double t = (v - x[k - 1]) / (x[k] - x[k - 1]);
+        return y[k - 1] + t * (y[k] - y[k - 1]);
+    }
+    double murOfB(double bh, double mu0r) const { return bh > 0 ? bh / (Mu0 * at(b, h, bh)) : mu0r; }
+    double murOfH(double hh, double mu0r) const
+    {
+        if (!(hh > 0)) return mu0r;
+        const double bh = at(h, b, hh);
+        return bh / (Mu0 * hh);
+    }
+};
 
 class MagneticProblem3 : public Problem3
 {
@@ -258,7 +307,15 @@ private:
     /// field read on the other side -, its time average in the frequency
     /// domain; set as globals.
     void setForceGlobals(bool harmonic);
+    /// A coil of turns' wire resistance: ∫ |j1|² / (σw fill) over it, j1 its
+    /// current density at 1 A (0: none given; a single conductor's its
+    /// field's own).
+    double wireResistance(int c) const;
     bool a_nonlinear = false;
+    /// The frequency domain's effective µr at each quadrature point (by prism,
+    /// then its rule's point), a B-H curve's (of its B's amplitude, by a
+    /// bisection solved in turn); 0 elsewhere; empty: none.
+    std::vector<double> a_muEff;
     bool a_magnets = false;
     double a_energy = 0;
     std::vector<std::vector<double>> a_inductance;   // coils swept at 1 A each: [i][j]
@@ -400,6 +457,21 @@ bool MagneticProblem3::setup(QString* error)
             if (c.role == Coil::Voltage) c.voltage = compile(feature.text(QStringLiteral("V0")), feature, QStringLiteral("V0"), false);
             for (const Coil& other : a_coils)
                 if (other.name == c.name) problem(tr("%1: another coil is named %2").arg(feature.name(), c.name));
+            if (!c.single) {
+                // (Its wire's resistance: ∫ |j1|² / (σw fill), j1 its current
+                // density at 1 A.)
+                const QString sw = feature.text(QStringLiteral("sigmaw")).trimmed();
+                if (!sw.isEmpty()) {
+                    c.wireSigma = compile(sw, feature, QStringLiteral("sigmaw"));
+                    const QString fl = feature.text(QStringLiteral("fill")).trimmed();
+                    if (!fl.isEmpty()) {
+                        const Expression fe = compile(fl, feature, QStringLiteral("fill"), false);
+                        if (fe.isValid() && (!fe.isConstant() || !(fe.constant() > 0 && fe.constant() <= 1)))
+                            problem(tr("%1: its fill factor must be a constant over 0, 1 at most").arg(feature.name()));
+                        else if (fe.isValid()) c.fill = fe.constant();
+                    }
+                }
+            }
             const QString n = !c.single ? feature.text(QStringLiteral("N")) : QStringLiteral("1");
             c.turns = compile(n.trimmed().isEmpty() ? QStringLiteral("1") : n, feature, QStringLiteral("N"), false);
             const QStringList tags = feature.list(QStringLiteral("ec"));
@@ -1499,6 +1571,11 @@ void MagneticProblem3::assembleHarmonic(const Equations& q, const Conductors& h,
             }
         };
         if (constNu) readNu(false);
+        // (A B-H curve's element: its effective µr at each of its points.)
+        const std::size_t nqe = rule.points.size();
+        const bool effective = !a_muEff.empty() && a_muEff.size() == mesh.prisms.size() * nqe && d < int(coef.curves.size()) && coef.curves[std::size_t(d)]
+                               && a_muEff[std::size_t(e) * nqe] > 0;
+        int qi = -1;
         if (conducting && constSigma) readSigma(false);
         const bool sourced = k0 && (J[std::size_t(d)][0].isValid() || J[std::size_t(d)][1].isValid() || J[std::size_t(d)][2].isValid());
         std::fill(Ke.begin(), Ke.end(), cd(0));
@@ -1512,11 +1589,16 @@ void MagneticProblem3::assembleHarmonic(const Equations& q, const Conductors& h,
         const AffineMap am = affineMap(es.planNodes(), t);
         const double hz = es.z(layer + 1) - es.z(layer);
         for (const auto& qp : rule.points) {
+            ++qi;
             EdgeSpace3::Basis b;
             es.basis(e, qp[0], qp[1], qp[2], b);
             const double w = qp[3] * b.det;
             if (!constNu || (conducting && !constSigma) || sourced) ev.at(e, qp[0], qp[1], qp[2], b.x);
-            if (!constNu) readNu(true);
+            if (!constNu && !effective) readNu(true);
+            if (effective) {
+                for (cd& v : nu) v = 0;
+                nu[0] = nu[4] = nu[8] = 1 / (Mu0 * a_muEff[std::size_t(e) * nqe + std::size_t(qi)]);
+            }
             if (conducting && !constSigma) readSigma(true);
             PrismShape s;
             prismShapeAt(ns.order(), qp[0], qp[1], qp[2], s);
@@ -1745,10 +1827,8 @@ bool MagneticProblem3::prepareHarmonic(const Options3& o, Harmonic& hs, QString*
     const Space3& ns = *f.space;
     const Mesh3& mesh = a_s.mesh();
     const QString name = a_node->name();
-    if (a_nonlinear) {
-        *error = tr("%1: a B-H curve in the frequency domain - give its domains a relative permeability (Ampère's Law, Relative permeability, "
-                    "and µr'' for a core's losses) for a study in frequency")
-                     .arg(name);
+    if (a_nonlinear && a_muEff.empty()) {
+        *error = tr("%1: a B-H curve in the frequency domain is taken by its effective permeability, solved in turn").arg(name);
         return false;
     }
     a_inductance.clear();
@@ -2026,6 +2106,7 @@ void MagneticProblem3::finishHarmonic(const Options3& o, const Harmonic& hs, dou
     for (int c = 0; c < nc; ++c) {
         const Coil& coil = a_coils[std::size_t(c)];
         a_U[std::size_t(c)] = voltageOf(c, x, A, true);
+        if (!coil.single) a_U[std::size_t(c)] += wireResistance(c) * evalAt(coil.current, Vec3{});
         if (coil.single) a_I[std::size_t(c)] = coil.role == Coil::Current ? cd(evalAt(coil.current, Vec3{})) : coil.role == Coil::Floating ? cd(0) : found[std::size_t(c)];
         else {
             a_I[std::size_t(c)] = evalAt(coil.current, Vec3{});
@@ -2058,6 +2139,8 @@ void MagneticProblem3::finishHarmonic(const Options3& o, const Harmonic& hs, dou
             std::vector<cd> Aj, Vj;
             unpack(xj, false, Aj, Vj);
             for (int kp = 0; kp < np; ++kp) a_Z[std::size_t(kp)][std::size_t(jp)] = voltageOf(hs.ports[std::size_t(kp)], xj, Aj, false);
+            // (A coil of turns' wire: its resistance on its own diagonal.)
+            if (!a_coils[std::size_t(hs.ports[std::size_t(jp)])].single) a_Z[std::size_t(jp)][std::size_t(jp)] += wireResistance(hs.ports[std::size_t(jp)]);
         }
     }
 }
@@ -2094,6 +2177,10 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
     // its multiplier, ψ, the coils' ψ) - jω there d/dt here, ψ the
     // conductors' potential's time integral, V = ψ̇ -, assembled once a
     // stepping.)
+    if (a_nonlinear) {
+        *error = tr("%1: a B-H curve in time is not taken - give its domains a relative permeability for a study in time").arg(name);
+        return false;
+    }
     if (!a_stepping) {
         bool magneticLoss = false;
         const Solution3::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
@@ -2319,7 +2406,7 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
                     }
         } else {
             I = evalAt(coil.current, Vec3{});
-            U = turns[std::size_t(c)];
+            U = turns[std::size_t(c)] + wireResistance(c) * I;
         }
         a_I[std::size_t(c)] = I;
         a_U[std::size_t(c)] = U;
@@ -2336,12 +2423,101 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
 
 bool MagneticProblem3::solveHarmonic(const Options3& o, QString* error)
 {
-    Harmonic hs;
-    if (!prepareHarmonic(o, hs, error)) return false;
     const double omega = 2 * M_PI * o.frequency;
-    Eigen::MatrixXcd X;
-    if (!solveExactly(o, hs, omega, X, error)) return false;
-    finishHarmonic(o, hs, omega, X);
+    if (!a_nonlinear) {
+        a_muEff.clear();
+        Harmonic hs;
+        if (!prepareHarmonic(o, hs, error)) return false;
+        Eigen::MatrixXcd X;
+        if (!solveExactly(o, hs, omega, X, error)) return false;
+        finishHarmonic(o, hs, omega, X);
+        return true;
+    }
+    // A B-H curve: each element of it its effective µr of its B's amplitude
+    // (effectiveMur()), from the curve's first slope, solved in turn - the
+    // change relaxed - till none changes by more than the tolerance.
+    Field3& f = field();
+    const Mesh3& mesh = a_s.mesh();
+    const Solution3::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
+    const QString name = a_node->name();
+    const PrismRule& rule = f.edges->order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+    const std::size_t nq = rule.points.size(), np = mesh.prisms.size() * nq;
+    a_muEff.assign(np, 0.0);
+    for (std::size_t e = 0; e < mesh.prisms.size(); ++e) {
+        const int d = mesh.domain[e];
+        if (d >= 0 && d < int(coef.curves.size()) && coef.curves[std::size_t(d)])
+            for (std::size_t k = 0; k < nq; ++k) a_muEff[e * nq + k] = 1 / (Mu0 * coef.curves[std::size_t(d)]->nu(0));
+    }
+    // (µr to a part in a thousand: the field's own error larger.)
+    const double tol = std::max(o.tolerance, 1e-3);
+    double change = 1;
+    int it = 0;
+    std::map<const BHCurve*, std::unique_ptr<EffectiveTable>> tables;
+    for (const auto& c : coef.curves)
+        if (c && !tables.count(c.get())) tables[c.get()] = std::make_unique<EffectiveTable>(*c);
+    // Each element's bracket of µr, its effective curve's range at first -
+    // a µr its B̂ is consistent with lies in it.
+    std::vector<double> lo(np, 0.0), hi(np, 0.0);
+    for (std::size_t e = 0; e < np; ++e) {
+        if (!(a_muEff[e] > 0)) continue;
+        const BHCurve& cv = *coef.curves[std::size_t(mesh.domain[e / nq])];
+        const EffectiveTable& tb = *tables[&cv];
+        double least = 1e300, most = 0;
+        for (std::size_t k = 1; k < tb.b.size(); ++k) {
+            const double mu = tb.b[k] / (Mu0 * tb.h[k]);
+            least = std::min(least, mu);
+            most = std::max(most, mu);
+        }
+        most = std::max(most, a_muEff[e]);
+        lo[e] = least;
+        hi[e] = most;
+    }
+    for (; it < std::max(2, o.maxIterations); ++it) {
+        if (o.cancelled && o.cancelled()) {
+            *error = tr("cancelled");
+            return false;
+        }
+        Harmonic hs;
+        if (!prepareHarmonic(o, hs, error)) return false;
+        Eigen::MatrixXcd X;
+        if (!solveExactly(o, hs, omega, X, error)) return false;
+        finishHarmonic(o, hs, omega, X);
+        f.internal = a_muEff;
+        f.internalStride = int(nq);
+        if (change < tol) break;
+        // Each element's B's amplitude at its middle and the µr its curve
+        // gives it: above its µr, the µr sought is more (its bracket's floor
+        // raised), else less (its ceiling lowered); the next its bracket's
+        // geometric mean - a bisection in ln µr, whatever drives it (µr of B̂
+        // taken as the next swung by a factor of 80 round a ring fed a
+        // current, saturation's slope past what a fixed point bears).
+        change = 0;
+        PointEvaluator3 ev(a_s);
+        std::vector<double> next = a_muEff;
+        for (std::size_t e = 0; e < np; ++e) {
+            if (!(a_muEff[e] > 0)) continue;
+            const auto& qp = rule.points[e % nq];
+            ev.at(int(e / nq), qp[0], qp[1], qp[2]);
+            MagneticState st;
+            if (!magneticStateAt(ev, a_fi, st)) continue;
+            double b2 = 0;
+            for (int k = 0; k < 3; ++k) b2 += st.B[k] * st.B[k] + st.Bi[k] * st.Bi[k];
+            const BHCurve& cv = *coef.curves[std::size_t(mesh.domain[e / nq])];
+            const EffectiveTable& tb = *tables[&cv];
+            const double mu0r = 1 / (Mu0 * cv.nu(0)), bh = std::sqrt(b2);
+            const double wanted = tb.murOfB(bh, mu0r);
+            (wanted > a_muEff[e] ? lo[e] : hi[e]) = a_muEff[e];
+            const double mu = std::sqrt(lo[e] * hi[e]);
+            change = std::max(change, std::abs(mu - a_muEff[e]) / a_muEff[e]);
+            next[e] = mu;
+        }
+        a_muEff = std::move(next);
+    }
+    a_s.log << tr("%1: its B-H curve's effective permeability in %2 solves, its last change %3").arg(name).arg(it + 1).arg(change, 0, 'g', 2);
+    if (change >= tol) {
+        *error = tr("%1: its B-H curve's effective permeability did not settle in %2 solves").arg(name).arg(it + 1);
+        return false;
+    }
     return true;
 }
 
@@ -2350,6 +2526,12 @@ bool MagneticProblem3::sweepFrequencies(const Options3& o, const std::vector<dou
 {
     const QString name = a_node->name();
     const int Nf = int(frequencies.size());
+    // (A B-H curve: its matrix of its field's own amplitude - each frequency
+    // solved, no fast sweep.)
+    if (a_nonlinear) {
+        error->clear();
+        return false;
+    }
     Harmonic hs;
     if (!prepareHarmonic(o, hs, error)) return false;
     QElapsedTimer clock;
@@ -2538,6 +2720,37 @@ void MagneticProblem3::setHarmonicGlobals()
     s.setGlobal(p + QStringLiteral("P"), a_losses, Dim::power(), tr("resistive losses, their time average"));
     s.setGlobal(p + QStringLiteral("Pm"), a_magneticLosses, Dim::power(), tr("magnetic losses (a core's, of its µr''), their time average"));
     setForceGlobals(true);
+    // Each coil's Lorentz force, its time average ∫ ½ Re(J × B*) over it (J
+    // its sources' and its eddy currents').
+    {
+        const int nc = int(a_coils.size());
+        std::vector<std::array<double, 3>> Fc(std::size_t(nc), {0, 0, 0});
+        for (int e = 0; e < es.elements(); ++e) {
+            const int d = mesh.domain[std::size_t(e)];
+            if (d < 0 || !f.domains[std::size_t(d)]) continue;
+            int which = -1;
+            for (int c = 0; c < nc && which < 0; ++c)
+                if (d < int(a_coils[std::size_t(c)].on.size()) && a_coils[std::size_t(c)].on[std::size_t(d)]) which = c;
+            if (which < 0) continue;
+            for (const auto& qp : rule.points) {
+                EdgeSpace3::Basis b;
+                es.basis(e, qp[0], qp[1], qp[2], b);
+                ev.at(e, qp[0], qp[1], qp[2], b.x);
+                MagneticState st;
+                if (!magneticStateAt(ev, a_fi, st, true)) continue;
+                const double w = 0.5 * qp[3] * b.det;
+                std::array<double, 3>& F = Fc[std::size_t(which)];
+                F[0] += w * (st.J[1] * st.B[2] - st.J[2] * st.B[1] + st.Ji[1] * st.Bi[2] - st.Ji[2] * st.Bi[1]);
+                F[1] += w * (st.J[2] * st.B[0] - st.J[0] * st.B[2] + st.Ji[2] * st.Bi[0] - st.Ji[0] * st.Bi[2]);
+                F[2] += w * (st.J[0] * st.B[1] - st.J[1] * st.B[0] + st.Ji[0] * st.Bi[1] - st.Ji[1] * st.Bi[0]);
+            }
+        }
+        static const char* const axes[3] = {"x", "y", "z"};
+        for (int c = 0; c < nc; ++c)
+            for (int k = 0; k < 3; ++k)
+                s.setGlobal(p + QStringLiteral("F") + QString::fromLatin1(axes[k]) + QLatin1Char('_') + a_coils[std::size_t(c)].name, Fc[std::size_t(c)][std::size_t(k)],
+                            Dim::of(1, 1, -2), tr("the Lorentz force on coil %1, %2 component, its time average").arg(a_coils[std::size_t(c)].name, QString::fromLatin1(axes[k])));
+    }
     for (int c = 0; c < int(a_coils.size()) && c < int(a_U.size()); ++c) {
         const Coil& coil = a_coils[std::size_t(c)];
         const QString n = coil.name;
@@ -2638,6 +2851,12 @@ void MagneticProblem3::setGlobals()
         for (int k = 0; k < 3; ++k)
             s.setGlobal(p + QStringLiteral("F") + QString::fromLatin1(axes[k]) + QLatin1Char('_') + c.name, c.force[k], force,
                         tr("the Lorentz force on coil %1, %2 component").arg(c.name, QString::fromLatin1(axes[k])));
+        // (A coil of turns' wire: its DC resistance, its voltage R I0.)
+        if (!c.single && c.wireSigma.isValid() && !a_inTime) {
+            const double R = wireResistance(int(&c - a_coils.data()));
+            s.setGlobal(p + QStringLiteral("R_") + c.name, R, Dim::resistance(), tr("coil %1's wire resistance").arg(c.name));
+            s.setGlobal(p + QStringLiteral("V_") + c.name, R * i0, Dim::voltage(), tr("coil %1's voltage at rest, R I0").arg(c.name));
+        }
     }
     const int nc = int(a_inductance.size());
     for (int i = 0; i < nc; ++i)
@@ -2670,6 +2889,40 @@ void MagneticProblem3::setGlobals()
         }
         s.setGlobal(p + QStringLiteral("P"), P, Dim::power(), tr("resistive losses now (its eddy currents')"));
     }
+}
+
+double MagneticProblem3::wireResistance(int c) const
+{
+    if (c < 0 || c >= int(a_coils.size())) return 0;
+    const Coil& coil = a_coils[std::size_t(c)];
+    if (coil.single || !coil.wireSigma.isValid()) return 0;
+    const Field3& f = a_s.fields()[std::size_t(a_fi)];
+    const EdgeSpace3& es = *f.edges;
+    const Mesh3& mesh = a_s.mesh();
+    const std::vector<std::array<Expression, 3>> unit = sourcesOf(c);
+    const PrismRule& rule = es.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+    PointEvaluator3 ev(a_s);
+    double R = 0;
+    for (int e = 0; e < es.elements(); ++e) {
+        const int d = mesh.domain[std::size_t(e)];
+        if (d < 0 || d >= int(unit.size()) || !f.domains[std::size_t(d)]) continue;
+        const auto& ju = unit[std::size_t(d)];
+        if (!ju[0].isValid() && !ju[1].isValid() && !ju[2].isValid()) continue;
+        for (const auto& qp : rule.points) {
+            EdgeSpace3::Basis b;
+            es.basis(e, qp[0], qp[1], qp[2], b);
+            ev.at(e, qp[0], qp[1], qp[2], b.x);
+            double j2 = 0;
+            for (int k = 0; k < 3; ++k)
+                if (ju[std::size_t(k)].isValid()) {
+                    const double v = ev.eval(ju[std::size_t(k)]);
+                    if (std::isfinite(v)) j2 += v * v;
+                }
+            const double sw = ev.eval(coil.wireSigma);
+            if (sw > 0 && std::isfinite(sw)) R += qp[3] * b.det * j2 / (sw * coil.fill);
+        }
+    }
+    return R;
 }
 
 void MagneticProblem3::setForceGlobals(bool harmonic)
@@ -2855,6 +3108,27 @@ bool magneticStateAt(PointEvaluator3& ev, int f, MagneticState& out, bool curren
         double mur[9];
         const std::array<Expression, 9>& c = coef.c[std::size_t(d)];
         for (int k = 0; k < 9; ++k) mur[k] = c[std::size_t(k)].isValid() ? ev.eval(c[std::size_t(k)]) : 0;
+        // (A B-H curve's element: its effective µr at its nearest
+        // quadrature point.)
+        if (d < int(coef.curves.size()) && coef.curves[std::size_t(d)] && field.internalStride > 0
+            && field.internal.size() == s.mesh().prisms.size() * std::size_t(field.internalStride)) {
+            const PrismRule& rule = es.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+            int best = 0;
+            double near = 1e300;
+            for (int k = 0; k < int(rule.points.size()); ++k) {
+                const auto& p = rule.points[std::size_t(k)];
+                const double d2 = (p[0] - ev.xi()) * (p[0] - ev.xi()) + (p[1] - ev.eta()) * (p[1] - ev.eta()) + (p[2] - ev.zeta()) * (p[2] - ev.zeta());
+                if (d2 < near) {
+                    near = d2;
+                    best = k;
+                }
+            }
+            const double mu = field.internal[std::size_t(ev.prism()) * std::size_t(field.internalStride) + std::size_t(best)];
+            if (mu > 0) {
+                for (double& v : mur) v = 0;
+                mur[0] = mur[4] = mur[8] = mu;
+            }
+        }
         double murIm = 0;
         if (const auto it = coef.named.find(QStringLiteral("murIm")); it != coef.named.end() && d < int(it->second.size()) && it->second[std::size_t(d)].isValid()) {
             murIm = ev.eval(it->second[std::size_t(d)]);

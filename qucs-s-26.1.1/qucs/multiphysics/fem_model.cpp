@@ -1452,7 +1452,16 @@ QList<NodeKind> makeKinds()
                        tr("Between its ends, over the model's thickness (round the axis: one turn; in 3D its terminal's potential "
                           "over its ground's); its amplitude in the frequency domain")),
                   QStringLiteral("conductor=single&role=voltage")),
-          shownIf(expr(QStringLiteral("N"), tr("Number of turns"), QString(), QStringLiteral("10")), QStringLiteral("conductor=multi"))},
+          shownIf(expr(QStringLiteral("N"), tr("Number of turns"), QString(), QStringLiteral("10")), QStringLiteral("conductor=multi")),
+          inSpaces(shownIf(spatial(QStringLiteral("sigmaw"), tr("Wire conductivity"), QStringLiteral("S/m"), QString(),
+                                   tr("Its wire's: its resistance ∫ |j1|²/(σw fill) over it, j1 its current density at 1 A - in its "
+                                      "voltage R I and its impedance (empty: none)")),
+                           QStringLiteral("conductor=multi")),
+                   Spaces::ThreeD),
+          inSpaces(shownIf(expr(QStringLiteral("fill"), tr("Fill factor"), QString(), QStringLiteral("1"),
+                                tr("The wire's share of its section (copper over the whole)")),
+                           QStringLiteral("conductor=multi")),
+                   Spaces::ThreeD)},
          {}, {}, false, false, QStringLiteral("coil"),
          tr("A conductor fed a current (or held at a voltage, floating, grounded), the rest found: mf.I_<name>, "
             "mf.V_<name>, mf.R_<name>, mf.L_<name>; with coils swept, the inductance (impedance) matrix of those fed a "
