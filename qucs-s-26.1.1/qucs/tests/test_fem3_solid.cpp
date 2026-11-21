@@ -918,6 +918,116 @@ private slots:
         }
     }
 
+    // Large deformation (Saint Venant-Kirchhoff, total Lagrangian; Newton's
+    // method in load steps). A bar 10 mm long, 1 mm square, E 200 GPa, ν 0,
+    // its left end held and 20 GPa (a dead load: the reference's area)
+    // pulling its right: stretched λ, λ³ - λ = 2 P/E (its second
+    // Piola-Kirchhoff stress E (λ² - 1)/2, the nominal λ times that) -
+    // exact on any mesh, its Green-Lagrange strain (λ² - 1)/2, its Cauchy
+    // stress (ν 0: J = λ) the load, its reaction -P A; small strain would
+    // give 1.1. A block turned 60° about z by its face held so, the rest
+    // free: turned whole, no stress (the strain's measure indifferent to
+    // a rotation). A cantilever 20 mm long, 1 mm square, ν 0, a dead load
+    // at its tip of P L²/EI = 2: its tip's elastica (Mattiasson's table)
+    // down 0.49346 L and back 0.16064 L, to 1 % (0.2 and 0.4 % found: the
+    // beam's shear). Refused with a thermal
+    // strain.
+    void largeDeformation()
+    {
+        auto steps = [](Model& m) {
+            for (Node& c : m.root.children)
+                if (c.type == QLatin1String("study")) {
+                    c.children.clear();
+                    c.children.push_back(m.make(QStringLiteral("stationary")));
+                }
+        };
+        auto large = [](Model& m, const QString& solid) { m.find(solid)->props.insert(QStringLiteral("large"), true); };
+        const QJsonObject steel{{QStringLiteral("E"), QStringLiteral("200[GPa]")}, {QStringLiteral("nu"), QStringLiteral("0")}};
+        {
+            Model m = model3d(1);
+            addBox(m, QStringLiteral("bar"), 0, 0, 0, 10, 1, 1);
+            const QString solid = addSolid(m, 2, steel);
+            large(m, solid);
+            addFeature(m, solid, QStringLiteral("solid/fixed"), ofSide(QStringLiteral("bar"), QStringLiteral("left")));
+            addFeature(m, solid, QStringLiteral("solid/load"), ofSide(QStringLiteral("bar"), QStringLiteral("right")),
+                       {{QStringLiteral("Fx"), QStringLiteral("20[GPa]")}});
+            steps(m);
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            // λ³ - λ = 0.2 by Newton's.
+            double l = 1.1;
+            for (int k = 0; k < 50; ++k) l -= (l * l * l - l - 0.2) / (3 * l * l - 1);
+            const Solution3& s = sv.s();
+            const double tip = valueAt(s, QStringLiteral("solid.u"), 10, 0.3, 0.7);
+            const double strain = valueAt(s, QStringLiteral("solid.ex"), 5, 0.5, 0.5), stress = valueAt(s, QStringLiteral("solid.sx"), 5, 0.5, 0.5);
+            const QString said = QStringLiteral("λ %1: its tip %2 mm against %3, strain %4 against %5, stress %6 Pa, reaction %7 N")
+                                     .arg(l, 0, 'g', 12).arg(tip * 1e3, 0, 'g', 12).arg((l - 1) * 10, 0, 'g', 12).arg(strain, 0, 'g', 12)
+                                     .arg((l * l - 1) / 2, 0, 'g', 12).arg(stress, 0, 'g', 12).arg(global(s, QStringLiteral("solid.Rx")), 0, 'g', 12);
+            QVERIFY2(std::abs(tip - (l - 1) * 10e-3) < 1e-9 * 10e-3 && std::abs(strain - (l * l - 1) / 2) < 1e-9 && std::abs(stress - 20e9) < 1e-6 * 20e9
+                         && std::abs(global(s, QStringLiteral("solid.Rx")) + 20e9 * 1e-6) < 1e-6 * 20e3,
+                     qPrintable(said));
+            info(said);
+        }
+        {
+            const double th = M_PI / 3, c = std::cos(th), sn = std::sin(th);
+            Model m = model3d(0.5);
+            addBox(m, QStringLiteral("blk"), 0, 0, 0, 2, 1, 1);
+            const QString solid = addSolid(m, 2, steel);
+            large(m, solid);
+            addFeature(m, solid, QStringLiteral("solid/displacement"), ofSide(QStringLiteral("blk"), QStringLiteral("left")),
+                       {{QStringLiteral("x"), true}, {QStringLiteral("y"), true}, {QStringLiteral("z"), true},
+                        {QStringLiteral("u0"), QStringLiteral("%1*x - %2*y").arg(c - 1, 0, 'g', 17).arg(sn, 0, 'g', 17)},
+                        {QStringLiteral("v0"), QStringLiteral("%1*x + %2*y").arg(sn, 0, 'g', 17).arg(c - 1, 0, 'g', 17)},
+                        {QStringLiteral("w0"), QStringLiteral("0[m]")}});
+            steps(m);
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const Solution3& s = sv.s();
+            // Its far corner (2, 1, 1) mm turned.
+            const double u = valueAt(s, QStringLiteral("solid.u"), 2, 1, 1), v = valueAt(s, QStringLiteral("solid.v"), 2, 1, 1),
+                         w = valueAt(s, QStringLiteral("solid.w"), 2, 1, 1);
+            const double wantU = ((c - 1) * 2 - sn * 1) * 1e-3, wantV = (sn * 2 + (c - 1) * 1) * 1e-3;
+            const double mises = valueAt(s, QStringLiteral("solid.mises"), 1, 0.5, 0.5);
+            const QString said = QStringLiteral("turned 60°: its corner (%1, %2, %3) mm against (%4, %5, 0), von Mises %6 Pa")
+                                     .arg(u * 1e3).arg(v * 1e3).arg(w * 1e3).arg(wantU * 1e3).arg(wantV * 1e3).arg(mises);
+            QVERIFY2(std::abs(u - wantU) < 1e-9 && std::abs(v - wantV) < 1e-9 && std::abs(w) < 1e-9 && mises < 1e-3 * 200e9 * 1e-6, qPrintable(said));
+            info(said);
+        }
+        {
+            const double L = 20e-3, EI = 200e9 * 1e-12 / 12, P = 2 * EI / (L * L);
+            Model m = model3d(slowBuild() ? 1.0 : 0.5);
+            addBox(m, QStringLiteral("beam"), 0, 0, 0, 20, 1, 1);
+            zDivisions(m, QStringLiteral("beam"), 2);
+            const QString solid = addSolid(m, 2, steel);
+            large(m, solid);
+            addFeature(m, solid, QStringLiteral("solid/fixed"), ofSide(QStringLiteral("beam"), QStringLiteral("left")));
+            addFeature(m, solid, QStringLiteral("solid/load"), ofSide(QStringLiteral("beam"), QStringLiteral("right")),
+                       {{QStringLiteral("Fz"), QStringLiteral("%1[Pa]").arg(-P / 1e-6, 0, 'g', 17)}});
+            steps(m);
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const Solution3& s = sv.s();
+            const double down = -valueAt(s, QStringLiteral("solid.w"), 20, 0.5, 0.5) / L, back = -valueAt(s, QStringLiteral("solid.u"), 20, 0.5, 0.5) / L;
+            const QString said = QStringLiteral("elastica at PL²/EI 2: its tip down %1 L (0.49346), back %2 L (0.16064); %3")
+                                     .arg(down).arg(back).arg(sv.r.log.filter(QStringLiteral("large deformation")).join(QLatin1Char(' ')));
+            QVERIFY2(std::abs(down - 0.49346) < 1e-2 * 0.49346 && std::abs(back - 0.16064) < 1e-2 * 0.16064, qPrintable(said));
+            info(said);
+        }
+        {
+            Model m = model3d(1);
+            addBox(m, QStringLiteral("bar"), 0, 0, 0, 4, 1, 1);
+            const QString solid = addSolid(m, 2, steel);
+            large(m, solid);
+            elastic(m, solid)->props.insert(QStringLiteral("thermal"), true);
+            elastic(m, solid)->props.insert(QStringLiteral("alpha"), QStringLiteral("1e-5[1/K]"));
+            elastic(m, solid)->props.insert(QStringLiteral("T"), QStringLiteral("400[K]"));
+            addFeature(m, solid, QStringLiteral("solid/fixed"), ofSide(QStringLiteral("bar"), QStringLiteral("left")));
+            steps(m);
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.contains(QStringLiteral("large deformation takes no thermal strain")), qPrintable(sv.error));
+        }
+    }
+
     // A piezoelectric block - e33 15 C/m², a stiffness of E 100 GPa and ν 0,
     // εr 1000 - between a grounded bottom and a top at 10 V, free to grow:
     // its strain e33 E3 / C33 (its top moves -e33 V / C33), its charge the
