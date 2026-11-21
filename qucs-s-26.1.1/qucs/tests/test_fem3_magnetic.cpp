@@ -605,6 +605,33 @@ private slots:
             QVERIFY2(std::abs(tz - want) < 2e-2 * want && std::abs(t - tz) < 1e-12 * want && std::hypot(fx, fy) < 1e-2 * want / (a * 1e-3), qPrintable(said));
             info(said);
         }
+        // A second fed bar beside it (the review of 8d5e9e9e): 0.4 mm apart,
+        // air between, its force its own ∫ J × B; touching, its layer in the
+        // other bar - not air -, said (its force taking part of the other's).
+        for (bool touching : {false, true}) {
+            Model m = model3d(0.2);
+            addBox(m, QStringLiteral("air"), -2, -2, 0, 4, 4, 1);
+            addBox(m, QStringLiteral("bar"), -0.2, -0.2, 0, 0.4, 0.4, 1);
+            addBox(m, QStringLiteral("bar2"), touching ? 0.2 : 0.6, -0.2, 0, 0.4, 0.4, 1);
+            for (const char* o : {"air", "bar", "bar2"}) zDivisions(m, QString::fromLatin1(o), 1);
+            const QString mf = addMagnetic(m, 2);
+            for (const char* o : {"bar", "bar2"})
+                addFeature(m, mf, QStringLiteral("magnetic/current"), objects(QString::fromLatin1(o)), {{QStringLiteral("Jez"), QStringLiteral("2[A]/0.16[mm^2]")}});
+            addFeature(m, mf, QStringLiteral("magnetic/potential"), rule(R"({"exterior": true})"), {{QStringLiteral("A0z"), QStringLiteral("-0.5[T]*x")}});
+            addFeature(m, mf, QStringLiteral("magnetic/insulation"), normal(0, 0, 1));
+            addFeature(m, mf, QStringLiteral("magnetic/insulation"), normal(0, 0, -1));
+            addFeature(m, mf, QStringLiteral("magnetic/force"), objects(QStringLiteral("bar")), {{QStringLiteral("name"), QStringLiteral("bar")}});
+            const Solved sv = solve(m);
+            QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+            const double fx = global(sv.s(), QStringLiteral("mf.Fx_bar"));
+            const double lorentz = -integral(sv.s(), QStringLiteral("mf.Jz*mf.By*(x < 0.2[mm])"));
+            const bool warned = sv.r.warnings.join(QLatin1Char(' ')).contains(QStringLiteral("not air"));
+            const QString said = QStringLiteral("two fed bars %1: Maxwell's %2 N, ∫ J × B over the first %3 N, warned %4")
+                                     .arg(touching ? QStringLiteral("touching") : QStringLiteral("0.4 mm apart")).arg(fx).arg(lorentz).arg(warned);
+            if (touching) QVERIFY2(warned, qPrintable(said));
+            else QVERIFY2(!warned && std::abs(fx - lorentz) < 2e-3 * std::abs(lorentz), qPrintable(said));
+            info(said);
+        }
     }
 
     // A coaxial line, 1 mm long: 1 A along z in its core (0.5 mm) and back
