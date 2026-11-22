@@ -1,0 +1,69 @@
+{
+    "format": "qucs-s multiphysics 3d 1",
+    "title": "Two coaxial loops",
+    "description": "Two copper rings on one axis, 10 mm in mean radius and 1 mm square in section, their centres 10 mm apart, in an insulated box of air 160 mm wide: a current of 1 A round the first (a current density along its circumference) and the flux it links with the second, the mean of the potential round it over its section - its mutual inductance M times the current. Neumann's formula for two coaxial circles, M = µ0 √(ab) [(2/k - k) K(k) - (2/k) E(k)], k² = 4ab/((a + b)² + d²), gives 4.94 nH; the rings' sections, small beside their spacing, change it by some 0.1 %, and the box's walls lower it a little. The field's M, order 1 on some 109,000 prisms, is 4.92 nH, 0.5 % under it, and comes nearer as the air's elements are made smaller (4.87 nH with them growing at 1.6 for 1.25). Every layer has the plan's fine triangles round the rings: a model to try the mesh's settings on. Qucs-S's tests hold the field's M to the formula's within 1 %.",
+    "parameters": [
+        {"name": "a", "expression": "10[mm]", "description": "the loops' mean radius"},
+        {"name": "w", "expression": "1[mm]", "description": "their section's side"},
+        {"name": "d", "expression": "10[mm]", "description": "their centres' distance along the axis"},
+        {"name": "L", "expression": "80[mm]", "description": "the box's half width"},
+        {"name": "I", "expression": "1[A]", "description": "the current round the first loop"}
+    ],
+    "components": [{
+        "unit": "mm",
+        "space": "3D",
+        "geometry": [
+            {"type": "box", "label": "air", "base": "center", "position": ["0", "0"], "size": ["2*L", "2*L"], "z": "-L", "height": "2*L + d"},
+            {"type": "extrude", "label": "first", "z": "-w/2", "height": "w", "features": [
+                {"type": "circle", "label": "out1", "radius": "a + w/2"},
+                {"type": "circle", "label": "in1", "radius": "a - w/2"},
+                {"type": "difference", "label": "loop1", "input": ["out1"], "tools": ["in1"]}
+            ]},
+            {"type": "extrude", "label": "second", "z": "d - w/2", "height": "w", "features": [
+                {"type": "circle", "label": "out2", "radius": "a + w/2"},
+                {"type": "circle", "label": "in2", "radius": "a - w/2"},
+                {"type": "difference", "label": "loop2", "input": ["out2"], "tools": ["in2"]}
+            ]},
+            {"type": "form union"}
+        ],
+        "materials": [
+            {"material": "Copper", "selection": {"only": ["loop1", "loop2"]}}
+        ],
+        "physics": [
+            {
+                "type": "magnetic",
+                "tag": "mf",
+                "order": "1",
+                "features": [
+                    {"type": "ampere", "label": "Ampère's Law", "source": "user", "mur": "1", "selection": {"all": true}},
+                    {
+                        "type": "current",
+                        "label": "1 A round the first loop",
+                        "Jex": "-I/w^2*y/sqrt(x^2 + y^2)",
+                        "Jey": "I/w^2*x/sqrt(x^2 + y^2)",
+                        "selection": {"only": ["loop1"]}
+                    }
+                ]
+            }
+        ],
+        "mesh": {
+            "size": "normal",
+            "custom": true,
+            "hmax": "25",
+            "growth": "1.25",
+            "features": [
+                {"type": "size", "label": "The loops", "hmax": "1", "selection": {"only": ["loop1", "loop2"]}},
+                {"type": "zdistribution", "label": "The loops' height", "selection": {"only": ["loop1", "loop2"]}, "count": 2}
+            ]
+        }
+    }],
+    "studies": [
+        {"type": "study", "label": "Study 1", "steps": [{"type": "stationary"}]}
+    ],
+    "results": {
+        "plots": [],
+        "derived": [
+            {"type": "integral", "label": "M: the flux through the second loop over the current", "expression": "(x*mf.Ay - y*mf.Ax)/sqrt(x^2 + y^2)/(w^2*I)", "unit": "nH", "selection": {"only": ["loop2"]}}
+        ]
+    }
+}
