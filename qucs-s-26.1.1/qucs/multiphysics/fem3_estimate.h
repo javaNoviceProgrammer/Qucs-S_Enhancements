@@ -124,8 +124,9 @@ void magneticComplexFactor(double* seconds, double* bytes);
 int harmonicFrequencies(const Node& study, const Scope& scope);
 /// A magnetic field's (\a physics) solves in the study's Frequency Domain
 /// steps: at each frequency the field's and, swept, one a coil fed a
-/// current; a fast sweep (more than three frequencies) some three of its
-/// frequencies solved exactly, each column three times (its moments in ω).
+/// current; a fast sweep (more than three frequencies, none of 0, no B-H
+/// curve) some three of its frequencies solved exactly, each column three
+/// times (its moments in ω).
 int magneticSolves(const Node& study, const Node* physics, const Scope& scope);
 /// A solid's estimate \a e made for its harmonic response at \a frequencies
 /// (more than 0: none changed otherwise) - a complex LDLᵀ at each, its

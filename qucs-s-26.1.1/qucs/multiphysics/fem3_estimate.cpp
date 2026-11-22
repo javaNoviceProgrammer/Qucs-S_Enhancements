@@ -127,9 +127,12 @@ int harmonicFrequencies(const Node& study, const Scope& scope)
 int magneticSolves(const Node& study, const Node* physics, const Scope& scope)
 {
     int ports = 0;
+    bool curve = false;   // a B-H curve: no fast sweep, each frequency solved
     if (physics)
         for (const Node& c : physics->children) {
-            if (!c.enabled || c.type != QLatin1String("magnetic/coil")) continue;
+            if (!c.enabled) continue;
+            if (c.type == QLatin1String("magnetic/ampere") && c.text(QStringLiteral("constitutive")) == QLatin1String("bh")) curve = true;
+            if (c.type != QLatin1String("magnetic/coil")) continue;
             const QString role = c.text(QStringLiteral("role"));
             const bool single = c.text(QStringLiteral("conductor")) != QLatin1String("multi");
             if (!single || role.isEmpty() || role == QLatin1String("current")) ++ports;
@@ -140,9 +143,13 @@ int magneticSolves(const Node& study, const Node* physics, const Scope& scope)
         const std::optional<std::vector<double>> listed = valueList(step.text(QStringLiteral("frequencies")), scope);
         if (!listed) continue;
         int frequencies = 0;
-        for (double f : *listed) frequencies += f > 0 ? 1 : 0;
+        bool rest = false;   // a frequency of 0: the fast sweep refused
+        for (double f : *listed) {
+            frequencies += f > 0 ? 1 : 0;
+            rest = rest || !(f > 0);
+        }
         const int columns = 1 + (step.flag(QStringLiteral("sweep")) ? ports : 0);
-        const bool fast = frequencies > 3 && step.text(QStringLiteral("fastsweep")) != QLatin1String("exact");
+        const bool fast = frequencies > 3 && !rest && !curve && step.text(QStringLiteral("fastsweep")) != QLatin1String("exact");
         n += fast ? 3 * 3 * columns : frequencies * columns;
     }
     return n;
@@ -202,11 +209,12 @@ Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order, int fr
         // The iterative solve (MagneticProblem3::solveIteratively): K0 and
         // K1, complex (a value and an index a nonzero), the preconditioner's
         // real matrix of A and ψ, its cycles (1.35 kB an unknown, measured),
-        // GMRES's 61 complex vectors; some 100 iterations a solve (51 to 164
+        // GMRES's 201 complex vectors (restarted every 200); some 100
+        // iterations a solve (51 to 164
         // on a coax from 10 Hz to 1 MHz), each 3.3 µs an unknown, \a solves
         // of them (magneticSolves(); not given, two a frequency).
         const double nnz = double(e.nonzeros);
-        e.iterativeBytes = 2 * 20 * nnz + 12 * nnz + n * (1350 + 61 * 16 + 200);
+        e.iterativeBytes = 2 * 20 * nnz + 12 * nnz + n * (1350 + 201 * 16 + 200);
         e.iterativeSeconds = frequencies * 3 * assemblySeconds(entries) + double(solves > 0 ? solves : 2 * frequencies) * 100 * 3.3e-6 * n;
         if (solver == QLatin1String("iterative")) e.method = QStringLiteral("iterative");
     }
@@ -313,16 +321,22 @@ std::vector<Estimate3> estimate3(const Model& model, std::shared_ptr<const Mesh3
 {
     std::vector<Estimate3> out;
     if (!mesh || mesh->prisms.empty()) return out;
-    // (The most frequencies a study solves its magnetic fields and solids at.)
+    // (The most frequencies a study solves its magnetic fields and solids at;
+    // a magnetic field's most solves, magneticSolves().)
     int frequencies = 0;
-    {
-        std::shared_ptr<ParameterScope> ps;
-        for (const Node& c : model.root.children)
-            if (c.type == QLatin1String("study")) {
-                if (!ps) ps = evaluateParameters(model);
-                if (ps) frequencies = std::max(frequencies, harmonicFrequencies(c, ps->scope));
-            }
-    }
+    std::shared_ptr<ParameterScope> ps;
+    for (const Node& c : model.root.children)
+        if (c.type == QLatin1String("study")) {
+            if (!ps) ps = evaluateParameters(model);
+            if (ps) frequencies = std::max(frequencies, harmonicFrequencies(c, ps->scope));
+        }
+    const auto solvesOf = [&](const Node* physics) {
+        int most = 0;
+        if (ps)
+            for (const Node& c : model.root.children)
+                if (c.type == QLatin1String("study")) most = std::max(most, magneticSolves(c, physics, ps->scope));
+        return most;
+    };
     std::shared_ptr<const Space3> spaces[3];
     qint64 nonzeros[3] = {0, 0, 0};
     for (const Node* p : model.physics()) {
@@ -332,7 +346,7 @@ std::vector<Estimate3> estimate3(const Model& model, std::shared_ptr<const Mesh3
             spaces[order] = std::make_shared<Space3>(mesh, order);
             nonzeros[order] = patternNonzeros(*spaces[order]);
         }
-        Estimate3 e = p->type == QLatin1String("magnetic") ? estimateMagnetic3(mesh, order, frequencies, solver)
+        Estimate3 e = p->type == QLatin1String("magnetic") ? estimateMagnetic3(mesh, order, frequencies, solver, solvesOf(p))
                                                            : estimateOn(*spaces[order], nonzeros[order], solver, componentsOf(p->type));
         if (p->type == QLatin1String("solid")) solidHarmonic(e, frequencies);
         e.physics = p->tag;

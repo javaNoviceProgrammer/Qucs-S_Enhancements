@@ -788,6 +788,35 @@ private slots:
             if (!line.startsWith(QLatin1Char('#')) && !line.startsWith(QLatin1Char('!'))) rows << line;
         QVERIFY2(rows == data && again.main.suffix == QLatin1String("s2p"), qPrintable(again.main.text));
         QVERIFY2(again.main.summary.contains(QStringLiteral("at 2 frequencies")), qPrintable(again.main.summary));
+        // Its frequencies given high to low, then a Frequency Domain step
+        // not swept at 50 kHz: its rows by increasing frequency, the same, the
+        // step not swept none (before: 100 kHz first, and a row at 50 kHz of
+        // the step before's matrix). (Not in a sanitized build: the function
+        // within QtTest's 300 s.)
+        if (slowBuild()) return;
+        for (Node& c : m.root.children)
+            if (c.type == QLatin1String("study")) {
+                c.children.clear();
+                Node swept = m.make(QStringLiteral("frequency"));
+                swept.props.insert(QStringLiteral("frequencies"), QStringLiteral("100[kHz], 10[kHz]"));
+                swept.props.insert(QStringLiteral("sweep"), true);
+                swept.props.insert(QStringLiteral("fastsweep"), QStringLiteral("exact"));
+                c.children.push_back(swept);
+                Node plain = m.make(QStringLiteral("frequency"));
+                plain.props.insert(QStringLiteral("frequencies"), QStringLiteral("50[kHz]"));
+                plain.props.insert(QStringLiteral("sweep"), false);
+                c.children.push_back(plain);
+            }
+        const Solved two = solve(m);
+        QVERIFY2(two.error.isEmpty(), qPrintable(why(two)));
+        QCOMPARE(two.s().snapshotCount(), 3);
+        const Export3 third = export3(Solutions3{two.r.solution}, node, QStringLiteral("coils"));
+        QVERIFY2(third.main.error.isEmpty(), qPrintable(third.main.error));
+        rows.clear();
+        for (const QString& line : third.main.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts))
+            if (!line.startsWith(QLatin1Char('#')) && !line.startsWith(QLatin1Char('!'))) rows << line;
+        QVERIFY2(rows == data, qPrintable(third.main.text + QStringLiteral("\nagainst\n") + data.join(QLatin1Char('\n'))));
+        QVERIFY2(third.main.summary.contains(QStringLiteral("(10 kHz to 100 kHz)")), qPrintable(third.main.summary));
     }
 
     // A copper disc 5 mm in radius, 1 mm thick, under a ring of 1e6 A/m²
@@ -1120,6 +1149,8 @@ private slots:
             };
             QCOMPARE(solvesOf(QStringLiteral("1[kHz], 10[kHz]"), QStringLiteral("exact")), 4);
             QCOMPARE(solvesOf(QStringLiteral("1[kHz], 2[kHz], 3[kHz], 4[kHz], 5[kHz], 6[kHz]"), QStringLiteral("fast")), 18);
+            // (A frequency of 0 among them: no fast sweep, each solved.)
+            QCOMPARE(solvesOf(QStringLiteral("0[Hz], 1[kHz], 2[kHz], 3[kHz], 4[kHz]"), QStringLiteral("fast")), 8);
             frequencyStep(m, QStringLiteral("100[kHz]"));
             // (A tolerance double precision does not reach, 1e-30: taken as
             // 1e-12 - before, 2000 iterations and an error.)

@@ -2083,17 +2083,22 @@ void MagneticProblem3::buildSpaces(const Harmonic& hs) const
             } else if (curve) {
                 nuE = curve->nu(0);
             } else {
-                bool constant = true;
+                // (A lossy core's |ν| of µr' - j µr'': of µr' alone, 10 - j1000
+                // stopped at a residual of 0.9.)
+                const Expression& im = coef.named.at(QStringLiteral("murIm"))[std::size_t(d)];
+                bool constant = !im.isValid() || im.isConstant();
                 for (const Expression& x : mur) constant = constant && (!x.isValid() || x.isConstant());
                 if (!constant) {
                     EdgeSpace3::Basis b;
                     es.basis(e, 1.0 / 3, 1.0 / 3, 0.5, b);
                     ev.at(e, 1.0 / 3, 1.0 / 3, 0.5, b.x);
                 }
-                double m9[9], nu9[9];
+                double m9[9];
                 for (int k = 0; k < 9; ++k)
                     m9[k] = mur[std::size_t(k)].isValid() ? (constant ? mur[std::size_t(k)].constant() : ev.eval(mur[std::size_t(k)])) : 0;
-                if (reluctivity(m9, nu9)) nuE = (nu9[0] + nu9[4] + nu9[8]) / 3;
+                const double mi = im.isValid() ? (constant ? im.constant() : ev.eval(im)) : 0.0;
+                cd nu9[9];
+                if (complexReluctivity(m9, std::isfinite(mi) ? mi : 0.0, nu9)) nuE = (std::abs(nu9[0]) + std::abs(nu9[4]) + std::abs(nu9[8])) / 3;
             }
             if (!(std::isfinite(nuE) && nuE > 0)) nuE = 1 / Mu0;
         }
@@ -2225,7 +2230,12 @@ bool MagneticProblem3::solveIteratively(const Options3& o, const Harmonic& hs, d
     using T = Eigen::Triplet<double>;
     Eigen::SparseMatrix<double> PS(nS, nS);
     {
-        const Eigen::SparseMatrix<double> R = Eigen::SparseMatrix<double>(hs.K0.real()) + omega * Eigen::SparseMatrix<double>(hs.K1.real());
+        // (K0's imaginary part a lossy core's curl-curl, of Im ν = µr''/(µ0
+        // |µr|²), positive semidefinite: Re K0 + Im K0 its curl-curl of Re ν +
+        // Im ν, within √2 of |ν|'s - of Re K0 alone, a core of 10 - j1000
+        // nearly none, GMRES at 0.9 after 2000 iterations.)
+        const Eigen::SparseMatrix<double> R = Eigen::SparseMatrix<double>(hs.K0.real()) + Eigen::SparseMatrix<double>(hs.K0.imag())
+                                              + omega * Eigen::SparseMatrix<double>(hs.K1.real());
         const auto index = [&](int k) { return k < nA ? k : k >= hs.oV ? nA + (k - hs.oV) : -1; };
         std::vector<T> t;
         t.reserve(std::size_t(R.nonZeros() + sp.M.nonZeros()));
@@ -2385,7 +2395,12 @@ bool MagneticProblem3::solveIteratively(const Options3& o, const Harmonic& hs, d
     const auto solve = [&](const Eigen::VectorXcd& b, double tol) {
         Eigen::VectorXcd xs = Eigen::VectorXcd::Zero(hs.n);
         if (cancelled) return xs;
-        const IterativeReport r = gmres(op, pre, D.cwiseProduct(b), xs, tol, 2000, 60, o.cancelled);
+        // (Restarted every 200: at 60 a coil in a core of µr 1000 crept from
+        // 2.4e-2 after its first cycle to 1e-9 after 2478 iterations, µr 4000
+        // and a B-H curve stalled at 0.011; at 200 they took 181, 259 and 163
+        // to 268, the bars in µr 1000 182 against 582. Its vectors 3.2 kB an
+        // unknown, the direct factors' some 8.)
+        const IterativeReport r = gmres(op, pre, D.cwiseProduct(b), xs, tol, 2000, 200, o.cancelled);
         iterations += r.iterations;
         worstIterations = std::max(worstIterations, r.iterations);
         worst = std::max(worst, r.residual);
@@ -2407,21 +2422,18 @@ bool MagneticProblem3::solveIteratively(const Options3& o, const Harmonic& hs, d
     };
     for (int j = 0; j < cols; ++j) {
         Eigen::VectorXcd out[3];
+        const Eigen::VectorXcd b = j == 0 ? Eigen::VectorXcd(hs.bc + jw * hs.bj) : Eigen::VectorXcd(hs.P.col(j - 1));
+        double tol = tolerance;
         if (j == 0 && hs.bcHeld.size() == hs.n) {
-            // (A held field - a background's A0 -: its part solved apart, its
-            // error measured against the sources' right-hand side, not its
-            // own - at 1e-9 of its own, the coil's response beside a field of
-            // 0.5 T was 1.7e-5 off -, 1e-12 of its own at least.)
-            const Eigen::VectorXcd bh = hs.bcHeld + jw * hs.bj, bs = hs.bc - hs.bcHeld;
-            const double nh = D.cwiseProduct(bh).norm(), nsrc = D.cwiseProduct(bs).norm();
-            const double heldTolerance = nh > 0 && nsrc > 0 ? std::clamp(tolerance * nsrc / nh, 1e-12, tolerance) : tolerance;
-            Eigen::VectorXcd held[3];
-            column(bh, &hs.bj, heldTolerance, held);
-            column(bs, nullptr, tolerance, out);
-            for (int k = 0; k <= std::clamp(moments, 0, 2); ++k) out[k] += held[k];
-        } else {
-            column(j == 0 ? Eigen::VectorXcd(hs.bc + jw * hs.bj) : Eigen::VectorXcd(hs.P.col(j - 1)), j == 0 ? &hs.bj : nullptr, tolerance, out);
+            // (A held field - a background's A0 -: the error measured against
+            // the sources' right-hand side, not the whole - at 1e-9 of it the
+            // coil's response beside a field of 0.5 T was 1.7e-5 off -, 1e-12
+            // of it at least. One solve: its held part apart took 123
+            // iterations where one to this took 68, as close.)
+            const double nb = D.cwiseProduct(b).norm(), nsrc = D.cwiseProduct(Eigen::VectorXcd(hs.bc - hs.bcHeld)).norm();
+            if (nb > 0 && nsrc > 0) tol = std::clamp(tolerance * nsrc / nb, 1e-12, tolerance);
         }
+        column(b, j == 0 ? &hs.bj : nullptr, tol, out);
         for (int k = 0; k <= std::clamp(moments, 0, 2); ++k) X.col(k * cols + j) = out[k];
     }
     if (cancelled) {

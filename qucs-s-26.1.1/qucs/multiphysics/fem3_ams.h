@@ -87,7 +87,7 @@ using ComplexOperator = std::function<void(const Eigen::VectorXcd&, Eigen::Vecto
 /// 856) for A x = b, preconditioned on the right by \a m: its residual the
 /// true one's, |b - A x| / |b| under \a tolerance; from \a x as given (zeros:
 /// none known). \a restart vectors kept; \a maxIterations at most;
-/// \a cancelled asked every ten iterations (true: stopped, said so).
+/// \a cancelled asked at each iteration (true: stopped, said so).
 IterativeReport gmres(const ComplexOperator& a, const ComplexOperator& m, const Eigen::VectorXcd& b, Eigen::VectorXcd& x, double tolerance,
                       int maxIterations, int restart = 60, const std::function<bool()>& cancelled = {});
 
