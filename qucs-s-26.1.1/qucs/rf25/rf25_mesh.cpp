@@ -145,6 +145,102 @@ QList<double> gridLines(double from, double length, double step, bool gradeLow, 
     return out;
 }
 
+/*!
+ * Whether \a outline has a curve in it: a run of corners each turning the
+ * same way by under 20 degrees - a curve's, as piecesOf() tells them from a
+ * polygon's -, 45 degrees or more in all. Not a taper beside a line, whose
+ * gentle corners turn one way and back; not an octagon's.
+ */
+bool isCurved(const QPolygonF& outline)
+{
+    QList<QPointF> points(outline.begin(), outline.end());
+    if (points.size() > 1 && points.first() == points.last()) points.removeLast();
+    const int m = int(points.size());
+    if (m < 4) return false;
+    QList<double> turn(m, 0.0);
+    for (int i = 0; i < m; ++i) {
+        const QPointF a = points.at(i) - points.at((i + m - 1) % m), b = points.at((i + 1) % m) - points.at(i);
+        if (std::hypot(a.x(), a.y()) > 0 && std::hypot(b.x(), b.y()) > 0)
+            turn[i] = std::atan2(a.x() * b.y() - a.y() * b.x(), a.x() * b.x() + a.y() * b.y());
+    }
+    const double small = 20 * M_PI / 180, enough = 45 * M_PI / 180;
+    double run = 0;
+    int sign = 0, length = 0;
+    // (Twice round, a run across the first corner counted whole.)
+    for (int k = 0; k < 2 * m; ++k) {
+        const double t = turn.at(k % m);
+        const int s = t > 0 ? 1 : t < 0 ? -1 : 0;
+        if (s != 0 && std::abs(t) < small && (s == sign || length == 0) && length < m) {
+            run += std::abs(t);
+            sign = s;
+            ++length;
+        } else {
+            run = s != 0 && std::abs(t) < small ? std::abs(t) : 0;
+            sign = run > 0 ? s : 0;
+            length = run > 0 ? 1 : 0;
+        }
+        if (run >= enough) return true;
+    }
+    return false;
+}
+
+/*!
+ * gridLines() of a piece of a curve: its lines from \a from to \a from +
+ * \a length on a lattice common to the curve's pieces - \a origin + k h,
+ * h \a base halved until it is \a step or less -, each a quarter of h or
+ * more from the piece's ends, so that a piece's lines are its neighbours'
+ * where they overlap, the finer's a lattice with the coarser's in it. A
+ * graded end's outermost space halved on the lattice of h / 2 (and again,
+ * while wider than the finest asked there, on h / 4 and down), its middle as
+ * that lattice has it.
+ */
+QList<double> latticeLines(double from, double length, double origin, double base, double step, bool gradeLow, bool gradeHigh,
+                           double finestLow = 0, double finestHigh = 0)
+{
+    const double to = from + length;
+    double h = base > 0 ? base : length;
+    while (step > 0 && h > step * (1 + 1e-9)) h /= 2;
+    QList<double> at{from, to};
+    // The lattice's lines of spacing \a w strictly inside [lo, hi], each a
+    // quarter of \a w or more from either end of the piece.
+    const auto add = [&](double w, double lo, double hi) {
+        const double clear = 0.25 * w;
+        lo = std::max(lo, from + clear);
+        hi = std::min(hi, to - clear);
+        if (!(hi > lo)) return;
+        for (qint64 k = qint64(std::ceil((lo - origin) / w)); ; ++k) {
+            const double v = origin + double(k) * w;
+            if (v > hi) break;
+            if (v >= lo) at << v;
+        }
+    };
+    add(h, from, to);
+    const auto grade = [&](bool low, double finest) {
+        const double end = low ? from : to;
+        for (double w = h / 2; w > 1e-6 * std::max(length, h); w /= 2) {
+            // (The outermost space: from the end to the nearest line.)
+            double nearest = low ? to : from;
+            for (const double x : std::as_const(at))
+                if (low ? (x > from && x < nearest) : (x < to && x > nearest)) nearest = x;
+            const double space = std::abs(nearest - end), middle = 0.5 * (end + nearest);
+            if (!(space > 0)) break;
+            // (Its middle as the lattice of \a w has it, a quarter of w
+            //  clear of either line.)
+            const double v = origin + std::round((middle - origin) / w) * w;
+            if (std::abs(v - end) > 0.25 * w && std::abs(nearest - v) > 0.25 * w) at << v;
+            if (!(finest > 0 && space / 2 > finest)) break;
+        }
+    };
+    if (gradeLow) grade(true, finestLow);
+    if (gradeHigh) grade(false, finestHigh);
+    std::sort(at.begin(), at.end());
+    QList<double> out;
+    for (const double x : std::as_const(at))
+        if (out.isEmpty() || x - out.last() > 1e-9 * std::max(1.0, std::abs(length))) out << x;
+    if (out.size() < 2) out = {from, to};
+    return out;
+}
+
 /// \a outline cut into rectangles, where every side of it runs along x or
 /// y: slabs between its corners' heights - across y, or across x, whichever
 /// gives fewer, the broader where both give as many - each slab's spans
@@ -240,6 +336,9 @@ struct Slab {
     /// The way its length runs where \a feature says so: 0 along x, 1 along
     /// y; -1: as its box has it.
     int along = -1;
+    /// Where its outline was cut: 0 at x levels (slabs across x), 1 at y
+    /// levels.
+    int cuts = -1;
 };
 
 /*!
@@ -417,6 +516,7 @@ QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved =
         QList<Span> open;
         const auto finish = [&done, &whole, acrossY, tol](const Span& sp) {
             Slab slab;
+            slab.cuts = acrossY ? 1 : 0;
             const auto at = [acrossY](double u, double c) { return acrossY ? QPointF(u, c) : QPointF(c, u); };
             slab.outline = QPolygonF({at(sp.u0[0], sp.c0), at(sp.u1[0], sp.c0), at(sp.u1[1], sp.c1), at(sp.u0[1], sp.c1)});
             slab.box = slab.outline.boundingRect();
@@ -1307,6 +1407,13 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         double feature = 0;
         /// The way it runs where its slab says (Slab::along); -1: by its box.
         int along = -1;
+        /// Where its slanted conductor was cut (Slab::cuts); -1: none.
+        int cuts = -1;
+        /// Its conductor's outline has a curve in it (isCurved()): its parts
+        /// cut on one lattice (latticeLines()), and graded only where they
+        /// are its edge. (A hexagon's parts, asking for 5.7 and 6.2 µm,
+        /// were cut at 3.1 on it.)
+        bool curve = false;
     };
     QList<Piece> pieces;
     int cutInto = 0, cutFrom = 0, slantedFrom = 0, slantedRectangles = 0, slantedParts = 0, snappedShapes = 0;
@@ -1356,6 +1463,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             if (!slabs.isEmpty()) {
                 ++slantedFrom;
                 const double reach = std::hypot(bounds.width(), bounds.height());
+                const bool curve = isCurved(outline);
                 for (const Slab& slab : slabs) {
                     Piece piece;
                     piece.conductor = c;
@@ -1388,10 +1496,20 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                         // (Where the conductor is four times as wide as the
                         //  part says or more: a part as wide as its own slab,
                         //  a triangle's trapezoid by its mean width, is its
-                        //  own.)
-                        if (std::isfinite(width) && width >= 4 * piece.feature) piece.feature = width;
+                        //  own. And wherever both its sides along the slab
+                        //  are cuts - Slab::along -, the chord whatever it
+                        //  is: its width across its two slanted sides is no
+                        //  width of the conductor where those are the two
+                        //  sides of a curve. A band near a disc's cap, 57 µm
+                        //  long and 0.8 deep, was 14 µm wide by them, its
+                        //  chord 56 just under four times that, and its cells
+                        //  of 1.4 µm ran down through every band below.)
+                        if (std::isfinite(width) && (width >= 4 * piece.feature || (slab.along >= 0 && width > piece.feature)))
+                            piece.feature = width;
                     }
                     piece.along = slab.along;
+                    piece.cuts = slab.cuts;
+                    piece.curve = curve;
                     pieces << piece;
                     ++(slab.rectangle ? slantedRectangles : slantedParts);
                 }
@@ -1635,6 +1753,63 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 }
             }
     }
+    // A curve's pieces (Piece::curve) graded only where they are its edge: a
+    // side of a piece's box is no edge where the pieces beside it meet all of
+    // the piece's outline along it - a cut between two of its bands, or a
+    // rectangle's end where a trapezoid goes on from it -, the parts' sides
+    // as much as the rectangles'. (Each graded at every side of its box, a
+    // disc's 80 bands were two rows of cells each, every cut between them
+    // halved from both sides. A side
+    // the outline touches at a corner alone - the end of a band, where its
+    // slanted sides meet the curve - is the edge, and graded. Not a polygon's:
+    // a line inside its pads, met at its ends by their tapers, is meshed as
+    // drawn alone, its ends graded.)
+    {
+        QRectF all;
+        for (const Piece& p : std::as_const(pieces)) all = all.united(p.box);
+        const double tol = 1e-9 * std::max(1.0, std::max(all.width(), all.height()));
+        QList<std::array<double, 4>> met(pieces.size(), {0, 0, 0, 0});
+        for (const Meeting& m : std::as_const(meetings)) {
+            const QRectF& A = pieces.at(m.a).box;
+            const QRectF& B = pieces.at(m.b).box;
+            const double length = m.hi - m.lo;
+            if (m.alongX) {
+                if (std::abs(A.bottom() - B.top()) <= tol) {
+                    met[m.a][3] += length;
+                    met[m.b][2] += length;
+                } else if (std::abs(A.top() - B.bottom()) <= tol) {
+                    met[m.a][2] += length;
+                    met[m.b][3] += length;
+                }
+            } else {
+                if (std::abs(A.right() - B.left()) <= tol) {
+                    met[m.a][1] += length;
+                    met[m.b][0] += length;
+                } else if (std::abs(A.left() - B.right()) <= tol) {
+                    met[m.a][0] += length;
+                    met[m.b][1] += length;
+                }
+            }
+        }
+        for (int a = 0; a < pieces.size(); ++a) {
+            if (pieces.at(a).cuts < 0 || !pieces.at(a).curve) continue;
+            const QRectF& A = pieces.at(a).box;
+            // (How much of its outline lies on each side of its box.)
+            double side[4] = {0, 0, 0, 0};
+            const QPolygonF o = pieces.at(a).rectangle ? QPolygonF(A) : pieces.at(a).outline;
+            for (int i = 0, n = int(o.size()); i < n; ++i) {
+                const QPointF p = o.at(i), q = o.at((i + 1) % n);
+                if (std::abs(p.x() - q.x()) <= tol) {
+                    if (std::abs(p.x() - A.left()) <= tol) side[0] += std::abs(q.y() - p.y());
+                    else if (std::abs(p.x() - A.right()) <= tol) side[1] += std::abs(q.y() - p.y());
+                } else if (std::abs(p.y() - q.y()) <= tol) {
+                    if (std::abs(p.y() - A.top()) <= tol) side[2] += std::abs(q.x() - p.x());
+                    else if (std::abs(p.y() - A.bottom()) <= tol) side[3] += std::abs(q.x() - p.x());
+                }
+            }
+            for (int k = 0; k < 4; ++k) pieces[a].grade[k] = !(side[k] > tol) || met.at(a).at(k) < side[k] - tol;
+        }
+    }
     // Pieces on two metals one over the other, a thin dielectric apart - far
     // nearer than their cells are wide, a tenth of them - and plates of each
     // other, their overlap half the larger or more: their lines shared where
@@ -1825,6 +2000,17 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         //  largest cell of 0.1 µm, each under the bound, were cut into
         //  8e7 cells, 29 GB and 18 s before the whole was found too many.)
         double total = 0;
+        // (Each curve's lattice from its bands' coarsest step, halved for
+        //  the finer ones: where all ask the same, the lattice is that step.
+        //  From the largest cell instead, a step of 5 µm under one of 6.25
+        //  was cut at 3.125.)
+        QHash<int, double> coarsest;
+        for (const Piece& piece : std::as_const(pieces)) {
+            if (piece.rectangle || !piece.curve || roundWires.contains(conductors.at(piece.conductor).layer)) continue;
+            double across = size;
+            if (perFeature > 0 && piece.feature > 0) across = std::min(across, piece.feature / perFeature);
+            coarsest[piece.conductor] = std::max(coarsest.value(piece.conductor), across);
+        }
         for (Piece& piece : pieces) {
             const Conductor& conductor = conductors.at(piece.conductor);
             const QRectF bounds = piece.box;
@@ -1868,6 +2054,21 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                                  how.gapShare * gap[0], how.gapShare * gap[1]);
             piece.ys = gridLines(bounds.top(), bounds.height(), stepY, edges && piece.grade[2], edges && piece.grade[3],
                                  how.gapShare * gap[2], how.gapShare * gap[3]);
+            // A curve's bands cut along them on one lattice (latticeLines()),
+            // not each from its own end: every band's lines are shared with
+            // the bands beside it, and a disc's 80 bands, each a grid of its
+            // own from an end where the curve put it, gave every band the
+            // lines of all of them - 151 where its own were 14.
+            if (!piece.rectangle && piece.curve && piece.cuts >= 0) {
+                const QRectF whole = conductor.outline.boundingRect();
+                const double base = coarsest.value(piece.conductor, size);
+                if (piece.cuts == 1)
+                    piece.xs = latticeLines(bounds.left(), bounds.width(), whole.left(), base, stepX, edges && piece.grade[0],
+                                            edges && piece.grade[1], how.gapShare * gap[0], how.gapShare * gap[1]);
+                else
+                    piece.ys = latticeLines(bounds.top(), bounds.height(), whole.top(), base, stepY, edges && piece.grade[2],
+                                            edges && piece.grade[3], how.gapShare * gap[2], how.gapShare * gap[3]);
+            }
             if (round) continue;
             // (The sides graded past the edges' one halving, for the line
             //  that says so: those whose quarter gap is narrower than it.)
@@ -1893,16 +2094,14 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         // or nearer, are one where two pieces meet (shareLines()): no cell
         // made by sharing is narrower than a quarter of the narrowest one
         // asked for.
-        // (Of the spaces a piece's own grid cuts it into, not of a piece
-        //  thinner that way than the finest cell any piece asked for - a part
-        //  of a curve's cap 0.002 µm deep, its edge's grading halving its
-        //  depth, no space anyone asked for. Taken as the finest, next to
-        //  nothing was merged, and a ring of 100 µm with feeds meshed at 5 µm
-        //  was 32,000 cells, 19,700 with it.)
+        // (Every piece's spaces, a part of a curve's cap a hair deep too:
+        //  with a curve's bands cut on one lattice, leaving out a piece
+        //  thinner than any cell asked for - as f858e470 did - changed no
+        //  curve's mesh, and was taken out again.)
         double finestSpace = 0;
         for (const Piece& p : std::as_const(pieces))
             for (const QList<double>* lines : {&p.xs, &p.ys})
-                for (int k = 1; lines->size() > 1 && lines->last() - lines->first() >= 0.5 * finest && k < lines->size(); ++k)
+                for (int k = 1; k < lines->size(); ++k)
                     if (const double d = lines->at(k) - lines->at(k - 1); d > tol && (finestSpace <= 0 || d < finestSpace))
                         finestSpace = d;
         const double merge = kMergeShare * finestSpace;
