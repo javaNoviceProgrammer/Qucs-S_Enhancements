@@ -203,7 +203,7 @@ bool openGLFit()
     // current on it to free what it made. Declared after the QRhi, it was
     // freed first - and on Linux the first to ask, the Viewers tab of
     // Application Settings with every viewer on the CPU, ended the program:
-    // a pure virtual function called on the surface gone, an earlier note, F8.)
+    // a pure virtual function called on the surface gone.)
     std::unique_ptr<QOffscreenSurface> surface(QRhiGles2InitParams::newFallbackSurface());
     QRhiGles2InitParams params;
     params.fallbackSurface = surface.get();

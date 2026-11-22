@@ -92,7 +92,8 @@ auto getFontDescription = [](const auto& Font) -> QString {
 // macOS's font panel is a live panel, without OK or Cancel: what is picked in
 // it applies, and it is simply closed. QFontDialog::getFont() takes closing it
 // for Cancel, so there the choice was lost (macOS 27: Qt makes its OK and Cancel
-// buttons, but they never reach the panel's window, an earlier note). So: no buttons, as Qt has for a live dialog, and
+// buttons, but they never reach the panel's window). So: no buttons, as Qt has
+// for a live dialog, and
 // what the panel told last.
 //
 // The panel tells once more as it closes, with whatever it has then, and that

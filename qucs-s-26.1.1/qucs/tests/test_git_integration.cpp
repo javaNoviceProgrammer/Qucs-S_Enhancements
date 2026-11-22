@@ -1364,9 +1364,9 @@ private slots:
     }
 
     // The History closed while a commit's menu is up: the menu goes with
-    // it, freed once (an earlier note: the
-    // menu, the History's child, shown with exec() and freed after it,
-    // was freed with the History in exec()'s loop, then again).
+    // it, freed once (the menu, the History's child, shown with exec() and
+    // freed after it, was freed with the History in exec()'s loop, then
+    // again).
     void theHistoryClosedWithItsMenuUpTakesTheMenuWithIt()
     {
         QVERIFY(!Commands::historyDocked());

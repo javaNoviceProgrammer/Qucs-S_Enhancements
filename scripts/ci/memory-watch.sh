@@ -3,7 +3,7 @@
 # A step's memory, watched while it runs (Linux only, /proc): CI's sanitized
 # Debug build lost its runner seven times in eleven runs, out of memory as
 # far as anything said, and a runner lost keeps only the part of its log it
-# had uploaded - some 2 MB of it, a quarter of an hour into the build
+# had uploaded - some 2 MB of it, a quarter of an hour into the build.
 # So the watch says each
 # new high-water mark as it is reached, with the biggest processes then -
 # the compiler with its source, the linker with what it writes -, and at the

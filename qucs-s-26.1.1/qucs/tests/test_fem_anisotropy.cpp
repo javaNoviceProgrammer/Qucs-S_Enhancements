@@ -1340,7 +1340,7 @@ private slots:
     // device's own mesh at 0 and 10 V - not the index at 10 V alone, which
     // asked the device's mesh and the turned one's, two meshes, to agree to
     // 5e-6 where the coarse mesh is 5e-5 from the fine: CI's Linux, 5.9e-6
-    // apart, macOS 2e-7. an earlier note)
+    // apart, macOS 2e-7.)
     void zCutDevice() { cutDevice(true); }
     void xCutDeviceTurned() { cutDevice(false); }
     void zCutAgainstXCut()

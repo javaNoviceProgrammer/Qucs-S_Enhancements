@@ -16,7 +16,6 @@
 // CTest runs this offscreen, where a platform theme is a palette of ours; run
 // the program itself, with no QT_QPA_PLATFORM, for the platform's own switch
 // (Cocoa, Windows). QUCS_THEME_PICTURES=<folder> keeps a picture of each step.
-// an earlier note
 
 #include <QtTest>
 #include <QActionGroup>

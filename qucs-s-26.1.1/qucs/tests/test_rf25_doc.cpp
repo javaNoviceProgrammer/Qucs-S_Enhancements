@@ -6,8 +6,7 @@
  *                     saved and read again, and the layout drawn in the
  *                     stack's colours.
  *
- * Phase A of an earlier note: there is
- * no solver, and nothing here asks for one.
+ * There is no solver, and nothing here asks for one.
  *
  * This file is part of Qucs-S.
  *

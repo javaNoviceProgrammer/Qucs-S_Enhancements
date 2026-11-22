@@ -9,12 +9,10 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * The last piece of phase A of
- * an earlier note It divides the
- * processed shapes into cells and counts what a solver would have to hold -
- * "the panel should show the unknown count before solving and refuse what
- * it cannot hold" - but it computes no fields: the basis functions, the
- * Green's functions and the matrix are phases B and C.
+ * It divides the processed shapes into cells and counts what a solver
+ * would have to hold - the panel shows the unknown count before solving and
+ * refuses what it cannot hold - but it computes no fields: the basis
+ * functions, the Green's functions and the matrix are the solvers'.
  *
  * The cells are axis-aligned squares cut against each conductor, which is
  * the rooftop mesh a planar layout wants: exact on the rectangles a layout

@@ -311,7 +311,8 @@ void ClaudeJobsWindow::setWidths()
     const auto width = [&metrics](const QString& text) { return metrics.horizontalAdvance(text) + 24; };
     // Every column's edge can be dragged (a double click on it fits what it
     // holds). The Job column takes the room the others leave - its text cut,
-    // never the window made wider for it - until the user sizes it; past the room, the table scrolls.
+    // never the window made wider for it - until the user sizes it; past the
+    // room, the table scrolls.
     // (It stretched, and a stretched column's edge does not move.)
     header->setMinimumSectionSize(24);
     header->setStretchLastSection(false);

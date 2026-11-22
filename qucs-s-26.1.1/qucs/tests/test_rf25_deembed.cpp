@@ -8,8 +8,6 @@
  * way from each end is a thru; the feed's line is phase B's quasi-static
  * line; an open line de-embedded is its open end, whose extension
  * Kirschning, Jansen and Koster give in closed form.
- *
- * Phase D of an earlier note
  */
 #include <QtTest>
 

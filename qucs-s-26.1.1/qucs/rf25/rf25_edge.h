@@ -9,14 +9,13 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * A2 of the open items of 8 November, with A1: a metal solved as its two faces carries an
+ * A metal solved as its two faces carries an
  * edge run's current on its face's strip and its half of the wall
  * (rf25_fullwave.cpp's wallsOf()), each part's current even across it. The
  * real current is not: it crowds to the corner as the edge's own field has
- * it, and loses more for it - a fifth to a third more on the lines of
- * an earlier note How much more
- * is solved here, once for each metal and frequency, in the cross-section
- * of its edge: an eddy-current solver's method - the metal cut into
+ * it, and loses more for it - a fifth to a third more on the lines tried.
+ * How much more is solved here, once for each metal and frequency, in the
+ * cross-section of its edge - the metal cut into
  * rectangles of uniform current graded toward its faces and its wall, the
  * mean of ln r between them in closed form, each rectangle's drop its own
  * resistance and every current's inductance, the drop alike across the

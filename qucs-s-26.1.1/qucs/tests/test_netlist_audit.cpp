@@ -7,8 +7,7 @@
  *
  * QUCS_NETLIST_AUDIT=<dir> also writes the surveys (every component, its
  * properties and every netlist flavour; every property marked; one ngspice
- * deck per component) for reading by eye and for scripts/netlist-audit.sh;
- * that is where an earlier note comes from.
+ * deck per component) for reading by eye and for scripts/netlist-audit.sh.
  * QUCS_NETLIST_AUDIT_TRACE=1 names each component before it is placed.
  */
 #include <QtTest>

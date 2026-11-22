@@ -9,8 +9,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * The steps are the table of an earlier note:
- * merge, merge vias, drop slivers, snap, heal, remove fill. Each says what
+ * The steps: merge, merge vias, drop slivers, snap, heal, remove fill. Each says what
  * it changed, each can be turned off, and the shapes that come out are what
  * the mesher will see - so the view can draw them over the originals and
  * the user can check what the solver is given.

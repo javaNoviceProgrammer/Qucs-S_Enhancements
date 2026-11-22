@@ -918,7 +918,7 @@ private slots:
         // (Sanitized, 0.5 and 1 nm: 2.6 % apart there on macOS's meshes before
         // 8 November, 3.3 % on the meshes every standard library makes since -
         // at 1 nm the interface's first triangles decide a few per cent; the
-        // finer pair's runs past QtTest's 300 s. an earlier note, F5.)
+        // finer pair's runs past QtTest's 300 s.)
         const bool slow = slowBuild();
         const QString fine = slow ? QStringLiteral("0.5") : QStringLiteral("0.25"), coarse = slow ? QStringLiteral("1") : QStringLiteral("0.5");
         const double within = slow ? 0.04 : 0.01;

@@ -368,8 +368,8 @@ int externalFrom(const char* variable, bool many, int single, int atOnce)
 }
 } // namespace
 
-// (Measured on 9 November - an earlier note
-// solvers.md: a 2D grid's LU, where Eigen's and MUMPS's take the same time.)
+// (Measured on 9 November: a 2D grid's LU, where Eigen's and MUMPS's take the
+// same time.)
 int mumpsFrom(bool atOnce)
 {
     return externalFrom("QUCS_FEM_MUMPS_FROM", atOnce, 20000, 50000);

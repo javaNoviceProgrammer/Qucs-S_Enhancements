@@ -7,8 +7,7 @@
  * threads, the dense matrix's to its tolerance in less memory; and GMRES
  * to its residual, preconditioned or not, restarted, and stopped.
  *
- * Phase E of an earlier note:
- * "acceleration: ACA ... GMRES with a near-field preconditioner".
+ * Acceleration: ACA, GMRES with a near-field preconditioner.
  */
 #include <QtTest>
 

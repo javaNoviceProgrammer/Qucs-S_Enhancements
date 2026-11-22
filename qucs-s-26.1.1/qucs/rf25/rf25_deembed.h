@@ -9,9 +9,8 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * Phase D of an earlier note: "the line's
- * own propagation is removed by solving a short and a long calibration line
- * (the classic two-line de-embedding)".
+ * The line's own propagation is removed by solving a short and a long
+ * calibration line (the classic two-line de-embedding).
  *
  * An edge port drives the face of its conductor as a gap: what a circuit
  * connects there is the line the face ends, and the port adds a

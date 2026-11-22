@@ -1,7 +1,7 @@
 /*
  * fem_sparse_external.cpp - MUMPS's and STRUMPACK's factorizations behind
  *                           fem_sparse (QUCS_MUMPS, QUCS_STRUMPACK: the
- *                           build found them; an earlier note)
+ *                           build found them)
  *
  * This file is part of Qucs-S.
  *

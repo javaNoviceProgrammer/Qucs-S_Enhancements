@@ -1,6 +1,5 @@
 /*
- * The netlists of the components that an earlier note
- * netlists.md found wrong, after the fix: one case per finding, checked on
+ * The netlists of the components the netlist audit found wrong, after the fix: one case per finding, checked on
  * the emitted text (and on ngspice's own reading where the finding was
  * about that).
  */

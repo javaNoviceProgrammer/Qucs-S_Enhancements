@@ -703,8 +703,7 @@ using MatrixC = Eigen::Matrix<Complex, Eigen::Dynamic, Eigen::Dynamic>;
 /// quicker: a coplanar line's 40 frequencies held dense (6996 runs and
 /// cells, some 435 MB each) 73 s three at a time in 1.5 GB, 44 s six in 3,
 /// 31 s thirteen in 6 and 27 s all 24 threads in 12, the app's peak some
-/// half a gigabyte over the budget each time (an M2 Ultra; docs/
-/// an earlier note).
+/// half a gigabyte over the budget each time (an M2 Ultra).
 constexpr double kSweepMemory = 1.5e9;
 std::atomic<int> denseLimitSet{0};
 std::atomic<double> sweepMemorySet{0};
@@ -1266,8 +1265,7 @@ struct Context {
  * on each free side - a strip standing upright on the edge's line, from the
  * face to the metal's middle -, the current shared between them by length,
  * as the cross-section's own solve of solid metal shares it near enough
- * (walls.py beside an earlier note:
- * a perfect metal's L within 0.01 % of a boundary-element solve's, where
+ * (a perfect metal's L within 0.01 % of a boundary-element solve's, where
  * the faces alone are 3 % over). The charge goes on the walls too
  * (Context::charges), and the run's loss is its band's of the edge solved
  * in its cross-section (rf25_edge.h): ownImpedances().
@@ -1563,7 +1561,7 @@ struct AtFrequency {
  * frequency, so the factor as it is, though over the band's, comes the
  * nearer: on five lines it left a coplanar line's attenuation 9 % from
  * their 2D solves on average, where one faded to nought as the cell
- * narrows left 16 %, and none tried came nearer
+ * narrows left 16 %, and none tried came nearer.
  */
 double crowding(double width, double thickness, double sigma, int free, double frequency, Complex sheet, bool faces = false)
 {

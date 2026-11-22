@@ -37,8 +37,7 @@ namespace qucs_s::fem {
  * multigrid's 0.15 us a nonzero, the Cholesky's 0.25 s + 2.14e-9 s x
  * n^1.387 x (nonzeros a row)^1.292. Fitted on an M2 Ultra to the solves of
  * boxes of order 1 and 2 from 15,000 to 310,000 unknowns in the app's own
- * solver and the
- * order-1 Laplacians of phase C to 1,020,100 (its amg_bench.tsv): multigrid's
+ * solver, and to order-1 Laplacians of up to 1,020,100 unknowns: multigrid's
  * memory within 7 % of each, its time 25 % past 40,000 unknowns; the
  * Cholesky's memory within 17 %, its time within a factor of two.
  */

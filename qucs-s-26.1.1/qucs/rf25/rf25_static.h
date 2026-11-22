@@ -9,9 +9,8 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * Phase B of an earlier note: "the
- * quasi-static extraction: charge MoM with the static layered Green's
- * function for C". The mesh of rf25_mesh.h gives the cells; the Green's
+ * The quasi-static extraction: charge MoM with the static layered Green's
+ * function for C. The mesh of rf25_mesh.h gives the cells; the Green's
  * function of rf25_green.h gives the potential of a charge in the stack;
  * this puts the two together.
  *

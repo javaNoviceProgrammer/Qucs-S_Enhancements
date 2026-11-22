@@ -180,7 +180,8 @@ jobs:
       # (fem_quantum.cpp the 4.8), side by side in the build's order - 33 of
       # RF 2.5D's in a row -, and the program and the tests' core each link
       # some 5 GB of objects, at the same time; the runs that built pushed
-      # 200 to 250 MB into the swap as well. So: as many jobs as processors; two of those heavy
+      # 200 to 250 MB into the swap as well. So: as many jobs as processors;
+      # two of those heavy
       # units at a time, by scripts/ci/heavy-compiles.sh, the others as they
       # come; two links at a time. The build's memory is watched
       # (scripts/ci/memory-watch.sh): each new high-water mark said as it
@@ -237,7 +238,7 @@ jobs:
       #   and 8f61d83d still out: test_gui_monkey, test_theme_switch, and six
       #   cut by their limits or a 60 s wall-clock check on slow runners.
       #   (test_rf25_stack is back: its ASan heap-use-after-free, a pointer
-      #   into a temporary Stack, is fixed)
+      #   into a temporary Stack, is fixed.)
       # - Two of the nine that failed on its runs of 5ce4d239 and 8bdef858
       #   (18 November), RF 2.5D's quasi-static and window suites: on this
       #   job each past ctest's 2,700 s and several of its functions past
@@ -247,7 +248,8 @@ jobs:
       #   solves of this runner, without Accelerate, four to six times that.
       #   The other seven were made to fit: smaller cases or waits that
       #   grow with the scale under the sanitizers, the 3D time-domain
-      #   suite's factorizations MUMPS's. On their first run here (ed438d66's, 184 of 185
+      #   suite's factorizations MUMPS's.
+      #   On their first run here (ed438d66's, 184 of 185
       #   passed) two more: test_rf25_dielectric's lid case past QtTest's
       #   900 s, its mesa alone under the sanitizers since and its oxide
       #   case's thin oxide alone, and test_rf25_fullwave's first part at

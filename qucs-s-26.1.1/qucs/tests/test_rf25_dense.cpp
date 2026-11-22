@@ -447,7 +447,7 @@ private slots:
     // its share of the threads as a sweep's is (Eigen's side by side, one
     // thread each; OpenBLAS's side by side on one thread each where the
     // share is under four threads, else taking turns on all of them).
-    // Skipped unless QUCS_RF25_BENCH is set (full: the larger sizes)
+    // Skipped unless QUCS_RF25_BENCH is set (full: the larger sizes).
     void benchmarkTheLibraries()
     {
         const QByteArray bench = qgetenv("QUCS_RF25_BENCH").trimmed().toLower();

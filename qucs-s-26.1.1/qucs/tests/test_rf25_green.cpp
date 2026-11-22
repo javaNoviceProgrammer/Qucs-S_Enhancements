@@ -4,8 +4,6 @@
  * one, which is what the proposal asks of it: free space; a charge over a
  * ground plane; a charge at a dielectric interface; a slab over a ground
  * plane, against its image series summed to machine precision.
- *
- * Phase B of an earlier note
  */
 #include <QtTest>
 

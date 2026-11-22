@@ -263,7 +263,7 @@ private slots:
     }
 
     // The view freed while its menu is up - its tab closed through the
-    // menu: the menu goes with it, nothing freed twice (an earlier note: a QMenu on the stack, shown with
+    // menu: the menu goes with it, nothing freed twice (a QMenu on the stack, shown with
     // exec(), freed as if allocated).
     void theViewFreedWithItsMenuUpTakesTheMenuWithIt()
     {

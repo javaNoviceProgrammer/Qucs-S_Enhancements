@@ -10,8 +10,6 @@
  * table is the integral. And a via's kernels, against a grounded slab's
  * line Green's function integrated by hand and against the other form the
  * formulation allows.
- *
- * Phase C of an earlier note
  */
 #include <QtTest>
 #include <QThread>

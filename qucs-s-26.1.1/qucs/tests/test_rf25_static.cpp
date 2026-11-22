@@ -3,10 +3,6 @@
  * the rectangle's closed form against a brute-force integral, a
  * parallel-plate capacitor, a microstrip's Z0 and eps_eff against
  * Hammerstad and Jensen's closed form of 1980, and a coupled pair's matrix.
- *
- * Phase B of an earlier note, whose
- * test list asks for "a parallel-plate capacitor ... a microstrip's Z0
- * ... a two-line coupling".
  */
 #include <QtTest>
 #include <QElapsedTimer>

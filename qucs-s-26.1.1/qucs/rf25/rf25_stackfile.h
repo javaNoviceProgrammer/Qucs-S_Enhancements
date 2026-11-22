@@ -11,8 +11,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * an earlier note says why it is what it
- * is. The stackup is the control file's <Stackup> alone, what Layout >
+ * The stackup is the control file's <Stackup> alone, what Layout >
  * Layers > Stackup > Import XML and Export XML read and write. The
  * process file is EMX's: layers from the bottom up,
  * conductors in them, vias between conductors, and the GDSII layers each

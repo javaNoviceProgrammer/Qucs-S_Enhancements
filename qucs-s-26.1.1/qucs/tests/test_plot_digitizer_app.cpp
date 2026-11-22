@@ -1027,7 +1027,7 @@ int main(int argc, char** argv)
     }
     // The application gone: so are they, not left to the program's end, where
     // QtPdf's own lock went first (on Linux, Qt 6.10: an abort after the last
-    // test, an earlier note).
+    // test).
     if (QucsControl::digitizerPdfsHeld() != 0) {
         std::fprintf(stderr, "FAIL: %d PDFs still held by the digitizer's tools after the application went\n", QucsControl::digitizerPdfsHeld());
         failed = 1;

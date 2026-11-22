@@ -11,8 +11,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * The last piece of phase B of an earlier note
- * method.md: "RLGC, Z0, and S-parameters below the first resonance".
+ * RLGC, Z0, and S-parameters below the first resonance.
  *
  * It is deliberately thin. The multiphysics engine already turns an R, L,
  * G and C per metre into S-parameters, a Touchstone file, a SPICE

@@ -56,7 +56,7 @@ struct Opened {
 // at the program's end, outlived QtPdf's lock - a static of its library, gone
 // first: ~QPdfDocument locked a null mutex, and on Linux with Qt 6.10 the
 // program ended in "terminate called after throwing an instance of
-// 'std::system_error'" after the work was done. an earlier note)
+// 'std::system_error'" after the work was done.)
 QCache<QString, Opened>*& openedCache()
 {
     static QCache<QString, Opened>* cache = nullptr;

@@ -9,10 +9,9 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * The first piece of phase B of
- * an earlier note - "the quasi-static
- * extraction: charge MoM with the static layered Green's function for C" -
- * and the piece the proposal calls the heart of the work and the risk.
+ * The first piece of the quasi-static extraction - charge MoM with the
+ * static layered Green's function for C -, the heart of the work and its
+ * risk.
  *
  * It is the static (zero frequency) scalar-potential Green's function of a
  * stack of dielectrics, with or without a ground plane under it: the

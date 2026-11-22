@@ -3,10 +3,8 @@
  * (rf25/rf25_sparams.h): one net as the multiphysics engine's own line,
  * all of them as coupled lines, and the S-parameters of each.
  *
- * The end of phase B of an earlier note,
- * whose test list asks for "a 50 Ohm microstrip's S11 below -30 dB and its
- * phase against beta l" and for "reciprocity (S = S^T) and passivity on
- * every result".
+ * A 50 Ohm microstrip's S11 below -30 dB and its phase against beta l, and
+ * reciprocity (S = S^T) and passivity on every result.
  */
 #include <QtTest>
 

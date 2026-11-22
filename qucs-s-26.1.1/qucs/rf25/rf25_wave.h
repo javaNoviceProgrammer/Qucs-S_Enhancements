@@ -10,11 +10,9 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * The first piece of phase C of
- * an earlier note - "full-wave MPIE:
- * the spectral Green's functions ... and the Sommerfeld fallback" - and,
- * as the proposal says of the static one before it, the heart of the work
- * and the risk.
+ * The first piece of the full-wave MPIE - the spectral Green's functions
+ * and the Sommerfeld fallback -, like the static one before it the heart of
+ * the work and its risk.
  *
  * The mixed-potential integral equation for currents on horizontal metal
  * sheets wants two kernels of the stack (Michalski and Zheng's

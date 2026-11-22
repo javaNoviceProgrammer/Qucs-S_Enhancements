@@ -38,7 +38,8 @@ struct IterativeReport {
  * a symmetric Gauss-Seidel smoother, measured on 3D Laplacians to a million
  * unknowns and on copper beside oxide: some 11 to 15 iterations at every
  * size, where an incomplete Cholesky's grow from 92 to 368; and on order 2's
- * stretched prisms, a chip's thin films and a VCSEL array's. Each right-hand side is scaled to a norm of one, so
+ * stretched prisms, a chip's thin films and a VCSEL array's. Each right-hand
+ * side is scaled to a norm of one, so
  * that a system of any unit solves alike. Set up once (compute), solved for
  * as many right-hand sides as wanted, each from the x given. Where it does not
  * converge, conjugate gradients with an incomplete Cholesky try instead (the

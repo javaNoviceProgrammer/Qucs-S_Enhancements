@@ -10,8 +10,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * The last line of phase B of an earlier note
- * method.md: "partial inductances for L".
+ * Partial inductances for L, the quasi-static extraction's last part.
  *
  * Why this is not the L the earlier rounds already answer. For a uniform
  * transmission line, L = 1/(c0^2 C0) is exact and comes free with the

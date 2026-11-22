@@ -13,8 +13,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * The tool over the solver of
- * phase B. It drives
+ * Claude's tool over the quasi-static solver (rf25/rf25_static.h). It drives
  * the tab's own solve rather than the library underneath, so that what a
  * tool answers and what the panel shows are the same run.
  */

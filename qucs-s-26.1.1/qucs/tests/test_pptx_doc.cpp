@@ -2222,7 +2222,7 @@ private slots:
     }
 
     // The tab closed by its close button while the slide's menu is up: the
-    // menu goes with it and nothing is freed twice (an earlier note: a QMenu on the stack of the slot,
+    // menu goes with it and nothing is freed twice (a QMenu on the stack of the slot,
     // shown with exec(), freed as if allocated when the tab closed in
     // exec()'s loop - the abort of 27.0.7 in the layout viewer).
     void aTabClosedWithItsMenuUpTakesTheMenuWithIt()

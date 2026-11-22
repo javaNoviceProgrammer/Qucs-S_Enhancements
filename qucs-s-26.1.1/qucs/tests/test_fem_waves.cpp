@@ -40,7 +40,7 @@ using cd = std::complex<double>;
 /// The L-shaped gap's energy (J per metre, 1 V) on a uniform mesh of
 /// 104,386 triangles (hmax 0.01 mm), linear elements.
 /// (Both of the meshes of 8 November, the same on every standard library
-/// now: an earlier note, F3. The iris's moved
+/// now. The iris's moved
 /// by 3e-3 from the mesh before, 34,488 triangles: its tolerance below
 /// tells meshes apart, not the error.)
 constexpr double FineCornerEnergy = 1.132889e-11;
@@ -1083,7 +1083,7 @@ private slots:
             // there by 0.25 of it ("fine"). So L up to 2 · 0.67 (hmax/4 +
             // 0.25 · 2L/3), 0.43 hmax - without the source's refinement, more
             // than hmax. (0.4 was the margin of one machine's arithmetic: CI's
-            // Linux, the glass case, 0.4006; an earlier note)
+            // Linux, the glass case, 0.4006.)
             const Mesh& mesh = s.mesh();
             const QStringList at = QString::fromUtf8(c.feature.toUtf8()).section(QStringLiteral("\"position\": ["), 1).section(QLatin1Char(']'), 0, 0).remove(QLatin1Char('"')).split(QLatin1Char(','));
             const Locator locator(mesh);

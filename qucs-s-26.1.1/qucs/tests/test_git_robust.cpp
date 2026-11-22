@@ -2,8 +2,7 @@
  * The git integration where it is hard: file names git would read as
  * patterns, commands stopped midway, links, a repository's own programs,
  * commits written by hand, every state a repository can be in. No window:
- * gitrepo.h and gitstatus.h as the windows and Claude's tools call them. See
- * an earlier note
+ * gitrepo.h and gitstatus.h as the windows and Claude's tools call them.
  *
  * Every repository is in a temporary folder.
  */

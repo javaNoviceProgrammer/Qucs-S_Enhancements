@@ -537,7 +537,7 @@ void TestFemAdapt::reentrantCornerRates()
     // uniform run that claimed the tolerance without reaching it would otherwise
     // pass unseen: after f3c591c a slow build's said 9.3e-4 and made 1.23e-3 at
     // 1e-3, its changes' jitter read as a rate faster than the order and
-    // bounded at the order. an earlier note, N3.)
+    // bounded at the order.)
     if (uniform.converged)
         QVERIFY2(eu <= tolerance.toDouble(), qPrintable(QStringLiteral("said %1, made %2: %3").arg(finalOf(uniform)->error / std::abs(exact)).arg(eu).arg(uniform.summary)));
     // And its smallest elements at the corner.

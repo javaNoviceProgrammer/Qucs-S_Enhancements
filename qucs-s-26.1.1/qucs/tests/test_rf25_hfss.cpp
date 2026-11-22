@@ -2514,7 +2514,7 @@ $end 'AnsoftProject'
 
     // The public samples the format was read from, where a folder of them is
     // named: none is kept here (scripts/ci/check-third-party.py), so CI has none.
-    // Each reads to its end, and is said; what it holds is checked by hand
+    // Each reads to its end, and is said; what it holds was checked by hand.
     void thePublicSamplesReadToTheirEnds()
     {
         const QString folder = qEnvironmentVariable("QUCS_EDB_SAMPLES");

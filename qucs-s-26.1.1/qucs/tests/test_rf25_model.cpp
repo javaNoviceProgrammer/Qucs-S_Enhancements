@@ -1,6 +1,5 @@
 /*
- * An RF 2.5D model (rf25/rf25_model.h), phase A of
- * an earlier note: the tree and its
+ * An RF 2.5D model (rf25/rf25_model.h): the tree and its
  * kinds, the file it is written to and read from, the stack read out of it
  * in SI, and everything the stack and the model say is wrong with them.
  * There is no solver yet, and nothing here asks for one.

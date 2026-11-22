@@ -5,8 +5,7 @@
  * Jansen, the losses of its substrate and its metal, reciprocity and
  * passivity, the current it returns, and what it will not solve.
  *
- * Phase C of an earlier note: "full-wave
- * MPIE: ... the dense fill and solve, the currents".
+ * The full-wave MPIE: the dense fill and solve, the currents.
  *
  * The lines are long beside the substrate - twenty heights and more. A
  * port's near field reaches the other port directly, not along the line,
@@ -1314,8 +1313,7 @@ private slots:
     // 1.093, of 1 and 3 mm at 10 GHz, twelve across). Now the longer's mean
     // potential of the shorter's charge: 1.0050 and 47.92 at 2 µm, 1.0013 and
     // 67.07 at 5. Z0 against a 2D boundary-element solve of the cross-section
-    // in air, its metal solid (cpw2d.py beside an earlier note
-    // rf25-production-readiness.md): 47.26 and 66.45 Ohm. (At 30 GHz, not
+    // in air, its metal solid: 47.26 and 66.45 Ohm. (At 30 GHz, not
     // the review's 10: a third of the cells, 1.9 s here where 10 GHz took
     // 8.6, and past five minutes under the sanitizers.)
     void aCoplanarLineInAirIsAsFastAsLight()
@@ -5044,7 +5042,7 @@ private slots:
     // 48), as many at once as the threads allow - Eigen's side by side,
     // one thread each; OpenBLAS's taking turns on all of them; Accelerate's
     // its own way -, and the same one frequency at a time. Skipped unless
-    // QUCS_RF25_BENCH is set; an earlier note
+    // QUCS_RF25_BENCH is set.
     void benchmarkADenseSweep()
     {
         const QByteArray bench = qgetenv("QUCS_RF25_BENCH").trimmed().toLower();

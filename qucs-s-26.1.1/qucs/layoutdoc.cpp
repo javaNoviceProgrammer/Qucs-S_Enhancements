@@ -1729,7 +1729,7 @@ LayoutDoc::~LayoutDoc()
     // there: its destructor gives the view back its mode and overlays. Left to
     // ~QWidget's children, it reached them through a document already past
     // this destructor (UBSan on Linux: a downcast of an object that is no
-    // longer a LayoutDoc; an earlier note).
+    // longer a LayoutDoc).
     delete a_routerPanel;
     a_routerPanel = nullptr;
 }

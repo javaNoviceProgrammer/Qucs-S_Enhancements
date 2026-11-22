@@ -9,7 +9,7 @@
  *                           amorphous cover (a native oxide, films, a
  *                           mask's resist) by TRIM's random collisions
  *
- * The model is the one checked against Cai et al.'s phosphorus SIMS in a review:
+ * The model is the one checked against Cai et al.'s phosphorus SIMS:
  *
  *   dE/dx = [Z1 γ(v, rs0)]² v F(rs(x))     (Cai, Grønbech-Jensen, Snell and
  *                                           Beardmore, PRB 54, 17147, 1996)

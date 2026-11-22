@@ -10,10 +10,9 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * Phase E of an earlier note:
- * "acceleration: ACA or the adaptive integral method on a grid, GMRES with
+ * Acceleration: ACA or the adaptive integral method on a grid, GMRES with
  * a near-field preconditioner, the memory bound lifted from a few thousand
- * unknowns to a few hundred thousand".
+ * unknowns to a few hundred thousand.
  *
  * The matrices of the solve - the runs' partial inductances, the cells'
  * potential coefficients, the vias' couplings - are each a kernel between

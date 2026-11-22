@@ -2835,7 +2835,7 @@ private slots:
         closeUnder(ws + "/rfjoin");
     }
 
-    // P24 of the evening re-test: a tab closed while its loop is solving, opened again,
+    // A tab closed while its loop is solving, opened again,
     // and rf25_inductance - the loop, not "no loop".
     // rf25_solve's 'frequency' for a quasi-static solve of a dispersive
     // substrate: its dielectrics taken there, not at the study's highest (P33

@@ -70,8 +70,7 @@ private slots:
     // tab meshes it, three cells across the signal, none over 100 µm, and
     // the sides facing its gaps graded to a quarter of them. Held to the
     // measurement and to the smooth line's own loss, a 2D eddy-current
-    // solve of its cross-section (an earlier note
-    // fullwave-gaps/an eddy-current solver: R 731.4, 1267 and 1795 Ohm/m, its chuck a
+    // solve of its cross-section (R 731.4, 1267 and 1795 Ohm/m, its chuck a
     // perfect plane; Wheeler's rule on its own inductance comes within
     // 3.6 % at 10 GHz and 1.6 % at 13 THz, its sharp corners' share
     // closing as the skin depth does), whose attenuation is

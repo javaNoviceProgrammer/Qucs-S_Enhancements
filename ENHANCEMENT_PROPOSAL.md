@@ -322,7 +322,7 @@ Target the *classes* from §1, not the individual issues.
   The canvas shows 1,000 characters of a value (`Property::displayText()`)
   and a raster export is fitted into 100 megapixels, 32,000 a side.
   `qucs/tests/test_stress_findings` has a test for each finding (the ones
-  that compile against the old code fail or hang there). Written up
+  that compile against the old code fail or hang there).
   Loading and every healing edit were quadratic in the size of the
   schematic (a node search per pin, all-pairs checks over the whole
   document, elements leaving the lists one search at a time): at 16,000

@@ -9,8 +9,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * Phase A of an earlier note: the
- * document, the stack and the layout, with no solver. The nodes are the
+ * The document, the stack and the layout, with no solver. The nodes are the
  * same objects the multiphysics model uses (multiphysics/fem_model.h: a
  * kind, its properties with their units and defaults, what it may hold),
  * so the panel, the undo, the file and the tests work the same way - but

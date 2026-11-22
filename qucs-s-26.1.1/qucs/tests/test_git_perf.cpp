@@ -10,8 +10,7 @@
  * As a benchmark: QUCS_GIT_BENCH=<a repository> prints, for each, the programs
  * it starts and its best time of five (make_big_repo.py makes a large
  * repository; a repository named here is only looked at, nothing in it is
- * changed - but a window's own look). See
- * an earlier note
+ * changed - but a window's own look).
  */
 
 #include <QtTest>

@@ -10,8 +10,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * an earlier note says why it is what it
- * is. A 3D Layout project is an .aedt, which is text, and an .aedb, whose
+ * A 3D Layout project is an .aedt, which is text, and an .aedb, whose
  * edb.def nothing documents: it cannot be written here, so what is written
  * is what Electronics Desktop itself makes a project of - a script, and a
  * GDSII file with its XML control file. What is read is the script back, a

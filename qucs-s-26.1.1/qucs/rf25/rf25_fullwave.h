@@ -9,9 +9,8 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * Phase C of an earlier note - "full-wave
- * MPIE: ... the dense fill and solve, the currents" - on the retarded Green's
- * functions of rf25_wave.h.
+ * The full-wave MPIE's dense fill and solve, and its currents, on the
+ * retarded Green's functions of rf25_wave.h.
  *
  * The mixed-potential integral equation, discretized on the mesh as phase
  * B's inductance already is: the runs of current between cells that share

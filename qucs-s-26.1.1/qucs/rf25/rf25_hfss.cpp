@@ -16,8 +16,7 @@
  * shows Add only with a near-field setup; the names of an HFSS setup's
  * properties are those of a real .aedt. The control file is the documented one,
  * as Ansys writes it itself in a public example. No Electronics Desktop has run
- * any of this.md says what to look at first
- * when one does.
+ * any of this.
  */
 #include "rf25_hfss.h"
 

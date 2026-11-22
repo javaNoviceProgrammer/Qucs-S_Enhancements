@@ -5,8 +5,7 @@
  * against Grover's formula, a two-wire line against its exact value, and
  * the mesh solved for the current that makes a loop.
  *
- * The last line of phase B of an earlier note
- * method.md: "partial inductances for L".
+ * Partial inductances for L.
  */
 #include <QtTest>
 

@@ -19,7 +19,7 @@
  * On macOS 13.3 and later Accelerate's LAPACK factorizes them, its new
  * interface (ACCELERATE_NEW_LAPACK) - measured on an M2 Ultra 9 to 11 times
  * Eigen's PartialPivLU on a complex matrix of 4000 to 6000 rows and 15 to 17
- * times on a real one of 6000 to 8000, to the same accuracy
+ * times on a real one of 6000 to 8000, to the same accuracy.
  * Its classic interface,
  * which macOS 13.0 has, is not used: for a complex matrix half the new
  * one's speed and three times the matrix's memory at its peak.

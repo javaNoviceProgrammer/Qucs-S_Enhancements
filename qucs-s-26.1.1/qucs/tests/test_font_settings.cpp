@@ -5,7 +5,8 @@
  *
  * On macOS these play what the real font panel does (a QFontDialog with no
  * buttons, told a font at each change and once more as it closes, then
- * rejected: seen on macOS 27 with Qt 6.12, an earlier note). The panel itself needs a display: a driver script works it. Elsewhere they use Qt's own dialog, with its
+ * rejected: seen on macOS 27 with Qt 6.12). The panel itself needs a display.
+ * Elsewhere they use Qt's own dialog, with its
  * OK and Cancel.
  */
 #include <QtTest>

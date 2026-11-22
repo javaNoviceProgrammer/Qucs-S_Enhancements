@@ -10,17 +10,15 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
- * The accuracy limits of the open items of 8 November
- * The walls' current
- * (A1), the metal's loss (A2), and a quasi-static Z0's convergence. Each
+ * The accuracy limits: the walls' current, the metal's loss, and a
+ * quasi-static Z0's convergence. Each
  * reference is a number made once, outside the test, and said where it came
  * from:
  *
- * - **The 2D eddy-current solves** (an eddy-current solver, the reference lines beside
- *   an earlier note): each line's
+ * - **The 2D eddy-current solves**: each line's
  *   R and L per metre, its metal in rectangles of uniform current graded to
  *   a hundredth of a micrometre at its faces, the chuck's image under it.
- * - **The boundary-element solve** (wheeler.py, there too): the alumina
+ * - **The boundary-element solve**: the alumina
  *   line's external inductance in vacuum, 1/(c^2 C0).
  * - **Palace 0.19** (a 3D and 2D finite-element solver, run once beside
  *   this work) and **QFEM** (the 2D multiphysics engine's mode solve, its

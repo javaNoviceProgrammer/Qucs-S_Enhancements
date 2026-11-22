@@ -352,7 +352,7 @@ survives a save/load and a properties-dialog Apply unchanged. With
 `QUCS_NETLIST_AUDIT=<dir>` it also writes the surveys (every component's
 netlists, and every property marked to show which ones the SPICE netlist
 ignores), and `scripts/netlist-audit.sh <build> <out>` runs the resulting
-decks through ngspice. What that turned up is written up
+decks through ngspice.
 
 ## Crash reports and recovery
 
