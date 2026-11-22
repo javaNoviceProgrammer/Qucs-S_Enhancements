@@ -423,13 +423,19 @@ Export3 fieldExport3(const Solutions3& set, const Node& node)
 /// A magnetic field's coils' impedance matrix at each frequency of a
 /// Frequency Domain step (its coil sweep's: mf.R_<i>_<j> + jω mf.L_<i>_<j>),
 /// its ports the coils fed a current, a Touchstone 1.1 file in ohms as they
-/// are (# Hz Z RI R 1); empty, and why.
-QString coilTouchstone(const Solution3& s, const Field3& f, const QStringList& comments, int* ports, QString* error)
+/// are (# Hz Z RI R 1); empty, and why. Its rows the snapshots of a
+/// frequency (\a rows), its ports the last one's - a Stationary or a Time
+/// Dependent step after it neither.
+QString coilTouchstone(const Solution3& s, const Field3& f, const QStringList& comments, int* ports, std::vector<int>* rows, QString* error)
 {
+    rows->clear();
+    for (int k = 0; k < s.snapshotCount(); ++k)
+        if (s.snapshotFrequency(k) > 0) rows->push_back(k);
+    const std::vector<Field3::Terminal>* terminals = rows->empty() ? nullptr : s.snapshotTerminals(rows->back(), s.fieldIndex(f.tag));
     QStringList names;
-    for (const Field3::Terminal& t : f.terminals)
+    for (const Field3::Terminal& t : terminals ? *terminals : f.terminals)
         if (t.floating) names << t.name;
-    if (!s.smallSignal || s.snapshotCount() == 0 || names.isEmpty()) {
+    if (!s.smallSignal || rows->empty() || names.isEmpty()) {
         *error = tr("%1: its Touchstone file is its coils' impedance matrix at each frequency of a Frequency Domain step - its coils fed a "
                     "current, a single conductor's or turns'")
                      .arg(f.tag);
@@ -453,7 +459,7 @@ QString coilTouchstone(const Solution3& s, const Field3& f, const QStringList& c
     for (const QString& c : comments) text += QStringLiteral("! ") + c + QLatin1Char('\n');
     text += QStringLiteral("! ports: %1\n").arg(names.join(QLatin1String(", ")));
     text += QStringLiteral("# Hz Z RI R 1\n");
-    for (int k = 0; k < K; ++k) {
+    for (const int k : *rows) {
         const double fr = s.snapshotFrequency(k), w = 2 * M_PI * fr;
         const auto entry = [&](int i, int j) {
             const std::size_t at = std::size_t(i * n + j);
@@ -508,8 +514,9 @@ Export3 touchstone3(const Solutions3& set, const Node& node)
                 QStringList comments{tr("%1, %2 of %3").arg(f.tag, s.studyTag, s.model().fileName.isEmpty() ? tr("a model") : s.model().fileName)};
                 if (!s.label.isEmpty()) comments << s.label;
                 int ports = 0;
+                std::vector<int> rows;
                 QString why;
-                out.main.text = coilTouchstone(s, f, comments, &ports, &why);
+                out.main.text = coilTouchstone(s, f, comments, &ports, &rows, &why);
                 if (out.main.text.isEmpty()) {
                     out.main.error = why;
                     return out;
@@ -517,9 +524,9 @@ Export3 touchstone3(const Solutions3& set, const Node& node)
                 out.main.suffix = QStringLiteral("s%1p").arg(ports);
                 out.main.summary = tr("%1 coils' impedance matrix at %2 frequencies (%3 to %4), Touchstone 1.1 (Z, ohms)")
                                        .arg(ports)
-                                       .arg(s.snapshotCount())
-                                       .arg(formatQuantity(s.snapshotFrequency(0), Dim::of(0, 0, -1)),
-                                            formatQuantity(s.snapshotFrequency(s.snapshotCount() - 1), Dim::of(0, 0, -1)));
+                                       .arg(rows.size())
+                                       .arg(formatQuantity(s.snapshotFrequency(rows.front()), Dim::of(0, 0, -1)),
+                                            formatQuantity(s.snapshotFrequency(rows.back()), Dim::of(0, 0, -1)));
                 return out;
             }
     if (!o) {

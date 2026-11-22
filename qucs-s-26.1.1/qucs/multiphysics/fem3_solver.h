@@ -133,6 +133,12 @@ public:
     /// signal about the solution at rest), each of its frequency (Hz).
     bool smallSignal = false;
     double snapshotFrequency(int i) const { return a_snapshots[std::size_t(i)].frequency; }
+    /// Field \a field's terminals in snapshot \a i (null: none kept).
+    const std::vector<Field3::Terminal>* snapshotTerminals(int i, int field) const
+    {
+        if (i < 0 || i >= int(a_snapshots.size()) || field < 0 || field >= int(a_snapshots[std::size_t(i)].terminals.size())) return nullptr;
+        return &a_snapshots[std::size_t(i)].terminals[std::size_t(field)];
+    }
     /// The frequency the globals are of (Hz; 0: none).
     double frequency() const { return a_frequency; }
     void setFrequency(double f) { a_frequency = f; }

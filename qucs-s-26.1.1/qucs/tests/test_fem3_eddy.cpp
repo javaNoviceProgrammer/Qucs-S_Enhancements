@@ -767,6 +767,27 @@ private slots:
             QVERIFY2(std::abs(v[1 + 2 * k].toDouble() - r) < 1e-8 * std::abs(r) + 1e-15 && std::abs(v[2 + 2 * k].toDouble() - x) < 1e-8 * std::abs(x),
                      qPrintable(QStringLiteral("Z%1: %2 %3 against %4 %5").arg(QLatin1String(order[k]), v[1 + 2 * k], v[2 + 2 * k]).arg(r).arg(x)));
         }
+        // A Stationary and a Time Dependent step after it: its rows the
+        // frequency domain's alone, the same, its ports its last
+        // frequency's (before: refused, the coils' terminals the time
+        // domain's; or a row a snapshot, of 0 Hz).
+        for (Node& c : m.root.children)
+            if (c.type == QLatin1String("study")) {
+                c.children.push_back(m.make(QStringLiteral("stationary")));
+                Node tr = m.make(QStringLiteral("transient"));
+                tr.props.insert(QStringLiteral("times"), QStringLiteral("0, 1[us]"));
+                c.children.push_back(tr);
+            }
+        const Solved after = solve(m);
+        QVERIFY2(after.error.isEmpty(), qPrintable(why(after)));
+        QVERIFY(after.s().snapshotCount() > 2);
+        const Export3 again = export3(Solutions3{after.r.solution}, node, QStringLiteral("coils"));
+        QVERIFY2(again.main.error.isEmpty(), qPrintable(again.main.error));
+        QStringList rows;
+        for (const QString& line : again.main.text.split(QLatin1Char('\n'), Qt::SkipEmptyParts))
+            if (!line.startsWith(QLatin1Char('#')) && !line.startsWith(QLatin1Char('!'))) rows << line;
+        QVERIFY2(rows == data && again.main.suffix == QLatin1String("s2p"), qPrintable(again.main.text));
+        QVERIFY2(again.main.summary.contains(QStringLiteral("at 2 frequencies")), qPrintable(again.main.summary));
     }
 
     // A copper disc 5 mm in radius, 1 mm thick, under a ring of 1e6 A/m²
