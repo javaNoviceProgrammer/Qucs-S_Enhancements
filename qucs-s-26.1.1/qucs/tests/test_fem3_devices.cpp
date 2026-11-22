@@ -764,7 +764,9 @@ private slots:
     // over its section, round it - against Neumann's formula for two coaxial
     // circles, M = µ0 √(ab) [(2/k - k) K(k) - (2/k) E(k)] (its elliptic
     // integrals by the arithmetic-geometric mean), within 1 %: the sections'
-    // 0.1 %, the box's walls and the mesh the rest. A Release build's.
+    // 0.1 %, the box's walls and the mesh the rest. A Release build's: some
+    // 109,000 prisms, 22 s, and a peak of 3.3 GB (CI's macOS runner has 7 GB
+    // for three tests at once).
     void coaxialLoops()
     {
         if (slowBuild()) QSKIP("a Release build's");
@@ -797,6 +799,19 @@ private slots:
         const QString said = QStringLiteral("two coaxial loops: M %1 nH, Neumann's %2 nH (%3)").arg(M * 1e9).arg(neumann * 1e9).arg(size);
         qInfo("%s", qPrintable(said));
         QVERIFY2(std::abs(M - neumann) < 1e-2 * neumann, qPrintable(said));
+        // Its mesh by band (the mesh's Plan): fewer prisms, its rings' fine
+        // triangles not through all the air.
+        Model banded = *m;
+        banded.mesh().props.insert(QStringLiteral("plan"), QStringLiteral("band"));
+        const Mesh3Build bb = buildMesh3(banded, *ps, g.topology);
+        QVERIFY2(bb.mesh, qPrintable(bb.error));
+        const QString bands = QStringLiteral("two coaxial loops by band: %1 prisms (%2 plan triangles in %3 bands) against %4")
+                                  .arg(bb.mesh->prisms.size())
+                                  .arg(bb.mesh->planTriangles())
+                                  .arg(bb.mesh->bands.size())
+                                  .arg(mb.mesh->prisms.size());
+        qInfo("%s", qPrintable(bands));
+        QVERIFY2(bb.mesh->byBand() && bb.mesh->prisms.size() < mb.mesh->prisms.size(), qPrintable(bands));
     }
 
 

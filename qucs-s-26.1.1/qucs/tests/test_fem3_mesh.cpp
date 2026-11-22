@@ -70,48 +70,85 @@ Built meshOf(const Model& m)
 
 /// A mesh's prisms where its plan's triangles are, at its heights; its
 /// faces turned from their face's back into its front, each domain's closed;
-/// its volume each domain's.
+/// its volume each domain's. By band: each band's prisms its plan's, through
+/// its heights only, no interface at a level.
 void checkMesh(const Mesh3& m)
 {
     const Topology3& t = *m.topology;
     const double scale = std::max(1.0, t.bounds.diagonal());
+    QVERIFY(!m.bands.empty());
     QCOMPARE(m.nodes.size(), m.nodeOrigin.size());
+    QCOMPARE(m.nodes.size(), m.nodeBand.size());
+    QCOMPARE(m.prisms.size(), m.prismBand.size());
+    for (std::size_t b = 0; b + 1 < m.bands.size(); ++b) {
+        QCOMPARE(m.bands[b].last, m.bands[b + 1].first);
+        QVERIFY2(std::find(m.levelHeight.begin(), m.levelHeight.end(), m.bands[b].last) == m.levelHeight.end(), "an interface at a level");
+    }
+    QCOMPARE(m.bands.front().first, 0);
+    QCOMPARE(m.bands.back().last, int(m.heights.size()) - 1);
     for (std::size_t i = 0; i < m.nodes.size(); ++i) {
         const auto [n, j] = m.nodeOrigin[i];
-        QCOMPARE(m.node(n, j), int(i));
-        QCOMPARE(m.nodes[i].x, m.plan->nodes[std::size_t(n)].x());
-        QCOMPARE(m.nodes[i].y, m.plan->nodes[std::size_t(n)].y());
+        const int b = m.nodeBand[i];
+        const Mesh& plan = *m.bands[std::size_t(b)].plan;
+        QCOMPARE(m.node(b, n, j), int(i));
+        QCOMPARE(m.nodes[i].x, plan.nodes[std::size_t(n)].x());
+        QCOMPARE(m.nodes[i].y, plan.nodes[std::size_t(n)].y());
         QCOMPARE(m.nodes[i].z, m.heights[std::size_t(j)]);
     }
     std::vector<double> volume(t.domains.size(), 0);
     for (std::size_t p = 0; p < m.prisms.size(); ++p) {
-        const std::array<int, 3>& tri = m.plan->triangles[std::size_t(m.prismTriangle[p])];
+        const Mesh3::Band& band = m.bands[std::size_t(m.prismBand[p])];
+        QVERIFY(m.prismLayer[p] >= band.first && m.prismLayer[p] < band.last);
+        const std::array<int, 3>& tri = band.plan->triangles[std::size_t(m.prismTriangle[p])];
         for (int c = 0; c < 3; ++c) {
             QVERIFY(m.prisms[p][std::size_t(c)] >= 0 && m.prisms[p][std::size_t(c) + 3] >= 0);
-            QCOMPARE(m.nodeOrigin[std::size_t(m.prisms[p][std::size_t(c)])], (std::pair<int, int>(tri[std::size_t(c)], m.prismLayer[p])));
-            QCOMPARE(m.nodeOrigin[std::size_t(m.prisms[p][std::size_t(c) + 3])], (std::pair<int, int>(tri[std::size_t(c)], m.prismLayer[p] + 1)));
+            // (Its band's node there - at its interface with the band below,
+            // where that band's plan has a node at the same place, that one.)
+            for (int up = 0; up < 2; ++up) {
+                const int node = m.prisms[p][std::size_t(c + 3 * up)], j = m.prismLayer[p] + up;
+                QCOMPARE(m.node(m.prismBand[p], tri[std::size_t(c)], j), node);
+                const QPointF q = band.plan->nodes[std::size_t(tri[std::size_t(c)])];
+                QCOMPARE(m.nodes[std::size_t(node)].x, q.x());
+                QCOMPARE(m.nodes[std::size_t(node)].y, q.y());
+                QCOMPARE(m.nodes[std::size_t(node)].z, m.heights[std::size_t(j)]);
+                if (m.nodeBand[std::size_t(node)] != m.prismBand[p]) {
+                    QVERIFY2(j == band.first && m.nodeBand[std::size_t(node)] == m.prismBand[p] - 1, "a node another band's only at its interface below");
+                } else {
+                    QCOMPARE(m.nodeOrigin[std::size_t(node)], (std::pair<int, int>(tri[std::size_t(c)], j)));
+                }
+            }
         }
         const Vec3 a = m.nodes[std::size_t(m.prisms[p][0])], b = m.nodes[std::size_t(m.prisms[p][1])], c = m.nodes[std::size_t(m.prisms[p][2])];
         const double area = ((b - a).cross(c - a)).z / 2;
         QVERIFY2(area > 0, "a prism's bottom is counter-clockwise seen from above");
         volume[std::size_t(m.domain[p])] += area * (m.nodes[std::size_t(m.prisms[p][3])].z - a.z);
     }
-    // Each domain's volume its cells' - its plan domains' triangles times its
-    // slabs' heights - exactly; the geometry's within the polygon a curved
-    // wall's plan nodes make (a P1 mesh's; on straight walls exact).
-    std::vector<double> planArea(t.plan->domains.size(), 0);
-    for (std::size_t i = 0; i < m.plan->triangles.size(); ++i) {
-        const std::array<int, 3>& tri = m.plan->triangles[i];
-        const QPointF a = m.plan->nodes[std::size_t(tri[0])], b = m.plan->nodes[std::size_t(tri[1])], c = m.plan->nodes[std::size_t(tri[2])];
-        planArea[std::size_t(m.plan->domain[i])] += ((b.x() - a.x()) * (c.y() - a.y()) - (b.y() - a.y()) * (c.x() - a.x())) / 2;
+    // Each domain's volume its cells' - each band's plan domains' triangles
+    // times its layers' heights in the slabs the domain fills - exactly; the
+    // geometry's within the polygon a curved wall's plan nodes make (a P1
+    // mesh's; on straight walls exact).
+    std::vector<int> slabOf(m.heights.size(), 0);
+    for (std::size_t k = 0; k + 1 < m.levelHeight.size(); ++k)
+        for (int j = m.levelHeight[k]; j < m.levelHeight[k + 1]; ++j) slabOf[std::size_t(j)] = int(k);
+    std::vector<double> cells(t.domains.size(), 0);
+    for (const Mesh3::Band& band : m.bands) {
+        std::vector<double> planArea(t.plan->domains.size(), 0);
+        for (std::size_t i = 0; i < band.plan->triangles.size(); ++i) {
+            const std::array<int, 3>& tri = band.plan->triangles[i];
+            const QPointF a = band.plan->nodes[std::size_t(tri[0])], b = band.plan->nodes[std::size_t(tri[1])], c = band.plan->nodes[std::size_t(tri[2])];
+            planArea[std::size_t(band.plan->domain[i])] += ((b.x() - a.x()) * (c.y() - a.y()) - (b.y() - a.y()) * (c.x() - a.x())) / 2;
+        }
+        for (std::size_t pd = 0; pd < planArea.size(); ++pd)
+            for (int j = band.first; j < band.last; ++j) {
+                const int d = t.cell(int(pd), slabOf[std::size_t(j)]);
+                if (d >= 0) cells[std::size_t(d)] += planArea[pd] * (m.heights[std::size_t(j) + 1] - m.heights[std::size_t(j)]);
+            }
     }
     double total = 0;
     for (std::size_t d = 0; d < t.domains.size(); ++d) {
         total += volume[d];
-        double cells = 0;
-        for (const auto& [pd, k] : t.domains[d].cells) cells += planArea[std::size_t(pd)] * (t.levels[std::size_t(k) + 1] - t.levels[std::size_t(k)]);
-        QVERIFY2(std::abs(volume[d] - cells) <= 1e-9 * scale * scale * scale,
-                 qPrintable(QStringLiteral("domain %1: prisms %2, its cells %3").arg(d + 1).arg(volume[d]).arg(cells)));
+        QVERIFY2(std::abs(volume[d] - cells[d]) <= 1e-9 * scale * scale * scale,
+                 qPrintable(QStringLiteral("domain %1: prisms %2, its cells %3").arg(d + 1).arg(volume[d]).arg(cells[d])));
         bool curved = false;
         for (const Topology3::Face& f : t.faces) curved = curved || (!f.planar && (f.back == int(d) || f.front == int(d)));
         QVERIFY2(std::abs(volume[d] - t.domains[d].volume) <= (curved ? 5e-2 : 1e-9) * t.domains[d].volume,
@@ -277,6 +314,102 @@ private slots:
             const int pd = mesh.plan->domain[std::size_t(mesh.prismTriangle[p])];
             const int k = fine.topology->slabAt((mesh.heights[std::size_t(mesh.prismLayer[p])] + mesh.heights[std::size_t(mesh.prismLayer[p]) + 1]) / 2);
             QCOMPARE(fine.topology->cell(pd, k), mesh.domain[p]);
+        }
+    }
+
+    /// By band (the mesh's Plan): two small blocks asked fine (0.25), one
+    /// near the floor of a tall box of air and one near its top, and a
+    /// cylinder through all its height. Bands, none of whose interfaces is a
+    /// level; a band of air between them coarse, the blocks' footprints
+    /// merged there; the cylinder's wall one surface through them (its
+    /// domains closed); every prism's domain the cell's; fewer prisms than
+    /// one plan for every layer.
+    void aMeshByBand()
+    {
+        Model m = model3d(4);
+        addBox(m, QStringLiteral("air"), -10, -10, 0, 20, 20, 40);
+        addBox(m, QStringLiteral("low"), -6, -1, 2, 2, 2, 1);
+        addBox(m, QStringLiteral("high"), 4, -1, 36, 2, 2, 1);
+        Node c = m.make(QStringLiteral("cylinder"));
+        c.label = QStringLiteral("pillar");
+        c.props.insert(QStringLiteral("center"), pairOf(0, 6));
+        c.props.insert(QStringLiteral("radius"), QStringLiteral("2"));
+        c.props.insert(QStringLiteral("z"), QStringLiteral("0"));
+        c.props.insert(QStringLiteral("height"), QStringLiteral("40"));
+        m.add(m.geometry().tag, c);
+        Node size = m.make(QStringLiteral("mesh/size"));
+        size.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("only"), QJsonArray{QStringLiteral("low"), QStringLiteral("high")}}});
+        size.props.insert(QStringLiteral("hmax"), QStringLiteral("0.25"));
+        m.add(m.mesh().tag, size);
+        const Built one = meshOf(m);
+        QVERIFY2(one.mesh.mesh, qPrintable(one.mesh.error));
+        QVERIFY(!one.mesh.mesh->byBand());
+        m.mesh().props.insert(QStringLiteral("plan"), QStringLiteral("band"));
+        const Built banded = meshOf(m);
+        QVERIFY2(banded.mesh.mesh, qPrintable(banded.mesh.error));
+        const Mesh3& mesh = *banded.mesh.mesh;
+        checkMesh(mesh);
+        QString said = QStringLiteral("by band: %1 prisms against %2 (%3 bands:").arg(mesh.prisms.size()).arg(one.mesh.mesh->prisms.size()).arg(mesh.bands.size());
+        for (const Mesh3::Band& b : mesh.bands)
+            said += QStringLiteral(" z %1 to %2, %3 triangles%4;")
+                        .arg(mesh.heights[std::size_t(b.first)])
+                        .arg(mesh.heights[std::size_t(b.last)])
+                        .arg(b.plan->triangles.size())
+                        .arg(b.merged.empty() ? QString() : QStringLiteral(" merged"));
+        qInfo("%s", qPrintable(said + QLatin1Char(')')));
+        QVERIFY2(mesh.bands.size() >= 3, qPrintable(said));
+        QVERIFY2(mesh.prisms.size() < 0.7 * one.mesh.mesh->prisms.size(), qPrintable(said));
+        // The band at mid-height: coarse, its blocks' footprints merged.
+        const Mesh3::Band* middle = nullptr;
+        for (const Mesh3::Band& b : mesh.bands)
+            if (mesh.heights[std::size_t(b.first)] <= 20 && mesh.heights[std::size_t(b.last)] >= 20) middle = &b;
+        QVERIFY(middle);
+        QVERIFY2(!middle->merged.empty() && middle->plan->triangles.size() < one.mesh.mesh->plan->triangles.size() / 2, qPrintable(said));
+        // The pillar - whole in every band - the same triangles in each; at
+        // each interface its nodes one, the finer side named.
+        QCOMPARE(int(mesh.interfaceFiner.size()), int(mesh.bands.size()) - 1);
+        int pillar = -1;
+        for (std::size_t pd = 0; pd < banded.topology->plan->domains.size(); ++pd)
+            if (banded.topology->cell(int(pd), 0) >= 0 && banded.topology->domains[std::size_t(banded.topology->cell(int(pd), 0))].owner
+                                                             == int(banded.topology->objectNames.indexOf(QStringLiteral("pillar"))))
+                pillar = int(pd);
+        QVERIFY(pillar >= 0);
+        const auto trianglesOf = [pillar](const Mesh& plan) {
+            std::vector<std::array<double, 6>> out;
+            for (std::size_t i = 0; i < plan.triangles.size(); ++i) {
+                if (plan.domain[i] != pillar) continue;
+                std::array<double, 6> tri{};
+                for (int c = 0; c < 3; ++c) {
+                    tri[std::size_t(2 * c)] = plan.nodes[std::size_t(plan.triangles[i][std::size_t(c)])].x();
+                    tri[std::size_t(2 * c + 1)] = plan.nodes[std::size_t(plan.triangles[i][std::size_t(c)])].y();
+                }
+                out.push_back(tri);
+            }
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        const auto first = trianglesOf(*mesh.bands.front().plan);
+        QVERIFY(!first.empty());
+        for (const Mesh3::Band& b : mesh.bands) QVERIFY2(trianglesOf(*b.plan) == first, "the pillar's triangles the same in every band");
+        for (std::size_t i = 0; i + 1 < mesh.bands.size(); ++i) {
+            const int f = mesh.interfaceFiner[i];
+            QVERIFY(f == int(i) || f == int(i) + 1);
+            // (The pillar's nodes at the interface the band below's.)
+            const Mesh3::Band& up = mesh.bands[i + 1];
+            for (std::size_t t3 = 0; t3 < up.plan->triangles.size(); ++t3) {
+                if (up.plan->domain[t3] != pillar) continue;
+                for (int n : up.plan->triangles[t3]) {
+                    const int node = mesh.node(int(i) + 1, n, up.first);
+                    QVERIFY2(node >= 0 && mesh.nodeBand[std::size_t(node)] == int(i), "a shared node at an interface not one");
+                }
+            }
+        }
+        // Every prism's domain the cell's of its triangle's (merged) plan
+        // domain and its slab.
+        for (std::size_t p = 0; p < mesh.prisms.size(); ++p) {
+            const int pd = mesh.planOf(int(p)).domain[std::size_t(mesh.prismTriangle[p])];
+            const int k = banded.topology->slabAt((mesh.heights[std::size_t(mesh.prismLayer[p])] + mesh.heights[std::size_t(mesh.prismLayer[p]) + 1]) / 2);
+            QCOMPARE(banded.topology->cell(pd, k), mesh.domain[p]);
         }
     }
 

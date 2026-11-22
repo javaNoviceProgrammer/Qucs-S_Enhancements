@@ -2173,6 +2173,12 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         out.error = tr("there is no mesh to solve on");
         return out;
     }
+    // (A mesh by band: its bands' interfaces not yet joined in the fields'
+    // spaces - its plan one for every layer solves.)
+    if (mesh->byBand()) {
+        out.error = tr("a mesh by band of layers (%1 bands) is not solved yet: set the mesh's Plan to one for every layer").arg(mesh->bands.size());
+        return out;
+    }
     if (!parameters) parameters = evaluateParameters(model);
     if (const QStringList unsolved = unsolvedPhysics3(model); !unsolved.isEmpty()) {
         out.error = tr("%1: not solved in 3D yet - heat, electrostatics, electric currents, solid mechanics, magnetic fields and semiconductors are")

@@ -131,6 +131,10 @@ using Progress = std::function<bool(double fraction, const QString& what)>;
 
 /// Meshes \a topology to \a sizes.
 MeshBuild buildMesh(std::shared_ptr<const Topology> topology, const MeshSizes& sizes, const Progress& progress = {});
+/// Boundary edge \a e of \a m split at \a p, \a s of the way from its a to
+/// its b: each triangle by it in two, the edges that bound them told (a
+/// periodic side's, a 3D mesh's band's plan's matched to another's).
+void splitBoundaryEdge(Mesh& m, int e, QPointF p, double s);
 /// Each periodic condition of \a sizes' two sides made the same node for node:
 /// a node of one moved onto the other where it has none, splitting its edge
 /// there.
