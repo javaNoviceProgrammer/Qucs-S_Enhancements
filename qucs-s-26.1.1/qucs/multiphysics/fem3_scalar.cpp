@@ -13,6 +13,7 @@
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  */
+#include "fem3_bands.h"
 #include "fem3_problem.h"
 
 #include "fem_problem.h"
@@ -58,13 +59,29 @@ struct TerminalDef {
 
 /// A system's equations, each degree of freedom's.
 struct Equations {
-    std::vector<int> eq;        // by dof: its equation; -1 none (not solved there); -3 fixed
+    std::vector<int> eq;        // by dof: its equation; -1 none (not solved there); -3 fixed; -4 constrained
     std::vector<int> fixed;     // by dof: its index among the fixed, -1
     std::vector<int> fixedDof;  // by fixed index: its dof
     std::vector<int> fixedFace; // by fixed index: the face whose value it takes (-1: a sweep's)
     std::vector<int> terminal;  // by dof: its terminal (a fixed or group dof's), -1
     std::vector<int> groupEq;   // by terminal: its equation (floating), -1
     int neq = 0;
+    /// A mesh by band's: by dof its constraint's row (-1: none), and the
+    /// constraints - an interface's finer side's values its masters'.
+    std::vector<int> cons;
+    const Constraints3* constraints = nullptr;
+    /// Each (equation, fixed index, weight) a dof's value is made of: its
+    /// own, or a constrained one's masters'.
+    template <typename F>
+    void expand(int dof, F f) const
+    {
+        const int c = cons.empty() ? -1 : cons[std::size_t(dof)];
+        if (c < 0) {
+            f(eq[std::size_t(dof)], fixed[std::size_t(dof)], 1.0);
+            return;
+        }
+        for (const auto& [m, w] : constraints->rows[std::size_t(c)]) f(eq[std::size_t(m)], fixed[std::size_t(m)], w);
+    }
 };
 
 /// A system assembled: the free equations', and the fixed dofs' rows for
@@ -163,6 +180,7 @@ private:
     bool sweepTerminals(const Options3& o, QString* error);
 
     bool a_es = false, a_ec = false, a_heat = false;
+    Constraints3 a_constraints;   // a mesh by band's interfaces'
     double a_scale = 1;
     std::vector<Condition> a_conditions;          // by face
     std::vector<std::vector<Natural>> a_natural;  // by face
@@ -193,6 +211,10 @@ bool ScalarProblem3::setup(QString* error)
     a_es = type == QLatin1String("electrostatics");
     a_ec = type == QLatin1String("currents");
     a_heat = type == QLatin1String("heat");
+    // (A mesh by band: its interfaces' finer side's values the coarser's
+    // interpolation - fem3_bands.h.)
+    a_constraints = mesh.byBand() && f.space ? nodalConstraints(*f.space) : Constraints3();
+    if (!a_constraints.empty() && !constraintsUnchained(a_constraints, f.space->size(), error)) return false;
     a_scale = a_es ? Eps0 : 1.0;
     const std::size_t D = topo.domains.size(), F = topo.faces.size();
     QString why;
@@ -598,6 +620,18 @@ void ScalarProblem3::buildEquations(bool sweep, Equations& q) const
                 q.terminal[std::size_t(dof)] = c.terminal;
             }
         }
+    // A mesh by band: its interfaces' constrained dofs no equations of their
+    // own (held or a group's: as they are - their masters alike).
+    if (!a_constraints.empty()) {
+        q.cons.assign(n, -1);
+        q.constraints = &a_constraints;
+        for (std::size_t k = 0; k < a_constraints.dofs.size(); ++k) {
+            const std::size_t dof = std::size_t(a_constraints.dofs[k]);
+            if (q.eq[dof] != -2 || group[dof]) continue;
+            q.eq[dof] = -4;
+            q.cons[dof] = int(k);
+        }
+    }
     // The equations: each floating terminal's one, then each free dof's.
     for (std::size_t dof = 0; dof < n; ++dof) {
         if (q.eq[dof] == -3) {
@@ -659,24 +693,28 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
         for (int i = 0; i < m; ++i) {
             const int di = dofs[std::size_t(i)];
             if (di < 0) continue;
-            const int ei = q.eq[std::size_t(di)], fi = q.fixed[std::size_t(di)];
-            if (ei >= 0) out.F(ei) += Fe[std::size_t(i)];
-            else if (fi >= 0) out.Fd(fi) += Fe[std::size_t(i)];
-            else continue;
-            for (int j = 0; j < m; ++j) {
-                const int dj = dofs[std::size_t(j)];
-                if (dj < 0) continue;
-                const double v = K[std::size_t(i * m + j)];
-                if (v == 0) continue;
-                const int ej = q.eq[std::size_t(dj)], fj = q.fixed[std::size_t(dj)];
-                if (ei >= 0) {
-                    if (ej >= 0) ta.emplace_back(ei, ej, v);
-                    else if (fj >= 0) tc.emplace_back(ei, fj, v);
-                } else {
-                    if (ej >= 0) tr.emplace_back(fi, ej, v);
-                    else if (fj >= 0) td.emplace_back(fi, fj, v);
+            // (A constrained dof's row and column its masters', weighted.)
+            q.expand(di, [&](int ei, int fi, double wi) {
+                if (ei >= 0) out.F(ei) += wi * Fe[std::size_t(i)];
+                else if (fi >= 0) out.Fd(fi) += wi * Fe[std::size_t(i)];
+                else return;
+                for (int j = 0; j < m; ++j) {
+                    const int dj = dofs[std::size_t(j)];
+                    if (dj < 0) continue;
+                    const double v = K[std::size_t(i * m + j)];
+                    if (v == 0) continue;
+                    q.expand(dj, [&](int ej, int fj, double wj) {
+                        const double vv = wi * wj * v;
+                        if (ei >= 0) {
+                            if (ej >= 0) ta.emplace_back(ei, ej, vv);
+                            else if (fj >= 0) tc.emplace_back(ei, fj, vv);
+                        } else {
+                            if (ej >= 0) tr.emplace_back(fi, ej, vv);
+                            else if (fj >= 0) td.emplace_back(fi, fj, vv);
+                        }
+                    });
                 }
-            }
+            });
         }
     };
     // The elements in parts on threads, each its own evaluator, triplets and
@@ -696,24 +734,27 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
         for (int i = 0; i < m; ++i) {
             const int di = dofs[std::size_t(i)];
             if (di < 0) continue;
-            const int ei = q.eq[std::size_t(di)], fi = q.fixed[std::size_t(di)];
-            if (ei >= 0) p.f.emplace_back(ei, Fe[std::size_t(i)]);
-            else if (fi >= 0) p.fd.emplace_back(fi, Fe[std::size_t(i)]);
-            else continue;
-            for (int j = 0; j < m; ++j) {
-                const int dj = dofs[std::size_t(j)];
-                if (dj < 0) continue;
-                const double v = K[std::size_t(i * m + j)];
-                if (v == 0) continue;
-                const int ej = q.eq[std::size_t(dj)], fj = q.fixed[std::size_t(dj)];
-                if (ei >= 0) {
-                    if (ej >= 0) p.ta.emplace_back(ei, ej, v);
-                    else if (fj >= 0) p.tc.emplace_back(ei, fj, v);
-                } else {
-                    if (ej >= 0) p.tr.emplace_back(fi, ej, v);
-                    else if (fj >= 0) p.td.emplace_back(fi, fj, v);
+            q.expand(di, [&](int ei, int fi, double wi) {
+                if (ei >= 0) p.f.emplace_back(ei, wi * Fe[std::size_t(i)]);
+                else if (fi >= 0) p.fd.emplace_back(fi, wi * Fe[std::size_t(i)]);
+                else return;
+                for (int j = 0; j < m; ++j) {
+                    const int dj = dofs[std::size_t(j)];
+                    if (dj < 0) continue;
+                    const double v = K[std::size_t(i * m + j)];
+                    if (v == 0) continue;
+                    q.expand(dj, [&](int ej, int fj, double wj) {
+                        const double vv = wi * wj * v;
+                        if (ei >= 0) {
+                            if (ej >= 0) p.ta.emplace_back(ei, ej, vv);
+                            else if (fj >= 0) p.tc.emplace_back(ei, fj, vv);
+                        } else {
+                            if (ej >= 0) p.tr.emplace_back(fi, ej, vv);
+                            else if (fj >= 0) p.td.emplace_back(fi, fj, vv);
+                        }
+                    });
                 }
-            }
+            });
         }
     };
     const PrismRule& rule = sp.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
@@ -883,13 +924,17 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
             scatterInto(part, dofs, K, Fe);
             if (derived)
                 for (int i = 0; i < per; ++i) {
-                    const int ei = dofs[std::size_t(i)] >= 0 ? q.eq[std::size_t(dofs[std::size_t(i)])] : -1;
-                    if (ei < 0) continue;
-                    for (int j = 0; j < per; ++j) {
-                        const int ej = dofs[std::size_t(j)] >= 0 ? q.eq[std::size_t(dofs[std::size_t(j)])] : -1;
-                        const double v = Je[std::size_t(i * per + j)];
-                        if (ej >= 0 && v != 0) part.tj.emplace_back(ei, ej, v);
-                    }
+                    if (dofs[std::size_t(i)] < 0) continue;
+                    q.expand(dofs[std::size_t(i)], [&](int ei, int, double wi) {
+                        if (ei < 0) return;
+                        for (int j = 0; j < per; ++j) {
+                            const double v = Je[std::size_t(i * per + j)];
+                            if (dofs[std::size_t(j)] < 0 || v == 0) continue;
+                            q.expand(dofs[std::size_t(j)], [&](int ej, int, double wj) {
+                                if (ej >= 0) part.tj.emplace_back(ei, ej, wi * wj * v);
+                            });
+                        }
+                    });
                 }
         }
     };
@@ -967,13 +1012,17 @@ void ScalarProblem3::assemble(const Equations& q, bool withSources, Assembled& o
         scatter(fd, Kf, Ff);
         if (newton)
             for (int i = 0; i < m; ++i) {
-                const int ei = fd[std::size_t(i)] >= 0 ? q.eq[std::size_t(fd[std::size_t(i)])] : -1;
-                if (ei < 0) continue;
-                for (int j = 0; j < m; ++j) {
-                    const int ej = fd[std::size_t(j)] >= 0 ? q.eq[std::size_t(fd[std::size_t(j)])] : -1;
-                    const double v = Jf[std::size_t(i * m + j)];
-                    if (ej >= 0 && v != 0) tj.emplace_back(ei, ej, v);
-                }
+                if (fd[std::size_t(i)] < 0) continue;
+                q.expand(fd[std::size_t(i)], [&](int ei, int, double wi) {
+                    if (ei < 0) return;
+                    for (int j = 0; j < m; ++j) {
+                        const double v = Jf[std::size_t(i * m + j)];
+                        if (fd[std::size_t(j)] < 0 || v == 0) continue;
+                        q.expand(fd[std::size_t(j)], [&](int ej, int, double wj) {
+                            if (ej >= 0) tj.emplace_back(ei, ej, wi * wj * v);
+                        });
+                    }
+                });
             }
     }
     const auto matrix = [&parts](Eigen::SparseMatrix<double>& into, std::vector<T> Part::*member, const std::vector<T>& faces) {
@@ -1078,6 +1127,12 @@ bool ScalarProblem3::solve(const Options3& o, QString* error)
         for (std::size_t dof = 0; dof < f.values.size(); ++dof) {
             if (q.eq[dof] >= 0) f.values[dof] = x(q.eq[dof]);
             else if (q.fixed[dof] >= 0) f.values[dof] = ud(q.fixed[dof]);
+            else if (q.eq[dof] == -4) {
+                // (A constrained one: its masters' values, weighted.)
+                double v = 0;
+                q.expand(int(dof), [&](int e, int fx, double w) { v += w * (e >= 0 ? x(e) : fx >= 0 ? ud(fx) : 0.0); });
+                f.values[dof] = v;
+            }
         }
         a_made = a.made;
         a_assembled = true;

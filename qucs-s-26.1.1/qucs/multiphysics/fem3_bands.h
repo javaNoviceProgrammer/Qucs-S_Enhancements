@@ -21,6 +21,7 @@
 
 #include <QPointF>
 #include <QRectF>
+#include <QString>
 
 #include <array>
 #include <functional>
@@ -58,8 +59,9 @@ private:
 };
 
 /// The polygon where triangles \a p and \a c overlap (counter-clockwise;
-/// empty: none, or a sliver under \a tol of area; points within \a tol of a
-/// side taken on it).
+/// empty: none, or a sliver of an area under a millionth of \a tol²). Clipped
+/// exactly - not widened by \a tol: two triangles beside a side would both
+/// take a strip of it.
 std::vector<QPointF> clipTriangle(const Corners& c, const Corners& p, double tol);
 /// Of triangle \a p, the area the located plan's triangles cover: the sum
 /// of its overlays with them (the triangle's own where they cover it).
@@ -90,9 +92,13 @@ Constraints3 nodalConstraints(const Space3& space);
 /// components) - integrated over the two plans' overlay, each triangle's
 /// own coefficients from them by its moment matrix.
 Constraints3 edgeConstraints(const EdgeSpace3& space);
+/// Whether no master of \a c is constrained (chained constraints are not
+/// taken); why not in \a why.
+bool constraintsUnchained(const Constraints3& c, int n, QString* why);
 /// u = C v for \a n degrees of freedom: C (n by the unconstrained), each
-/// one's reduced number in \a reduced (-1: constrained).
-Eigen::SparseMatrix<double> reductionMatrix(int n, const Constraints3& c, std::vector<int>* reduced);
+/// one's reduced number in \a reduced (-1: constrained). A master
+/// constrained: an empty matrix, and why (constraintsUnchained()).
+Eigen::SparseMatrix<double> reductionMatrix(int n, const Constraints3& c, std::vector<int>* reduced, QString* why = nullptr);
 
 /// A plane field's canonical interpolation into band \a band's edge
 /// functions at height \a height (E across z there): each of its degrees of

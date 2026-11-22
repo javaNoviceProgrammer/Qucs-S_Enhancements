@@ -736,23 +736,32 @@ bool PointEvaluator3::at(const Vec3& x)
 {
     const Mesh3& m = a_s.mesh();
     if (!m.plan) return false;
-    if (!a_locator) a_locator = std::make_unique<Locator>(*m.plan);
     const double s = m.unitScale;
-    int t = -1;
-    double xi = 0, eta = 0;
-    if (!a_locator->locate(QPointF(x.x / s, x.y / s), &t, &xi, &eta)) return false;
     const double z = x.z / s;
     const std::vector<double>& h = m.heights;
     if (h.size() < 2 || z < h.front() - 1e-12 * (std::abs(h.back()) + 1) || z > h.back() + 1e-12 * (std::abs(h.back()) + 1)) return false;
     int j = int(std::upper_bound(h.begin(), h.end(), z) - h.begin()) - 1;
     j = std::clamp(j, 0, int(h.size()) - 2);
+    // (By band: the band of the layer that holds the point, its own plan.)
+    const int NB = std::max(1, int(m.bands.size()));
+    if (a_locators.empty()) a_locators.resize(std::size_t(NB));
+    const auto bandOf = [&m](int layer) {
+        for (int b = 0; b < int(m.bands.size()); ++b)
+            if (layer >= m.bands[std::size_t(b)].first && layer < m.bands[std::size_t(b)].last) return b;
+        return 0;
+    };
     // (On a height between two layers: the one below it holds it too.)
-    int e = -1;
+    int e = -1, t = -1;
+    double xi = 0, eta = 0;
     for (int k : {j, j - 1, j + 1}) {
         if (k < 0 || k > int(h.size()) - 2 || z < h[std::size_t(k)] - 1e-12 || z > h[std::size_t(k) + 1] + 1e-12) continue;
+        const int b = m.byBand() ? bandOf(k) : 0;
+        std::unique_ptr<Locator>& at = a_locators[std::size_t(b)];
+        if (!at) at = std::make_unique<Locator>(m.byBand() ? *m.bands[std::size_t(b)].plan : *m.plan);
+        if (!at->locate(QPointF(x.x / s, x.y / s), &t, &xi, &eta)) continue;
         for (const Field3& f : a_s.fields())
             if (f.space) {
-                e = f.space->prismAt(t, k);
+                e = f.space->prismAt(b, t, k);
                 break;
             }
         if (e >= 0) {
@@ -2173,12 +2182,6 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         out.error = tr("there is no mesh to solve on");
         return out;
     }
-    // (A mesh by band: its bands' interfaces not yet joined in the fields'
-    // spaces - its plan one for every layer solves.)
-    if (mesh->byBand()) {
-        out.error = tr("a mesh by band of layers (%1 bands) is not solved yet: set the mesh's Plan to one for every layer").arg(mesh->bands.size());
-        return out;
-    }
     if (!parameters) parameters = evaluateParameters(model);
     if (const QStringList unsolved = unsolvedPhysics3(model); !unsolved.isEmpty()) {
         out.error = tr("%1: not solved in 3D yet - heat, electrostatics, electric currents, solid mechanics, magnetic fields and semiconductors are")
@@ -2288,6 +2291,26 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
                 return out;
             }
             s->log << tr("Solved past the limit, as asked (force): %1").arg(past);
+        }
+    }
+    // (A mesh by band: its interfaces joined for the nodal physics -
+    // electrostatics, currents, heat - so far; the others not yet.)
+    if (mesh->byBand()) {
+        QStringList not3;
+        for (const Field3& f : s->fields())
+            if (f.type != QLatin1String("electrostatics") && f.type != QLatin1String("currents") && f.type != QLatin1String("heat")) {
+                const Node* p = model.find(f.tag);
+                not3 << (p ? p->name() : f.tag);
+            }
+        // (Light's - a full-wave solve's, an eigenmode expansion's - neither.)
+        for (const Node* p : model.physics())
+            if (p->enabled && (p->type == QLatin1String("waves3") || p->type == QLatin1String("waves3t") || p->type == QLatin1String("eme")))
+                not3 << p->name();
+        if (!not3.isEmpty()) {
+            out.error = tr("%1: not solved on a mesh by band of layers yet (electrostatics, electric currents and heat are) - set the mesh's "
+                           "Plan to one for every layer")
+                            .arg(not3.join(QLatin1String(", ")));
+            return out;
         }
     }
     s->coefficients().resize(s->fields().size());

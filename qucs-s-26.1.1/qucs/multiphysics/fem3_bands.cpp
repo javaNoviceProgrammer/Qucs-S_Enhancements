@@ -15,6 +15,7 @@
 
 #include <Eigen/Dense>
 
+#include <QCoreApplication>
 #include <QRectF>
 
 #include <algorithm>
@@ -581,8 +582,32 @@ Constraints3 nodalConstraints(const Space3& space)
     return finish(rows);
 }
 
-Eigen::SparseMatrix<double> reductionMatrix(int n, const Constraints3& c, std::vector<int>* reduced)
+bool constraintsUnchained(const Constraints3& c, int n, QString* why)
 {
+    std::vector<char> constrained(std::size_t(std::max(n, 0)), 0);
+    for (int d : c.dofs)
+        if (d >= 0 && d < n) constrained[std::size_t(d)] = 1;
+    for (std::size_t k = 0; k < c.dofs.size(); ++k)
+        for (const auto& [m, w] : c.rows[k])
+            if (m < 0 || m >= n || constrained[std::size_t(m)]) {
+                if (why)
+                    *why = QCoreApplication::translate("fem3", "the interfaces' constraints chain: degree of freedom %1's master %2 is "
+                                                               "constrained itself")
+                               .arg(c.dofs[k])
+                               .arg(m);
+                return false;
+            }
+    return true;
+}
+
+Eigen::SparseMatrix<double> reductionMatrix(int n, const Constraints3& c, std::vector<int>* reduced, QString* why)
+{
+    // (A master constrained: not taken - its weight dropped silently, else,
+    // where Q_ASSERT is not compiled.)
+    if (!constraintsUnchained(c, n, why)) {
+        if (reduced) reduced->clear();
+        return Eigen::SparseMatrix<double>();
+    }
     std::vector<int> red(std::size_t(n), 0);
     for (int d : c.dofs) red[std::size_t(d)] = -1;
     int next = 0;
@@ -598,10 +623,7 @@ Eigen::SparseMatrix<double> reductionMatrix(int n, const Constraints3& c, std::v
     for (int i = 0; i < n; ++i)
         if (red[std::size_t(i)] >= 0) t.emplace_back(i, red[std::size_t(i)], 1.0);
     for (std::size_t k = 0; k < c.dofs.size(); ++k)
-        for (const auto& [master, w] : c.rows[k]) {
-            Q_ASSERT(red[std::size_t(master)] >= 0);   // (no master constrained)
-            if (red[std::size_t(master)] >= 0) t.emplace_back(c.dofs[k], red[std::size_t(master)], w);
-        }
+        for (const auto& [master, w] : c.rows[k]) t.emplace_back(c.dofs[k], red[std::size_t(master)], w);
     Eigen::SparseMatrix<double> C(n, next);
     C.setFromTriplets(t.begin(), t.end());
     if (reduced) *reduced = red;

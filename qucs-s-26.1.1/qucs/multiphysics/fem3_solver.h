@@ -327,7 +327,7 @@ private:
     std::vector<double> a_values;
     std::vector<char> a_known;   // 0 not yet, 1 known, 2 being found (a loop: NaN)
     std::vector<double> a_scratch;
-    std::unique_ptr<Locator> a_locator;
+    std::vector<std::unique_ptr<Locator>> a_locators;   // by band
 };
 
 /// What a 3D solve is asked beyond its model: its linear solver for this
