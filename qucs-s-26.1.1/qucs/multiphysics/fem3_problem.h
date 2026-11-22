@@ -46,6 +46,9 @@ struct Options3 {
     /// - C (mass u - history) + K u = F. 0: at rest.
     double mass = 0;
     const std::vector<double>* history = nullptr;
+    /// A Time Dependent step's solve - a physics at rest at each of its
+    /// times too (no mass).
+    bool inTime = false;
     /// A physics that reads its own field: by Newton's method (auto, newton)
     /// or Picard's iterations (picard).
     QString nonlinear = QStringLiteral("auto");

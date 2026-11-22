@@ -8,7 +8,9 @@
  *                          inductance, a wire's Lorentz force in a field
  *                          with its current from a currents physics, the
  *                          coils' inductance matrix, an iron ring's B-H
- *                          curve by Newton's method, and what is refused
+ *                          curve by Newton's method, a coil of turns in air
+ *                          stepped in time against the frequency domain's
+ *                          impedance, and what is refused
  *
  * This file is part of Qucs-S.
  *
@@ -328,6 +330,39 @@ QString why(const Solved& sv)
 void info(const QString& what)
 {
     qInfo("%s", qPrintable(what));
+}
+
+/// A copper bar 0.4 mm square and 1 mm long along z in a box of air 4 mm
+/// wide: a coil of 10 turns of wire (σw 6e7 S/m, fill 0.5) fed 0.2 A by its
+/// currents physics' terminal at its floor; the box's ends insulated, its
+/// sides held at A of a field of 0.5 T along x (\a background), or none.
+Model coilOfTurns(bool background)
+{
+    Model m = model3d(0.2);
+    addBox(m, QStringLiteral("air"), -2, -2, 0, 4, 4, 1);
+    addBox(m, QStringLiteral("bar"), -0.2, -0.2, 0, 0.4, 0.4, 1);
+    for (const char* o : {"air", "bar"}) zDivisions(m, QString::fromLatin1(o), 1);
+    Node ec = m.make(QStringLiteral("currents"));
+    ec.props.insert(QStringLiteral("order"), QStringLiteral("1"));
+    ec.props.insert(QStringLiteral("selection"), objects(QStringLiteral("bar")));
+    const QString et = ec.tag;
+    m.add(m.component().tag, ec);
+    for (Node& c : m.find(et)->children)
+        if (c.type == QLatin1String("currents/conservation")) {
+            c.props.insert(QStringLiteral("source"), QStringLiteral("user"));
+            c.props.insert(QStringLiteral("sigma"), QStringLiteral("6e7[S/m]"));
+        }
+    addFeature(m, et, QStringLiteral("currents/terminal"), ofSide(QStringLiteral("bar"), QStringLiteral("bottom")), {{QStringLiteral("name"), QStringLiteral("a")}});
+    addFeature(m, et, QStringLiteral("currents/ground"), ofSide(QStringLiteral("bar"), QStringLiteral("top")));
+    const QString mf = addMagnetic(m, 2);
+    addFeature(m, mf, QStringLiteral("magnetic/coil"), objects(QStringLiteral("bar")),
+               {{QStringLiteral("name"), QStringLiteral("1")}, {QStringLiteral("ec"), QJsonArray{et}}, {QStringLiteral("terminal"), QStringLiteral("a")},
+                {QStringLiteral("conductor"), QStringLiteral("multi")}, {QStringLiteral("N"), QStringLiteral("10")}, {QStringLiteral("I0"), QStringLiteral("0.2[A]")},
+                {QStringLiteral("sigmaw"), QStringLiteral("6e7[S/m]")}, {QStringLiteral("fill"), QStringLiteral("0.5")}});
+    addFeature(m, mf, QStringLiteral("magnetic/potential"), rule(R"({"exterior": true})"), {{QStringLiteral("A0z"), background ? QStringLiteral("0.5[T]*y") : QStringLiteral("0")}});
+    addFeature(m, mf, QStringLiteral("magnetic/insulation"), normal(0, 0, 1));
+    addFeature(m, mf, QStringLiteral("magnetic/insulation"), normal(0, 0, -1));
+    return m;
 }
 
 } // namespace
@@ -664,30 +699,7 @@ private slots:
     {
         const double R = 100 * 1e-3 / (6e7 * 0.5 * 0.16e-6);
         for (bool harmonic : {false, true}) {
-            Model m = model3d(0.2);
-            addBox(m, QStringLiteral("air"), -2, -2, 0, 4, 4, 1);
-            addBox(m, QStringLiteral("bar"), -0.2, -0.2, 0, 0.4, 0.4, 1);
-            for (const char* o : {"air", "bar"}) zDivisions(m, QString::fromLatin1(o), 1);
-            Node ec = m.make(QStringLiteral("currents"));
-            ec.props.insert(QStringLiteral("order"), QStringLiteral("1"));
-            ec.props.insert(QStringLiteral("selection"), objects(QStringLiteral("bar")));
-            const QString et = ec.tag;
-            m.add(m.component().tag, ec);
-            for (Node& c : m.find(et)->children)
-                if (c.type == QLatin1String("currents/conservation")) {
-                    c.props.insert(QStringLiteral("source"), QStringLiteral("user"));
-                    c.props.insert(QStringLiteral("sigma"), QStringLiteral("6e7[S/m]"));
-                }
-            addFeature(m, et, QStringLiteral("currents/terminal"), ofSide(QStringLiteral("bar"), QStringLiteral("bottom")), {{QStringLiteral("name"), QStringLiteral("a")}});
-            addFeature(m, et, QStringLiteral("currents/ground"), ofSide(QStringLiteral("bar"), QStringLiteral("top")));
-            const QString mf = addMagnetic(m, 2);
-            addFeature(m, mf, QStringLiteral("magnetic/coil"), objects(QStringLiteral("bar")),
-                       {{QStringLiteral("name"), QStringLiteral("1")}, {QStringLiteral("ec"), QJsonArray{et}}, {QStringLiteral("terminal"), QStringLiteral("a")},
-                        {QStringLiteral("conductor"), QStringLiteral("multi")}, {QStringLiteral("N"), QStringLiteral("10")}, {QStringLiteral("I0"), QStringLiteral("0.2[A]")},
-                        {QStringLiteral("sigmaw"), QStringLiteral("6e7[S/m]")}, {QStringLiteral("fill"), QStringLiteral("0.5")}});
-            addFeature(m, mf, QStringLiteral("magnetic/potential"), rule(R"({"exterior": true})"), {{QStringLiteral("A0z"), QStringLiteral("0.5[T]*y")}});
-            addFeature(m, mf, QStringLiteral("magnetic/insulation"), normal(0, 0, 1));
-            addFeature(m, mf, QStringLiteral("magnetic/insulation"), normal(0, 0, -1));
+            Model m = coilOfTurns(true);
             if (harmonic)
                 for (Node& st : m.root.children)
                     if (st.type == QLatin1String("study")) {
@@ -1191,6 +1203,83 @@ private slots:
         info(said3);
     }
 
+    // A coil of turns in air - nothing conducting - fed a cosine in time
+    // (0.2 A at the start: the current its sources were built with not
+    // counted twice): its field stepped all the same, its voltage R I +
+    // dΦ/dt the frequency domain's Re(Z Î e^{jωt}) at 20 kHz (BDF2 at 1 µs,
+    // a period's 50th: to 0.5 % of |Z| Î; a sanitized build's 2 µs, 1.5 % -
+    // at 1 µs and to 52 µs past QtTest's 300 s under ASan), B beside it the
+    // frequency domain's Re(B̂ e^{jωt}) (to rounding: A of I now). (Before,
+    // solved at rest at each output time, it said R I alone.) A B-H curve in
+    // the air instead: solved at rest at each time, R I alone, said.
+    void aCoilOfTurnsInTime()
+    {
+        using cd = std::complex<double>;
+        const double f = 2e4, w = 2 * M_PI * f, I = 0.2;
+        Model mh = coilOfTurns(false);
+        for (Node& st : mh.root.children)
+            if (st.type == QLatin1String("study")) {
+                for (Node& step : st.children) step.enabled = false;
+                Node fr = mh.make(QStringLiteral("frequency"));
+                fr.props.insert(QStringLiteral("frequencies"), QStringLiteral("20[kHz]"));
+                st.children.push_back(fr);
+            }
+        const Solved h = solve(mh);
+        QVERIFY2(h.error.isEmpty(), qPrintable(why(h)));
+        // (Fed 0.2 A: its voltage phasor Z Î.)
+        const cd V(global(h.s(), QStringLiteral("mf.V_1")), global(h.s(), QStringLiteral("mf.V_1_im")));
+        QVERIFY2(std::abs(V.imag()) > 0.1 * std::abs(V.real()), "its inductance in the frequency domain");
+        // (And B beside it: its field, not its rate alone.)
+        const cd B(valueAt(h.s(), QStringLiteral("mf.By"), 0.6, 0, 0.5), valueAt(h.s(), QStringLiteral("mf.By_im"), 0.6, 0, 0.5));
+        QVERIFY2(std::abs(B) > 0, "B beside the bar");
+        Model mt = coilOfTurns(false);
+        for (Node& c : mt.find(QStringLiteral("mf"))->children)
+            if (c.type == QLatin1String("magnetic/coil")) c.props.insert(QStringLiteral("I0"), QStringLiteral("0.2[A]*cos(2*pi*20[kHz]*t)"));
+        const auto inTime = [](Model& m) {
+            for (Node& st : m.root.children)
+                if (st.type == QLatin1String("study")) {
+                    st.children.clear();
+                    Node tr = m.make(QStringLiteral("transient"));
+                    tr.props.insert(QStringLiteral("times"), QStringLiteral("0, 20[us], 24[us], 28[us], 32[us]"));
+                    tr.props.insert(QStringLiteral("stepping"), QStringLiteral("fixed"));
+                    tr.props.insert(QStringLiteral("dt"), slowBuild() ? QStringLiteral("2[us]") : QStringLiteral("1[us]"));
+                    st.children.push_back(tr);
+                }
+        };
+        inTime(mt);
+        const Solved t = solve(mt);
+        QVERIFY2(t.error.isEmpty(), qPrintable(why(t)));
+        QString said;
+        for (int k = 1; k <= 4; ++k) {
+            t.s().select(k);
+            const double time = (16 + 4 * k) * 1e-6;
+            // (I = Re(Î e^{jωt}), Î 0.2 A: V Re(Z Î e^{jωt}).)
+            const double want = (V * std::exp(cd(0, w * time))).real();
+            const double got = global(t.s(), QStringLiteral("mf.V_1")), current = global(t.s(), QStringLiteral("mf.I_1"));
+            const double by = valueAt(t.s(), QStringLiteral("mf.By"), 0.6, 0, 0.5), byWant = (B * std::exp(cd(0, w * time))).real();
+            said += QStringLiteral("t %1 µs: V %2 mV against %3, By %4 mT against %5 (I %6 A); ")
+                        .arg(time * 1e6).arg(got * 1e3).arg(want * 1e3).arg(by * 1e3).arg(byWant * 1e3).arg(current);
+            QVERIFY2(std::abs(got - want) < (slowBuild() ? 1.5e-2 : 5e-3) * std::abs(V) && std::abs(by - byWant) < 1e-6 * std::abs(B), qPrintable(said));
+            QVERIFY(std::abs(current - I * std::cos(w * time)) < 1e-12);
+        }
+        info(said);
+        // A B-H curve in the air: at rest at each time, said.
+        Model mb = coilOfTurns(false);
+        addFeature(mb, QStringLiteral("mf"), QStringLiteral("magnetic/ampere"), QJsonObject{{QStringLiteral("objects"), QJsonArray{QStringLiteral("air")}}, {QStringLiteral("except"), objects(QStringLiteral("bar"))}},
+                   {{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("constitutive"), QStringLiteral("bh")},
+                    {QStringLiteral("BH"), QJsonArray{QJsonArray{0.0, 0.0}, QJsonArray{0.5, 100.0}, QJsonArray{1.0, 300.0}, QJsonArray{2.0, 100000.0}}}});
+        for (Node& st : mb.root.children)
+            if (st.type == QLatin1String("study")) {
+                st.children.clear();
+                Node tr = mb.make(QStringLiteral("transient"));
+                tr.props.insert(QStringLiteral("times"), QStringLiteral("0, 1[us]"));
+                st.children.push_back(tr);
+            }
+        const Solved b = solve(mb);
+        QVERIFY2(b.error.isEmpty(), qPrintable(why(b)));
+        QVERIFY2(b.r.warnings.join(QLatin1Char('\n')).contains(QStringLiteral("dΦ/dt not in it")), qPrintable(b.r.warnings.join(QLatin1Char('\n'))));
+    }
+
     // The iron ring in the frequency domain (50 Hz, nothing conducting): its
     // B-H curve by its effective permeability - each element's B̂/(µ0 H1),
     // H1 the fundamental of H for a sinusoidal B of amplitude B̂ -, solved in
@@ -1198,7 +1287,7 @@ private slots:
     // B̂ there is the root of H1(B̂) = Ĥ (H1 worked out here from the curve):
     // at three radii to 2 % (0.04 % found, µr at each quadrature point; its
     // element's middle's alone, 2.9 % off in saturation), and H's amplitude
-    // there Ĥ (to 5 %: the point's B over its nearest point's µr).
+    // there Ĥ (to 5 %: B and µr both its nearest quadrature point's).
     void ironRingInFrequency()
     {
         // (A sanitized build: a coarser mesh, µr to a hundredth.)
@@ -1246,7 +1335,7 @@ private slots:
             const double got = valueAt(sv.s(), QStringLiteral("mf.normB"), r * std::cos(0.4), r * std::sin(0.4), 0.15);
             const double hgot = valueAt(sv.s(), QStringLiteral("mf.normH"), r * std::cos(0.4), r * std::sin(0.4), 0.15);
             said += QStringLiteral("; r %1 mm: Ĥ %2 A/m (%3), B̂ %4 T against %5").arg(r).arg(H).arg(hgot).arg(got).arg(want);
-            // (H the point's own B over its nearest quadrature point's µr: 5 %.)
+            // (H its nearest quadrature point's B over its µr: 5 %.)
             QVERIFY2(std::abs(got - want) < 2e-2 * want && std::abs(hgot - H) < 5e-2 * H, qPrintable(said));
         }
         info(said);
