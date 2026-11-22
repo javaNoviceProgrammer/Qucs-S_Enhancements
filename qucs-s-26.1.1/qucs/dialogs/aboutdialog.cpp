@@ -194,7 +194,7 @@ AboutDialog::AboutDialog(QWidget *parent)
 
   // Others' names this build uses - the files it reads and writes, the
   // published results it is compared with -: whose they are, and no
-  // affiliation (as the README's Trademarks section says).
+  // affiliation (as TRADEMARKS.md says).
   QTextBrowser *trademarksBrowser = new QTextBrowser;
   trademarksBrowser->setObjectName(QStringLiteral("aboutTrademarks"));
   trademarksBrowser->viewport()->installEventFilter(this);

@@ -74,7 +74,7 @@ private slots:
 
     // The Trademarks tab: Ansys's names (Lumerical's files are read and
     // written, its and Zemax's results compared with) are ANSYS, Inc.'s, no
-    // affiliation - as the README's Trademarks section has it, word for word.
+    // affiliation - as TRADEMARKS.md has it, word for word.
     void theTrademarksTab()
     {
         AboutDialog about(nullptr);
@@ -90,12 +90,12 @@ private slots:
                                     QStringLiteral("not affiliated with, sponsored or endorsed by ANSYS, Inc., Synopsys, Inc. or Cadence Design Systems, Inc."),
                                     QStringLiteral("the property of their respective owners")})
             QVERIFY2(text.contains(said), qPrintable(said));
-        QFile readme(QStringLiteral(QUCS_EXAMPLES_DIR "/../../README.md"));
-        if (!readme.open(QIODevice::ReadOnly)) QSKIP("no README.md above the sources");
-        const QString md = QString::fromUtf8(readme.readAll());
-        const qsizetype at = md.indexOf(QLatin1String("\n## Trademarks\n"));
-        QVERIFY2(at >= 0, "README.md has no Trademarks section");
-        QString section = md.mid(at + 15);
+        QFile marks(QStringLiteral(QUCS_EXAMPLES_DIR "/../../TRADEMARKS.md"));
+        if (!marks.open(QIODevice::ReadOnly)) QSKIP("no TRADEMARKS.md above the sources");
+        const QString md = QString::fromUtf8(marks.readAll());
+        const QLatin1String heading("# Trademarks\n");
+        QVERIFY2(md.startsWith(heading), "TRADEMARKS.md does not begin with its heading");
+        QString section = md.mid(heading.size());
         section = section.left(section.indexOf(QLatin1String("\n#"))).simplified();
         QCOMPARE(section, text);
     }

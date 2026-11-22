@@ -4,7 +4,7 @@
 #
 # No macOS bundle is built here: the repository is private, where a macOS
 # runner's minutes count many times a Linux one's, so the DMGs are built
-# locally with scripts/package-macos.sh (README, "macOS, with Qt's own build").
+# locally with scripts/package-macos.sh (BUILD.md, "macOS, with Qt's own build").
 #
 # Triggers
 #   * workflow_dispatch  – pick the platforms you want; publishes to the rolling

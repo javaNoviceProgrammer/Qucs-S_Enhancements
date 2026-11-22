@@ -13,7 +13,8 @@ below with its generator, which must still write it.
 
 Exits 1, and says what, when a file of a vendor's format is not one of ours
 or a text file carries a vendor's copyright line - or when a string the
-program shows (a C++ string literal, not a comment) or the README writes a
+program shows (a C++ string literal, not a comment) or the README and the
+root's other notes (BUILD.md, TESTS.md, CI.md, TRADEMARKS.md) write a
 vendor's name as a possessive ("Lumerical's format"): the owner's
 trademark guidelines ask for a mark as an adjective before a noun
 ("the Lumerical format"), never possessive or plural.
@@ -115,7 +116,7 @@ for path in tracked():
         said = []
         if path.startswith("qucs-s-26.1.1/qucs/") and path.endswith((".cpp", ".h")):
             said = [(n, t) for n, t in strings(text) if POSSESSIVE.search(t)]
-        elif path == "README.md":
+        elif path in ("README.md", "BUILD.md", "TESTS.md", "CI.md", "TRADEMARKS.md"):
             said = [(n, line) for n, line in enumerate(text.split("\n"), 1) if POSSESSIVE.search(line)]
         for number, t in said:
             found.append(f"{path}:{number}: a vendor's name as a possessive ({POSSESSIVE.search(t).group(0)}) - "

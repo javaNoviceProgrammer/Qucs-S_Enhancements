@@ -13,7 +13,7 @@ tag 26.1.1). Paths below are relative to the repository root.
 |---|---|
 | `qucs-s-26.1.1/` | Vendored upstream source, with the three git submodules already checked out |
 | `bin/{macos,linux,windows}/{intel,arm,...}` | Placeholder dirs for prebuilt binaries |
-| `README.md`, `LICENSE` | Wrapper repo files |
+| `README.md`, `BUILD.md`, `TESTS.md`, `CI.md`, `TRADEMARKS.md`, `LICENSE` | Wrapper repo files |
 
 ## 2. Big picture
 
