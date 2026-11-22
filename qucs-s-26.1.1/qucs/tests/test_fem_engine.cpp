@@ -352,9 +352,9 @@ void TestFemEngine::expressions()
              qPrintable(ps->errors.value(QStringLiteral("bad"))));
 }
 
-// What the expressions' fuzzer found (the fuzz of 21 October), each
+// What the expressions' fuzzer found, each
 // refused or answered at once: brackets and signs nested thousands deep
-// (E1: the parser's recursion overflowed a stack), a sum thousands long (as
+// (the parser's recursion overflowed a stack), a sum thousands long (as
 // deep a tree, compiled and freed by recursion), a function reading its
 // argument twice nested eighteen deep (E2: written out, 2^18 copies, 33 s),
 // a table at no number and a table short of values (E4: a read past its
@@ -467,9 +467,9 @@ void TestFemEngine::hostileExpressions()
 // The shipped implant's silicon a kilometre's million off in its model of
 // micrometres, and further: built and meshed, or refused - said. (Its
 // vertices' cells, rounded to a long long's largest, overflowed with a
-// neighbour's index: UBSan; the fuzz of 21 October, G1.) At 1e300 its
-// width is lost in its coordinates' digits: said so (G2). A mesh's hmax of
-// 1e308 (M1).
+// neighbour's index: UBSan.) At 1e300 its
+// width is lost in its coordinates' digits: said so. A mesh's hmax of
+// 1e308.
 void TestFemEngine::hostilePositions()
 {
     QFile f(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/boron_implant_anneal.qfem"));
@@ -492,7 +492,7 @@ void TestFemEngine::hostilePositions()
     }
     // The implant meshed with an hmax of 1e308: its rays across the narrow
     // regions reached as far, their grid's cells cast past an int's range
-    // (UBSan; the fuzz of 21 October, M1, the photodiode's) - meshed.
+    // (UBSan, the photodiode's) - meshed.
     QJsonObject o = QJsonDocument::fromJson(json).object();
     QJsonArray components = o.value(QStringLiteral("components")).toArray();
     QJsonObject c = components.first().toObject();
@@ -548,7 +548,7 @@ void TestFemEngine::modelRoundTrip()
 
 void TestFemEngine::proposalFormat()
 {
-    // As the proposal writes a model: names, "bottom of", a library material.
+    // A model as written by hand: names, "bottom of", a library material.
     const Model m = modelOf(R"({
       "format": "qucs-s multiphysics 1",
       "parameters": [{"name": "w", "expression": "3[mm]", "description": "trace width"}, {"name": "h", "expression": "1.6[mm]"}],
@@ -772,7 +772,7 @@ void TestFemEngine::booleans()
 // A boolean's integers scaled to its own inputs too, and a coordinate out
 // of Clipper's range a failed build: a 20 mm die with a hole drawn in nm
 // made the scale 2^39 (the inputs no longer among the objects it measured)
-// and Clipper threw, which nothing caught - Qucs-S aborted on opening it
+// and Clipper threw, which nothing caught - Qucs-S aborted on opening it.
 void TestFemEngine::booleansOfHugeAndEndlessCoordinates()
 {
     const Model die = modelOf(R"({"format": "qucs-s multiphysics 1", "components": [{"unit": "nm", "geometry": [

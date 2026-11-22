@@ -312,7 +312,7 @@ public:
     /// why where one could not be. (One after another they were thousands of
     /// some milliseconds each - 8664 of a flip chip's bump, its pad solved as
     /// its two faces and its die's layers ending at the die -, a minute or
-    /// more with nothing said: P40 of the open items.)
+    /// more with nothing said.)
     bool build(const std::atomic_bool* stop, QStringList* problems, const std::function<void(int, int)>& progress = {})
     {
         std::vector<Green*> all;

@@ -450,7 +450,8 @@ private slots:
                  qPrintable(describe(inkBox(rendered)) + " vs " + describe(expected)));
     }
 
-    // A graph in an SVG, PDF or EPS export is as exact as asked: its lines round-capped and thinned to a tenth
+    // A graph in an SVG, PDF or EPS export is as exact as asked:
+    // its lines round-capped and thinned to a tenth
     // of a pixel. The export is zoomed after; drawn as on a screen's pixels
     // its thin lines had square caps (since 755bb00) and its points a pixel
     // apart.
@@ -981,7 +982,7 @@ private slots:
 
         // A library's Verilog-A kept in a project, named as the file (or
         // the PDF of a pdf_tex): not written through - said, the dialog
-        // stays.
+        // stays (in the window).
         const QString kept = path("proj/Libraries/X/"), shelf = path("shelf/");
         QVERIFY(QDir().mkpath(kept) && QDir().mkpath(shelf));
         for (const QString& name : {QStringLiteral("fig.png"), QStringLiteral("tex.pdf")}) {

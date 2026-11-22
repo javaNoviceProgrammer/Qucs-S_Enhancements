@@ -36,7 +36,7 @@ double besselI0(double x)
 /// \a sign: X_k = sum_n x_n exp(sign j 2 pi k n / N). Radix two where N is a
 /// power of two, else Bluestein's chirp through one - N log N either way, where
 /// the plain sum took 3.5 s for 16,000 points and would have taken hours for a
-/// million (a bug hunt's second hour).
+/// million.
 void transform(std::vector<Complex>& x, int sign)
 {
     const std::size_t n = x.size();
@@ -129,7 +129,8 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
     // through them, at nought. Where it turns more, that quadratic is wild - a
     // phase turning between the three sends it far off: S11 = 0.2 exp(-j w 1
     // ns) swept every 50 MHz from 1 GHz came to -3.51, from 5 GHz to -92.9,
-    // and Z(t) to nought throughout, said as fine (a bug hunt's second hour) -, so the lowest point carried down to nought along the lowest
+    // and Z(t) to nought throughout, said as fine
+    // -, so the lowest point carried down to nought along the lowest
     // three's slope of phase, and its real part taken: |S(f0)| cos(phase at
     // nought). (Its magnitude with the sign of that cosine, as it first was,
     // took a pad's or a bond wire's S, rising as j w from nought, at +-|S(f0)|
@@ -193,8 +194,7 @@ TimeDomain timeDomainOf(const QList<double>& frequencies, const QList<Complex>& 
     // the phase's guess. Not through a null - a point under half the largest
     // within three either side, S dipping there, which a coarse sweep of an
     // even |S| does not -, where the phase flips however finely S is swept:
-    // a line's S11 passing through its nulls said its 178 degrees there
-    // (P37 of the open items).
+    // a line's S11 passing through its nulls said its 178 degrees there.
     double largest = 0, turned = 0;
     for (const Complex& v : s) largest = std::max(largest, std::abs(v));
     const auto nearNull = [&s, n](int k) {

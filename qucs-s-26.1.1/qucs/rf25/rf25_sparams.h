@@ -26,7 +26,7 @@
  *
  *  - As a two-port of a given length, a line of a right RLGC is right at
  *    any frequency: the telegrapher's equations carry its own resonances.
- *    The "first resonance" the proposal names is not a limit of the
+ *    The "first resonance" above is not a limit of the
  *    S-parameters but of the quasi-static *cross-section* - the frequency
  *    at which the cross-section stops being electrically small and a mode
  *    other than quasi-TEM appears. quasiStaticLimit() is that frequency,
@@ -71,7 +71,8 @@ fem::LineRLGC asLine(const Extraction& extraction, int index, double length, dou
  *   - R  is diagonal: each net's surface resistance times how its own
  *          charge crowds. The proximity effect - one conductor pushing
  *          another's current about - is not in an electrostatic solve,
- *          so the off-diagonal terms are nothing, said so that a caller does not assume otherwise.
+ *          so the off-diagonal terms are nothing, and this says so
+ *          rather than letting a caller assume otherwise.
  *
  * A frequency of none gives the lossless line (R and G nothing), whose
  * modes are taken at 1 GHz as the engine's quasi-TEM ones are.

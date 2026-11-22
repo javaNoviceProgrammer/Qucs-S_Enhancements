@@ -1293,7 +1293,7 @@ public:
     {
         // (Each cell's index well inside a long long's range: a point 1e308
         // away - a hostile position - rounded to its largest and overflowed
-        // a neighbour's index - the fuzz of 21 October, G1.)
+        // a neighbour's index.)
         auto cell = [this](double v) {
             const double c = std::floor(v / a_eps);
             return std::isfinite(c) ? static_cast<long long>(std::clamp(c, -4e18, 4e18)) : 0LL;
@@ -1348,8 +1348,7 @@ std::shared_ptr<Topology> formUnionOf(const std::vector<GObject>& objects, const
     // Objects thinner than the tolerance, a share of the whole extent: lost
     // to it, said - and one so far off its width is lost in its
     // coordinates' digits. (A rectangle at 1e300 failed the union in the
-    // triangulation's words, "#1 is a duplicate of #4294967295": the fuzz
-    // of 21 October.)
+    // triangulation's words, "#1 is a duplicate of #4294967295".)
     QStringList lost;
     for (const GObject& o : objects) {
         const QRectF b = o.bounds();

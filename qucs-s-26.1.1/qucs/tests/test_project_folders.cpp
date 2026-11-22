@@ -338,8 +338,7 @@ private slots:
 
         // The workspace is not a project, nor the home folder (Open Project
         // starts in the workspace, and Open there without a folder chosen
-        // picked it: a Scratch in it, listed as a project) (bug hunt
-        // 2026-09-26, E2).
+        // picked it: a Scratch in it, listed as a project).
         for (const QString& folder : {workspace, QDir::homePath()}) {
             QString said;
             answering([&] { app.openProject(folder); },
@@ -360,7 +359,7 @@ private slots:
     // good, and with the setting any folder of the workspace could be.
     // The question names the folder and what is in it, and says so of a
     // folder that is a project by the setting alone; a document open from
-    // it with unsaved changes stops it (bug hunt 2026-09-26, A3).
+    // it with unsaved changes stops it.
     void deletingAProjectAsksAndTrashes()
     {
         fresh("delete");

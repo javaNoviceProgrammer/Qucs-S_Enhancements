@@ -571,8 +571,7 @@ struct Source::Text {
     // QtPdf loads the page again at each: a page of a million and a half
     // points of paths - a scatter of 60,000 markers - took 0.23 s a call,
     // 42 s for one plot's labels. So a heavy page has calls in inverse
-    // proportion to its weight, some 15 s of them at most (the robustness
-    // hunt's R1) - each read its own, not the page's between them: one
+    // proportion to its weight, some 15 s of them at most - each read its own, not the page's between them: one
     // plot's read took them all and left the next plot of the page unread
     int allowance = -1;
     bool frugal = false;   // a heavy page: every word by its box, one call each
@@ -1953,7 +1952,8 @@ Trust assess(const Plot& plot)
         return t;
     }
     t.calibrationPoints = c.rms();
-    // What the route is good to, from the tests' measurements: the file's own vertices, or a trace at renderScale.
+    // What the route is good to, from the tests' measurements: the file's
+    // own vertices, or a trace at renderScale.
     bool anyRaster = false, anyHand = false;
     for (const Series& s : plot.series) {
         anyRaster = anyRaster || s.origin == Series::Origin::Raster;
@@ -2239,7 +2239,7 @@ QByteArray dataset(const Plot& plot, QStringList* variables)
         const QString name = names.at(si);
         // Every series as NAME over NAME_x, all of it, whether it has gaps
         // or not - a diagram tracing it keeps working when the plot is done
-        // again (the PDF open items' A1). A gap is a NaN between its pieces,
+        // again. A gap is a NaN between its pieces,
         // halfway across it, where a diagram ends the line.
         QList<QPointF> all;
         for (int k = 0; k < w.points.size(); ++k) {

@@ -154,7 +154,7 @@ public:
     QString askedEachTime(const QString& tool, const QJsonObject& arguments) const override;
     /// \a args with a singular read as the field \a tool takes of that
     /// name in the plural ('name' as delete's 'names', of the one; 'step'
-    /// as undo's 'steps'); empty when there is none to read so (N11).
+    /// as undo's 'steps'); empty when there is none to read so.
     /// The plural of \a word by the English rules a field name follows, or
     /// empty where it is too short to be a singular anyone would send.
     static QString pluralOf(const QString& word);

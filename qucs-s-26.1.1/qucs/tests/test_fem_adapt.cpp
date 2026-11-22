@@ -582,7 +582,7 @@ void TestFemAdapt::aRateFasterThanTheOrderIsNotClaimed()
 {
     // Changes falling faster than elements of the order can converge are not a
     // rate: the corner's read unknowns^-2.2 on quadratic elements where its error
-    // fell as ^-1.2, and said "extrapolated" (the review of 063142f, N1).
+    // fell as ^-1.2, and said "extrapolated".
     std::vector<double> ns, qs;
     for (double n = 100; n < 1e4; n *= 1.6) {
         ns.push_back(n);

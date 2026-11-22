@@ -221,7 +221,7 @@ QList<NodeKind> makeKinds()
           expr(QStringLiteral("epsr"), tr("Relative permittivity"), QString(), QStringLiteral("4.1")),
           expr(QStringLiteral("tand"), tr("Loss tangent"), QString(), QStringLiteral("0.002")),
           // (Any layer's, not the substrate's alone: epi on bulk, an SOI
-          //  device layer, a trap-rich layer - F7 of the open items.)
+          //  device layer, a trap-rich layer.)
           expr(QStringLiteral("sigma"), tr("Conductivity"), QStringLiteral("S/m"), QStringLiteral("0"),
                tr("A conducting layer over the substrate - an epitaxial layer, an SOI device layer, a trap-rich layer, a "
                   "well: 5[S/m] for 20 Ohm cm. The full wave takes it in its fields, as it takes the substrate's; the "
@@ -674,8 +674,8 @@ QList<NodeKind> makeKinds()
             "against it - a symmetric pair's even and odd modes by name - and a coplanar port returns through the "
             "nearest of them either side. With none, what a via joins to the ground is one, and with no ground plane "
             "the two outermost conductors of a coplanar line are.")});
-    // F3 of the open items of 8 November: a fixture - a GSG pad and its feed
-    // at each port - taken out by standards made with it (rf25_trl.h).
+    // A fixture - a GSG pad and its feed at each port - taken out by
+    // standards made with it (rf25_trl.h).
     add({QStringLiteral("rf_trl"), tr("TRL Calibration"), QStringLiteral("port"), QStringLiteral("port"), none,
          {file(QStringLiteral("thru"), tr("Thru"),
                tr("A model (.qrf25) of the two fixtures joined: its line between them as long as the fixture's feed on "
@@ -770,7 +770,7 @@ QList<NodeKind> makeKinds()
           // What the last run found: written by it, not a setting - the
           // Optimization's own as the multiphysics kind has it. (Not one of
           // the kind's, a saved or exported sweep's was said to be "no
-          // property" when read again: NF3 of the open items.)
+          // property" when read again.)
           [] {
               P kept;
               kept.key = QStringLiteral("result");
@@ -852,7 +852,7 @@ QList<NodeKind> makeKinds()
     add({QStringLiteral("rf_circuit"), tr("Equivalent circuit"), QStringLiteral("export"), QStringLiteral("export"), none,
          {file(QStringLiteral("file"), tr("File")),
           text(QStringLiteral("name"), tr("Name"), QString(), tr("The SPICE subcircuit's name (empty: the model's)")),
-          // (NF7 of the open items: a wide solve fitted below its first
+          // (a wide solve fitted below its first
           //  resonance without solving it again.)
           expr(QStringLiteral("from"), tr("From"), QStringLiteral("Hz"), QString(),
                tr("The solve's frequencies it is fitted to, from this (empty: its first) - below a resonance, where a lumped "
@@ -1293,8 +1293,7 @@ std::optional<Model> Model::fromJson(const QByteArray& json, QString* error)
     const QJsonDocument document = QJsonDocument::fromJson(json, &parsed);
     if (document.isNull() || !document.isObject()) {
         // (Valid JSON that is no object - an array - was said as "does not
-        //  read as JSON: no error occurred"
-        //  second hour.)
+        //  read as JSON: no error occurred".)
         if (error != nullptr)
             *error = document.isNull() ? tr("It does not read as JSON: %1").arg(parsed.errorString())
                                        : tr("It is JSON, but not an object: an RF 2.5D model is one, beginning \"format\": \"%1\".")
@@ -1750,8 +1749,8 @@ QStringList Model::problems() const
     }
     if (calibrations > 0 && driven2 != 2)
         said << tr("A TRL calibration is of a two-port, and the model has %1 port(s).").arg(driven2);
-    // An Optimization's variables: each Type one the optimizer knows (NF4 of
-    // the open items - said only by its run, so that rf25_edit took any).
+    // An Optimization's variables: each Type one the optimizer knows (said
+    // only by its run before, so that rf25_edit took any).
     if (const Node* analyses = root.child(QStringLiteral("rf_analyses")))
         for (const Node& a : analyses->children) {
             if (!a.enabled || a.type != QLatin1String("rf_optimization")) continue;

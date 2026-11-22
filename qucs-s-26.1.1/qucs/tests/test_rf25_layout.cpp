@@ -136,7 +136,8 @@ private slots:
 
         // Its layer and datatype written as numbers - [[1, 0, "M1"]], as a
         // file written by hand or a tool may have them - are their text: read
-        // as nothing, the row was lost, its shapes nowhere. Read again from a file, the model's rows are text.
+        // as nothing, the row was lost, its shapes nowhere.
+        // Read again from a file, the model's rows are text.
         QJsonArray numbers;
         numbers.append(QJsonArray{1, 0, QStringLiteral("M1")});
         set(*m.layout().child(QStringLiteral("rf_layer_map")), "rows", numbers);
@@ -188,7 +189,7 @@ private slots:
     // Merging: the metal of a layout is drawn as many rectangles, and the
     // solver wants one conductor - but only where they touch.
     // A jog - a step of a few grid units in a side along x or y - is healed
-    // away, its sides kept along x and y, and said (P41 of the open items: a
+    // away, its sides kept along x and y, and said (a
     // review's octagon with 5 nm jogs meshed to 153,590 cells, refused at
     // 3.2 TB, where snapped it was 7,418). One a grid unit long and one of
     // three both go; a step of five grid units stays.
@@ -240,8 +241,8 @@ private slots:
     }
 
     // A conductor's breadth across a run (breadthAcross(), which a metal
-    // solved as its faces takes its inside by - P52 of the production-
-    // readiness review): the line's stretches on the shapes,
+    // solved as its faces takes its inside by):
+    // the line's stretches on the shapes,
     // joined where shapes touch, each judged by its middle - so that a corner
     // the line runs through, which crossings paired in turn took twice, cuts
     // nothing, and a gap does.
@@ -295,7 +296,8 @@ private slots:
         QVERIFY(off.report.lines.isEmpty());
 
         // But what overlaps is joined all the same, and said: left apart,
-        // each was meshed whole and the overlap twice. What only touches stays apart beside it.
+        // each was meshed whole and the overlap twice.
+        // What only touches stays apart beside it.
         QMap<QString, QList<QPolygonF>> overlapping;
         overlapping[QStringLiteral("M1")] = {box(0, 0, 10, 2), box(6, 0, 10, 2), box(0, 0, 10, 2), box(16, 0, 4, 2)};
         overlapping[QStringLiteral("M2")] = {box(0, 50, 5, 5), box(20, 50, 5, 5)};
@@ -325,7 +327,8 @@ private slots:
     // union's own sweep meets them. gdstk's union left two pieces apart in
     // about one set in sixty of touching rectangles - a
     // low-pass filter among them, its centre stub then cut from its line in
-    // the full-wave solve with nothing said -: here one such set, whose fourth rectangle gdstk alone
+    // the full-wave solve with nothing said
+    // -: here one such set, whose fourth rectangle gdstk alone
     // left apart, and three thousand random ones, each as many shapes out
     // as it has pieces joined along edges, their area the rectangles'. Two
     // that meet at a corner alone stay two.
@@ -402,7 +405,7 @@ private slots:
     // A via farm: the shapes are joined by how close they are, and the
     // metal is kept - the union its footprint, conducting as the vias in it
     // do (Conductor::share), where it was shrunk to their area, a block in
-    // the footprint's middle (P44 of the open items of 8 November).
+    // the footprint's middle.
     void aViaFarmIsMergedAndItsAreaKept()
     {
         const rf::Stack stack = stacked().stack();
@@ -547,7 +550,7 @@ private slots:
     // segment along its longer way; one along x and y, a taper, a strip of
     // two widths and an odd outline are none. Processed, a strip keeps its
     // centreline, thinned as its curves would be, and its outline is made
-    // of it (P49's third fix, the centreline mesh).
+    // of it (the centreline mesh).
     void aStripIsFoundWithItsCentreline()
     {
         // A bend of three segments, 6 wide, its corners mitred.
@@ -768,7 +771,7 @@ private slots:
         QCOMPARE(of(rect).outline.boundingRect(), QRectF(10, -5, 260, 80));
 
         // A bare number is in the Layout's unit, as its coordinates are drawn
-        // (P6 of the open items: it was read as metres, a strip of "100" a
+        // (it was read as metres, a strip of "100" a
         // hundred metres long); a JSON number too; a length with a unit, or
         // of the parameters, as it says.
         {
@@ -918,11 +921,12 @@ private slots:
     // middles, to a nanometre). Parts of the curve's cap a few nanometres deep
     // had cells under a nanometre wide, which the snap to a nanometre left
     // with no width: 300 sides "could not be told apart", and the loop and
-    // the full wave found the disc in pieces, an open circuit. circleOf()'s side counts, odd at these radii
+    // the full wave found the disc in pieces, an open circuit.
+    // circleOf()'s side counts, odd at these radii
     // (703 and 497), put no corner where the feed meets the curve.
     //
     // Each in 3,300 to 7,600 cells, and the ring fed at 90 degrees meshed at
-    // 5 µm in 4,200 (P59). Its slivers meshed by their own depth made some
+    // 5 µm in 4,200. Its slivers meshed by their own depth made some
     // 37,000; then its bands, each graded at every side and each a grid from
     // its own end, every one with all their lines, 20,000 to 39,000. And the loop's R at direct current, fed at 90
     // degrees, in squares of the metal within half a per cent of a
@@ -993,7 +997,7 @@ private slots:
                 QVERIFY2(pieces.size() == 1, qPrintable(QStringLiteral("%1: %2 pieces").arg(what).arg(pieces.size())));
                 // (And not meshed as finely as its slivers would have it: a
                 //  part of the cap meshed by its own depth, its lines taken by
-                //  its neighbours - P59.)
+                //  its neighbours.)
                 // (Each within a tenth of its own count, either way: past it a
                 //  band sized across its slanted sides, the lattice from the
                 //  largest cell, the bands each a grid of their own; under it
@@ -1511,8 +1515,7 @@ private slots:
         const rf::Processed done = rf::processShapes(shapes, {}, how, stack);
         QVERIFY2(done.ok(), qPrintable(done.problems.join(" | ")));
         // (The two it keeps whole overlap, and are joined for that alone,
-        //  said: apart, their overlap was meshed
-        //  twice.)
+        //  said: apart, their overlap was meshed twice.)
         QCOMPARE(done.byLayer().value(QStringLiteral("M1")), 2);
         QVERIFY2(says(done.report.lines, "M1: 2 overlapping shapes joined into 1"), qPrintable(done.report.summary()));
         QCOMPARE(done.byLayer().value(QStringLiteral("M2")), 0);

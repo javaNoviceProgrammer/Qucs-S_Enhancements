@@ -430,7 +430,7 @@ private slots:
         // A parameter: no number, said.
         s = source(linkSchematic("tb", "80 ps"), "v(rx)");
         QVERIFY2(!s.found() && s.why.contains("V1's Tbit is tb"), qPrintable(s.why));
-        // V1 left out of the simulation: V3.
+        // V1 left out of the simulation.
         s = source(linkSchematic("50 ps", "80 ps", true, false), "v(rx)");
         QVERIFY2(s.found() && s.name == "V3", qPrintable(s.name + s.why));
         // No such net, a current, ground: none, nothing said.

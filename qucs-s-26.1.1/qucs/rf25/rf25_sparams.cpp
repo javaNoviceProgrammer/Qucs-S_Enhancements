@@ -238,7 +238,7 @@ QList<double> studySweep(const Model& model, QString* problem)
     }
     // (Its points before they are an int: 1e12 of them overflowed it. And a
     //  cap - a study of ten million points made ten million frequencies, each
-    //  solved and kept: a bug hunt's second hour.)
+    //  solved and kept.)
     if (!(points < kMostSweepPoints + 0.5)) {
         if (problem != nullptr)
             *problem = tr("A sweep of %1 points is past the %2 a solve takes: each frequency is a solve of its own, and keeps "

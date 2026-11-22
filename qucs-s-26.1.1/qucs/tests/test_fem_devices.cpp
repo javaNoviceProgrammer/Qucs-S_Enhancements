@@ -841,8 +841,8 @@ private slots:
         // from the solution alone 1367 of Newton's steps to -40 V; each
         // point from the last's solution but on the line within it 74, 45
         // and 163 to -48, -50 and -51 V; on the lines 250, 96, 31, 50 and
-        // none (one step) - since a bug hunt 223, 30, 15, 10 and
-        // none: the second point on the first's line (B4: its walk solved
+        // none (one step) - since 19 October 223, 30, 15, 10 and
+        // none: the second point on the first's line (its walk solved
         // again handed on a line of nought, 96), Newton's method no longer
         // cycling near breakdown (A1, A2: CI's mesh 227, 101, 69, 86, 76).
         // (A sanitized build: a coarser mesh.)
@@ -868,7 +868,7 @@ private slots:
         qInfo("toward breakdown, Newton's steps on the way to each point: %d, %d, %d, %d, %d", newton[0], newton[1], newton[2], newton[3], newton[4]);
         // (On a sanitized build's coarser mesh 214, 25, 14, 8 and none - on
         // meshes of 0.09 to 0.11 µm 212 to 215, 25, 14 or 15, 8 to 10 -;
-        // before a bug hunt 228, 48, 20, 21: from the solution
+        // before 19 October 228, 48, 20, 21: from the solution
         // alone 480 to -40 V, from the last point's 43, 36 and 28 to -48,
         // -50 and -51 V.)
         const int first = slowBuild() ? 350 : 800;
@@ -1003,7 +1003,7 @@ private slots:
         // there balanced to some 1e-9. Dark, 3 nA: none of them - the
         // holes' current in the layer some 1e-13 of their drift and
         // diffusion, no more than their rounding (the field's pairs there,
-        // that rounding's, a thousandth of all of them before a bug hunt).
+        // that rounding's, a thousandth of all of them before 19 October).
         auto apd = [](const char* driving, bool lit) {
             return QString::fromUtf8(R"json({"format": "qucs-s multiphysics 1",
               "parameters": [{"name": "Va", "expression": "%4[V]"}],
@@ -1367,7 +1367,7 @@ private slots:
     }
 
     // A trap distribution's levels from 1 to 1000: 2147483647, made at
-    // every node, took memory without end (the fuzz of 21 October, X1);
+    // every node, took memory without end;
     // more, or none, refused at once, said.
     void trapLevelsAreBounded()
     {
@@ -2901,7 +2901,8 @@ private slots:
         // semi.Mion, 1 + Iion/Igen, where no pairs are made otherwise - no
         // recombination model, or a forward bias, Igen nought or a rounding
         // -: not a number. It was infinite for a resistor of 10 A and a
-        // diode without recombination, 2.75e18 for a diode at 0.7 V; at rest 1; with recombination reversed,
+        // diode without recombination, 2.75e18 for a diode at 0.7 V;
+        // at rest 1; with recombination reversed,
         // its multiplication.
         auto mion = [](const char* volts, bool srh, bool uniform) {
             QByteArray json = diode(QStringLiteral("1e16[1/cm^3]"), QStringLiteral("4"),
@@ -2979,7 +2980,7 @@ private slots:
         // in 1/cm³ "1e+22 1/m³"; one point kept is one point (N4). A value
         // not finite refused at once - a sweep's point of 0/0 failed as
         // "'nan' is not a parameter", a transient's output time of it ran a
-        // million steps (B9, N12).
+        // million steps.
         QByteArray json = diode(QStringLiteral("Nd"), QStringLiteral("4"), QString(),
                                 QStringLiteral(R"({"type": "sweep", "parameters": [["Nd", "1e16, 1e17", "1/cm^3"]]}, {"type": "stationary"})"), QStringLiteral("0.2"));
         json.replace(R"("parameters": [{"name": "Va", "expression": "0[V]"}])", R"("parameters": [{"name": "Va", "expression": "-1[V]"}, {"name": "Nd", "expression": "1e16[1/cm^3]"}])");

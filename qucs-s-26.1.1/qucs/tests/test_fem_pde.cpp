@@ -138,8 +138,8 @@ private slots:
     }
 
     // A line's elements, 2147483647 of them: refused at once, the line's
-    // 400,000 at most (the counts a model gives, read for the fuzz of 21
-    // October, X1: this one was bounded); 50 solved.
+    // 400,000 at most (the counts a model gives: this one was bounded); 50
+    // solved.
     void aLinesElementsAreBounded()
     {
         auto line = [](const char* elements) {
@@ -693,7 +693,7 @@ private slots:
             const Model m = load(QStringLiteral("annulus_laplace.qfem"));
             const Run r = solve(m);
             // (Γ's units, the equation's own, not warned of: "Γ is in 1/m,
-            // where 1 is expected" before a bug hunt.)
+            // where 1 is expected" before 19 October.)
             QVERIFY2(!r.solution->log.join(QLatin1Char(' ')).contains(QLatin1String("Warning")), qPrintable(r.solution->log.join(QLatin1String("; "))));
             const double u = at(*r.solution, QStringLiteral("u"), {1.5, 0}), u2 = at(*r.solution, QStringLiteral("u"), {0, -1.3});
             double flux = NAN;

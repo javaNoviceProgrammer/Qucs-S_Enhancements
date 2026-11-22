@@ -187,7 +187,7 @@ void render(QTextDocument* document, const QString& markdown, const QFont& font,
     // kLongestRun letters, a zero-width space (taken out of what is copied).
     // Where a quote or a list narrows the column, Qt broke its lines anywhere,
     // searching the run to its end for each: a letter a line, in the square
-    // of its length - 32 kB three quotes deep 8.9 s to open (C2).
+    // of its length - 32 kB three quotes deep 8.9 s to open.
     breakLongRuns(&staged, 0, RunBreaks{kLongestRun, kLongestRun, false});   // (code: not wrapped)
 
     const QColor shade = colours.code.isValid()

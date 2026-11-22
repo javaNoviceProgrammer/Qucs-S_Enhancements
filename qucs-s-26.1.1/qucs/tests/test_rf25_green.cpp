@@ -1,7 +1,7 @@
 /*
  * test_rf25_green.cpp - the static Green's function of a layered stack
  * (rf25/rf25_green.h), held to the closed forms of the cases that have
- * one, which is what the proposal asks of it: free space; a charge over a
+ * one: free space; a charge over a
  * ground plane; a charge at a dielectric interface; a slab over a ground
  * plane, against its image series summed to machine precision.
  */
@@ -396,8 +396,7 @@ private slots:
 
     // The two ways of computing it - the images, which the solver uses,
     // and the spectral integral, which rests on no expansion - are the
-    // same function. This is the check the proposal asks for, of the one
-    // method against the other.
+    // same function: the one method checked against the other.
     void theImagesAndTheIntegralAgree()
     {
         rf::Layers many;   // four slabs: the recursion has something to walk

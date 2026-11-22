@@ -176,13 +176,13 @@ public:
     /// \a read (a document opened): read from it where the drawing is empty;
     /// else (saved, Save As) written there, what is there replaced - read, a
     /// document saved over another's name took that one's strokes (the
-    /// review of 6dce480e). Empty: kept nowhere (V1 of the RF 2.5D open
-    /// items: a tab closed, its strokes were lost).
+    /// review of 6dce480e). Empty: kept nowhere
+    /// (a tab closed, its strokes were lost).
     void keepDrawingIn(const QString& path, bool read = true);
     QString drawingFile() const { return a_drawingFile; }
     /// The names a tab gives the file's layers (an RF 2.5D model's: its
     /// stack's, by its layer map), by layer index: a stroke's reading says
-    /// "V2 (12/0)" where it said "12/0" (V5).
+    /// "V2 (12/0)" where it said "12/0".
     void setLayerNames(const QHash<int, QString>& names) { a_layerNames = names; }
     /// The last change to the drawing undone; whether there was one.
     bool undoDrawing();

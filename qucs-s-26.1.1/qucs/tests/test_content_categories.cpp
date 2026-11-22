@@ -173,8 +173,7 @@ private slots:
     // __pycache__, venv, a CMake build tree) are not walked, at most
     // misc::MaxProjectEntries files and folders are looked at - the header
     // says so -, and the look every few seconds is taken aside: a home
-    // folder froze the window for half a minute, every 3 s (bug hunt
-    // 2026-09-26, C3).
+    // folder froze the window for half a minute, every 3 s.
     void aBigFolderIsListedInPart()
     {
         const QString big = dir.filePath("big");

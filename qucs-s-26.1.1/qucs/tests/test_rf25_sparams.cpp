@@ -254,7 +254,7 @@ private slots:
         QVERIFY(!rf::asLine(e, 0, 0, f).error.isEmpty());
     }
 
-    // A test: a microstrip solved for its Z0, then fed
+    // A microstrip solved for its Z0, then fed
     // into ports of that impedance, reflects next to nothing and delays
     // by beta l.
     void aMatchedLineReflectsNothingAndDelaysByBetaL()
@@ -270,7 +270,7 @@ private slots:
         const double z0 = l.Zc.real();
         QVERIFY2(z0 > 20 && z0 < 100, qPrintable(QStringLiteral("Z0 %1").arg(z0)));
 
-        // Matched: S11 below -30 dB, as the proposal asks.
+        // Matched: S11 below -30 dB.
         const std::array<cd, 4> s = fem::lineSParameters(l, length, z0);
         QVERIFY2(dB(s[0]) < -30, qPrintable(QStringLiteral("S11 %1 dB").arg(dB(s[0]))));
         QVERIFY2(dB(s[3]) < -30, qPrintable(QStringLiteral("S22 %1 dB").arg(dB(s[3]))));
@@ -370,7 +370,8 @@ private slots:
         QVERIFY(rf::sweepFrequencies(-1e9, 1e10, 5, false, &why).isEmpty());
         QVERIFY(!why.isEmpty());
         // Past kMostSweepPoints, refused: a study of ten million points made
-        // ten million frequencies, each solved and kept (a bug hunt's second hour). At it, made.
+        // ten million frequencies, each solved and kept.
+        // At it, made.
         QVERIFY(rf::sweepFrequencies(1e9, 4e9, rf::kMostSweepPoints + 1, false, &why).isEmpty());
         QVERIFY2(why.contains(QStringLiteral("past the 100001")), qPrintable(why));
         QCOMPARE(rf::sweepFrequencies(1e9, 4e9, rf::kMostSweepPoints, false, &why).size(), rf::kMostSweepPoints);
@@ -956,7 +957,7 @@ private slots:
         QVERIFY2(c.between.error > 0.5 && !said.contains(QStringLiteral("e+02 %")), qPrintable(said));
     }
 
-    // Every value fitted together to S (F6 of the open items of 8 November):
+    // Every value fitted together to S:
     // a line 30 degrees long at the top of its sweep, with a pad's
     // capacitance at either end - what a lumped pi stands for only
     // roughly. Each branch fitted to its own share of Y weighs the

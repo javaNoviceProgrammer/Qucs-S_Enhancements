@@ -2557,8 +2557,7 @@ private slots:
     // unstage, discard, commit (and push), branches, the remotes, stashes,
     // tags, a commit's actions, abort, init, clone, ignore. What would
     // throw work away, or publish it, is asked about each time.
-    // ------------------------------------------------------------------
-    // A review.
+    // -----------------------------------------------------------------.
 
     void aCommitWithAPathOutsideCommitsNothing()
     {
@@ -2777,7 +2776,7 @@ private slots:
         QCOMPARE(log(repo).first().subject, QStringLiteral("other's"));
     }
 
-    void theSmallerFaultsOfTheReview()
+    void theSmallerFaults()
     {
         const QString repo = makeRepo("smaller");
         QVERIFY(!repo.isEmpty());

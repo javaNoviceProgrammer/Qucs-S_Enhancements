@@ -286,7 +286,7 @@ private slots:
         QCOMPARE(readAll(repo + "/a.txt"), QByteArray("one\ntwo\nthree\n"));
     }
 
-    // A review, what the tools' tests do not reach.
+    // What the tools' tests do not reach.
     void aGitignoreThatIsNoPlainFile()
     {
         const QString repo = makeRepo();

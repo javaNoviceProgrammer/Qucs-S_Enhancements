@@ -816,7 +816,7 @@ private slots:
         QCOMPARE(sc.params.field(QStringLiteral("cden"))->m.size(), std::size_t(4));
         for (int i = 0; i < 4; ++i) QVERIFY(near(sc.params.field(QStringLiteral("cden"))->m[std::size_t(i)], (i + 1) * 1e24 * 8 / 48, 1e-9));
         // (Wavelengths 800 to 1060 nm: their frequencies, not evenly spaced.
-        // 900 to 1060 before a bug hunt: the example's
+        // 900 to 1060 before 19 October: the example's
         // window past the barriers' gap and its fade.)
         const std::vector<double> ph = sc.params.field(QStringLiteral("phfreq"))->m;
         QCOMPARE(ph.size(), std::size_t(261));

@@ -102,8 +102,8 @@ struct Node {
     }
     double num(QAnyStringView local, double fallback = 0) const { return has(local) ? number(attr(local), fallback) : fallback; }
     /// An attribute as a whole number, held within \a lo and \a hi before
-    /// it is converted: converting a double past int's range is undefined
-    /// (bug hunt 2026-10-23 B5), and no attribute of a deck needs more.
+    /// it is converted: converting a double past int's range is undefined,
+    /// and no attribute of a deck needs more.
     int whole(QAnyStringView local, int fallback = 0, int lo = std::numeric_limits<int>::lowest(),
               int hi = std::numeric_limits<int>::max()) const
     {
@@ -166,7 +166,7 @@ struct Node {
 // How deep a part's elements may nest. PowerPoint's own nest a few dozen
 // deep (groups in groups, a table's cells' text); the tree is walked by
 // recursion here (AlternateContent, groups, notes, ~Node), so a part
-// nesting past this is not read (bug hunt 2026-10-23 A2: 50,000 levels in
+// nesting past this is not read (50,000 levels in
 // a 157 kB deck overflowed the stack).
 constexpr std::size_t kMaxXmlDepth = 256;
 
@@ -667,7 +667,7 @@ struct TextFrame {
         // Nothing laid out until all of it is in: QTextDocument lays the
         // text out again at every insertion, so a paragraph of thousands of
         // runs (a listing with its colours) cost the square of them - 5,000
-        // runs took 36 s a slide (bug hunt 2026-10-23 A5). Nothing here
+        // runs took 36 s a slide. Nothing here
         // undoes anything either.
         doc->setUndoRedoEnabled(false);
         QTextCursor c(doc);
@@ -2534,8 +2534,8 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
 // ---------------------------------------------------------------------------
 // Charts: their parts read.
 
-// The most points of a series read: a cache saying more (bug hunt
-// 2026-10-23 A4: ptCount="2000000000" asked for a list of two thousand
+// The most points of a series read: a cache saying more
+// (ptCount="2000000000" asked for a list of two thousand
 // million) is read as this many, and a point's index past it is left.
 constexpr int kMaxPoints = 1000000;
 
@@ -3485,8 +3485,8 @@ void drawShadow(QPainter& p, const Element& e, const QRectF& box)
     if (area.width() < 1 || area.height() < 1) return;
     // A mask of more pixels than this is built smaller and drawn scaled up
     // - a blurred shadow shows nothing of it - rather than not drawn at
-    // all, which is what a shape larger than the view used to get (bug
-    // hunt 2026-10-23 B1: a slide's own shape lost its shadow at an export
+    // all, which is what a shape larger than the view used to get
+    // (a slide's own shape lost its shadow at an export
     // of 8 pixels a point, and at 800 % in the tab).
     constexpr qint64 kMaxMaskPixels = 16ll * 1000 * 1000;
     const qint64 wanted = qint64(area.width()) * area.height();
@@ -4598,7 +4598,7 @@ std::shared_ptr<Presentation> Presentation::read(const QByteArray& bytes, QStrin
     if (d.slides.isEmpty() && !ids.isEmpty()) return fail(QObject::tr("none of its %1 slides could be read").arg(ids.size()));
     // What is drawn is read: the parts' XML and their trees let go (the
     // pictures keep their own bytes). The trees took some 37 times the
-    // XML (bug hunt 2026-10-23 B3), and were kept as long as the deck.
+    // XML, and were kept as long as the deck.
     themes.clear();
     d.pkg = Package();
     // (And the layouts of text measured while it was read: made again when

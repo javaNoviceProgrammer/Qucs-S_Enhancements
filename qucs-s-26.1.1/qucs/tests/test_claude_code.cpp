@@ -2691,7 +2691,7 @@ private slots:
     // Allow All Edits on a card is that conversation's alone, as its note
     // says: the saved permissions - what every new conversation starts
     // with, after a restart too - stay as the Extras menu set them.
-    // They became every conversation's (bug hunt 2026-09-26, B3).
+    // They became every conversation's.
     void allowAllEditsIsOneConversationsAlone()
     {
         QucsSettingsFile().remove("ClaudeCode/permissionMode");   // asking, the default
@@ -3188,7 +3188,7 @@ private slots:
 
     // Dollars in code are code: an indented code block (after a blank line,
     // not in a list, whose items go on indented) and HTML <code> and <pre>,
-    // as GitHub reads them (bug hunt 2026-09-26, E6: "$HOME/bin:$" was set
+    // as GitHub reads them ("$HOME/bin:$" was set
     // as a formula in a shell command).
     void codeIsNotMath()
     {
@@ -3212,9 +3212,10 @@ private slots:
         QCOMPARE(texts("```\n    $a$\n```\n$c$"), QStringList{"c"});
     }
 
-    // A reply's HTML is read whole (a review and its re-check).
+    // A reply's HTML is read whole.
     // A table right under a line of text - "**Label:**" then its header row,
-    // no blank line between - is a table, as GitHub has it: Qt's reader (md4c) starts one only where its header row
+    // no blank line between - is a table, as GitHub has it:
+    // Qt's reader (md4c) starts one only where its header row
     // is a paragraph's only line, and showed the label, the rows and their
     // pipes as one paragraph. A blank line is put before such a header row
     // (tablesApart): in a quote its '>', in a list item none needed (the
@@ -5049,7 +5050,7 @@ private slots:
 #ifndef Q_OS_WIN
         // The folder through a link (a workspace on another disk; /tmp and
         // /var on macOS): Claude Code files its sessions under the real
-        // path, and they are found (bug hunt 2026-09-26, E4). One filed
+        // path, and they are found. One filed
         // under the path as spelled is found too - the newest first.
         const QString link = dir.filePath("claudesessions-link");
         QFile::remove(link);
@@ -6311,7 +6312,7 @@ private slots:
         QVERIFY(qucs_s::claude::imageForClaude(work + "/notes.sch", &type, &why).isEmpty() && why.contains("notes.sch"));
         // An SVG whose <use> references ask for more than is drawn here is
         // not sent, and at once: QtSvg would expand every one of them as it
-        // read (bug hunt 2026-10-23 A3).
+        // read.
         {
             QByteArray defs = "<rect id='r0' width='1' height='1'/>";
             for (int i = 1; i <= 15; ++i) {
@@ -8301,7 +8302,7 @@ private slots:
         QVERIFY(!doc->a_DocNodes.empty());
         doc->setChanged(false);   // (made again, the file has none)
 
-        // A spreadsheet Claude changed (bug hunt 2026-09-26, E1: "could not
+        // A spreadsheet Claude changed ("could not
         // be loaded again", the old table kept - and saved over Claude's):
         // loaded again, the cell in front kept.
         const QString csv = workspace + "/results.csv";

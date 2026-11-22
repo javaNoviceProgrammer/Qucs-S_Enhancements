@@ -2,8 +2,7 @@
  * test_qucsator_robustness.cpp - qucsator_rf on damaged netlists, and
  *                                qucsconv_rf on damaged data and SPICE
  *                                files: an error said, never a signal or a
- *                                sanitizer's report (the hunts of 9 November,
- *                                Q1, and 10 November, R1-R4, U3, U4)
+ *                                sanitizer's report
  *
  * This file is part of Qucs-S.
  *
@@ -74,7 +73,8 @@ class TestQucsatorRobustness : public QObject
 private slots:
     /// An S-parameter file part whose Touchstone file is missing: said. One
     /// of one node compared its uninitialised count of ports with its own 0
-    /// and read the missing file's data - SIGSEGV; one of two said a port count of whatever the memory held.
+    /// and read the missing file's data - SIGSEGV;
+    /// one of two said a port count of whatever the memory held.
     void aMissingTouchstoneFile()
     {
         const QByteArray head = ".SP:SP1 Type=\"log\" Start=\"1 Hz\" Stop=\"10 GHz\" Points=\"11\" Noise=\"no\" saveCVs=\"no\" saveAll=\"no\"\n"
@@ -91,7 +91,7 @@ private slots:
         }
     }
 
-    // --- a bug hunt ------------------------------------------
+    // --- found on 10 November ---------------------------------------------
 
     /// A Touchstone file of `#` alone - an option line with no options, the
     /// defaults' - read: its list of options was never made, and the checker

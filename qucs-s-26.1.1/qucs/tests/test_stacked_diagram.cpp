@@ -214,7 +214,7 @@ private slots:
         QCOMPARE(d.valuesAt(42, 0), QStringList{"a: -"});
         // The marker's reading of the others in its own precision (they were
         // at six digits under its three), and of
-        // those over its x only (a spectrum read at a time's x: B10).
+        // those over its x only (a spectrum read at a time's x).
         QCOMPARE(d.valuesAt(4.123456, 0, "time", m), QStringList{"a: " + m->numberText(4.123456)});
         QVERIFY(m->numberText(4.123456).size() < QString("4.123456").size());
         QCOMPARE(d.valuesAt(4.123456, 0), QStringList{"a: 4.12346"});
@@ -348,7 +348,8 @@ private slots:
     }
 
     // A limit on a pane taken away goes with the traces to the last pane
-    // left (it was checked against nothing, and the diagram said PASS); one no trace is drawn against is unchecked.
+    // left (it was checked against nothing, and the diagram said PASS);
+    // one no trace is drawn against is unchecked.
     void aLimitGoesWithItsPane()
     {
         StackedDiagram d(0, 400);
@@ -438,7 +439,8 @@ private slots:
 
     // A log x axis over data from 0: the point at 0 has no place on it - it
     // is left out of the axis' range and drawn off it - and the rest is
-    // drawn (the whole trace was left out, and a marker on it crashed Qucs-S). An axis whose limits are given through 0
+    // drawn (the whole trace was left out, and a marker on it crashed Qucs-S).
+    // An axis whose limits are given through 0
     // draws nothing, as a Cartesian one; a marker on a trace not drawn is
     // invalid. A pane without traces is a frame.
     void aLogAxisFromZero()

@@ -1003,8 +1003,8 @@ QList<OwnShape> ownShapesOf(const Model& model, QStringList* problems)
     };
     // The Layout's unit, m: a bare number of a shape is in it, as its
     // coordinates are drawn - read as metres, a strip of "100" by "50" was
-    // a hundred metres long, and the solve said there was no layout (P6 of
-    // the open items). A length with a unit, or of the parameters, is as it
+    // a hundred metres long, and the solve said there was no layout.
+    // A length with a unit, or of the parameters, is as it
     // says.
     double unit = 1e-6;
     {
@@ -1537,7 +1537,7 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
                 // Its jogs: steps of a few grid units in an outline along x
                 // and y, each of which the mesh cut a slab for - an
                 // octagon with 5 nm jogs meshed to 153,590 cells, 7,418
-                // snapped (P41 of the open items).
+                // snapped.
                 int jogs = 0;
                 tidy = withoutJogs(tidy, 4 * grid, &jogs);
                 jogged += jogs;
@@ -1593,7 +1593,7 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
             // shrunk to the vias' area instead, a block in the middle of the
             // footprint: a farm under a plate then fed it there alone, and
             // the plate's spreading added 0.44 Ohm where the vias feed it
-            // across its area (P44 of the open items of 8 November).
+            // across its area.
             if (how.keepArea) viasOf = shapes;
             out.report.viasTo += int(one.size());
             out.report.areaKept = after > 0 && how.keepArea ? wanted / after : 1;
@@ -1647,7 +1647,8 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
 
         // Curves thinned: a circle drawn of many segments, each corner a
         // part of the mesh's own - a spiral of 180 segments a turn meshed
-        // to 170,000 cells where 24 made 7,000 - as one of as few as keep the outline within the
+        // to 170,000 cells where 24 made 7,000 - as one of as few as keep the
+        // outline within the
         // tolerance. The corners of a shape that is no curve are far from
         // the line between their neighbours, and stay.
         //

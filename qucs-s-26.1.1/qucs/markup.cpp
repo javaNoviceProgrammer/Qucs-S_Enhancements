@@ -953,8 +953,8 @@ QList<std::pair<QColor, QString>> colors()
 }
 
 // The tool in hand, for this session alone: kept with the colour and the
-// widths, a pen taken up the next day began as an eraser (V7 of the RF 2.5D
-// open items). Each session begins with the pen.
+// widths, a pen taken up the next day began as an eraser.
+// Each session begins with the pen.
 Tool& sessionTool()
 {
     static Tool tool = Tool::Pen;

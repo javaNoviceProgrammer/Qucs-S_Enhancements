@@ -2058,7 +2058,7 @@ private slots:
             QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
             // (Nothing warned: its p⁺ and n⁺ slabs at its window's edges are
             // its rib's silicon, its mode guided - "not guided" said before
-            // a bug hunt.)
+            // 19 October.)
             {
                 QStringList said = r.study.warnings;
                 for (const auto& s : r.study.solutions) said << s->log;

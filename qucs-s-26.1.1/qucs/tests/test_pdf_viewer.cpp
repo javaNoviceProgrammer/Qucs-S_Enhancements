@@ -591,7 +591,8 @@ private slots:
 
 
 
-    // A drag over a page of labels asks little: each of Qt's calls for a character reads the page's text again,
+    // A drag over a page of labels asks little:
+    // each of Qt's calls for a character reads the page's text again,
     // 3 ms on 3,000 runs, 12 on 12,000, and a drag's step took three to five
     // of them. Now a point in a character met before, or nearest a run of
     // one character met before, asks none; a step over the same characters
@@ -657,7 +658,8 @@ private slots:
     }
 
     // A zoom with the pointer beside a page (the grey margins at Fit Page)
-    // keeps the point under it, as on the page (the page in sight's top left corner was thrown under the pointer,
+    // keeps the point under it, as on the page
+    // (the page in sight's top left corner was thrown under the pointer,
     // a jump of up to a page). And a file read again during a step's frames
     // keeps the step's end (N2: it stayed where the frames were).
     void aZoomBesideAPageKeepsThePointer()
@@ -872,7 +874,7 @@ private slots:
         QCOMPARE(view->drawing().strokes().size(), 1);
     }
 
-    // The PDF open items' C2: screenshot's area screen right after a zoom
+    // screenshot's area screen right after a zoom
     // came back blurred - one paint draws no tile while a zoom settles, and
     // only what fits in its time after. Now the tiles in sight are drawn
     // first.
@@ -895,7 +897,7 @@ private slots:
         view->setZoom(1.0);
     }
 
-    // The PDF open items' C1: the foot of each page cut off in the tab.
+    // The foot of each page cut off in the tab.
     // Not seen again; kept so: pages whose ink runs to the bottom edge - a
     // letter page, slides, a media box below nought, a crop box inside its
     // media box - show their last 24 points whole.
@@ -996,8 +998,8 @@ private slots:
         QCOMPARE(catcher.urls.first(), QUrl("https://example.org/datasheet"));
     }
 
-    // A link of a PDF to a program is not handed to the system (it ran -
-    // bug hunt 2026-09-26, B2): asked about, shown in the file manager at
+    // A link of a PDF to a program is not handed to the system (it ran):
+    // asked about, shown in the file manager at
     // most.
     void aLinkToAProgramIsNotRun()
     {
@@ -1067,7 +1069,7 @@ private slots:
 
     // Deleted, then written again a moment later ("rm report.pdf && make
     // report"): still followed - read again then, and at every later
-    // version (bug hunt 2026-09-26, E3: nothing watched the path any more).
+    // version (nothing watched the path any more).
     // Meanwhile it is shown as it was, and the status bar says why.
     void itFollowsItsFileThroughADelete()
     {
@@ -1128,8 +1130,7 @@ private slots:
 
     // Saved as itself under another spelling - a path through a link to
     // its folder, another case where the file system has none: nothing to
-    // write, the file whole. It was deleted, and the copy then failed (bug
-    // hunt 2026-09-26, A1).
+    // write, the file whole. It was deleted, and the copy then failed.
     void itIsSavedAsItselfUnderAnotherSpelling()
     {
         PdfDoc* doc = pdf();

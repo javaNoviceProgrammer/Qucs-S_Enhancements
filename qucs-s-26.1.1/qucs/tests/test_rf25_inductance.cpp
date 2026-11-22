@@ -118,7 +118,8 @@ rf::Mesh meshed(const QList<rf::Conductor>& conductors, double cell)
 }
 
 /// A planar spiral of S. S. Mohan et al., "Simple accurate expressions for
-/// planar spiral inductances" (IEEE JSSC 34(10), 1999), as a review drew its Table IV: \a sides 4, 8 or 12, \a n turns, \a dout
+/// planar spiral inductances" (IEEE JSSC 34(10), 1999), its Table IV:
+/// \a sides 4, 8 or 12, \a n turns, \a dout
 /// across the flats, track \a w and gap \a s (µm). Its centre line - a
 /// square's segments 2 a0, 2 a0, 2 a0 and then pairs shorter by the pitch;
 /// a polygon's turns each a regular polygon a pitch inside the one before,
@@ -279,7 +280,8 @@ private slots:
     // Two filaments side by side: their mutual is the same double
     // integral with their distance in it, and it is exact where they are
     // far enough apart for their widths not to matter.
-    // A wire as thick as it is wide is a bar: its runs' geometric mean distance a rectangle's, w by t -
+    // A wire as thick as it is wide is a bar:
+    // its runs' geometric mean distance a rectangle's, w by t -
     // 0.2235 (w + t) at any aspect, the strip's w e^-3/2 as t goes to nought
     // -, and near ones over both cross-sections. A square loop of copper 0.5
     // by 0.5 mm, 10 mm along its middle with a 0.2 mm gap, in free space, is
@@ -402,7 +404,7 @@ private slots:
     // their length over their distance, which is where the turned runs'
     // geometry differs). partialInductance() of two oblique runs is the
     // cosine times the aligned one too: as though parallel, without the
-    // cosine, as it was until a review, it was 2.11 times
+    // cosine, as it was until 14 November, it was 2.11 times
     // Neumann's here, and a dense loop at 45 degrees 30-50 % high.
     void anObliquePairIsTheCosineTimesItsAlignedOne()
     {
@@ -497,7 +499,7 @@ private slots:
 
     // A strip standing upright beside one lying in the plane - a metal's
     // wall and its face, solved as two faces whose edge runs carry current
-    // down their walls (A1 of the open items of 8 November) -: the partial
+    // down their walls -: the partial
     // inductance by the two cross-sections' geometric mean distance, against
     // the double integral averaged over both cross-sections by a midpoint
     // rule fine enough to settle. Strips that meet at a corner, two walls end
@@ -692,7 +694,7 @@ private slots:
     // A loop whose two ends' points lie on a plate under them too - a model
     // built for the full wave, its two via ports both from one ground plate
     // to the leads -: each end on the metal it names, the leads', not on the
-    // plate's one edge both points are on (P42 of the open items: "both ends
+    // plate's one edge both points are on ("both ends
     // of the loop are on the same face"). The bar's L as without the plate.
     void aLoopsEndsAreOnTheMetalsTheyName()
     {
@@ -905,7 +907,7 @@ private slots:
         // refused but solved compressed: aLoopPastTheDenseLimitIsSolvedCompressed.)
     }
 
-    // Past the dense limit (F5 of the open items of 8 November): the same
+    // Past the dense limit: the same
     // loop solved compressed - L as H-matrices, GMRES preconditioned by the
     // near field's LU - is the dense solve's, on a U of three strips, a
     // plate whose current turns a corner and two metals joined by a via:
@@ -913,8 +915,8 @@ private slots:
     // 1e-4 of the largest. And the mesh this build used to refuse, past 3000 runs and
     // cells, is solved, its L within 2 % of a coarser dense mesh's, said.
     // A via farm that feeds a plate across its area, merged (the
-    // processing's default), feeds it so still (P44 of the open items of 8
-    // November): the union its footprint, conducting as the vias in it do
+    // processing's default), feeds it so still:
+    // the union its footprint, conducting as the vias in it do
     // (Conductor::share), where it was shrunk to the vias' area - a block in
     // the plate's middle, the plate's spreading added in series (0.44 Ohm on
     // the review's capacitor). Two plates 60 µm square of 0.2 µm metal, one
@@ -987,7 +989,7 @@ private slots:
             rf::setLoopDenseLimit(50);
             // (How far it has got, for what is said while it runs: its runs
             //  and cells, compressed, and its GMRES's last iteration and
-            //  residual - P26 of the open items.)
+            //  residual.)
             rf::LoopProgress progress;
             const rf::Inductance compressed = rf::inductanceOf(mesh, shapes, on, from, to, 1e-6, 0, nullptr, QString(), QString(), &progress);
             rf::setLoopDenseLimit(0);
@@ -1073,9 +1075,9 @@ private slots:
     }
 
 
-    // Mohan's spirals as a review meshed them, at the cell
+    // Mohan's spirals, at the cell
     // sizes where their loops came out shorted: "L02 ... 15 µm 0.0151 Ohm",
-    // "L05 ... 10 µm 0.387 Ohm", "L16 ... 15 µm 0.00106 Ohm" (P17). Two
+    // "L05 ... 10 µm 0.387 Ohm", "L16 ... 15 µm 0.00106 Ohm". Two
     // things together: each turn's rectangles graded from their own ends
     // met in lines a hair apart, cells 0.5 nm wide whose edges the runs could
     // not tell apart (cells left joined to nothing); and the loop's ports
@@ -1339,7 +1341,8 @@ private slots:
         }
     }
 
-    // A loop's ends on a slanted face take the whole face: its cells' corners up to 0.7 nm off the face's line,
+    // A loop's ends on a slanted face take the whole face:
+    // its cells' corners up to 0.7 nm off the face's line,
     // they were looked for within 1e-6 of its length, and the current went
     // in at the one cell nearest - a 2 mm strip's R at direct current 15 %
     // high at 10 degrees, 11 % at 30, against 45 degrees', whose corners
@@ -1367,8 +1370,8 @@ private slots:
         for (int k = 1; k < r.size(); ++k) QVERIFY2(std::abs(r.at(k) / r.at(0) - 1) < 0.045, qPrintable(QStringLiteral("%1 against %2").arg(r.at(k)).arg(r.at(0))));
     }
 
-    // A loop's end on a corner says which edge the current goes in along
-    // It has no facing to give, and of the
+    // A loop's end on a corner says which edge the current goes in along:
+    // it has no facing to give, and of the
     // two edges it took one as found, nothing said.
     void aLoopsEndOnACornerSaysItsEdge()
     {
@@ -1398,7 +1401,7 @@ private slots:
     // A compressed loop past what a solve may take is refused before it is
     // made, and says what it would have taken: an octagonal spiral of
     // 172,000 runs went on into its near field's LU, 25 GB in 30 s and
-    // climbing, until the system ended Qucs-S without a word (P18).
+    // climbing, until the system ended Qucs-S without a word.
     void aLoopPastTheMemoryItMayTakeIsRefused()
     {
         const rf::Stack stack = grounded(9.8, 100e-6, 1e-6, 5.8e7);
@@ -1417,7 +1420,7 @@ private slots:
         // Room for L, and not for its near field's pairs: refused as it
         // counts them, before the triplets and the matrix are made - a mesh
         // of nanometre slivers beside 15 µm runs had 259 million of them, and
-        // the solve went past 60 GB (P21).
+        // the solve went past 60 GB.
         {
             const double rows = solved.branches + solved.nodes - 1;
             rf::setLoopMemory(20e3 * solved.branches + 16.0 * 104 * rows + 1e6);

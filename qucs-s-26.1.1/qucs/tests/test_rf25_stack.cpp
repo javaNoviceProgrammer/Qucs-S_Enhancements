@@ -279,7 +279,7 @@ void TestRf25Stack::groundsAndLidsGoThereAndBack()
     QVERIFY(e.text.contains(QLatin1String("layer 100 1 name Lid_gap")));
     QVERIFY(e.text.contains(QLatin1String("layer infinity 1 conductivity 5.8e7 name Lid")));
     QVERIFY(!e.text.contains(QLatin1String("name air")));
-    // A dielectric's conductivity (F7 of the open items): in its own layer,
+    // A dielectric's conductivity: in its own layer,
     // and in the room of the metal it fills (the review of f13694ea).
     QString conducting = twoMetals();
     conducting.replace(QStringLiteral(R"("epsr": "4.2", "tand": "0")"), QStringLiteral(R"("epsr": "4.2", "tand": "0", "sigma": "5")"));

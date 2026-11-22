@@ -1025,7 +1025,7 @@ QImage PageView::tile(int page, qreal scale, int tx, int ty, bool* cached)
     // A tile at the page's edge asked for whole and cut to the page: QtPdf
     // gives a clip a few dozen pixels high nothing at all - the foot of a
     // page whose height is just over a multiple of the tile's was left
-    // white (the PDF open items' C1).
+    // white.
     const QRect cell(tx * TileSize, ty * TileSize, TileSize, TileSize);
     // (A clip a pixel larger than the picture: QtPdf maps w x h as if w - 1 by
     // h - 1, and a tile's ink came Y / 512 rows high - 9 at a page's foot.)

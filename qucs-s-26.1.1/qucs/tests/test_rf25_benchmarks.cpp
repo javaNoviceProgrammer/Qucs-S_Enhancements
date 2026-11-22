@@ -3,7 +3,8 @@
  * gathered where a build runs them all: published measurements, closed forms
  * and filament sums, each case's reference and its source written beside
  * it, its tolerance about today's answer so that a drift is caught, and a
- * table of them all said at the end (the production-readiness review: "A benchmark regression suite on every build. The references
+ * table of them all said at the end
+ * ("A benchmark regression suite on every build. The references
  * that caught real faults are in my folders, not in CI").
  *
  * Its heavy cases - a spiral's loop, dense, some 130 times a Release build's
@@ -172,9 +173,8 @@ class TestRf25Benchmarks : public QObject
 private slots:
     // Mohan's spirals (IEEE JSSC 1999), the inductance measured at a low
     // frequency, through the loop inductance at the tab's mesh - 15 µm cells,
-    // one across: the three squares a review found shorted
-    // (P17), and the seven polygons it found 10 times past their cells (P19,
-    // P20). Each within 10 % of the measured, the paper's own expressions'
+    // one across: the three squares once found shorted, and the seven
+    // polygons once found 10 times past their cells. Each within 10 % of the measured, the paper's own expressions'
     // spread, and within 1.5 % of its own answer today, so that a drift is
     // caught (today: L02 +0.7 %, L05 -0.7, L16 -1.2, L55 +1.0, L56 -0.7, L57
     // +8.3, L58 +3.9, L59 -1.6, L60 +0.9, L61 +2.1 against the measured). (L57's
@@ -236,7 +236,8 @@ private slots:
             QVERIFY2(std::abs(nh / today - 1) < 0.015, qPrintable(QStringLiteral("%1 nH against %2 today").arg(nh).arg(today)));
     }
 
-    // A square loop of wire as thick as it is wide (a review's thick conductors): 10 mm along its middle, 0.5 by 0.5 mm, a
+    // A square loop of wire as thick as it is wide: 10 mm along its middle,
+    // 0.5 by 0.5 mm, a
     // 0.2 mm gap - 24.17 nH by a Neumann sum over 16 by 16 filaments of each
     // side, each filament's own term its rectangle's geometric mean distance
     // (Grover, Inductance Calculations, 1946). The loop inductance, its runs
@@ -300,8 +301,8 @@ private slots:
         QVERIFY2(std::abs(c / exact - 1) < 0.005, qPrintable(QStringLiteral("%1 pF/m against %2").arg(c * 1e12).arg(exact * 1e12)));
     }
 
-    // MIM plates of no thickness, facing each other cell for cell (P28 of
-    // the open items: plates as faces read 72.4 fF where 151.6 was right):
+    // MIM plates of no thickness, facing each other cell for cell
+    // (plates as faces read 72.4 fF where 151.6 was right):
     // 40 µm square, 40 nm of eps_r 7 between them - the parallel plate's
     // eps A/d, 2.48 pF, its fringe a fraction of d over the side more. The
     // quasi-static solve at 5 µm cells within 0 and +2 % of it.

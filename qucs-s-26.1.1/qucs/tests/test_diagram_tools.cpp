@@ -3068,8 +3068,8 @@ private slots:
 
     // A data display of its own - a .dpl beside its dataset, with no
     // schematic: what a multiphysics 1D plot group writes - keeps its plots
-    // through an edit and a save, on the canvas as well as in the data. They went blank until reload_data; this is
-    // the sequence they describe, as a guard.
+    // through an edit and a save, on the canvas as well as in the data. They
+    // went blank until reload_data; this is that sequence, as a guard.
     void aStandaloneDisplayKeepsItsPlots()
     {
         QVERIFY(writeFile(path("bend.dat"),
@@ -3125,15 +3125,14 @@ private slots:
         plots(sch, "after it is opened again");
     }
 
-    // ==== A bug hunt:
-    // each finding's case, as it was found.
+    // ==== The cases found on 8 October, each as it was found.
 
-    // F1: a marker on a log x axis whose data start at 0 - a linear AC
+    // A marker on a log x axis whose data start at 0 - a linear AC
     // sweep from 0 Hz on a Bode diagram, an FFT's spectrum on a log x -
     // crashed Qucs-S, and the diagram drew nothing. The point at 0 is left
     // out of the axis (said), the rest drawn; a trace not drawn refuses a
     // marker, with why.
-    void huntMarkerOnALogAxisFromZero()
+    void aMarkerOnALogAxisFromZero()
     {
         const auto h = [](double f) { return std::complex<double>(1.0) / std::complex<double>(1.0, f / 1e3); };
         QVERIFY(schematicWith("logzero", datasetText("frequency", range(0, 1e5, 101),
@@ -3160,7 +3159,8 @@ private slots:
     }
 
     // A hidden trace is said hidden, not "not drawn" for a layout's failure,
-    // and a marker on it says why it cannot sit there ("its diagram cannot lay out its axes over it").
+    // and a marker on it says why it cannot sit there
+    // ("its diagram cannot lay out its axes over it").
     void aHiddenTraceIsSaidHidden()
     {
         const auto h = [](double f) { return std::complex<double>(1.0) / std::complex<double>(1.0, f / 1e3); };
@@ -3177,10 +3177,10 @@ private slots:
         QVERIFY2(failed(r) && text(r).contains(QLatin1String("is not drawn (it is hidden (edit_trace 'hidden': false shows it))")), qPrintable(text(r)));
     }
 
-    // F2: a spectrogram's segment far below the sampling took time growing
+    // A spectrogram's segment far below the sampling took time growing
     // as 1/segment - a file keeping one could not be opened; and the answer
-    // asked for a shorter one. B7: an AC sweep is no transient to cut.
-    void huntASpectrogramsShortSegment()
+    // asked for a shorter one. An AC sweep is no transient to cut.
+    void aSpectrogramsShortSegment()
     {
         constexpr double Pi = 3.14159265358979323846;
         QVERIFY(schematicWith("seg", datasetText("time", range(0, 10e-3, 20001), {{"tran.v(out)", [](double t) { return std::sin(2 * Pi * 1e3 * t); }}})
@@ -3217,12 +3217,12 @@ private slots:
         QVERIFY2(json(r).value("note").toString().contains("is over frequency: a spectrogram reads a transient"), qPrintable(text(r)));
     }
 
-    // F3, B14, B15, N8, N14, N18, N19: the LTspice import.
-    void huntLtspiceImport()
+    // The LTspice import.
+    void ltspiceImportCases()
     {
         namespace lt = qucs_s::ltspice;
         const QString head = "Version 4\nSHEET 1 880 680\n";
-        // F3: coordinates beyond the model plane's reach refused (they
+        // Coordinates beyond the model plane's reach refused (they
         // overflowed an int: a Debug build aborted, Release wrapped).
         lt::Conversion c = lt::convert(head + "SYMBOL res 800 2147483647 R0\nSYMATTR InstName R1\nSYMATTR Value 1k\n");
         QVERIFY2(c.error.contains("line 3") && c.error.contains("within 8388608"), qPrintable(c.error));
@@ -3232,14 +3232,14 @@ private slots:
                                                "PIN 0 32 NONE 8\nPINATTR SpiceOrder 2\nSYMATTR Prefix X\nSYMATTR SpiceModel FAR\n"));
         c = lt::convert(head + "SYMBOL far 0 0 R0\nSYMATTR InstName U1\n", {path("lt2")});
         QVERIFY2(c.error.contains("far.asy: a pin beyond 8388608"), qPrintable(c.error));
-        // N8: a symbol's SpiceOrder of 0, of text, twice: said.
+        // A symbol's SpiceOrder of 0, of text, twice: said.
         for (const char* order : {"0", "-1", "x"}) {
             QVERIFY(writeFile(path("lt2/odd.asy"), QStringLiteral("Version 4\nPIN 0 0 NONE 8\nPINATTR SpiceOrder %1\nPIN 0 32 NONE 8\nPINATTR SpiceOrder 2\n"
                                                                   "SYMATTR Prefix X\nSYMATTR SpiceModel ODD\n").arg(order)));
             c = lt::convert(head + "SYMBOL odd 0 0 R0\nSYMATTR InstName U1\n", {path("lt2")});
             QVERIFY2(c.notes.join('\n').contains(QStringLiteral("odd.asy: SpiceOrder %1 (the pin at 0, 0) is not 1, 2, 3").arg(order)), qPrintable(c.notes.join('\n')));
         }
-        // B15: a capacitor's and an inductor's database ratings left out,
+        // A capacitor's and an inductor's database ratings left out,
         // their parasitics parts of their own; a resistor's tolerance out,
         // its temperature kept. B14: .step and .four kept for the import,
         // .meas and .wave said; .backanno LTspice's own bookkeeping.
@@ -3282,7 +3282,7 @@ private slots:
             QVERIFY2(json(r).value("succeeded").toBool(), qPrintable(text(r)));
         }
         closeAll();
-        // N14: UTF-16 big-endian, with its mark or without; the old Mac's
+        // UTF-16 big-endian, with its mark or without; the old Mac's
         // line ends; a line LTspice has no word for (a NUL first), said.
         const QString rc = head + "WIRE 0 0 100 0\nFLAG 0 0 a\nFLAG 0 64 0\nSYMBOL cap -16 0 R0\nSYMATTR InstName C1\nSYMATTR Value 1u\n";
         QByteArray be("\xFE\xFF", 2);
@@ -3295,13 +3295,13 @@ private slots:
         QCOMPARE(lt::textOf(QString(rc).replace('\n', '\r').toLatin1()), rc);
         c = lt::convert(rc + QStringLiteral("%1WIRE 0 64 100 64\n").arg(QChar(0)));
         QVERIFY2(c.notes.join('\n').contains("1 line(s) not read, none of an .asc's words: line 9"), qPrintable(c.notes.join('\n')));
-        // N18: a model of LTspice's own library, defined nowhere: said.
+        // A model of LTspice's own library, defined nowhere: said.
         c = lt::convert(head + "FLAG 16 0 a\nFLAG 16 64 0\nSYMBOL diode 0 0 R0\nSYMATTR InstName D1\nSYMATTR Value 1N4148\n");
         QVERIFY2(c.notes.join('\n').contains("D1 (1N4148): models defined nowhere in it - LTspice takes them from its own library"),
                  qPrintable(c.notes.join('\n')));
         c = lt::convert(head + "FLAG 16 0 a\nFLAG 16 64 0\nSYMBOL diode 0 0 R0\nSYMATTR InstName D1\nSYMATTR Value DX\nTEXT 0 100 Left 2 !.model DX D\n");
         QVERIFY2(!c.notes.join('\n').contains("models defined"), qPrintable(c.notes.join('\n')));
-        // N19: flags a net label cannot take, renamed to names it can - said.
+        // Flags a net label cannot take, renamed to names it can - said.
         c = lt::convert(head + "FLAG 16 0 +5V\nFLAG 16 64 -12V\nFLAG 116 0 3V3\nFLAG 116 64 V+\nFLAG 216 0 a.b\nFLAG 216 64 a_b\n"
                                "SYMBOL cap 0 0 R0\nSYMATTR InstName C1\nSYMATTR Value 1u\nSYMBOL cap 100 0 R0\nSYMATTR InstName C2\nSYMATTR Value 1u\n"
                                "SYMBOL cap 200 0 R0\nSYMATTR InstName C3\nSYMATTR Value 1u\n");
@@ -3315,10 +3315,10 @@ private slots:
         QVERIFY2(json(r).value("converted").toVariant().toStringList().join('\n').contains("the node +5V is the net P5V"), qPrintable(text(r)));
     }
 
-    // A1: a tornado chart's parts named with an underscore (R_load), and
-    // ngspice 46's AC sensitivity (ac.v(r1_scale)); N3, N17: its 'at'
+    // A tornado chart's parts named with an underscore (R_load), and
+    // ngspice 46's AC sensitivity (ac.v(r1_scale)); its 'at'
     // between two points of the sweep, and beyond it.
-    void huntTornadoParts()
+    void tornadoPartsFound()
     {
         QCOMPARE(TornadoDiagram::sensitivityParts({"r1", "r1_m", "r1_scale", "r_load", "r_load_m", "r_load_scale", "v1", "v1_dc"}),
                  (QStringList{"r1_scale", "r_load_scale", "v1"}));
@@ -3339,11 +3339,11 @@ private slots:
         QCOMPARE(t.value("shown").toArray().first().toObject().value("value").toDouble(), 1.0);
     }
 
-    // A3: the spectrum view's fundamental read between the bins, and each
+    // The spectrum view's fundamental read between the bins, and each
     // harmonic sought at its multiple: a line there a peak above the floor,
     // else the bin there. A square's 2nd was "at 1800 Hz, -45.6 dBc", and a
     // pure sine of 10.5 periods read at 952 Hz, its THD up to 5.5 %.
-    void huntSpectrumHarmonics()
+    void spectrumHarmonics()
     {
         namespace sp = qucs_s::spectrum;
         constexpr double Pi = 3.14159265358979323846;
@@ -3394,17 +3394,17 @@ private slots:
             QVERIFY2(std::abs(l.frequency - l.harmonic * ng.fundamental) < 5, qPrintable(QStringLiteral("%1: %2").arg(l.harmonic).arg(l.frequency)));
             if (l.harmonic % 2 == 0) QVERIFY2(l.dBc < -40, qPrintable(QStringLiteral("%1: %2 dBc").arg(l.harmonic).arg(l.dBc)));
         }
-        // N2: a spectrum from past the run's end says so.
+        // A spectrum from past the run's end says so.
         QVERIFY(schematicWith("spec", datasetText("time", t, {{"tran.v(sq)", [](double v) { return std::fmod(v, 1e-3) < 0.5e-3 ? 1.0 : 0.0; }}})));
         QJsonObject r = call("add_diagram", {{"type", "spectrum"}, {"traces", QJsonArray{"tran.v(sq)"}}, {"spectrum", QJsonObject{{"from", 0.02}}}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY2(json(r).value("analyses").toArray().first().toObject().value("error").toString().contains("past the run's end"), qPrintable(text(r)));
     }
 
-    // A5: a two-terminal part's second pin gave its first's current - the
-    // sign wrong; B12: a bipolar's emitter (@q1[ie], which ngspice writes
+    // A two-terminal part's second pin gave its first's current - the
+    // sign wrong; a bipolar's emitter (@q1[ie], which ngspice writes
     // none of) failed every run. Each computed by a NutmegEq now.
-    void huntProbedCurrents()
+    void probedCurrents()
     {
         QJsonObject r = call("import_netlist", {{"text", "bjt\nV1 c 0 5\nVb b0 0 0.7\nRb b0 b 1k\nR1 c out 1k\nQ1 out b e QN\nRe e 0 100\n"
                                                          ".model QN NPN(BF=100)\n.tran 1u 100u\n.end"},
@@ -3467,14 +3467,14 @@ private slots:
             // alone, of vectors of no type).
             for (const Graph* g : sch->a_DocDiags.front()->Graphs) QVERIFY2(!g->isEmpty(), qPrintable(g->Var));
         }
-        // B13: under Qucsator a net is probed (the netlist "could not be
+        // Under Qucsator a net is probed (the netlist "could not be
         // written").
         QucsSettings.DefaultSimulator = spicecompat::simQucsator;
         const auto restore = qScopeGuard([] { QucsSettings.DefaultSimulator = spicecompat::simNgspice; });
         r = call("probe", {{"what", "out"}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QCOMPARE(json(r).value("variable").toString(), QString("out.Vt"));
-        // N1: a list of names, each probed.
+        // A list of names, each probed.
         QucsSettings.DefaultSimulator = spicecompat::simNgspice;
         r = call("probe", {{"what", QJsonArray{"out", "R1"}}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
@@ -3483,11 +3483,11 @@ private slots:
         QCOMPARE(each.at(1).toObject().value("variable").toString(), QString("ngspice/tran.@r1[p]"));
     }
 
-    // A6: a delta marker placed on an earlier trace measured from the wrong
-    // marker; B2: one whose reference went kept its Δ lines; B9: a marker's
+    // A delta marker placed on an earlier trace measured from the wrong
+    // marker; one whose reference went kept its Δ lines; a marker's
     // x kept to six digits moved on save; N13: 'relative_to' with no other
-    // marker said "1 to 1"; N23: in the complex plane, a Δ of magnitudes.
-    void huntMarkers()
+    // marker said "1 to 1"; in the complex plane, a Δ of magnitudes.
+    void markerCases()
     {
         QVector<double> t;
         for (int i = 0; i <= 1000; ++i) {
@@ -3505,14 +3505,14 @@ private slots:
         r = call("add_marker", {{"trace", 1}, {"at", 0.004}, {"relative_to", 2}});   // the one at 6 ms, as numbered before
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY2(std::abs(json(r).value("delta").toObject().value("x").toDouble() + 2e-3) < 1e-9, qPrintable(text(r)));
-        // B2: the reference deleted - no Δ left in the text.
+        // The reference deleted - no Δ left in the text.
         Diagram* d = front()->a_DocDiags.front();
         Marker* delta = d->markers().first();
         QVERIFY(delta->Text.contains(QString::fromUtf8("Δx")));
         QVERIFY(!failed(call("delete_marker", {{"marker", 3}})));
         QVERIFY2(!delta->Text.contains(QString::fromUtf8("Δ")), qPrintable(delta->Text));
         QVERIFY(delta->reference() == nullptr);
-        // B9: every digit of its x kept - on a sample a nanosecond from
+        // Every digit of its x kept - on a sample a nanosecond from
         // others, it stays on it reopened (at six digits it moved).
         r = call("add_marker", {{"trace", 1}, {"at", 3.000006e-3}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
@@ -3524,7 +3524,7 @@ private slots:
         bool kept = false;
         for (const Marker* m : front()->a_DocDiags.front()->markers()) kept = kept || std::abs(m->varPos().front() - 3.000006e-3) < 1e-13;
         QVERIFY(kept);
-        // N23: Smith - Δ|y| and |Δy|, the distance.
+        // Smith - Δ|y| and |Δy|, the distance.
         using C = std::complex<double>;
         QVERIFY(schematicWith("mks", datasetText("frequency", {1e6, 2e6}, {{"ac.s_1_1", [](double f) { return f < 1.5e6 ? 0.3 : 0.0; },
                                                                                      [](double f) { return f < 1.5e6 ? 0.0 : 0.4; }}})));
@@ -3542,7 +3542,7 @@ private slots:
 
     // A2 (unchecked limits), N6 (a limit at one x), N7 (a limit that does
     // not read leaves the schematic be), N16 (one warning a limit).
-    void huntLimits()
+    void limitCases()
     {
         QVERIFY(schematicWith("lim", datasetText("time", range(0, 10e-3, 1001), {{"tran.v(sq)", [](double v) { return std::fmod(v, 1e-3) < 0.5e-3 ? 1.0 : 0.0; }}})));
         QJsonObject r = call("add_diagram", {{"type", "rect"}, {"traces", QJsonArray{"tran.v(sq)"}}});
@@ -3587,9 +3587,9 @@ private slots:
         QVERIFY(front()->a_DocDiags.front()->limits.isEmpty());
     }
 
-    // B1: a vector its simulation's name put before it (two simulations of
+    // A vector its simulation's name put before it (two simulations of
     // a kind ran: tr1.tran.v(out)) found by the name alone, when one is so.
-    void huntPrefixedNames()
+    void prefixedNames()
     {
         QVERIFY(schematicWith("pre", datasetText("time", range(0, 1e-3, 11), {{"tr1.tran.v(out)", [](double) { return 1.0; }}})
                                          + datasetText("frequency", range(1, 10, 10), {{"fft1.ac.s", [](double) { return 2.0; }},
@@ -3608,7 +3608,7 @@ private slots:
         QVERIFY2(!failed(r) && json(r).value("variables").toArray().size() == 2, qPrintable(text(r)));
         r = call("get_dataset", {{"variables", QJsonArray{"ac.v(two)"}}});   // two: both, each by its name
         QVERIFY2(!failed(r) && json(r).value("variables").toArray().size() == 2, qPrintable(text(r)));
-        // B6: a trace shown, its data the run names otherwise (tr1.tran.v(out)):
+        // A trace shown, its data the run names otherwise (tr1.tran.v(out)):
         // probed again, it has data; and one of a dataset named before it, as
         // the examples' traces are, is found in it.
         {
@@ -3656,7 +3656,7 @@ private slots:
     // N4, N21 (a constellation's limits said), N9 (a box plot's 'at' on one
     // curve), N10 (iso-lines the data does not reach), N20 (a zero's half-
     // plane), N22 (Values at the Marker kept with the schematic).
-    void huntTheRest()
+    void otherDiagramCases()
     {
         // B4.
         QVERIFY(schematicWith("sp", datasetText("frequency", range(1e6, 2e7, 5), {{"ac.s_1_1", [](double) { return 0.3; }, [](double) { return 0.1; }},
@@ -3687,7 +3687,7 @@ private slots:
         QVERIFY(failed(call("edit_diagram", {{"diagram", 2}, {"constellation", QJsonObject{{"offset", -1e-3}}}})));
         r = call("add_diagram", {{"type", "box_plot"}, {"traces", QJsonArray{"tran.i"}}, {"box_plot", QJsonObject{{"at", 0.003}}}});
         QVERIFY2(json(r).value("box_plot").toObject().value("boxes").toArray().first().toObject().value("at").toString().startsWith("not used"), qPrintable(text(r)));
-        // N22: Values at the Marker kept.
+        // Values at the Marker kept.
         r = call("add_marker", {{"diagram", 1}, {"trace", 1}, {"at", 0.004}, {"annotate", true}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY(front()->cursorValuesShown());
@@ -3696,7 +3696,7 @@ private slots:
         QVERIFY(!failed(call("open_document", {{"path", path("rest.sch")}})));
         QVERIFY(front()->cursorValuesShown());
         QVERIFY(front()->cursorMarker() != nullptr && front()->cursorMarker() == front()->a_DocDiags.front()->markers().first());
-        // N13: an NRZ signal read as PAM4 (levels 4) - three eyes drawn - said.
+        // An NRZ signal read as PAM4 (levels 4) - three eyes drawn - said.
         if (withNgspice()) {
             const QString sch = path("nrz.sch");
             QFile::remove(sch);
@@ -3719,7 +3719,7 @@ private slots:
             QVERIFY2(!json(r).value("analyses").toArray().first().toObject().contains("notes"), qPrintable(text(r)));
             closeAll();
         }
-        // B8: the rails a label can name.
+        // The rails a label can name.
         const auto kind = [](const QString& name) {
             const QString sch = QStringLiteral("<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Symbol>\n</Symbol>\n<Components>\n</Components>\n"
                                                "<Wires>\n  <300 100 400 100 \"%1\" 320 70 0 \"\">\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n").arg(name);
@@ -3737,7 +3737,7 @@ private slots:
                      name);
             closeAll();
         }
-        // B16: a Nichols chart over many turns of the phase: no grid, said.
+        // A Nichols chart over many turns of the phase: no grid, said.
         QVERIFY(schematicWith("nic", datasetText("frequency", range(1, 1000, 1000), {{"ac.v(g)", [](double f) { return std::polar(0.5, -f * 0.1).real(); },
                                                                                     [](double f) { return std::polar(0.5, -f * 0.1).imag(); }}})));
         r = call("add_diagram", {{"type", "nichols"}, {"traces", QJsonArray{"ac.v(g)"}}});
@@ -3762,14 +3762,14 @@ private slots:
             QVERIFY(f.open(QIODevice::ReadOnly));
             QVERIFY2(svg.size() < f.size() + f.size() / 10, qPrintable(QStringLiteral("%1 %2").arg(svg.size()).arg(f.size())));
         }
-        // N10: iso-lines the data does not reach, not listed.
+        // Iso-lines the data does not reach, not listed.
         const QVector<double> xs = range(1, 10, 10), ys = range(0, 1, 6);
         QVERIFY(schematicWith("iso", datasetText2("r", xs, "c", ys, {{"sw.v", [](double x, double y) { return x + 10 * y; }}})));
         r = call("add_diagram", {{"type", "contour"}, {"traces", QJsonArray{"sw.v"}}, {"contour", QJsonObject{{"range", QJsonObject{{"from", 0}, {"to", 1e-3}}}}}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         const QJsonObject an = json(r).value("analyses").toArray().first().toObject();
         QVERIFY2(an.value("iso-lines").toArray().isEmpty() && an.value("iso-lines not drawn").toString().contains("beyond the data (1 to 20)"), qPrintable(text(r)));
-        // N20: a zero's side is its phase's, not a pole's stability.
+        // A zero's side is its phase's, not a pole's stability.
         QVERIFY(schematicWith("pz", datasetText("index", {1}, {{"pz.pole(1)", [](double) { return -1000.0; }}, {"pz.zero(1)", [](double) { return 0.0; }}})));
         r = call("add_diagram", {{"type", "pole_zero"}, {"traces", QJsonArray{"pz.pole(1)", "pz.zero(1)"}}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
@@ -3781,7 +3781,7 @@ private slots:
 
     // N5 (a bus named ""), N15 (one of no length), N11 (a dialog's value
     // read back as it was shown).
-    void huntBusesAndDialogValues()
+    void busesAndDialogValues()
     {
         QVERIFY(schematicWith("bus", datasetText("time", range(0, 1, 11), {{"tran.v", [](double t) { return t; }}})));
         QJsonObject r = call("add_painting", {{"type", "bus"}, {"from", QJsonArray{0, 0}}, {"to", QJsonArray{100, 0}}, {"name", ""}});
@@ -3813,9 +3813,9 @@ private slots:
         QVERIFY2(iq->offset == 1e-4 && iq->period == 5e-4, qPrintable(QString::number(iq->offset, 'g', 17)));
     }
 
-    // ---- Crash hardening, round three: diagrams of hostile numbers.
+    // ---- Diagrams of hostile numbers.
 
-    // D1: a 3D diagram of values whose axes span past a double (1e308 and
+    // A 3D diagram of values whose axes span past a double (1e308 and
     // -1e308: a NaN in each coordinate) - its hidden lines were walked to
     // pixels an int of NaN gave, and its buffers read and written past:
     // the program gone at adding it.
@@ -3846,7 +3846,7 @@ private slots:
         closeAll();
     }
 
-    // D2: a Smith chart's step is its count of arcs: add_diagram swapped
+    // A Smith chart's step is its count of arcs: add_diagram swapped
     // one it took for a spacing too fine for niceStep's, about 1e307 for
     // -1e308 to 1, and the chart appended arcs until memory ran out.
     void aSmithChartsStepIsItsArcs()
@@ -3879,7 +3879,7 @@ private slots:
         closeAll();
     }
 
-    // D3: a limit over values of 1e299 and infinity: the trace was drawn
+    // A limit over values of 1e299 and infinity: the trace was drawn
     // again in red once for each stretch beyond it - 30,000 points with
     // 7,500 such, the export never done.
     void aLimitOverFarValuesIsDrawnOnce()
@@ -3909,7 +3909,7 @@ private slots:
         closeAll();
     }
 
-    // D4: a Nichols chart's x axis from -1e308: its count of turns an int
+    // A Nichols chart's x axis from -1e308: its count of turns an int
     // of 2.5e13 (undefined, often small), and its grid drawn without end.
     void aNicholsAxisOfCountlessTurns()
     {
@@ -3928,7 +3928,7 @@ private slots:
         closeAll();
     }
 
-    // D5: a pole-zero map's answer lists at most 500 roots a trace, and
+    // A pole-zero map's answer lists at most 500 roots a trace, and
     // says how many there are: one of 600,000 numbers was not answered in
     // 120 s.
     void aPoleZeroAnswerIsCut()
@@ -3943,7 +3943,7 @@ private slots:
         closeAll();
     }
 
-    // U6: the diagrams' counts of NaN or past an int (UBSan's build says):
+    // The diagrams' counts of NaN or past an int (UBSan's build says):
     // a histogram's bins of an infinite spread over an infinite range, a
     // spectrogram's rows up to 1e30 Hz.
     void diagramCountsOfNaNOrPastAnInt()

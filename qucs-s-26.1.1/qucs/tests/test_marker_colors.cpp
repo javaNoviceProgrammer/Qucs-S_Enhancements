@@ -101,8 +101,7 @@ private slots:
 
     // A precision from a file is kept to what the dialogs allow (a marker's
     // 0..12, a trace's 0..99), and a notation never writes more than 20
-    // places: a marker line with 999999999 made a label of gigabytes (bug
-    // hunt 2026-09-26, C5).
+    // places: a marker line with 999999999 made a label of gigabytes.
     void aPrecisionFromAFileIsKeptInBounds()
     {
         QString body = "<\"ngspice/ac.v(out)\" #0000ff 2 999999999 0 0 0>\n  <Mkr 2e+06 100 -100 999999999 0 0>\n</Rect>\n";

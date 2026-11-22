@@ -592,8 +592,8 @@ private slots:
     void cleanup()
     {
         closeAll();
-        // (The strokes kept beside a layout - V1 of the RF 2.5D open items -
-        //  taken away: each test's tab begins with none.)
+        // (The strokes kept beside a layout taken away: each test's tab
+        //  begins with none.)
         QDirIterator kept(dir.filePath("workspace"), {QStringLiteral("*.drawings")}, QDir::Files, QDirIterator::Subdirectories);
         while (kept.hasNext()) QFile::remove(kept.next());
         // The canvas as it is at first, whatever a test left.
@@ -889,7 +889,7 @@ private slots:
     // A CBLOCK of a compression gdstk does not know: its bytes skipped from
     // where they begin, only as many as the file has - a length past an
     // int64's failed an assert (a Debug build aborted), and Release sought
-    // to it from the file's start (crash hardening, round three, L1).
+    // to it from the file's start.
     void aCblockOfAnUnknownCompressionIsSkipped()
     {
         const auto file = [](const QByteArray& length, const QByteArray& block) {
@@ -962,8 +962,8 @@ private slots:
     // micrometre up and right: read on a thread of 512 kB (a pool's on
     // macOS, as the viewer's reading thread was), its bounds and depth
     // found, drawn and searched - no recursion as deep (its bounds, a level
-    // a call, overflowed a thread's stack at 3,000 - the fuzz of 21
-    // October, L1); drawn and searched 256 levels down at most.
+    // a call, overflowed a thread's stack at 3,000); drawn and searched 256
+    // levels down at most.
     void aHierarchyThousandsDeepIsReadAndDrawn()
     {
         for (const bool oasis : {false, true}) {
@@ -1021,7 +1021,7 @@ private slots:
     // A text string's property named by a number (PROPNAME's, and no
     // PROPNAME given): read, the property's name "?". (Copied with the text
     // before the names were looked up: its name the number, 0, read as a
-    // string - the fuzz of 21 October, L2.)
+    // string.)
     void anOasisTextsPropertyNamedByNumberIsRead()
     {
         const QString file = path("hostile/textproperty.oas");
@@ -1043,7 +1043,7 @@ private slots:
 
     // A property of 2⁶² values in a file of 40 bytes: the file said damaged
     // at once, its cell before shown. (Its values were made, one by one,
-    // until memory ran out - the fuzz of 21 October, L3.)
+    // until memory ran out.)
     void anOasisPropertysCountPastTheFileIsSaidDamaged()
     {
         const QString file = path("hostile/propertycount.oas");
@@ -3033,7 +3033,7 @@ private slots:
         const QPoint mixed = (view->toPixel(QPointF(75, 50)) * gpu.devicePixelRatio()).toPoint();
         QCOMPARE(gpu.pixelColor(mixed), QColor("#808020"));
         const QString shots = qEnvironmentVariable("QUCS_TEST_SHOTS");
-        // (the viewer's own look - as a .lyp was drawn
+        // (The viewer's own look - as a .lyp was drawn
         // before - and what is in sight, for KLayout's picture of it.)
         if (!shots.isEmpty()) {
             doc->setKLayoutLook(false);
@@ -3719,8 +3719,8 @@ private slots:
 #endif
     }
 
-    // The GPU's canvas makes its buffers again when it must, and only then
-    // A layout set again - one read anew where a
+    // The GPU's canvas makes its buffers again when it must, and only then:
+    // a layout set again - one read anew where a
     // freed one was, taken for it by its address (N1) - is made again; past
     // its budget, the CPU drawing the cell, it is not made again at every
     // frame (F1: each frame flattened 2 million shapes first) but when the

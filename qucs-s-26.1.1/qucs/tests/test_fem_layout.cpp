@@ -328,7 +328,7 @@ private slots:
     // A row of a cross-section's stack at z 1/0: refused, said - its layer
     // from infinity had a height of NaN, the union's tolerance with it, and
     // every point fell in one cell of its vertex pool: opening the model
-    // never returned (crash hardening, round three, G1).
+    // never returned.
     void aCrossSectionLayerAtInfinityRefused()
     {
         QTemporaryDir dir;

@@ -678,7 +678,7 @@ SweepResult runSweep(const Model& model, std::shared_ptr<const qucs_s::layout::L
     // (A quantity's column its expression; where two read one expression -
     //  its min over a window and its value at a frequency -, each named by
     //  how it reads it too: alike, the second overwrote the first in the
-    //  points' columns - NF1 of the open items.)
+    //  points' columns.)
     for (const Reading& q : plan.quantities) {
         int alike = 0;
         for (const Reading& other : plan.quantities) alike += other.expression == q.expression ? 1 : 0;

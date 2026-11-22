@@ -163,7 +163,7 @@ private slots:
 
     // A CSV file of a Windows program (ANSI): "Ω" typed into it is asked
     // about - no, nothing written; yes, UTF-8 with the mark Excel reads
-    // UTF-8 by. It was written as "?" (bug hunt 2026-09-26, A7).
+    // UTF-8 by. It was written as "?".
     void aCharacterTheCsvFileLacksIsAskedAbout()
     {
         const QByteArray ansi = "part;value\nR1;10 k\xB5\n";
@@ -203,8 +203,7 @@ private slots:
 
     // The table offers rows and columns to type into - never past Excel's
     // 1,048,576 rows (a value in the last row: rowCount() + 30 overflowed
-    // for the 2^31 rows a file could make) or 16,384 columns (bug hunt
-    // 2026-09-26, C1).
+    // for the 2^31 rows a file could make) or 16,384 columns.
     void theTableStopsAtExcelsLastRow()
     {
         QList<qucs_s::zip::Entry> package = qucs_s::zip::read(excelLike());

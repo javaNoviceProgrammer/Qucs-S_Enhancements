@@ -51,8 +51,8 @@ constexpr int kMostSlides = 500;
 /// The slides a 'slides' argument names: 7, [3, 4], "2-5" (from 1), each
 /// once, in order; "all" all of them; \a fallback when it names none. No
 /// more than kMostSlides of them: \a left takes how many were named
-/// beyond that, which the answer says (bug hunt 2026-10-23 B4 - a deck of
-/// 3,000 slides gave 500 and said nothing).
+/// beyond that, which the answer says (a deck of 3,000 slides gave 500 and
+/// said nothing).
 QList<int> slidesNamed(const QJsonValue& v, int count, const QList<int>& fallback, int* left = nullptr)
 {
     QList<int> out;
@@ -518,8 +518,7 @@ QJsonObject QucsControl::pptxView(PptxDoc* deck) const
             const int at = deck->hits().at(deck->hitShown());
             // "shown" only where the tab is on that slide: after a reload
             // the hits are counted again without the view moving, and the
-            // one it would go to next is not the one shown (bug hunt
-            // 2026-10-23 N4).
+            // one it would go to next is not the one shown.
             f.insert(at == deck->currentSlide() ? QStringLiteral("shown") : QStringLiteral("next"),
                      tr("slide %1, the %2 of %3").arg(at + 1).arg(deck->hitShown() + 1).arg(deck->hits().size()));
         }
@@ -646,7 +645,7 @@ bool QucsControl::viewPptx(PptxDoc* deck, const QJsonObject& args, QJsonObject* 
             else if (step == QLatin1String("last")) deck->lastSlide();
             else if (target >= 0) deck->goToSlide(target);
             // A step that moved nothing is said, so a step at an end is not
-            // read as one that moved (bug hunt 2026-10-23 N1).
+            // read as one that moved.
             if (!step.isEmpty() && deck->currentSlide() == was)
                 done << (step == QLatin1String("next") || step == QLatin1String("last")
                              ? tr("Already the last slide (%1).").arg(was + 1)
@@ -676,7 +675,7 @@ bool QucsControl::viewPptx(PptxDoc* deck, const QJsonObject& args, QJsonObject* 
     }
     // 'zoom', then 'region' of the slide shown. (A zoom keeps the slide it
     // was on in sight: SlideView::setZoom, which no longer opens on the
-    // end of the slide before - bug hunt 2026-10-23 B2.)
+    // end of the slide before.)
     if (fit) deck->view()->setFit(*fit);
     else if (scale > 0) deck->view()->setZoom(scale);
     if (!region.isEmpty()) {

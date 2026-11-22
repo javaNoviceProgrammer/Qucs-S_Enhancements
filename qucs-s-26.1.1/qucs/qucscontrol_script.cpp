@@ -108,8 +108,7 @@ qint64 mostScriptMemory()
 // check, the same done in JavaScript, which has it - or bounded. A value
 // nested 100,000 deep ended the program through Array.prototype.
 // toLocaleString, a chain of 100,000 Proxies through a property read, and
-// console.log of a deep array (the re-check of round four's fixes, 14
-// November, J4); String(), join and sort stop at V4's limit already.
+// console.log of a deep array; String(), join and sort stop at V4's limit already.
 constexpr const char* kPrelude = R"js((function (global) {
   const join = Array.prototype.join, Too = RangeError, Real = Proxy, revocable = Proxy.revocable, depth = new WeakMap();
   Object.defineProperty(Array.prototype, 'toLocaleString', {writable: true, configurable: true, value: function toLocaleString() {
@@ -216,7 +215,8 @@ public:
     /// \a value made JSON by the script's own engine (kStringify), read back
     /// by fromJson, which stops at 1,024 levels. Qt's QJSValue::toVariant
     /// recursed a level at a time without a limit: a value nested 100,000
-    /// deep overflowed the stack and ended the program. False, with why, where it is not JSON.
+    /// deep overflowed the stack and ended the program.
+    /// False, with why, where it is not JSON.
     bool jsonOf(const QJSValue& value, QJsonValue* made, QString* why)
     {
         const QJSValue text = a_stringify.call({value});
@@ -345,7 +345,7 @@ QJsonObject QucsControl::runScript(const QJsonObject& args)
     std::condition_variable over;
     bool finished = false, stopped = false;
     // A script that takes too much memory is stopped too, at the same
-    // watch: V4's heap grew until the system refused it, 6.3 GB in 12 s
+    // watch: V4's heap grew until the system refused it, 6.3 GB in 12 s.
     const qint64 mostMemory = mostScriptMemory();
     qint64 tookMemory = 0;
     QElapsedTimer clock;

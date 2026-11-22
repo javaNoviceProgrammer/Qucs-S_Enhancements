@@ -1204,7 +1204,7 @@ private slots:
         bridged.layer = m;
         bridged.outline = QPolygonF(QList<QPointF>{{0, 0}, {10, 0}, {10, 5}, {20, 5}, {20, 0}, {30, 0}, {30, 10}, {20, 10}, {20, 5}, {10, 5}, {10, 10}, {0, 10}});
         // (Its port on its edge, 10 µm tall: at 50 µm, 40 µm off it, it was
-        //  written on the nearest edge before a bug hunt.)
+        //  written on the nearest edge until 18 November.)
         const Model onLobes = modelOf(microstripStack() + QLatin1Char(',')
                                       + portsOf(QStringLiteral(R"({"type": "rf_edge_port", "tag": "p", "label": "P1", "properties": {"conductor": "M1", "x": "0", "y": "5[um]", "facing": "-x"}})"))
                                       + QLatin1Char(',') + QLatin1String(kStudy));
@@ -1226,7 +1226,7 @@ private slots:
             {"type": "rf_metal", "tag": "m2", "label": "M2", "properties": {"thickness": "3[um]", "sigma": "4e7"}},
             {"type": "rf_via", "tag": "v1", "label": "V1", "properties": {"from": "M1", "to": "M2", "sigma": "2e7"}}]})");
         // (P1 on its strip's end, 45 to 55 µm: at nought, 45 µm off it, it was written on
-        //  the nearest edge before a bug hunt.)
+        //  the nearest edge until 18 November.)
         const Model model = modelOf(stack + QLatin1Char(',') + portsOf(QStringLiteral(R"({"type": "rf_edge_port", "tag": "p", "label": "P1", "properties": {"conductor": "M2", "x": "0", "y": "50[um]", "facing": "-x"}})"))
                                     + QLatin1Char(',') + QLatin1String(kStudy));
         // A plane on M1 with a clearance, keyholed as the union leaves it; in it the
@@ -1299,7 +1299,7 @@ private slots:
         QVERIFY(!metalLayers.intersects(boxLayers));
         QVERIFY(e.notes.join(QLatin1Char('\n')).contains(QLatin1String("1 via shape(s) that are no rectangles")));
         // A via farm merged into its footprint, 8 µm square, a quarter of it
-        // metal (Conductor::share - P44 of the open items of 8 November):
+        // metal (Conductor::share):
         // written as its metal thinned in place, 4 µm square about its middle
         // (within a per cent), not as solid metal over the footprint - and
         // said.
@@ -1465,7 +1465,7 @@ private slots:
         QCOMPARE(away.ports, 1);
         QVERIFY(away.notes.join(QLatin1Char('\n')).contains(QLatin1String("P2 is not written")));
         // One on the line's end's corner, no facing given: said as the solve
-        // says it (a bug hunt's second hour).
+        // says it.
         const Model cornered = modelOf(microstripStack() + QLatin1Char(',')
                                        + portsOf(QStringLiteral(R"({"type": "rf_edge_port", "tag": "p1", "label": "P1", "properties": {"conductor": "M1", "x": "0", "y": "0", "facing": "-x"}},
                                                                   {"type": "rf_edge_port", "tag": "p2", "label": "P2", "properties": {"conductor": "M1", "x": "100[um]", "y": "31[um]"}})"))

@@ -1,6 +1,6 @@
 # Silicon's valence-and-core electron density about one atom in the crystal, e/A^3 against r (A), for the
 # crystal implant's electronic stopping (fem_process_crystal.cpp: Cai et al.'s split, PRB 54, 17147, 1996).
-# Made: a spherical
+# Made on 8 November 2026: a spherical
 # LDA atom (Perdew-Zunger), checked on the free atom against NIST's LDA eigenvalues (1s -65.170 against
 # -65.184 Ha, 3p -0.152 against -0.153), solved in the Wigner-Seitz sphere (R'(r_ws) = 0) for the solid-state
 # atom; inside the muffin-tin radius (half the nearest-neighbour distance) its density, one electron per atom

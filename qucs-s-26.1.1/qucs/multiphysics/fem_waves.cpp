@@ -2715,7 +2715,7 @@ bool WaveProblem::setup(QString* error)
                 pc.points = feature.integer(QStringLiteral("points"));
                 pc.evenly = feature.text(QStringLiteral("sampling")) == QLatin1String("even");
                 // (At most 1000, a solve each: 2147483646 was a list of them
-                // past memory - the fuzz of 21 October.)
+                // past memory.)
                 if (pc.points < 2 || pc.points % 2 || pc.points > 1000)
                     problem(tr("%1: %2 kF points - an even number from 2 to 1000 (N points: a supercell of N cells)").arg(feature.name()).arg(pc.points));
             }
@@ -3166,7 +3166,8 @@ void WaveProblem::periodicOrders(double k0, const double kF[2], double kIn, std:
         const double ktF = kF[0] * port.along.x() + kF[1] * port.along.y();
         const double kmax = std::sqrt(std::max(0.0, (k0 * k0 * port.q / port.pt).real()));
         // (Counted in doubles, then held to the most solved: at 1e30 Hz the
-        // count passed an int's range, wrapped negative and listed no order. solve() refuses such a cell first.)
+        // count passed an int's range, wrapped negative and listed no order.
+        // solve() refuses such a cell first.)
         const double many = double(kMaxPeriodicOrders);
         const int propagating = int(std::clamp(std::ceil((kmax + std::abs(ktF)) * port.length / (2 * M_PI)) + 1, 1.0, many));
         // (The orders that propagate here at some angle of the fed wave's -

@@ -353,7 +353,7 @@ void QucsControl::setAsking(quint64 caller, bool asking)
 QucsControl::Guarded QucsControl::guarded(const QString& tool, const QJsonObject& given) const
 {
     // What the tool will read, not what came in: a singular ('a' for 'as',
-    // 'call' for 'calls') used to hide a file or a whole batch from here
+    // 'call' for 'calls') used to hide a file or a whole batch from here.
     const QJsonObject a = asTheToolReadsIt(tool, given);
     Guarded g;
     if (tool == QLatin1String("batch")) {
@@ -584,7 +584,8 @@ void QucsControl::filesOutside(const QString& tool, const QJsonObject& a, Guarde
         if (!text("table").isEmpty()) write(QFileInfo(text("table")).isAbsolute() ? QDir::cleanPath(text("table")) : QDir::cleanPath(QDir(beside.isEmpty() ? QucsSettings.QucsWorkDir.absolutePath() : beside).filePath(text("table"))));
     } else if (tool == QLatin1String("rename_file")) {
         // 'to' is a new name or a path to move it to: the file leaves where
-        // it was and lands there, and neither end was named. A rename is the one file mover that took a free path
+        // it was and lands there, and neither end was named.
+        // A rename is the one file mover that took a free path
         // and was watched nowhere.
         const QString from = text("path").isEmpty() ? QString() : absolute(text("path"));
         if (!from.isEmpty()) {
@@ -726,7 +727,8 @@ QString QucsControl::unaskedWrite(const QString& file) const
 // is asked about each time. A script makes its calls at run time, so the
 // names it will use cannot always be read here: the text used to be searched
 // for five words, and 'trash' + '_file' walked straight past it while
-// console, a git push and send_input were never looked for at all. Every tool irreversible() and askedEachTime() can name
+// console, a git push and send_input were never looked for at all.
+// Every tool irreversible() and askedEachTime() can name
 // is looked for now, and a call whose tool is not a plain literal is taken as
 // the worst case - a script is asked about once, before it runs, so erring
 // this way costs a question and not a surprise.
@@ -764,7 +766,7 @@ bool QucsControl::scriptMayNotBeUndone(const QString& script)
 
 bool QucsControl::irreversible(const QString& tool, const QJsonObject& given) const
 {
-    const QJsonObject a = asTheToolReadsIt(tool, given);   // (as guarded(): A2, A3)
+    const QJsonObject a = asTheToolReadsIt(tool, given);   // (as guarded())
     const auto exists = [this](const QString& path) { return !path.trimmed().isEmpty() && QFileInfo::exists(absolute(path.trimmed())); };
     if (tool == QLatin1String("clean_scratch") || tool == QLatin1String("trash_file")) return true;
     // A batch: when one of its calls is. (Taken as undoable whatever it

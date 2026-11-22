@@ -1,7 +1,6 @@
 /*
  * test_pen_reading.cpp - what Claude is told of the pen's strokes on a
- * layout ("Layout viewer pen markers: how Claude
- * reads them, and what would help"): the review's demo - two pads joined
+ * layout: a demo - two pads joined
  * by a bent 5 µm trace on 2/0, under a 300 x 140 µm frame on 10/0 - and
  * its three cases, a ring, an arrow and a freehand step, as the prompt has
  * them.
@@ -419,8 +418,8 @@ private slots:
     }
 
     // Each test with the demo opened afresh: a tab's strokes, and their
-    // numbers, are its own - the strokes kept beside a layout (V1 of the RF
-    // 2.5D open items) taken away with it.
+    // numbers, are its own - the strokes kept beside a layout
+    // taken away with it.
     void cleanup()
     {
         app->closeAllFiles();
@@ -444,7 +443,7 @@ private slots:
     // follows the trace and leaves it, and its polyline - its runs, snapped
     // to the trace and to round values, its rounded corner, its symmetry.
     // The frame under all of them is set apart, not what they mark.
-    void theReviewsCasesAreToldWhatTheyAreAbout()
+    void theDemoCasesAreToldWhatTheyAreAbout()
     {
         LayoutDoc* doc = demo();
         QVERIFY(doc != nullptr);
@@ -1129,11 +1128,11 @@ private slots:
     }
 
     // Pictures (QUCS_PEN_PICTURES=<folder>; run with
-    // QT_QPA_PLATFORM=cocoa for the screen's own drawing): the review's
+    // QT_QPA_PLATFORM=cocoa for the screen's own drawing): the demo's
     // three strokes as the user drew them; then Claude's overlay of the
     // step it means to make, 5 µm wide, over the sketch, the ring and the
     // arrow marked addressed.
-    void picturesForTheWriteUp()
+    void pictures()
     {
         const QString folder = qEnvironmentVariable("QUCS_PEN_PICTURES");
         if (folder.isEmpty()) QSKIP("QUCS_PEN_PICTURES names no folder");
@@ -1263,7 +1262,7 @@ private slots:
 
     // Strokes of every shape, as a hand might draw or a fuzzer might, never
     // break the reading: none is asserted but that it reads.
-    // A highlighter along a strip's middle (V6 of the RF 2.5D open items: a
+    // A highlighter along a strip's middle (a
     // strip drawn as a rectangle had no centre line to snap to, and its
     // reading snapped to a small square's edge beside it): it snaps to the
     // strip's centre line.

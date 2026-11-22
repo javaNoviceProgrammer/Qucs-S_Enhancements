@@ -86,7 +86,7 @@ private slots:
         delete app;
     }
 
-    // A1: port 1 is the left pair of pins (1, 4), port 2 the right (2, 3).
+    // Port 1 is the left pair of pins (1, 4), port 2 the right (2, 3).
     void fourTerminalLinePairsThePinsOfASide()
     {
         Component* c = placed(doc, "<TLIN4P Line1 1 200 200 -26 16 0 0 \"50 Ohm\" 1 \"1 mm\" 1 \"0 dB\" 0 \"26.85\" 0>");
@@ -94,7 +94,7 @@ private slots:
         QVERIFY2(ngspice(c).startsWith("TLine1 n1 n4 n2 n3 Z0=50 "), qPrintable(ngspice(c)));
     }
 
-    // A2: T1 is the upper winding (pins 1, 6), T2 the lower (pins 5, 4).
+    // T1 is the upper winding (pins 1, 6), T2 the lower (pins 5, 4).
     void symmetricTransformerRatiosFollowTheSymbol()
     {
         Component* c = placed(doc, "<sTr Tr1 1 200 200 -29 78 0 0 \"2\" 1 \"3\" 1>");
@@ -104,7 +104,7 @@ private slots:
         QVERIFY2(s.contains("X_Tr1_W2 n2 n3 n5 n4  XFMR RATIO=3\n"), qPrintable(s));
     }
 
-    // A3: K13 carries k13.
+    // K13 carries k13.
     void threeMutualInductorsNetEveryCoupling()
     {
         Component* c = placed(doc, "<MUT2 Tr1 1 200 200 -29 78 0 0 \"1 mH\" 0 \"2 mH\" 0 \"3 mH\" 0 \"0.1\" 0 \"0.2\" 0 \"0.3\" 0>");
@@ -115,7 +115,7 @@ private slots:
         QVERIFY2(s.contains("K23_Tr1 LTr1_L2 LTr1_L3 0.3\n"), qPrintable(s));
     }
 
-    // A4: the seven TRNOISE parameters are the seven properties, and the
+    // The seven TRNOISE parameters are the seven properties, and the
     // current flows with the arrow, toward pin 1.
     void currentNoiseSourceReadsEveryParameter()
     {
@@ -124,7 +124,7 @@ private slots:
         QCOMPARE(ngspice(c).trimmed(), QString("I1 n2 n1 DC 0 AC 0 TRNOISE(20N 0.5N 1.1 12P 1U  2U 3U)"));
     }
 
-    // A5: Xyce .TRAN <step> <stop> <start>
+    // Xyce .TRAN <step> <stop> <start>
     void xyceTransientSensitivityOrdersTheTranArguments()
     {
         // The component is registered for Xyce only.
@@ -139,7 +139,7 @@ private slots:
         QVERIFY2(xyce(c).startsWith(".tran 5U 5M 0\n"), qPrintable(xyce(c)));
     }
 
-    // A6: the pattern repeats (r=0) and returns to the initial level.
+    // The pattern repeats (r=0) and returns to the initial level.
     void digitalSourceRepeatsItsPattern()
     {
         Component* c = placed(doc, "<DigiSource S1 1 200 200 -35 16 0 0 \"1\" 1 \"high\" 0 \"1ns; 2ns\" 0 \"1 V\" 0>");
@@ -158,7 +158,7 @@ private slots:
         QCOMPARE(ngspice(e).trimmed(), QString("VS3 n1 0 DC 1 PWL(0 1 1e-09 1) r=0"));
     }
 
-    // A7: an even-numbered time list repeats; the change takes at most
+    // An even-numbered time list repeats; the change takes at most
     // MaxDuration.
     void timeSwitchRepeatsAnEvenList()
     {
@@ -174,7 +174,7 @@ private slots:
         QVERIFY2(!t.contains("r=0"), qPrintable(t));
     }
 
-    // A8, B2: no Temp in the VDMOS card; RQ/VQ only when both are set.
+    // No Temp in the VDMOS card; RQ/VQ only when both are set.
     void vdmosCardLeavesTemperatureAndQuasiSaturationAlone()
     {
         Component* c = placed(doc, "<VDMOS M1 1 200 200 8 -36 0 0 \"nchan\" 1 \"1\" 1 \"0.0\" 1 \"1.0\" 1 \"0.6\" 0 \"0.0\" 1 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"1.0\" 0 \"0.0\" 0 \"0.0\" 0 \"1.0\" 0 \"0.0\" 0 \"0.1\" 0 \"1500\" 0 \"1.0e-10\" 0 \"1.0\" 0 \"1e7\" 0 \"0.0\" 0 \"1.0\" 0 \"0.0\" 0 \"1.11\" 0 \"3.0\" 0 \"1e-14\" 0 \"0.8\" 0 \"0.5\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"0.0\" 0 \"1.0\" 0 \"10e-6\" 0 \"1000\" 0 \"26.85\" 0 \"26.85\" 0 \"yes\" 0 \"off\" 1>");
@@ -195,7 +195,7 @@ private slots:
         QVERIFY2(!s.contains("Temp=85"), qPrintable(s));
     }
 
-    // A9, A10: value notation.
+    // Value notation.
     void valuesFollowQucsNotation_data()
     {
         QTest::addColumn<QString>("qucs");
@@ -244,7 +244,7 @@ private slots:
         QVERIFY2(ngspice(c).contains("ron=1E-3 "), qPrintable(ngspice(c)));
     }
 
-    // B3: the Xyce JFET card has no GUI property in it.
+    // The Xyce JFET card has no GUI property in it.
     void jfetXyceCardHasOnlyModelParameters()
     {
         Component* c = placed(doc, "<JFET T1 1 200 200 8 -26 0 0 \"nfet\" 1 \"-2.0 V\" 1 \"1e-4\" 1 \"0.0\" 1 \"0.0\" 0 \"0.0\" 0 \"1e-14\" 0 \"1.0\" 0 \"1e-14\" 0 \"2.0\" 0 \"0.0\" 0 \"0.0\" 0 \"1.0\" 0 \"0.5\" 0 \"0.5\" 0 \"0.0\" 0 \"1.0\" 0 \"1.0\" 0 \"26.85\" 0 \"3.0\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"1.0\" 0 \"yes\" 0 \"Generic\" 0 \"Generic\" 0>");
@@ -253,7 +253,7 @@ private slots:
         QVERIFY2(!ngspice(c).contains("UseGlobTemp"), qPrintable(ngspice(c)));
     }
 
-    // C4: the properties the dialog shows for a SPICE simulator reach its
+    // The properties the dialog shows for a SPICE simulator reach its
     // netlist, or are marked Qucsator's. The diode's ISR/NR go in the card
     // and Cp becomes a capacitor across it.
     void diodeCarriesIsrNrAndCp()
@@ -387,7 +387,7 @@ private slots:
         QVERIFY2(lib->getSpiceLibrary().isEmpty(), qPrintable(lib->getSpiceLibrary()));
     }
 
-    // B4: XSPICE-based components are not offered to Xyce.
+    // XSPICE-based components are not offered to Xyce.
     void xspiceComponentsAreNotForXyce()
     {
         for (const char* line : {"<Vfile V1 1 200 200 18 -26 0 1 \"vfile.dat\" 1 \"linear\" 0 \"no\" 0 \"1\" 0 \"0\" 0>",

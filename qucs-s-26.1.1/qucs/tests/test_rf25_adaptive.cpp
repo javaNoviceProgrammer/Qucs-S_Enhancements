@@ -216,7 +216,7 @@ void TestRf25Adaptive::theCurrentsAreCarriedByTheFit()
     QVERIFY2(worst < 1e-4, qPrintable(QString::number(worst)));
 }
 
-// The ends of the band (D4 of the open items: a spiral's last gap, 87 to
+// The ends of the band (a spiral's last gap, 87 to
 // 100 GHz, the widest, missed by three times the tolerance at 99 GHz, the
 // test met in the middle): a lossy line 8 mm long, its loss as the root of
 // f - read with the sweep stopping where the middle met it, 0.011 off at
@@ -372,7 +372,7 @@ void TestRf25Adaptive::aValueConvergingIsExtrapolated()
         QVERIFY(std::abs(c.limit - cd(2, 0)) < 1e-9);
     }
     // Converging as h^4, faster than a method of moments can: three
-    // readings on a steep curve (D1 of the open items) - its error taken at
+    // readings on a steep curve - its error taken at
     // first order, not Richardson's at h^4.
     {
         const QList<double> h{4, 2, 1};
@@ -393,7 +393,7 @@ void TestRf25Adaptive::aValueConvergingIsExtrapolated()
 }
 
 // The check's report: where the model's own mesh is not the finest (a mesh
-// twice as fine besides, D1 of the open items), how far it is from the
+// twice as fine besides), how far it is from the
 // limits; each mesh as the Mesh node makes it (D2); a value converging too
 // fast said.
 void TestRf25Adaptive::theModelsOwnMeshIsSaidAgainstTheLimit()

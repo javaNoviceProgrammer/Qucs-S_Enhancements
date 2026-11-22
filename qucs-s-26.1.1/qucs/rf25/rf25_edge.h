@@ -69,7 +69,7 @@ EdgeBand bandOf(const EdgeSolution& edge, double from, double to);
 
 /*!
  * A part of a cell's charge, where the charge is spread over more than the
- * cell (A1 of the open items of 8 November): on a metal solved as its two
+ * cell: on a metal solved as its two
  * faces a cell at the metal's edge, where its wall faces another
  * conductor's across a narrow gap (wallGapsOf()'s, sixteen thicknesses at
  * most), is its face's rectangle and its half of that wall - from the face

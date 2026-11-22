@@ -281,8 +281,8 @@ private:
     std::pair<int, int> cell(double x, double y) const
     {
         // (Clamped before the cast: a ray reaching 1e308 - a mesh's hmax of
-        // 1e308 - was cast past an int's range, undefined: the fuzz of 21
-        // October, M1. Not a number: the first.)
+        // 1e308 - was cast past an int's range, undefined. Not a number: the
+        // first.)
         auto index = [this](double v) { return v >= 0 ? int(std::min(v, double(a_n - 1))) : 0; };
         return {index((x - a_box.left()) / a_cw), index((y - a_box.top()) / a_ch)};
     }
@@ -927,8 +927,7 @@ private:
         auto keyOf = [snap](double x, double y, long long dx, long long dy) {
             // (Each index well inside a long long's range: a point not a
             // number, or 1e15 µm off - a hostile position -, rounded to the
-            // largest and overflowed with its neighbour's - the fuzz of 21
-            // October, G1.)
+            // largest and overflowed with its neighbour's.)
             auto cell = [snap](double v) {
                 const double c = std::floor(v / snap);
                 return std::isfinite(c) ? static_cast<long long>(std::clamp(c, -4e18, 4e18)) : 0LL;

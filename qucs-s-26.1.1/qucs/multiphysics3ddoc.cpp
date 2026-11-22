@@ -847,7 +847,8 @@ bool Multiphysics3DDoc::idle() const
 QString Multiphysics3DDoc::jobProgress() const
 {
     if (!a_job) return {};
-    // (A solve's: the physics and its phase as last told - a review had "Solving, 64 %" alone for most of an hour.)
+    // (A solve's: the physics and its phase as last told - "Solving, 64 %"
+    // alone was said for most of an hour.)
     const QString what = a_job->solve ? a_job->doing() : QString();
     const QString stage = what.isEmpty() ? a_stage->text() : tr("Solving: %1").arg(what);
     return tr("%1, %2 %").arg(stage).arg(a_job->permille.load() / 10);

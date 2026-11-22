@@ -182,7 +182,7 @@ QJsonObject QucsControl::editText(const QJsonObject& args)
             // In one pass, and one change in the document: from the first
             // place to the end of the last, written out once. One a match -
             // the copy and the document each moving the rest of the text -
-            // was quadratic: 1,000,000 of them took 148 s on the GUI thread
+            // was quadratic: 1,000,000 of them took 148 s on the GUI thread.
             const qsizetype end = last + find.size();
             QString with;
             with.reserve(end - first + count * (replace.size() - find.size()));

@@ -496,7 +496,8 @@ double QucsControl::measureRun(const QJsonObject& spec, const QJsonObject& simul
 void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
 {
     // A count of nought is either a refusal or means none, and it used to
-    // mean neither: clamped in silence, so 'max_runs': 0 still ran 4. Asked before anything else, so the answer is
+    // mean neither: clamped in silence, so 'max_runs': 0 still ran 4.
+    // Asked before anything else, so the answer is
     // about the argument and not about the schematic.
     if (args.contains(QLatin1String("max_runs"))
         && !(args.value(QLatin1String("max_runs")).toInt(0) >= 4 && args.value(QLatin1String("max_runs")).toInt(0) <= 60)) {
@@ -938,7 +939,8 @@ void QucsControl::tuneKnobs(const QJsonObject& args, const Done& done)
 void QucsControl::tune(const QJsonObject& args, const Done& done)
 {
     // A count of nought is either a refusal or means none, and it used to
-    // mean neither: clamped in silence, so 'max_runs': 0 still ran 2. Asked before anything else, so the answer is
+    // mean neither: clamped in silence, so 'max_runs': 0 still ran 2.
+    // Asked before anything else, so the answer is
     // about the argument and not about the schematic.
     if (args.contains(QLatin1String("max_runs"))
         && !(args.value(QLatin1String("max_runs")).toInt(0) >= 2 && args.value(QLatin1String("max_runs")).toInt(0) <= 40)) {
@@ -1519,7 +1521,8 @@ QJsonObject QucsControl::readPdf(const QJsonObject& args)
                 // region's own corners: Qt reads between the characters
                 // nearest them, and a corner in the margin - which is
                 // where a region drawn by hand usually starts - is near
-                // no character at all, so nothing came back. The first and last run the
+                // no character at all, so nothing came back. The first and last
+                // run the
                 // region meets, in reading order, give the two points.
                 QRectF first, last;
                 for (const QPolygonF& drawn : all.bounds()) {

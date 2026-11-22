@@ -180,7 +180,7 @@ private slots:
             QVERIFY(std::abs(a.gain / a.directivity - a.efficiency) < 1e-9);
             // (Radiated past what it accepts, by the solve's error: held at
             //  one, its gain its directivity, and said - it read 1.002 and
-            //  1.004, the gain over the directivity: a bug hunt's second hour.)
+            //  1.004, the gain over the directivity.)
             QVERIFY(a.efficiency <= 1);
             if (a.radiated > a.accepted)
                 QVERIFY2(a.efficiency == 1 && a.notes.join(' ').contains(QStringLiteral("more than it takes")), qPrintable(a.notes.join(" | ")));
@@ -289,7 +289,8 @@ private slots:
     // Which frequencies keep their currents: every one within
     // kKeptCurrentsBytes; past it as many as fit, evenly spread, the ends
     // and the highest among them. A 10,001-point sweep of a four-port of
-    // 30,000 runs, 1.9 MB a frequency, keeps 139 (a bug hunt's second hour: 19 GB, all of it written to the .solution file).
+    // 30,000 runs, 1.9 MB a frequency, keeps 139
+    // (19 GB, all of it written to the .solution file).
     void aLongSweepKeepsSomeCurrents()
     {
         const QList<bool> all = rf::keptCurrentsOf(51, 58e3, 50);

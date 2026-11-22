@@ -634,8 +634,8 @@ void QucsControl::withLayout(const QJsonObject& args, bool open,
         }
     }
     // (An open layout by its file's name or its tab's title, as every tool
-    //  names an open document: "demo.gds" was
-    //  looked for in the project's folder, not as the tab open.)
+    //  names an open document: "demo.gds" was looked for in the project's
+    //  folder, not as the tab open.)
     if (const QString given = file; !QFileInfo(absolute(given)).isFile()) {
         QString unused;
         if (QucsDoc* named = document(QJsonObject{{QStringLiteral("path"), given}}, &unused);
@@ -700,7 +700,7 @@ void QucsControl::withLayout(const QJsonObject& args, bool open,
     };
     auto reading = std::make_shared<Reading>();
     QThread* thread = QThread::create([reading, file] { reading->layout = read(file, &reading->error); });
-    thread->setStackSize(8u << 20);   // (a main thread's: a thread's 512 kB on macOS - the fuzz of 21 October, E3)
+    thread->setStackSize(8u << 20);   // (a main thread's: a thread's 512 kB on macOS)
     connect(thread, &QThread::finished, this, [reading, file, then, done] {
         if (!reading->layout) {
             done(errorResult(reading->error));
@@ -853,7 +853,7 @@ void QucsControl::findShapes(const QJsonObject& args, const Done& done)
                                           : QRegularExpression::escape(textWanted),
                                      QRegularExpression::CaseInsensitiveOption);
     // Clamped in silence before: 'limit': 0 listed one shape of the four
-    // there were, and said "1 listed of 4" as though that was asked (B5).
+    // there were, and said "1 listed of 4" as though that was asked.
     if (args.contains(QLatin1String("limit")) && !(args.value(QLatin1String("limit")).toInt(0) >= 1
                                                    && args.value(QLatin1String("limit")).toInt(0) <= 1000))
         return done(errorResult(tr("'limit' is how many shapes to list at most, 1 to 1000 (50 when not given): %1 is none of "
@@ -1103,9 +1103,8 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
         if (model != nullptr) {
             // Which cell, and which layers, are the model's to say - its
             // Layout node and its layer map - and are not set from here.
-            // (Its rulers are its own, as a layout's tab's: V4 of the open
-            //  items, refused here, so that a measurement asked could not be
-            //  checked.)
+            // (Its rulers are its own, as a layout's tab's - once refused here,
+            //  so that a measurement asked could not be checked.)
             for (const char* key : {"cell", "layers", "depth", "overlay", "select", "highlight_net", "colours",
                                     "layer_properties", "layer_look", "theme", "contrast", "grid_style", "reload"})
                 if (args.contains(QLatin1String(key))) {
@@ -1115,7 +1114,7 @@ void QucsControl::showLayout(const QJsonObject& args, const Done& done)
                     return;
                 }
             // (Held while it waits: closed meanwhile, it is not deleted under
-            //  this call - B6 of the RF 2.5D open items of 8 November.)
+            //  this call.)
             const RF25Doc::Held held(model);
             if (!model->waitForLayout(60000) || model->closedWhenFree()) {
                 done(errorResult(model->closedWhenFree() ? tr("%1 was closed while this call waited on it.").arg(titleOf(model))

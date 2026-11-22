@@ -311,7 +311,7 @@ private:
     }
     /// An angle, in radians: a plain number in degrees. (Its unit in it, or
     /// in a parameter it names - a tilt of "tilt", tilt = 10[deg], is 10°:
-    /// it was taken as 10° in radians, read as degrees, 0.175° - a review's tilted cases.)
+    /// it was taken as 10° in radians, read as degrees, 0.175°.)
     double angle(const QString& text)
     {
         const double v = evaluate(text, Dim(), a_unitScale, false);
@@ -337,7 +337,8 @@ private:
     {
         if (a_error.isEmpty()) a_error = why;
     }
-    /// A flag, given as an expression of the parameters too; one not a constant fails.
+    /// A flag, given as an expression of the parameters too;
+    /// one not a constant fails.
     bool flag(const Node& step, const QString& key)
     {
         QString why;

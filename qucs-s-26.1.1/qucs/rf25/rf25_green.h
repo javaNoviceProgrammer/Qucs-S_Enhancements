@@ -18,9 +18,9 @@
  * potential at a distance from a unit point charge, both of them at metal
  * heights in the stack.
  *
- * Two ways, as the proposal asks for ("the discrete complex image method
- * where it converges, and by direct Sommerfeld integration on a deformed
- * path as the fallback and the reference"):
+ * Two ways: the discrete complex image method where it converges, and
+ * direct Sommerfeld integration on a deformed path as the fallback and the
+ * reference:
  *
  *   - **Images.** In the spectral domain the reflections of a stratified
  *     medium are a rational function of exp(-2 k h) with constant

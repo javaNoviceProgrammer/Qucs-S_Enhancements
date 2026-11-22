@@ -1329,7 +1329,7 @@ private slots:
     }
 
     // A scan's kF points, a solve each, from 2 to 1000: 2147483646 was a
-    // list past memory (the fuzz of 21 October, X1) - refused, said.
+    // list past memory - refused, said.
     void aScansPointsAreBounded()
     {
         for (const char* n : {"2147483646", "1002", "0"}) {

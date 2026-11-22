@@ -194,7 +194,7 @@ struct CrystalRun {
  * from the top of the cover (its first coverBins bins over the crystal's
  * surface, the rest below it), and across the section (Σx, Σx², m, about
  * where each came in); those backscattered, those past the depth followed.
- * Option B of the proposal: the histogram is the profile - remaining()
+ * The histogram is the profile - remaining()
  * reads its cumulative off it, merged in the tail until each piece holds
  * 20 ions -, so a tail no Pearson fits is kept.
  */
@@ -222,7 +222,7 @@ struct CrystalProfile {
 };
 
 /// Whether the Monte Carlo holds for \a run: an error where it does not
-/// (refused), warnings where it was not checked (item 9 of the proposal).
+/// (refused), warnings where it was not checked.
 QString crystalTrust(const CrystalRun& run, QStringList* warnings);
 /// The Monte Carlo of \a run - cached by its key, so a flow built again
 /// does not run it again (\a cached says so). \a ticker told how far it is,

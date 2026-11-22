@@ -287,7 +287,7 @@ private slots:
     // A CSV file in a Windows program's ANSI code page: "Ω" typed into it
     // made UTF-8 with the mark Excel reads UTF-8 by - it was written as
     // "?"; a UTF-16 file (Excel's "Unicode Text") read as text, not NULs,
-    // and written back as it was (bug hunt 2026-09-26, A7).
+    // and written back as it was.
     void csvEncodingsAreKept()
     {
         sheet::Workbook ansi = sheet::readCsv("part;value\nR1;10 k\xB5\nC1;5 \x80\n");
@@ -357,7 +357,7 @@ private slots:
     // showed none), and when the first cell changes they are written each
     // on its own - they named a shared formula that was no more, and Excel
     // called the workbook damaged. An array changed inside is written so
-    // too (bug hunt 2026-09-26, A8).
+    // too.
     void sharedFormulasSurviveTheirFirstCell()
     {
         const QByteArray sheetXml =
@@ -447,8 +447,7 @@ private slots:
     // Far rows and columns take no room: a row past Excel's is refused (one
     // at 2,147,483,647 took 25 GB), a style on the last row or column is
     // kept aside and written back where it was, the table grows into it; a
-    // sheet whose cells would span more than MaxCells is refused (bug hunt
-    // 2026-09-26, C1).
+    // sheet whose cells would span more than MaxCells is refused.
     void farRowsAndColumnsTakeNoRoom()
     {
         sheet::Workbook book;
@@ -498,7 +497,7 @@ private slots:
     // A small archive that says it holds more than is opened here, or
     // whose file inflates past the size it says, is refused - and never
     // inflated past it (200 KB held 200 MB of spaces: 1.9 GB of memory).
-    // A long run inflates quickly (bug hunt 2026-09-26, C2).
+    // A long run inflates quickly.
     void aZipBombIsRefused()
     {
         const QByteArray spaces(4 * 1024 * 1024, ' ');
@@ -615,7 +614,7 @@ private slots:
     }
 
     // What a damaged or odd workbook holds, read without undefined
-    // behaviour (bug hunt 2026-09-26, D2, D3): a column of twelve letters
+    // behaviour: a column of twelve letters
     // (its number overflowed int, letter by letter), a <col> at 2147483647
     // (min + 1024 overflowed), a date cell holding 1e300 or nan (converted
     // to an integer unchecked). A sheet whose name has "%1" in it is

@@ -224,7 +224,7 @@ QJsonObject fullWaveAnswer(const RF25Doc& model, const FullWave& w, double asked
     // Reciprocal by S, |S - S^T| at its largest over the sweep: Z's asymmetry
     // over its largest term is a huge shunt reactance's rounding at a low
     // frequency - a spiral at 100 Hz read "reciprocal: false" at 2.4e-9,
-    // its S right (N5 of the open items) - where S's is nothing.
+    // its S right - where S's is nothing.
     const auto sAsymmetryOf = [](const QList<QList<QList<Complex>>>& s) {
         double most = 0;
         for (const QList<QList<Complex>>& at : s)
@@ -484,7 +484,8 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     // past its timeout: one asked alike is joined, waited for rather than
     // started again; one asked otherwise is refused, not started beside
     // it. A second rf25_solve once let the first go and started another,
-    // and the first, unstoppable, ran on beside it (two cores, twelve gigabytes and climbing).
+    // and the first, unstoppable, ran on beside it
+    // (two cores, twelve gigabytes and climbing).
     const bool joined = model->solvingAlike(request);
     if (model->isSolving() && !joined)
         return errorResult(tr("%1 is solving already, as it was asked otherwise (%2): rf25_solve asked as it was waits for "
@@ -649,7 +650,8 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         if (cl.error.isEmpty() && !cl.modes.empty()) {
             QJsonObject coupled;
             // The signals, against the returns where there are any (a
-            // coplanar line's grounds at nought), and their matrices per metre (G3).
+            // coplanar line's grounds at nought), and their matrices per
+            // metre.
             QJsonArray conductors, returning;
             for (const QString& name : cl.names) conductors.append(name);
             for (int i = 0; i < e->names.size(); ++i)
@@ -693,7 +695,7 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
             coupled.insert(QStringLiteral("modes"), modes);
             // The 2N-port, of a length asked for: the near ends first, then
             // the far ends. Of the solved length unasked, it came first in
-            // the answer and was what max_chars cut around (G7).
+            // the answer and was what max_chars cut around.
             const std::vector<std::vector<std::complex<double>>> sm =
                 args.contains(QLatin1String("length")) ? fem::coupledSParameters(cl, length, zref)
                                                        : std::vector<std::vector<std::complex<double>>>();
@@ -797,7 +799,7 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
         const QJsonObject coupled = out.value(QStringLiteral("coupled lines")).toObject();
         if (!coupled.isEmpty()) {
             // The signals, what they return through and their matrices per
-            // metre, as well as the modes (G7).
+            // metre, as well as the modes.
             QJsonObject lines;
             for (const char* key : {"conductors", "returning through", "symmetric pair", "per metre"})
                 if (coupled.contains(QLatin1String(key))) lines.insert(QLatin1String(key), coupled.value(QLatin1String(key)));
@@ -974,7 +976,7 @@ QJsonObject QucsControl::rf25Converge(const QJsonObject& args)
                                   {QStringLiteral("cells"), l.cells},
                                   {QStringLiteral("unknowns"), l.unknowns},
                                   {QStringLiteral("seconds"), std::round(l.seconds * 10) / 10},
-                                  // (Written back into the Mesh node, it is this mesh: D2.)
+                                  // (Written back into the Mesh node, it is this mesh.)
                                   {QStringLiteral("mesh node"),
                                    QJsonObject{{QStringLiteral("cells_across"), l.asked},
                                                {QStringLiteral("per_wavelength"), l.perWavelength},
@@ -1121,7 +1123,7 @@ QJsonObject QucsControl::rf25Circuit(const QJsonObject& args)
         const QDir dir = file.isEmpty() ? QDir(QucsSettings.QucsWorkDir) : QFileInfo(file).absoluteDir();
         where = QDir::cleanPath(dir.absoluteFilePath(where));
     }
-    // Its window (NF7 of the open items): 'from' and 'to', else the node's.
+    // Its window: 'from' and 'to', else the node's.
     QString why;
     double window[2] = {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::quiet_NaN()};
     {
@@ -1172,7 +1174,7 @@ QJsonObject QucsControl::rf25Circuit(const QJsonObject& args)
     out.insert(QStringLiteral("most at"), c->worstAt);
     out.insert(QStringLiteral("S differs by rms"), c->rms);
     // How it was fitted: each branch to its own share, then every value at
-    // once to S where that did better (F6 of the open items of 8 November).
+    // once to S where that did better.
     out.insert(QStringLiteral("fitted"), c->joint ? QStringLiteral("every value together, to the solve's S (each branch to its own share first)")
                                                   : QStringLiteral("each branch to its own share (fitting every value together to S did no better)"));
     if (c->joint) {
@@ -1322,7 +1324,7 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
     if (!model->loopPortsSaid().isEmpty()) said.append(model->loopPortsSaid());
     // (Its Q line the frequency asked for's, as "Q" is: it said Q at the
     //  study's top beside a "Q" of the one asked for - 6.91e+03 at 0.1 GHz
-    //  beside 690.7 at 10 MHz, a smaller point of a review.)
+    //  beside 690.7 at 10 MHz.)
     for (const QString& line : ind->lines) {
         if (asked > 0 && ind->rDc > 0 && line.startsWith(QLatin1String("Q is ")))
             said.append(tr("Q is %1 at %2 GHz, of that inductance over the resistance at direct current.")

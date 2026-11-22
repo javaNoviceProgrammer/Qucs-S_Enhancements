@@ -428,8 +428,7 @@ private slots:
 
     // A profile whose "about" is UTF-32 (MATLAB's miUTF32): a character
     // past 16 bits read as UTF-16's two, one past Unicode's as the
-    // replacement. (Cast to char16_t, undefined - the fuzz of 21 October,
-    // P1.)
+    // replacement. (Cast to char16_t, undefined.)
     void aUtf32AboutIsRead()
     {
         ModeProfile g;

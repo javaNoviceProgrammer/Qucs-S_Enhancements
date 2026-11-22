@@ -120,7 +120,8 @@ class TestRf25Mesh : public QObject
     Q_OBJECT
 
 private slots:
-    // A circular spiral drawn of many segments a turn: at 180 a turn its parts between an inner corner and
+    // A circular spiral drawn of many segments a turn: at 180 a turn its
+    // parts between an inner corner and
     // an outer one a hair higher were slivers 0.0098 µm deep, and the mesh
     // 170,381 cells where 24 a turn made 7,495 - refused, past what is
     // solved. Its curves thinned in Processing - corners within a hundredth
@@ -132,7 +133,7 @@ private slots:
     // octagon keep every corner; a circle of 360 segments becomes one of
     // fewer, no point of it moved more than the tolerance.)
     // The spiral drawn of 24, 72 and 180 segments a turn: its loop's L the
-    // same within 1 % (P49), the curves thinned and snapped as the tab has
+    // same within 1 %, the curves thinned and snapped as the tab has
     // them. (Apart from the meshes' checks above: the three solves were 20 of
     // the function's 23 s here, past CI's sanitized limit. A slow build takes
     // a turn and a half of it at 24 and 72 a turn: its cells are its curves'
@@ -292,7 +293,8 @@ private slots:
     // The settings: what the node says, and what it cannot say.
     // A metal thick against its own width says the full wave's inductance
     // at a low frequency reads high - as a sheet, and as its two faces - and
-    // that the loop inductance takes it as the bar it is (a square wire as thick as it is wide, 38 % high as a
+    // that the loop inductance takes it as the bar it is
+    // (a square wire as thick as it is wide, 38 % high as a
     // sheet). A metal thin against its width says nothing of it. An
     // Automatic one as the solvers take it.
     void aMetalThickAgainstItsWidthSaysItsInductanceReadsHigh()
@@ -308,7 +310,7 @@ private slots:
                  qPrintable(sheet.warnings.join(" | ")));
         for (rf::Layer& l : stack.layers)
             if (l.name == QLatin1String("M1")) l.twoSheets = true;
-        // (As its two faces it holds its section's own inside - P52 -: said
+        // (As its two faces it holds its section's own inside: said
         //  only of a conductor more than about twice as tall as it is wide.)
         const rf::Mesh faces = rf::meshOf(wire, how, stack, 1e9);
         QVERIFY2(!says(faces.warnings, "inductance at a low frequency reads high"), qPrintable(faces.warnings.join(" | ")));
@@ -327,9 +329,8 @@ private slots:
         QVERIFY2(!says(pad.warnings, "inductance at a low frequency reads high"), qPrintable(pad.warnings.join(" | ")));
         // (Automatic, as the solvers decide it: the lone wire, no gap beside
         //  it, a sheet - said, where Automatic was taken for faces and
-        //  nothing said, its L 27 % high on a lone 10 µm wire of 8 µm metal,
-        //  a bug hunt -; beside a 4 µm gap, as its faces,
-        //  not.)
+        //  nothing said, its L 27 % high on a lone 10 µm wire of 8 µm metal
+        //  -; beside a 4 µm gap, as its faces, not.)
         for (rf::Layer& l : stack.layers)
             if (l.name == QLatin1String("M1")) {
                 l.twoSheets = false;
@@ -515,7 +516,8 @@ private slots:
     // a quarter of the gap: the charge crowds on both edges of a narrow gap,
     // and the edges' one halving left a coplanar line's 6 µm gaps, between a
     // signal of 50 µm and grounds of 150, with one cell of 3 µm on one side
-    // and one of 9 on the other - its capacitance 10 % short (test_rf25_static has the line against its references).
+    // and one of 9 on the other - its capacitance 10 % short
+    // (test_rf25_static has the line against its references).
     // A side that faces nothing, or a gap as wide as its cells, is graded as
     // before, and with no grading at the edges there is none here either.
     // The quasi-static solve's mesh, which the tab asks it of for a
@@ -695,7 +697,8 @@ private slots:
         QVERIFY2(says(bent.lines, "cut into the 2 rectangle(s)"), qPrintable(bent.lines.join(" | ")));
         QVERIFY2(says(bent.lines, "times as long"), qPrintable(bent.lines.join(" | ")));
         // A shape with a slanted side is cut between its corners into
-        // rectangles and trapezoids, each going by its own width: a right triangle of 200 µm legs, one
+        // rectangles and trapezoids, each going by its own width:
+        // a right triangle of 200 µm legs, one
         // trapezoid, by its mean width across its slab, 100 µm. (It went by
         // twice its area over its perimeter whole, 58.58.)
         rf::Conductor wedge;
@@ -851,8 +854,8 @@ private slots:
         }
         // Two shapes left unmerged over each other: refused, as overlapping
         // (shapesOverlappingOnALayerAreRefused) - meshed, each whole, their
-        // cells met no edge and the overlap was twice, warned of alone, before
-        // a bug hunt.
+        // cells met no edge and the overlap was twice, warned of alone, until
+        // 18 November.
         const rf::Conductor under = on(QStringLiteral("M1"), 0, 0, 1000, 300), over = on(QStringLiteral("M1"), 450, 70, 1100, 230);
         const rf::Mesh apart = rf::meshOf({under, over}, how, m.stack(), 3e9);
         QVERIFY2(!apart.ok() && says(apart.problems, "2 shapes on M1 overlap"), qPrintable(apart.problems.join(" | ")));
@@ -866,8 +869,8 @@ private slots:
     // reads low - 19 % on a comb of 1 µm metal in 1 µm gaps against Palace -,
     // and that is said, on a sheet and on two faces alike, from a thickness
     // of a quarter of the narrowest gap; not for 3 µm in 50 µm gaps, which
-    // rf25_fullwave.h validates, nor for a thin film (B2 of the open items
-    // of 8 November: nothing was said).
+    // rf25_fullwave.h validates, nor for a thin film
+    // (nothing was said).
     void aMetalThickBesideNarrowGapsIsSaid()
     {
         rf::Model m = stacked();
@@ -930,7 +933,7 @@ private slots:
                  qPrintable(tenth.said.join(" | ")));
         // At a fortieth, its two faces; under it a sheet. Each near the
         // threshold, which a sweep across steps the answer at, said so with
-        // how to hold it (a bug hunt's second hour: C12
+        // how to hold it (C12
         // stepped 3.3 % there); a tenth not.
         const rf::Thickened at = decided(1, 40), past = decided(1, 41);
         QVERIFY(at.any);
@@ -962,8 +965,7 @@ private slots:
     // within 2 µm of a pad its metal is 36.8 µm from at the nearest, and the
     // pad's side was graded to a quarter of those 2 µm. The gap between a
     // slanted part and another is how far apart their outlines are, for the
-    // grading and as said (a review's octagonal spirals,
-    // whose turns' slivers were graded to boxes 0.73 µm apart beside gaps of
+    // grading and as said (octagonal spirals' turns' slivers were graded to boxes 0.73 µm apart beside gaps of
     // 2).
     void aSlantedPartsGapIsWhereItsMetalIs()
     {
@@ -1094,8 +1096,8 @@ private slots:
     // neither face holds: a capacitance between facing edge cells, what a 2D
     // solve of solid metal against its two faces leaves between walls that
     // far apart - 0.349 eps per metre at thickness / gap 1, growing as the
-    // square of it below and nought under 1/32 (B2 of the open items of 8
-    // November: a MOM comb of 1 µm metal in 1 µm gaps 19 % under Palace's
+    // square of it below and nought under 1/32
+    // (a MOM comb of 1 µm metal in 1 µm gaps 19 % under Palace's
     // capacitance without it). Each wall with the nearest one facing it.
     void theWallsAcrossANarrowGapAreItsCapacitance()
     {
@@ -1167,7 +1169,7 @@ private slots:
         QVERIFY2(mesh.cells.size() > rf::kMostCharges / 4, qPrintable(QString::number(mesh.cells.size())));
         QVERIFY2(says(mesh.lines, "10 cells across a conductor would be more than the 8000"), qPrintable(mesh.lines.join(" | ")));
         QVERIFY2(says(mesh.lines, "across instead"), qPrintable(mesh.lines.join(" | ")));
-        // (A warning too, which the solve's answer carries: D2.)
+        // (A warning too, which the solve's answer carries.)
         QVERIFY2(says(mesh.warnings, "across instead"), qPrintable(mesh.warnings.join(" | ")));
         // One that fits is not touched.
         const rf::Mesh one = rf::meshOf({many.first()}, how, m.stack(), 10e9);

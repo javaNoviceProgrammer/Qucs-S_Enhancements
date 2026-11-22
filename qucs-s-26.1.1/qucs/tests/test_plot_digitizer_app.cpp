@@ -953,7 +953,7 @@ private slots:
     // Pictures of the window, when asked for (where to put
     // them in QUCS_DIGITIZER_SHOTS): the panel on a vector plot with the
     // magnifier by the pointer, and on a scan traced from its picture.
-    void picturesForTheWriteUp()
+    void pictures()
     {
         const QString shots = qEnvironmentVariable("QUCS_DIGITIZER_SHOTS");
         if (shots.isEmpty()) QSKIP("QUCS_DIGITIZER_SHOTS names no folder.");

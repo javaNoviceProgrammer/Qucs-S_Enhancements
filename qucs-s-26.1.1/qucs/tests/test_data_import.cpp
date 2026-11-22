@@ -149,8 +149,8 @@ private slots:
         QCOMPARE(d.columns, (QStringList{"Time", "Voltage", "I_out", "Voltage_2"}));
     }
 
-    // A CSV is read as rows, not as a spreadsheet's cells first (bug hunt
-    // 2026-09-30, B4: 26 MB took 1.15 GB): as a spreadsheet reads it all
+    // A CSV is read as rows, not as a spreadsheet's cells first
+    // (26 MB took 1.15 GB): as a spreadsheet reads it all
     // the same - fields in quotes holding the delimiter, a quote or a
     // line; numbers in quotes; CR LF; a byte order mark; a comment after a
     // delimiter; a table of many rows whole.
@@ -372,7 +372,7 @@ private slots:
     void aDamagedTouchstoneFileIsNotGuessedAt()
     {
         QString why;
-        // A9. One row of five numbers where nine are wanted: refused, with
+        // One row of five numbers where nine are wanted: refused, with
         // the count. It used to read S12 at 2 GHz as the third row's
         // frequency, 3e9.
         di::Data d = read(write("short.s2p", "# Hz S RI R 50\n"
@@ -388,7 +388,7 @@ private slots:
         read(write("mislabelled.s2p", "# Hz S RI R 50\n1e9 0.1 0.2\n2e9 0.3 0.4\n3e9 0.5 0.6\n4e9 0.7 0.8\n"), {}, &why);
         QVERIFY2(why.contains(QStringLiteral("whole points")), qPrintable(why));
 
-        // A10. Points that do not rise: read as far as the first fall, and
+        // Points that do not rise: read as far as the first fall, and
         // said - three rows in, one point out.
         why.clear();
         d = read(write("unsorted.s2p", "# Hz S RI R 50\n"
@@ -403,7 +403,7 @@ private slots:
         QVERIFY2(d.notes.join(QLatin1Char(' ')).contains(QStringLiteral("stops rising")),
                  qPrintable(d.notes.join(QLatin1Char(' '))));
 
-        // A11. A unit the option line names and we cannot read: refused,
+        // A unit the option line names and we cannot read: refused,
         // where it used to fall through to GHz - 1e9 read as 1e18 Hz.
         why.clear();
         read(write("banana.s2p", "# BANANA S RI R 50\n1e9 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8\n"), {}, &why);
@@ -430,7 +430,7 @@ private slots:
     // what the answer says about it.
     void aCsvKeepsItsHeaderAndSaysWhatItRenamed()
     {
-        // B9. Rows of 3, 2 and 4 values under a header of 3. The widest row
+        // Rows of 3, 2 and 4 values under a header of 3. The widest row
         // decided the table and the header was looked for just above it, so
         // the names were thrown away (A, B, C, D) and every row ahead of
         // the widest one was dropped with them.
@@ -440,7 +440,7 @@ private slots:
         QVERIFY2(d.notes.join(QLatin1Char(' ')).contains(QStringLiteral("not all the same width")),
                  qPrintable(d.notes.join(QLatin1Char(' '))));
 
-        // B10. Three columns of one name: the rename map is keyed by the
+        // Three columns of one name: the rename map is keyed by the
         // name in the file, so only the last of them was reported.
         d = read(write("dup.csv", "a,a,a\n1,2,3\n4,5,6\n"));
         QCOMPARE(names(d), (QStringList{"a", "a_2", "a_3"}));

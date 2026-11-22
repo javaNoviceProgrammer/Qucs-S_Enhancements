@@ -285,7 +285,7 @@ private slots:
         // (Analysed three times - a, a and b's union, and with c's; b, c and
         // a within it after -, Accelerate's and Eigen's alike. Analysed at
         // each change - five here -, an analysis was eight factorizations'
-        // time; Eigen's was so till a bug hunt.)
+        // time; Eigen's was so till 2026-10-17.)
         QCOMPARE(lu.analyses(), 3);
         // Another of the same pattern - a problem made again, a sweep's next
         // point -: its analysis the cache's, none made.

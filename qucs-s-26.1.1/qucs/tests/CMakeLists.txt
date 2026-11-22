@@ -243,7 +243,8 @@ set_tests_properties(test_fem_devices PROPERTIES TIMEOUT 3600)
 # quantum test's first part 1.3, the modulator's 1.2, the optoelectronics'
 # 1.1 - two or three at once on CI's macOS runner of three processors and
 # 7 GB: swapping, the VCSEL functions past their 300 s on 91450f4, the
-# quantum test's split having moved the order the tests run in. One of them at a time there; elsewhere the room is
+# quantum test's split having moved the order the tests run in.
+# One of them at a time there; elsewhere the room is
 # enough.)
 if(APPLE)
   set_property(TEST test_fem_laser test_fem_resonator test_fem_quantum test_fem_modulator test_fem_optoelectronics
@@ -270,8 +271,7 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/qucsator_rf/CMakeLists.txt)
   add_dependencies(test_library_export qucsconv_rf)
 endif()
 # qucsator_rf on damaged netlists, and qucsconv_rf on damaged data and SPICE
-# files: an error said, never a signal (the hunts of 9 November, Q1, and 10
-# November, R1-R4).
+# files: an error said, never a signal.
 if(EXISTS ${CMAKE_SOURCE_DIR}/qucsator_rf/CMakeLists.txt)
   add_executable(test_qucsator_robustness test_qucsator_robustness.cpp)
   target_link_libraries(test_qucsator_robustness Qt6::Core Qt6::Test)
@@ -397,7 +397,8 @@ qucs_add_test(test_rf25_accuracy)
 set_tests_properties(test_rf25_accuracy PROPERTIES TIMEOUT 2400)
 qucs_add_test(test_rf25_benchmarks)
 # (RF 2.5D against published measurements, closed forms and filament sums,
-# gathered where a build runs them all - the production-readiness review. Its spirals' and thick loop's loops skipped under the
+# gathered where a build runs them all.
+# Its spirals' and thick loop's loops skipped under the
 # sanitizers, its quasi-static lines and plates run there.)
 set_tests_properties(test_rf25_benchmarks PROPERTIES TIMEOUT 900)
 qucs_add_test(test_long_lines)

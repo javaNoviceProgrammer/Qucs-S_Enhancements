@@ -1,6 +1,6 @@
 /*
- * test_rf25_trl.cpp - RF 2.5D's multiline TRL calibration (rf25/rf25_trl.h,
- * F3 of the open items of 8 November) on fixtures made up in closed form: a
+ * test_rf25_trl.cpp - RF 2.5D's multiline TRL calibration (rf25/rf25_trl.h)
+ * on fixtures made up in closed form: a
  * device behind two error boxes unlike each other, the standards measured
  * through them, and the device found again.
  */

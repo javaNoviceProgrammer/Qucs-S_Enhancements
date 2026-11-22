@@ -2322,8 +2322,8 @@ bool LayoutDoc::load()
         if (a_lyp.isEmpty()) a_lypFile.clear();
     }
     a_keepView = false;
-    // The pen's strokes on it, kept beside it (V1 of the RF 2.5D open items:
-    // a tab closed, they were lost).
+    // The pen's strokes on it, kept beside it
+    // (a tab closed, they were lost).
     a_view->keepDrawingIn(a_DocName + QStringLiteral(".drawings"));
     startReading();
     return true;
@@ -2349,8 +2349,7 @@ void LayoutDoc::startReading()
         job->result = read(job->path, &job->error, &job->cancelled, &job->progress);
     });
     // (A main thread's stack, 8 MB: a thread's is 512 kB on macOS, where a
-    // layout's hierarchy was walked by recursion - the fuzz of 21 October,
-    // E3, L1.)
+    // layout's hierarchy was walked by recursion.)
     thread->setStackSize(8u << 20);
     connect(thread, &QThread::finished, this, [this, job] {
         if (job == a_job) readingDone();

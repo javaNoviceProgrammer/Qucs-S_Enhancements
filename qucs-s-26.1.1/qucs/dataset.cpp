@@ -340,7 +340,7 @@ bool Dataset::readFile(const QString& path, const QSet<QString>* only, QString* 
     if (a_variables.isEmpty()) return fail(tr("%1 holds no variables.").arg(path));
     // Read down to what is there, which is right - nothing is made up (a
     // short row of a Touchstone file did: A9 of the same hunt) - but a
-    // count that does not match what follows it is said, not passed over
+    // count that does not match what follows it is said, not passed over.
     for (qsizetype i = 0; i < a_variables.size() && i < declared.size() && a_notes.size() < 8; ++i) {
         const Variable& v = a_variables.at(i);
         if (declared.at(i) < 0 || declared.at(i) == v.re.size()) continue;

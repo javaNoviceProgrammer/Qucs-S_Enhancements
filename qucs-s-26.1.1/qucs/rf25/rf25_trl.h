@@ -2,7 +2,7 @@
  * rf25_trl.h - a multiline TRL calibration of an RF 2.5D two-port: its
  *              error boxes - a GSG pad and its feed at each end, or any
  *              fixture - found from standards solved as the structure is,
- *              and taken out of its S (F3 of the open items of 8 November)
+ *              and taken out of its S
  *
  * This file is part of Qucs-S.
  *

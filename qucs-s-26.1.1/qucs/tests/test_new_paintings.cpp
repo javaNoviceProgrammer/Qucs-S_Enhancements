@@ -396,8 +396,8 @@ private slots:
     QCOMPARE(static_cast<DimensionPainting*>(again.get())->label(), QStringLiteral("L1"));
   }
 
-  // What a damaged file may hold, kept in range as it is read (bug hunt
-  // 2026-09-26, D1 and D4): a callout's tip far out - turned or mirrored,
+  // What a damaged file may hold, kept in range as it is read:
+  // a callout's tip far out - turned or mirrored,
   // it overflowed int and was saved wrapped around; a waveform's cycles and
   // a dimension's scale that are not numbers - nothing drawn, "nan mm",
   // saved back so.
@@ -463,7 +463,7 @@ private slots:
 
   // A big formula zoomed in is drawn from an image of at most 64 MB and
   // 8192 pixels a side - a size-400 transfer function at 8 pixels a unit
-  // asked for 4.6 GB (bug hunt 2026-09-26, C4); so is its image in a
+  // asked for 4.6 GB; so is its image in a
   // symbol. A small one keeps every pixel the zoom gives.
   void aBigFormulaZoomedInStaysSmall()
   {

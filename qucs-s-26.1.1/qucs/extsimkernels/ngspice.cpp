@@ -756,7 +756,8 @@ void Ngspice::createNetlist(
 
     // Only the kinds two simulations write: an .AC beside an .FFT (both
     // write "ac") prefixed every vector, the transient's too - tran.v(out)
-    // became tr1.tran.v(out), and every diagram of it went blank. A custom simulation's, when any kind is shared.
+    // became tr1.tran.v(out), and every diagram of it went blank.
+    // A custom simulation's, when any kind is shared.
     const unsigned int counts[] = {dcSims, freqSims, timeSims, fourSims, pzSims};
     const bool anyShared = std::any_of(std::begin(counts), std::end(counts), [](unsigned int n) { return n > 1; });
     a_prefixedSims.clear();

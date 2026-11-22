@@ -36,7 +36,7 @@ void block(QTextStream& s, const QString& header, int n, const std::function<dou
 }
 
 // A bowl over a 7 x 5 die (71 x 51 points, 0 at its centre, -18 at its
-// corners), as a review plotted it; and two flat patches
+// corners); and two flat patches
 // side by side at height 0, apart (x below -0.5 and above 0.5), of 15 x 11
 // and 41 x 31 points spaced a little unevenly - no two of their cells as far
 // from the viewer.

@@ -509,7 +509,8 @@ namespace {
 //
 // line_calc and receiver_budget passed every number straight to their
 // programs and handed back whatever came of it - "nan" for a substrate of
-// no height, a budget of nulls for a temperature below absolute zero - where every synthesizer beside them
+// no height, a budget of nulls for a temperature below absolute zero
+// - where every synthesizer beside them
 // checks its inputs and refuses a design that is no number.
 QString mustBeAbove(const QJsonValue& v, const char* key, double least, const QString& what)
 {
@@ -523,7 +524,7 @@ QString mustBeAbove(const QJsonValue& v, const char* key, double least, const QS
 // As mustBeAbove(), for a number that must lie between \a least and \a most,
 // both allowed. The upper end matters as much as the lower: a gain of 1e300
 // is as impossible as one of -1e300, and it overflowed the arithmetic into
-// a budget of nulls instead of being turned down (B7).
+// a budget of nulls instead of being turned down.
 QString mustBeWithin(const QJsonValue& v, const char* key, double least, double most, const QString& what)
 {
     if (!v.isDouble()) return {};
@@ -606,7 +607,7 @@ QJsonObject QucsControl::receiverBudget(const QJsonObject& args)
 {
     // Conditions that cannot be. The stages were checked and these were
     // not: a temperature below absolute zero and a negative bandwidth each
-    // gave a budget whose system numbers were all null (B7).
+    // gave a budget whose system numbers were all null.
     if (const QString why = mustBeAbove(args.value(QLatin1String("temperature")), "temperature", -273.15, tr("a temperature in C")); !why.isEmpty())
         return errorResult(tr("No budget: %1").arg(why));
     if (const QString why = mustBeAbove(args.value(QLatin1String("bandwidth")), "bandwidth", 0, tr("a noise bandwidth in Hz")); !why.isEmpty())
@@ -631,7 +632,7 @@ QJsonObject QucsControl::receiverBudget(const QJsonObject& args)
     for (const QJsonValue& v : args.value(QLatin1String("stages")).toArray()) {
         if (!v.isObject()) return errorResult(tr("Stage %1 is no object: {\"name\", \"gain\", \"nf\", ...}.").arg(stages.size() + 1));
         // A noise figure is the noise a stage adds: it cannot be below
-        // 0 dB, and one that is gave a budget that read as sound (B7).
+        // 0 dB, and one that is gave a budget that read as sound.
         const QJsonObject stage = v.toObject();
         if (const QString why = mustBeWithin(stage.value(QLatin1String("nf")), "nf", 0, 1e6, tr("a noise figure in dB")); !why.isEmpty())
             return errorResult(tr("No budget: stage %1's %2").arg(stages.size() + 1).arg(why));

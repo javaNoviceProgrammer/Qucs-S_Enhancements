@@ -167,7 +167,7 @@ private slots:
     // system has none, a path through a link. A copy over a file writes
     // beside it first: one that fails leaves the file there (the helpers
     // under PDF Save As, Claude's simulate keep_as and the library
-    // dialog; bug hunt 2026-09-26, A1).
+    // dialog).
     void filesComparedAndCopiedSafely()
     {
         const QString here = top + "/same";
@@ -303,8 +303,8 @@ private slots:
 
     // Replace is not offered for the one there when it holds the one moved
     // or copied: W/x/x onto W, where W/x is, sent W/x - the one moved and
-    // all beside it - to the trash, and the move then failed (bug hunt
-    // 2026-09-26, A2). Kept both, or skipped.
+    // all beside it - to the trash, and the move then failed.
+    // Kept both, or skipped.
     void aFolderHoldingTheOneMovedIsNotReplaced()
     {
         const QString here = top + "/holds";
@@ -377,7 +377,7 @@ private slots:
     // Renamed as a name: another case of its own is a rename (it was
     // refused on macOS and Windows), a path ("../x", "sub/x") is refused
     // (it moved the file); renamed by name or in place, moved() says so,
-    // for open documents to follow (bug hunt 2026-09-26, A9, A10).
+    // for open documents to follow.
     void renamedAsAName()
     {
         const QString here = top + "/renames";

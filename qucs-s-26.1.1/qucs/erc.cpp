@@ -1599,7 +1599,7 @@ const QRegularExpression& programRun()
 }
 
 // What a line of a .control block can run without naming a command that
-// starts a program (bug hunt 2026-10-23 A7). Read in ngspice 46's own
+// starts a program. Read in ngspice 46's own
 // sources, since each is a way round a pattern that reads the command's
 // name:
 //   - a backquote: what stands between them is passed to popen
@@ -1830,8 +1830,8 @@ QList<std::pair<QString, const Component*>> commandsOf(Schematic* doc)
         // part's SPICE source is lines by design (a model's continuation
         // lines), and a value the netlist keeps on its own line can still
         // be written by a path of its own. Every value of the part is read
-        // together, since a block may span several (bug hunt 2026-10-23
-        // A1). The parts below whose own text is read are left to those.
+        // together, since a block may span several.
+        // The parts below whose own text is read are left to those.
         static const QStringList readsItsText{QStringLiteral("INCLSCR"), QStringLiteral("CMD"), QStringLiteral(".CUSTOMSIM"),
                                               QStringLiteral("NutmegEq"), QStringLiteral("SPICEINIT")};
         if (!readsItsText.contains(c->Model)) {

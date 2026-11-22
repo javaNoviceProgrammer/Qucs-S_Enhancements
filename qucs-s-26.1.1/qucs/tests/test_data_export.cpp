@@ -311,7 +311,7 @@ private slots:
         QVERIFY(found);
     }
 
-    // Written row by row (bug hunt 2026-09-30, B1): a table went through a
+    // Written row by row: a table went through a
     // spreadsheet's cells, hundreds of bytes for each value, 1.6 GB for a
     // workbook of 500,000 rows. The same files as before - a sheet's own
     // writers make them here from cells, as the exporter did - and how far
@@ -512,7 +512,7 @@ private slots:
         QFile f(csv);
         QVERIFY(f.open(QIODevice::ReadOnly));
         QCOMPARE(f.readAll(), QByteArray("time,tran.v(out)\n0,0\n0.001,0.5\n0.002,1\n"));
-        // The file's name says its format (bug hunt 2026-09-30, B2):
+        // The file's name says its format:
         // out.xlsx a workbook with CSV chosen, said; a name of no format's
         // gets the chosen one's suffix.
         const QString named = dir.filePath("out/named.xlsx");
@@ -567,7 +567,7 @@ private slots:
     }
 
     // An export that takes a while shows how far it is; Stop there stops
-    // it, and the file there stays as it was (bug hunt 2026-09-30, B1: it
+    // it, and the file there stays as it was (it
     // ran on, with nothing to see or stop).
     void aLongExportCanBeStopped()
     {
@@ -648,8 +648,7 @@ private slots:
             QString error;
             dialog->findChild<DataImportPanel*>()->importFiles({write("measured.csv", "t,v\n0,1\n1,2\n")});
             QVERIFY(panel->datasetBox()->findText("measured.dat  (imported)") >= 0);
-            // A dataset the Export tab writes beside it: in the Data tab too
-            // (bug hunt 2026-09-30, B3).
+            // A dataset the Export tab writes beside it: in the Data tab too.
             QVERIFY(datasets->findData("copied") < 0);
             const QString shown = datasets->currentData().toString();
             QVERIFY(panel->chooseDataset(folder + "/other.dat"));

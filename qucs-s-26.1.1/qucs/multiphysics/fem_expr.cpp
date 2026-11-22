@@ -35,7 +35,7 @@ QString tr(const char* text, const char* disambiguation = nullptr, int n = -1)
 namespace {
 
 // A power held at ±127, not wrapped: m^100 * m^100 was m^-56 (and m to
-// 2147483647 squared undefined) - the fuzz of 21 October, E5. No unit has
+// 2147483647 squared undefined). No unit has
 // such powers; one held there is as wrong, and plainly so.
 std::int8_t held(long long power)
 {
@@ -675,7 +675,7 @@ public:
     // How deep it reads: nested brackets, signs and powers each a level of
     // its recursion; and the tree's height - a long sum is as deep as it is
     // long, compiled and freed by recursion. (Unbounded, 2247 brackets
-    // overflowed a sanitized build's stack - the fuzz of 21 October, E1 -,
+    // overflowed a sanitized build's stack,
     // a thread's of 512 kB sooner; the compiler takes 256 levels,
     // functions written out.)
     static constexpr int MaxNesting = 100, MaxHeight = 200;
@@ -963,13 +963,13 @@ public:
     std::optional<Value> compile(const AstPtr& ast, int depth = 0)
     {
         // (Its depth the tree's, its functions written out - a sum of 65
-        // terms refused as functions calling each other, before the fuzz of
-        // 21 October -; the functions' calls within each other counted
+        // terms refused as functions calling each other, until 21 October
+        // -; the functions' calls within each other counted
         // apart, in call().)
         if (depth > MaxDepth) return failed(tr("the expression is too deep with its functions written out (more than %1 levels)").arg(MaxDepth));
         // (Its functions written out: one that reads its argument twice,
         // nested, doubles at each call - sq(u) = u*u + 1 eighteen deep took
-        // 33 s, its 2^18 copies (the fuzz of 21 October, E2).)
+        // 33 s, its 2^18 copies.)
         if (++a_nodes > MaxNodes) return failed(tr("the expression grows too large with its functions written out (more than %1 terms)").arg(MaxNodes));
         switch (ast->kind) {
         case Ast::Number: {
@@ -1696,7 +1696,7 @@ double Expression::Table::at(double v) const
 {
     // (Not a number: none - upper_bound, every comparison false, gave the
     // end and a read past it: a diverged solve's temperature in a
-    // material's table - the fuzz of 21 October, E4.)
+    // material's table.)
     if (x.empty() || y.size() < x.size() || std::isnan(v)) return std::nan("");
     if (v <= x.front()) return y.front();
     if (v >= x.back()) return y.back();

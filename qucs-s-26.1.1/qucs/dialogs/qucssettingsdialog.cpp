@@ -907,7 +907,7 @@ QucsSettingsDialog::QucsSettingsDialog(QucsApp *parent)
     connect(ClearAllPathsButt, SIGNAL(clicked()), SLOT(slotClearAllPaths()));
     // (The list takes the group's height: a row of its own below the
     // buttons, stretched - the room went between them, the list a fifth of
-    // it; a bug hunt, as the File Types tab's.)
+    // it, as the File Types tab's.)
     pathsGrid->addItem(new QSpacerItem(0, 0, QSizePolicy::Minimum, QSizePolicy::Expanding), 3, 2);
     pathsGrid->setRowStretch(3, 1);
 

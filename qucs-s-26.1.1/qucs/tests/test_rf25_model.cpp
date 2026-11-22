@@ -134,7 +134,7 @@ private slots:
         // What is not an RF 2.5D model is refused, and says why.
         QVERIFY(!rf::Model::fromJson(QByteArray("{"), &why).has_value());
         QVERIFY2(why.contains(QLatin1String("JSON")), qPrintable(why));
-        // An array: JSON, but no object - said as "no error occurred" (a bug // hunt's second hour).
+        // An array: JSON, but no object - said as "no error occurred".
         QVERIFY(!rf::Model::fromJson(QByteArray("[1, 2]"), &why).has_value());
         QVERIFY2(why.contains(QLatin1String("It is JSON, but not an object")), qPrintable(why));
         QVERIFY(!rf::Model::fromJson(QByteArray("{\"format\": \"qucs-s multiphysics 1\"}"), &why).has_value());
@@ -390,7 +390,7 @@ private slots:
         }
     }
 
-    // What the stack says cannot be: each check of the proposal, one at a
+    // What the stack says cannot be: each check, one at a
     // time, on a stack that is otherwise sound.
     void aStackThatCannotBeSaysWhy()
     {

@@ -158,8 +158,8 @@ private slots:
         QVERIFY(t.lines.join(QLatin1Char(' ')).contains(QStringLiteral("phase turns by up to 45 degrees")));
         // A line of 25 Ohm in 50, its S11 swept finely - 3.6 degrees of the
         // line a step - through its nulls, where its phase flips by nearly
-        // 180 degrees however fine the sweep: not said (P37 of the open
-        // items: it said "178 degrees").
+        // 180 degrees however fine the sweep: not said
+        // (it said "178 degrees").
         {
             const double z = 25, r0 = 50, length = 0.1037e-9;   // (its one-way delay: its nulls off the sweep's points)
             QList<double> f1;
@@ -257,7 +257,8 @@ private slots:
     // exp(-j w 1 ns), swept every 50 MHz to 10 GHz from 25 MHz, 0.3, 1, 2 and
     // 5 GHz: S at nought 0.2 throughout, and the profile 50 Ohm before the
     // nanosecond and 75 after it. From 1 GHz the lowest three's quadratic gave
-    // -3.51, from 5 GHz -92.9, and Z(t) nought throughout, said as fine (a bug hunt's second hour). And a sweep whose phase carried
+    // -3.51, from 5 GHz -92.9, and Z(t) nought throughout, said as fine.
+    // And a sweep whose phase carried
     // to nought lands off the real axis: said.
     void aSweepFromHighHasItsLevel()
     {

@@ -1011,7 +1011,8 @@ Result analyse(const Curve& c, const Options& o)
         if (std::min({gap1, gap2, gap3}) < 0.25 * std::max({gap1, gap2, gap3}))
             r.notes << tr("the four levels are far from evenly spaced: is it PAM4?");
         // Two levels with hardly a symbol on them - an NRZ signal read as
-        // four (its transitions' samples): said (three eyes drawn without a remark).
+        // four (its transitions' samples): said (three eyes were drawn
+        // without a remark).
         // So too a middle gap twice the outer ones: an NRZ signal's levels and
         // its intersymbol interference's, which PAM4's spacing is not.
         QVector<int> on(4, 0);
@@ -1083,7 +1084,8 @@ Result analyse(const Curve& c, const Options& o)
     // The width at a bit error rate of 1e-12: the bathtub's opening there -
     // its dual-Dirac fit of the crossings' tails - as the bathtub diagram
     // gives it. A UI less 14.069 rms jitters takes the whole spread for
-    // random jitter, and closed an eye the bathtub found 0.57 UI open; it stays where there is no bathtub.
+    // random jitter, and closed an eye the bathtub found 0.57 UI open;
+    // it stays where there is no bathtub.
     for (int i = 0; i < r.eyes.size(); ++i) {
         const Bathtub b = bathtubOf(r, i);
         double from = NaN, to = NaN;

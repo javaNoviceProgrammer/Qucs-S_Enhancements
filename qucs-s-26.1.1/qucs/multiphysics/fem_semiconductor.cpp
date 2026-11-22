@@ -2500,7 +2500,7 @@ bool SemiconductorProblem::setup(QString* error)
                 const double lo = energyOf(bf->text(QStringLiteral("Elow")), constants, &why);
                 const double hi = energyOf(bf->text(QStringLiteral("Ehigh")), constants, &why);
                 // (Its levels from 1 to 1000: 2147483647 made at every node
-                // took memory without end - the fuzz of 21 October.)
+                // took memory without end.)
                 const int count = bf->integer(QStringLiteral("levels"));
                 if (!(Dit >= 0) || !std::isfinite(lo) || !std::isfinite(hi) || !(hi > lo)) problem(tr("%1: its density and range").arg(where));
                 else if (count < 1 || count > 1000) problem(tr("%1: its levels from 1 to 1000, not %2").arg(where).arg(count));
@@ -4211,7 +4211,8 @@ void SemiconductorProblem::assemble(const Eigen::VectorXd& x, double mass, const
             // the current there. Taken whole, a junction's triangles' holes'
             // currents were that rounding: their pairs counted 99 times
             // without recombination, Newton's method cycling at the minority
-            // carriers beside them near a breakdown. Weighed, a junction's triangle takes its current from
+            // carriers beside them near a breakdown.
+            // Weighed, a junction's triangle takes its current from
             // its edges across the junction; and what still is no more than
             // the rounding is smoothly nought, J²/√(J² + J0²), J0 the fit's
             // own rounding. J0 of a triangle's density instead - a p⁺
@@ -4992,7 +4993,8 @@ bool SemiconductorProblem::newton(Eigen::VectorXd& x, double mass, const std::ve
             // what still changes is the linear solve's own. An avalanche
             // diode's mesh of 10 nm at -32 V met them to 10⁻¹⁶, its
             // carriers wandering by up to 5·10⁻⁵ step after step, the
-            // potential by 10⁻¹¹ Vt: no solution found. 10⁻¹² took a current of 10⁻¹³ A among majority
+            // potential by 10⁻¹¹ Vt: no solution found.
+            // 10⁻¹² took a current of 10⁻¹³ A among majority
             // flows of 10⁻² A as it was, 15 % off.)
             const bool met = ((changeC < 1e-6 || changeV < 1e-12) && imb < 1e-6) || imb < 1e-14;
             // (Its mobilities held: the solution's own? Held from fifteen
@@ -7300,7 +7302,8 @@ void SemiconductorProblem::latticeTemperature()
 bool SemiconductorProblem::solve(const SolveOptions& o, QString* error)
 {
     // (A failure at a low temperature said by it: at 1 mK "the equilibrium's
-    // potential: a singular matrix", the temperature not named. A silicon or GaAs junction solves at 77 K, not at 40.)
+    // potential: a singular matrix", the temperature not named.
+    // A silicon or GaAs junction solves at 77 K, not at 40.)
     const bool ok = solveAt(o, error);
     if (!ok && error && a_gapOverKT > 150 && !error->contains(QLatin1String("cancelled")) && !error->contains(QLatin1String("(Eg/2kT)")))
         *error += tr(" - at %1 its materials' intrinsic density is e^(-%2) of their states' (Eg/2kT): drift and diffusion's carrier "
@@ -8142,7 +8145,7 @@ void SemiconductorProblem::setGlobals()
             // are made otherwise, or no more than a rounding's of the current
             // - a resistor, a diode without recombination, one forward-biased
             // -, no multiplication to tell: not a number. Infinite there, and
-            // 2.75e18 for a diode at 0.7 V, before a bug hunt.)
+            // 2.75e18 for a diode at 0.7 V, until 19 October.)
             bool still = true;
             double most = 0;
             for (const Contact& c : a_contacts) {
@@ -8402,7 +8405,7 @@ SemiconductorState semiconductorAt(PointEvaluator& e, int f)
                     Ex -= (a.y() - b.y()) / area2 * V[k];
                     Ey -= (b.x() - a.x()) / area2 * V[k];
                 }
-            // (Along the line: its field, A4.)
+            // (Along the line: its field.)
             if (alongLine) {
                 Ex = field.along->alongY ? 0.0 : -slope[0];
                 Ey = field.along->alongY ? -slope[0] : 0.0;

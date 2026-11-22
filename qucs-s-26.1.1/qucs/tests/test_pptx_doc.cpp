@@ -1140,7 +1140,7 @@ private slots:
     // its right, not blurred).
     // A paragraph of thousands of runs - a listing with its colours, text
     // pasted from a page - is laid out once, not again at every run: 5,000
-    // of them took 36 s a slide before (bug hunt 2026-10-23 A5).
+    // of them took 36 s a slide before.
     void manyRunsAreLaidOutOnce()
     {
         Deck d;
@@ -1168,8 +1168,8 @@ private slots:
     // Numbers a deck has no business holding: a chart cache saying it has
     // two thousand million points, a point's index and a paragraph's level
     // past what a whole number holds. Each is held within what is read,
-    // and none is converted out of range (bug hunt 2026-10-23 A4 and B5;
-    // under UndefinedBehaviorSanitizer this test is the check).
+    // and none is converted out of range
+    // (under UndefinedBehaviorSanitizer this test is the check).
     void absurdNumbersAreHeld()
     {
         Deck d;
@@ -1224,7 +1224,7 @@ private slots:
 
     // A deck is read by walking its elements: one nesting them deeper than
     // any PowerPoint writes is refused, and says so, rather than taking the
-    // reader's stack with it (bug hunt 2026-10-23 A2).
+    // reader's stack with it.
     void deepNestingIsRefused()
     {
         const QByteArray group = "<p:grpSp><p:nvGrpSpPr><p:cNvPr id=\"9\" name=\"g\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>"
@@ -1259,7 +1259,7 @@ private slots:
 
     // An SVG picture whose <use> references ask for more than is drawn
     // here: counted before QtSvg reads it (which expands each reference as
-    // it goes), a box in its place, and said (bug hunt 2026-10-23 A3).
+    // it goes), a box in its place, and said.
     void svgAskingTooMuchIsNotDrawn()
     {
         // Fifteen levels of four: 1.8 kB that would draw 10^9 nodes.
@@ -1636,8 +1636,8 @@ private slots:
 
     // A shadow of a shape as large as the slide, drawn where its mask
     // would be more pixels than are worth holding: it is built smaller and
-    // drawn scaled up, not left out altogether (bug hunt 2026-10-23 B1 -
-    // a slide's own shape lost its shadow at 8 pixels a point).
+    // drawn scaled up, not left out altogether (a slide's own shape lost its
+    // shadow at 8 pixels a point).
     void aBigShadowIsStillDrawn()
     {
         Deck d;
@@ -1850,7 +1850,7 @@ private slots:
     // printed, a page a slide; played full screen, hidden slides left out.
     // A zoom keeps the slide it was on in sight: it used to open a hair
     // above a slide standing at the view's top, on the end of the slide
-    // before, which was then the slide shown (bug hunt 2026-10-23 B2).
+    // before, which was then the slide shown.
     void aZoomKeepsTheSlideItWasOn()
     {
         QucsApp app(false);
@@ -2181,8 +2181,7 @@ private slots:
 
     // The window closed while a tab's own dialog is open: the tab is freed
     // once its own call has returned, not under the dialog - which is a
-    // local object of that call, and freeing it killed the program (bug
-    // hunt 2026-10-23 A6).
+    // local object of that call, and freeing it killed the program.
     void aTabIsNotFreedUnderItsOwnDialog()
     {
         QucsApp app(false);
@@ -2876,7 +2875,7 @@ private slots:
         {
             const QucsSettingsFile settings;
             // (The tool is the session's alone: kept, a pen taken up the next
-            //  day began as an eraser - V7 of the RF 2.5D open items.)
+            //  day began as an eraser.)
             QVERIFY(!settings.contains(QStringLiteral("Viewers/penTool")));
             QCOMPARE(settings.value(QStringLiteral("Viewers/penColor")).toString(), QStringLiteral("#0a141e"));
             QCOMPARE(settings.value(QStringLiteral("Viewers/highlighterWidth")).toDouble(), 24.0);

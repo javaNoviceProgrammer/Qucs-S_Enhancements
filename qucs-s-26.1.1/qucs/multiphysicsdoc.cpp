@@ -210,8 +210,8 @@ private:
 };
 
 /// A geometry with a process flow: built in the background - its anneals
-/// and oxidations take seconds to minutes (71 s for one of the fuzz of 21
-/// October's, the window frozen).
+/// and oxidations take seconds to minutes (71 s for one hostile flow, the
+/// window frozen).
 bool slowGeometry(const Model& m)
 {
     for (const Node& g : m.geometry().children)
@@ -349,7 +349,8 @@ MultiphysicsDoc::~MultiphysicsDoc()
         if (job && job->thread) job->cancel = true;
     // A job that does not ask whether to stop - a ray trace, a mesh's
     // boundaries walked, a long spectrum - is not waited for past a moment:
-    // closing the tab (or quitting) waited for ever; the 3D model's the same. Left to end on its own: the thread holds the job, all it reads
+    // closing the tab (or quitting) waited for ever, and the 3D model's
+    // the same. Left to end on its own: the thread holds the job, all it reads
     // (its work captures values, not this), and deletes itself.
     for (const std::shared_ptr<Job>& job : {a_job, a_build})
         if (job && job->thread) {
@@ -828,8 +829,7 @@ void MultiphysicsDoc::invalidate(const Model& before, const Model& after)
 {
     const Sections a = sections(before), b = sections(after);
     // (A process flow reads the materials - a III-V's composition, for its
-    // intermixing: changed, it runs again; it was left as it was, found
-    // reading the flow for the fuzz of 21 October.)
+    // intermixing: changed, it runs again; it was left as it was.)
     const bool geometry = a.parameters != b.parameters || a.geometry != b.geometry || (b.flow && a.materials != b.materials);
     const bool mesh = geometry || a.mesh != b.mesh;
     const bool physics = mesh || a.physics != b.physics;
@@ -1079,8 +1079,7 @@ void MultiphysicsDoc::launch(const std::shared_ptr<Job>& job, std::function<void
     job->thread = QThread::create([job, work] { work(*job); });
     // (A main thread's stack, 8 MB: a worker's 512 kB on macOS. The
     // material library's expressions, compiled by recursion on its first
-    // solve there, overflowed it under the sanitizers - the fuzz of 21
-    // October, E3.)
+    // solve there, overflowed it under the sanitizers.)
     job->thread->setStackSize(8u << 20);
     connect(job->thread, &QThread::finished, this, [this, job] {
         if (job == a_job) jobFinished();

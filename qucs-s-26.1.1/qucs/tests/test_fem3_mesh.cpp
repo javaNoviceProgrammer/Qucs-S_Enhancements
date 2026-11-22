@@ -468,7 +468,7 @@ private slots:
     }
 
     /// A slab's divisions by a size far smaller than it clamped: 1e-9
-    /// across 1 asked for a million, and smaller sizes past an int's range
+    /// across 1 asked for a million, and smaller sizes past an int's range.
     void divisionsClamped()
     {
         const double inf = std::numeric_limits<double>::infinity();

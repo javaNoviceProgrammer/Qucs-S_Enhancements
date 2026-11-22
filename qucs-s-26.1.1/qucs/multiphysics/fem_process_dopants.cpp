@@ -434,7 +434,7 @@ void Dopants::addRows(double top)
 
 /// The grid's budget: a flow whose cells would pass it refused (a dy of
 /// 0.1 nm under 300 µm filled: 10⁹ cells, minutes to make and memory past
-/// any machine's - the fuzz of 21 October, PF2).
+/// any machine's).
 bool Dopants::fits(double nx, double ny)
 {
     constexpr double MaxCells = 5e6;
@@ -478,7 +478,7 @@ void Dopants::refine(const std::vector<Region>& regions)
 {
     ProcessDopants& d = *a_d;
     // (No grid - a flow narrower than a column, no rows -: nothing to
-    // refine. Its row -1 was read: the fuzz of 21 October, PF1.)
+    // refine. Its row -1 was read.)
     if (d.nx() <= 0 || d.ny() <= 0) return;
     double low = std::numeric_limits<double>::max();
     bool any = false;

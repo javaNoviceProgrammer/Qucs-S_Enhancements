@@ -326,11 +326,11 @@ private slots:
     }
 
     // A net with two names - a label and a ground symbol, two labels - was
-    // netlisted as two nodes, each part on whichever name reached its pin
-    // (bug hunt 2026-09-30, A1). One node now, named as the check names
+    // netlisted as two nodes, each part on whichever name reached its pin.
+    // One node now, named as the check names
     // it: ground, else the first label; the check says which is dropped.
-    // A net named GND is ground to ngspice only (A6).
-    // What a run executes besides the simulator (bug hunt 2026-09-30, E1):
+    // A net named GND is ground to ngspice only.
+    // What a run executes besides the simulator:
     // each found - a command part's lines but its comments, ngspice's shell
     // in a custom simulation, the Octave script run after it; nothing of a
     // part turned off, of a command of comments alone, or of a word that
@@ -340,7 +340,7 @@ private slots:
     // A value is one token of its line, whatever is written in it: a
     // newline in an ordinary property cannot write a line of the netlist,
     // and the lines a part does take as SPICE source are read for the
-    // commands they run (bug hunt 2026-10-23 A1).
+    // commands they run.
     void aValueWritesNoLineOfTheNetlist()
     {
         struct Restore {
@@ -473,7 +473,7 @@ private slots:
     // A .control block can run a command without naming one: ngspice
     // passes what stands between backquotes to popen, expands an alias
     // before it looks the command up, and substitutes a variable where the
-    // command's name belongs. Each is said (bug hunt 2026-10-23 A7).
+    // command's name belongs. Each is said.
     void commandsByAnotherNameAreSaid()
     {
         struct Restore {
@@ -628,7 +628,7 @@ private slots:
         QFile::remove(init);
     }
 
-    // The SPICE file part's preprocessor (bug hunt 2026-09-30, D5): Perl
+    // The SPICE file part's preprocessor: Perl
     // running the script on the file - the list was added to itself, and
     // the script was the program started. (Built here, not run.)
     void aSpiceFilesPreprocessorIsPerlRunningItsScript()
@@ -774,7 +774,7 @@ private slots:
         QTRY_VERIFY2(chip->text().startsWith("2 errors,"), qPrintable(chip->text()));
 
         // The commands a run executes: warned of as the box says, checked
-        // again when it changes (bug hunt 2026-09-30, E1; off by default).
+        // again when it changes (off by default).
         const QString withCommand = dir.filePath("with_command.sch");
         write(withCommand, "<Qucs Schematic " PACKAGE_VERSION ">\n<Components>\n"
                            "  <CMD CMD1 1 100 200 -30 20 0 0 \"echo qucs-test\" 1 \"no\" 1 \"no\" 0>\n"
@@ -1220,7 +1220,7 @@ private slots:
         got = findings(amplifier + R("RB", 400, "470k"), amplifierWires + top(400, "vcc") + bottom(400, "b"));
         QVERIFY2(got.filter("no DC path").isEmpty() && got.filter("fixture").isEmpty(), qPrintable(got.join(" | ")));
 
-        // (The hunt after round 9, A3.) What fixes a voltage besides a
+        // What fixes a voltage besides a
         // voltage source, each straight across V1 (ngspice: a singular
         // matrix): a current probe, a 0 V source; a VCVS's output; a
         // current-controlled source's input, the 0 V source the netlist
@@ -1300,8 +1300,8 @@ private slots:
         got = across(part("vPWL", "V1", 0, "\"0 0 1u 0 1.01u 5 3u 5\" 1 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0 \"\" 0"), "1 nF");
         QVERIFY2(got.size() == 1 && got.first().contains("C dV/dt is 0.5 A here (1 nF, a step of 5 V in 10 ns)"), qPrintable(got.join(" | ")));
 
-        // A transient's step long for the sources' edges (the stress report:
-        // 0.5 ns steps over 0.5 ns edges, delays 12% off): an edge crossed
+        // A transient's step long for the sources' edges (0.5 ns steps over
+        // 0.5 ns edges, delays 12% off): an edge crossed
         // in fewer than five steps. ngspice's step is (Stop - Start)/(Points
         // - 1), or (Stop - Start)/50 when less, or MaxStep when that is set;
         // the fastest source is named; edges of no rise time are the step
@@ -1861,7 +1861,7 @@ private slots:
         if (!grabDir.isEmpty()) app.grab(QRect(0, 0, app.width(), 130)).save(grabDir + "/toolbars.png");
     }
 
-    // (The hunt after round 9, A2, D1, D2.) A schematic that uses itself,
+    // A schematic that uses itself,
     // and a cycle of files: errors (ngspice nests them until it gives up),
     // and the walk ends. A subcircuit with no file: an error of its own,
     // and the schematic's folder is not read as its file. A file not found

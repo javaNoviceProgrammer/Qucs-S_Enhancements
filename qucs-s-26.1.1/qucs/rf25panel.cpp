@@ -354,7 +354,7 @@ void RF25Panel::updateStatusColumn()
     const Stack stack = a_doc->model().stack();
     // The Cutout as read: which of its regions are applied, and why one is
     // not - shown on its row and counted, where every enabled region read
-    // "kept" or "taken out" (C1 of the open items).
+    // "kept" or "taken out".
     QStringList cutSaid;
     const Cutout cut = cutoutOf(a_doc->model(), &cutSaid);
     QSet<QString> applied;

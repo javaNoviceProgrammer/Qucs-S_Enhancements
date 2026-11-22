@@ -635,8 +635,7 @@ private slots:
     }
 
     // An SVG whose <use> references ask for more than is drawn here is not
-    // opened, and says why; QtSvg would expand each of them as it read
-    // (bug hunt 2026-10-23 A3).
+    // opened, and says why; QtSvg would expand each of them as it read.
     void anSvgAskingTooMuchIsRefused()
     {
         QByteArray defs = "<rect id='r0' width='1' height='1' fill='#ff0000'/>";

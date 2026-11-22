@@ -306,7 +306,8 @@ class TestQucsControl : public QObject
             film.props.insert(QStringLiteral("thickness"), i % 2 == 0 ? QStringLiteral("0.1[um]") : QStringLiteral("0.2[um]"));
             // (A hundred and sixty of 12 and 3.9: of 28 and 3.9, twenty such
             //  films grew the stack's images past what a number holds - its
-            //  capacitance NaN, said to be solved, before a bug hunt; now refused. These take their time as those did,
+            //  capacitance NaN, said to be solved, until 18 November; now
+            //  refused. These take their time as those did,
             //  some 6 s of Green's functions.)
             film.props.insert(QStringLiteral("epsr"), i % 2 == 0 ? QStringLiteral("12") : QStringLiteral("3.9"));
             // (Lossless: each lossy layer is its own Green's function more,
@@ -1396,7 +1397,7 @@ private slots:
         QVERIFY(!failed(call("edit_marker", {{"marker", 2}, {"notation", "diagram"}})));
         QVERIFY(markers().at(1).toObject().value("text").toString().contains(QString::fromUtf8("×10⁴")));
         QVERIFY(!failed(call("edit_diagram", {{"notation", "engineering"}, {"decimals", -1}})));
-        // (The hunt after round 9, C2.) Precision as the dialog takes it,
+        // Precision as the dialog takes it,
         // 0 to 12; out of it, or not whole, refused - 99 was 12 and 2.7 was
         // 1, without a word. (C3) A table has no axes: no notation.
         QVERIFY(!failed(call("edit_marker", {{"marker", 2}, {"precision", 0}})));
@@ -1788,7 +1789,7 @@ private slots:
         QCOMPARE(kept.value("variable").toString(), QStringLiteral("ngspice/run1:tran.v(out)"));
         QVERIFY2(kept.value("points").toInt() > 100, QJsonDocument(kept).toJson().constData());
         // keep_as the schematic's own name: that is the run's dataset itself,
-        // not kept over itself - it was deleted (bug hunt 2026-09-26, A1).
+        // not kept over itself - it was deleted.
         for (const char* own : {"rc", "RC"}) {
             if (QString(own) == "RC" && !QFileInfo::exists(dir.filePath("workspace/RC.sch"))) continue;   // (case matters here)
             const QJsonObject self = json(call("simulate", {{"timeout", 60}, {"keep_as", own}}, 90000)).toObject();
@@ -2705,7 +2706,7 @@ private slots:
                      qPrintable(text(alone)));
             // One port returning through a terminal at the wire's other end,
             // a second port disabled: the loop from the port to the terminal,
-            // and said so - it said only where the current went in and out
+            // and said so - it said only where the current went in and out.
             qucs_s::rf25::Model through = lossy;
             qucs_s::rf25::Node fed = port(-600);
             fed.props.insert(QStringLiteral("return"), QStringLiteral("terminals"));
@@ -2759,7 +2760,8 @@ private slots:
     // rf25_solve once let the first go - which ran on regardless - and
     // started another: two cores and gigabytes on a stack whose Green's
     // function did not end, and on timeout each call stopped its own solve,
-    // so that a solve longer than one call could never finish. The slow model (slowRf25Model()).
+    // so that a solve longer than one call could never finish.
+    // The slow model (slowRf25Model()).
     void anRf25SolveGoingOnIsJoinedAndStopped()
     {
         const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
@@ -2838,8 +2840,8 @@ private slots:
     // A tab closed while its loop is solving, opened again,
     // and rf25_inductance - the loop, not "no loop".
     // rf25_solve's 'frequency' for a quasi-static solve of a dispersive
-    // substrate: its dielectrics taken there, not at the study's highest (P33
-    // of the open items: R and G at 1 GHz came with eps_r at the top).
+    // substrate: its dielectrics taken there, not at the study's highest
+    // (R and G at 1 GHz came with eps_r at the top).
     void anRf25QuasiStaticSolveTakesItsDielectricsAtTheFrequencyAsked()
     {
         const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
@@ -2879,7 +2881,8 @@ private slots:
             film.props.insert(QStringLiteral("thickness"), i % 2 == 0 ? QStringLiteral("0.1[um]") : QStringLiteral("0.2[um]"));
             // (A hundred and sixty of 12 and 3.9: of 28 and 3.9, twenty such
             //  films grew the stack's images past what a number holds - its
-            //  capacitance NaN, said to be solved, before a bug hunt; now refused. These take their time as those did,
+            //  capacitance NaN, said to be solved, until 18 November; now
+            //  refused. These take their time as those did,
             //  some 6 s of Green's functions.)
             film.props.insert(QStringLiteral("epsr"), i % 2 == 0 ? QStringLiteral("12") : QStringLiteral("3.9"));
             film.props.insert(QStringLiteral("tand"), QStringLiteral("0"));
@@ -3003,8 +3006,8 @@ private slots:
     // alike -: the call answers that it was closed and touches nothing of it
     // after, and the model goes once the wait is over. It read the freed
     // model on 7 November, an EXC_BAD_ACCESS in QucsControl::rf25Solve some
-    // fifteen minutes into a full-wave solve sent to the background (B6 of
-    // the RF 2.5D open items of 8 November). The slow model, so that the
+    // fifteen minutes into a full-wave solve sent to the background.
+    // The slow model, so that the
     // close comes in the middle of its solve.
     void anRf25ModelClosedWhileItsSolveIsWaitedForIsLeftAlone()
     {
@@ -3109,8 +3112,8 @@ private slots:
         QVERIFY2(terminals.value("labels").toArray() == QJsonArray::fromStringList({"T1", "T2", "T3", "T4"}) && terminals.value("shapes").toInt() == 4
                      && lines.value("shapes").toInt() == 4,
                  qPrintable(QString::fromUtf8(QJsonDocument(shown).toJson(QJsonDocument::Compact))));
-        // Its rulers, as a layout's tab's: placed, said, cleared (V4 of the
-        // RF 2.5D open items: refused for a model).
+        // Its rulers, as a layout's tab's: placed, said, cleared
+        // (refused for a model).
         {
             const QJsonObject measured = call("show_layout", {{"path", ws + "/rf/gsg.qrf25"}, {"rulers", QJsonArray() << QJsonArray{0, 0, 100, 0}}}, 60000);
             QVERIFY2(!failed(measured), qPrintable(text(measured)));
@@ -3140,7 +3143,7 @@ private slots:
                                                            {"brief", true}}, 300000)).toObject();
         QCOMPARE(brief.value("ports").toArray().at(1).toObject().value("returns").toArray().size(), 2);
         // A return on the port's own conductor, apart from its cells: solved,
-        // and said (B7 of the open items of 8 November; refused before).
+        // and said (refused before).
         qucs_s::rf25::Model shorted = m;
         for (qucs_s::rf25::Node& n : shorted.ports().children)
             if (n.label == QLatin1String("T1")) n.props.insert(QStringLiteral("y"), QStringLiteral("0"));
@@ -3768,7 +3771,7 @@ private slots:
         QVERIFY(c.value("note").toString().contains(QStringLiteral("are as they were")));
         // Quasi-statically, the meshes unasked: a quarter, a half, all and
         // twice the model's 3 across (D1), its own said against the limits;
-        // each mesh as the Mesh node makes it (D2).
+        // each mesh as the Mesh node makes it.
         const QJsonObject statics = call("rf25_converge", {{"path", model}}, 600000);
         QVERIFY2(!failed(statics), qPrintable(text(statics)));
         const QJsonObject q = json(statics).toObject();
@@ -3919,7 +3922,7 @@ private slots:
         QVERIFY(text(format).contains(QStringLiteral("rf_optimization")));
     }
 
-    // rf25_draw (F4 of the open items of 8 November): a model that names no
+    // rf25_draw: a model that names no
     // layout drawn on from nothing - a file begun beside it, its Layout
     // naming it, the map's row added -, a strip and a path in one call;
     // what the processing leaves, by layer; a shape deleted by its point;
@@ -3987,8 +3990,8 @@ private slots:
         g.close();
         const QJsonObject notRf = call("rf25_draw", {{"path", "nothing.sch"}, {"shapes", QJsonArray{}}}, 60000);
         QVERIFY(failed(notRf));
-        // Drawn on the substrate: where it is (F2 of the open items of 8
-        // November) - a row of the map, no conductor, and the quasi-static
+        // Drawn on the substrate: where it is
+        // - a row of the map, no conductor, and the quasi-static
         // solve saying the substrate ends there. (The path deleted first, and
         // the substrate's box wide of the strip: the path's 10 µm made cells
         // of 1 µm, and walls near the strip are panelled as finely - 1,548
@@ -4115,7 +4118,7 @@ private slots:
             const QJsonObject wide = json(call("rf25_circuit", {{"path", ws + "/rf/wave.qrf25"}, {"from", "0[Hz]"}, {"to", "1000[GHz]"}}, 120000)).toObject();
             QCOMPARE(wide.value("frequencies").toInt(), 1);
             // How it was fitted: together on S, the branches' own rms beside
-            // it, or branch by branch (F6 of the open items of 8 November).
+            // it, or branch by branch.
             const bool together = fit.value("fitted").toString().startsWith(QStringLiteral("every value together, to the solve's S"));
             QVERIFY(together || fit.value("fitted").toString().startsWith(QStringLiteral("each branch to its own share")));
             QCOMPARE(fit.value("S rms, each branch on its own").isDouble(), together);
@@ -4186,7 +4189,7 @@ private slots:
         for (const char* key : {"S11_dB", "S21_dB", "S12_dB", "S22_dB"}) QVERIFY2(sweep.at(0).toObject().contains(QLatin1String(key)), key);
         const QJsonObject checks = out.value("checks").toObject();
         QVERIFY2(checks.value("reciprocal").toBool() && checks.value("passive").toBool(), qPrintable(text(solved)));
-        // (Reciprocal by S's asymmetry, said beside Z's: N5 of the open items.)
+        // (Reciprocal by S's asymmetry, said beside Z's.)
         QVERIFY2(checks.contains("S asymmetry") && checks.value("S asymmetry").toDouble() <= 1e-9, qPrintable(text(solved)));
         QVERIFY(out.value("unknowns").toObject().value("runs of current").toInt() > 0);
         QVERIFY(!out.value("what it did").toArray().isEmpty());
@@ -4343,7 +4346,7 @@ private slots:
         QVERIFY2(std::abs(past.value("second surface wave from").toDouble() - 39.79e9) < 0.01e9,
                  qPrintable(QString::number(past.value("second surface wave from").toDouble())));
         // A port that returns through the conductors beside it - a coplanar
-        // line's - on a lone strip: none either side, said through the tool
+        // line's - on a lone strip: none either side, said through the tool.
         qucs_s::rf25::Model beside = m;
         for (qucs_s::rf25::Node& port : beside.ports().children) port.props.insert(QStringLiteral("return"), QStringLiteral("beside"));
         QVERIFY(put(ws + "/rf/wave4.qrf25", beside.toJson()));
@@ -4379,7 +4382,7 @@ private slots:
     // for (G1, G3, G7); and full wave, four coplanar ports returning through
     // the grounds past the other signal, in two differential pairs, whose
     // mixed-mode S is in the answer and in a Touchstone 2.0 file's
-    // [Mixed-Mode Order] (G4, G5).
+    // [Mixed-Mode Order].
     void aGssgIsSolvedThroughTheToolsAsItsModes()
     {
         const QString ws = QucsSettings.qucsWorkspaceDir.absolutePath();
@@ -4974,7 +4977,8 @@ private slots:
     // An atomic batch that fails while a dialog is open over the schematic
     // - a wire label's, opened by the batch's own double click - is not put
     // back under it: putting it back made its labels anew, the dialog's
-    // freed, and its OK read and wrote the freed label (ASan's heap-use-after-free in LabelDialog::slotOk).
+    // freed, and its OK read and wrote the freed label
+    // (ASan's heap-use-after-free in LabelDialog::slotOk).
     // Said, with the undo that takes its changes back.
     void anAtomicBatchIsNotPutBackUnderADialog()
     {
@@ -6679,7 +6683,7 @@ private slots:
         QVERIFY(failed(call("new_project", {{"name", "round5"}})));
         QVERIFY(failed(call("open_project", {{"name", "round5"}})));   // unsaved changes
         // The workspace itself, or the home folder, is no project - told,
-        // not a message box that waits (bug hunt 2026-09-26, E2).
+        // not a message box that waits.
         r = call("open_project", {{"name", "."}});
         QVERIFY2(failed(r) && text(r).contains("workspace folder"), qPrintable(text(r)));
         r = call("open_project", {{"name", QDir::homePath()}});
@@ -6697,8 +6701,7 @@ private slots:
         QCOMPARE(scratch, QucsSettings.S4Qworkdir);
         QDir().mkpath(scratch + "/other");
         {
-            // (Another's file there: not its last run's - bug hunt
-            // 2026-09-30, D3.)
+            // (Another's file there: not its last run's.)
             QFile f(scratch + "/another_run.txt");
             QVERIFY(f.open(QIODevice::WriteOnly));
         }
@@ -6724,8 +6727,8 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
-    // A schematic's results are its Data Set's, not of its file's name (bug
-    // hunt 2026-09-30, A2-A5, A7, D2): clean_scratch and copy_document find
+    // A schematic's results are its Data Set's, not of its file's name:
+    // clean_scratch and copy_document find
     // them by it, and pass an import by; a data display made for it reads
     // it; a simulation's names and an import's are kept apart; a Data Set
     // or Data Display is a name beside the schematic; kept netlists of
@@ -6740,7 +6743,7 @@ private slots:
         };
         const QByteArray run = "<Qucs Dataset " PACKAGE_VERSION ">\n<indep time 2>\n0\n1\n</indep>\n<dep v(out) time>\n0\n1\n</dep>\n";
 
-        // A7: names beside it ("run" a .dat), as a file has them too.
+        // Names beside it ("run" a .dat), as a file has them too.
         QCOMPARE(QucsDoc::fileBeside("../up.dat", "amp.dat"), QStringLiteral("up.dat"));
         QCOMPARE(QucsDoc::fileBeside("..", "amp.dat"), QStringLiteral("amp.dat"));
         QCOMPARE(QucsDoc::fileBeside("sub\\x.dpl", "amp.dpl"), QStringLiteral("x.dpl"));
@@ -6778,7 +6781,7 @@ private slots:
         QCOMPARE(front(), amp);
         for (QucsDoc* d : app->allDocuments()) QVERIFY(!d->getDocName().endsWith("amp.txt"));   // (not opened)
         amp->setDataDisplay("amp.dpl");
-        // A4: its Data Set another: the data display made for it reads it.
+        // Its Data Set another: the data display made for it reads it.
         amp->setDataSet("run.dat");
         QVERIFY(!failed(call("save_document")));
         r = call("add_diagram", {{"document", "data_display"}, {"type", "rect"}});
@@ -6797,13 +6800,13 @@ private slots:
         QVERIFY(misc::keepRunNetlist(folder + "/run.dat.ngspice", "* Qucs " PACKAGE_VERSION "  x.sch\nR1 1 0 1k\n.end\n", folder + "/amp.sch"));
         const QString kept = misc::runNetlistFile(folder + "/run.dat.ngspice");
         QVERIFY(QFileInfo::exists(kept));
-        // A3: copied with its run (and that run's netlist), not with the import.
+        // Copied with its run (and that run's netlist), not with the import.
         r = call("copy_document", {{"to", "amp2"}, {"replace", true}});
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY(QFileInfo::exists(folder + "/amp2.dat.ngspice"));
         QVERIFY(!QFileInfo::exists(folder + "/amp2.dat"));
         QVERIFY(!misc::runNetlistOf(folder + "/amp2.dat.ngspice").isEmpty());
-        // A2: its run trashed, with the netlist kept for it; the import stays.
+        // Its run trashed, with the netlist kept for it; the import stays.
         r = call("clean_scratch", {{"datasets", true}});
         QVERIFY2(!failed(r) && text(r).contains("run.dat.ngspice") && !text(r).contains("amp.dat"), qPrintable(text(r)));
         QVERIFY(!QFileInfo::exists(folder + "/run.dat.ngspice"));
@@ -6825,7 +6828,7 @@ private slots:
         amp->setDataSet("run.dat");
         amp->setDataDisplay("amp.dpl");
 
-        // D2: the kept netlists of datasets that are gone (and of the stamp
+        // The kept netlists of datasets that are gone (and of the stamp
         // of before, with no path) go when another is kept.
         write("gone.dat.ngspice", run);
         QVERIFY(misc::keepRunNetlist(folder + "/gone.dat.ngspice", "* Qucs " PACKAGE_VERSION "  x.sch\n.end\n"));
@@ -6845,7 +6848,7 @@ private slots:
         QVERIFY(QFileInfo::exists(misc::runNetlistFile(folder + "/again.dat.ngspice")));
         QVERIFY(QFileInfo::exists(misc::runNetlistFile(folder + "/amp2.dat.ngspice")));
 
-        // A5: keep_as, a new name and a copy's are not an import's...
+        // Keep_as, a new name and a copy's are not an import's...
         r = call("simulate", {{"keep_as", "amp"}, {"timeout", 5}});
         QVERIFY2(failed(r) && text(r).contains("imported from"), qPrintable(text(r)));
         QVERIFY(!QFileInfo::exists(folder + "/amp.dat.ngspice"));
@@ -6866,7 +6869,7 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
-    // The tools (bug hunt 2026-09-30, C1-C9): the trace of a dataset beside
+    // The tools: the trace of a dataset beside
     // the schematic's own names it (ngspice/run1:v, m:gain), and is taken
     // back; a script's call takes max_chars; a document of Qucs-S is no
     // data; a wide table's columns are cut; a default and a prefix are
@@ -6891,7 +6894,7 @@ private slots:
             return list;
         };
 
-        // C9: a run kept beside it - its traces name it; its own do not.
+        // A run kept beside it - its traces name it; its own do not.
         write("run1.dat.ngspice", ac);
         write("p.dat.ngspice", ac);
         QJsonObject r = call("get_dataset", {{"path", folder + "/run1.dat.ngspice"}});
@@ -6908,7 +6911,7 @@ private slots:
         QVERIFY2(!failed(r) && json(r).toObject().value("variables").toArray().at(0).toObject().value("name") == "ac.v(in)", qPrintable(text(r)));
         r = call("get_dataset", {{"variables", QJsonArray{"ngspice/run1:ac.v(in)"}}});
         QVERIFY2(!failed(r) && json(r).toObject().value("dataset").toString().endsWith("run1.dat.ngspice"), qPrintable(text(r)));
-        // C3: an imported one.
+        // An imported one.
         write("m.csv", "f,gain\n1,2\n2,3\n");
         r = call("import_data", {{"file", "m.csv"}});
         QVERIFY2(!failed(r) && json(r).toObject().value("dataset").toString() == "m", qPrintable(text(r)));
@@ -6922,10 +6925,10 @@ private slots:
         QVERIFY2(failed(r) && text(r).contains("of 2 datasets"), qPrintable(text(r)));
         r = call("get_dataset", {{"variables", QJsonArray{"nothere:x"}}});
         QVERIFY2(failed(r) && text(r).contains("There is no dataset nothere"), qPrintable(text(r)));
-        // C4: a schematic is no data.
+        // A schematic is no data.
         r = call("import_data", {{"file", folder + "/p.sch"}});
         QVERIFY2(failed(r) && text(r).contains("p.sch is a schematic of Qucs-S, not data"), qPrintable(text(r)));
-        // C8: a wide table's columns cut, as its variables are.
+        // A wide table's columns cut, as its variables are.
         QByteArray wide;
         for (int c = 0; c < 150; ++c) wide += (c ? "," : "") + QByteArray("c") + QByteArray::number(c);
         wide += '\n';
@@ -6939,7 +6942,7 @@ private slots:
         QCOMPARE(json(r).toObject().value("columns").toArray().size(), 100);
         QVERIFY2(json(r).toObject().value("columns left out").toString().contains("50 more columns (150 in all)"), qPrintable(text(r).right(400)));
 
-        // C1: a trace of no data is hinted at from the imports' names - not
+        // A trace of no data is hinted at from the imports' names - not
         // each read in full for every trace. (A dataset of 8 MB: 8 traces
         // read it 8 times, 64 MB, before.)
         QByteArray big = "<Qucs Dataset " PACKAGE_VERSION ">\n<indep x 400000>\n";
@@ -6965,7 +6968,7 @@ private slots:
         QVERIFY2(!failed(r), qPrintable(text(r).left(200)));
         QVERIFY2(first < 300 && then < 300, qPrintable(QStringLiteral("%1 ms, %2 ms").arg(first).arg(then)));
 
-        // C2: a script's call takes max_chars, as a batch's does.
+        // A script's call takes max_chars, as a batch's does.
         if (control->scriptingBuilt()) {
             r = call("run_script", {{"script", "const a = qucs.call('get_schematic', {max_chars: 300});\nreturn JSON.stringify(a).length"}});
             QVERIFY2(!failed(r) && json(r).toObject().value("result").toInt() < 600, qPrintable(text(r)));
@@ -6973,7 +6976,7 @@ private slots:
             QVERIFY2(failed(r) && text(r).contains("max_chars is a whole number"), qPrintable(text(r)));
         }
 
-        // C5: a default SPICE reads; C6: a prefix SPICE reads as a name.
+        // A default SPICE reads; a prefix SPICE reads as a name.
         for (const char* bad : {"Rs=-", "Rs=1k;", "Rs=1,5", "Rs={2*k", "Rs=4k7%"}) {
             r = call("set_subcircuit_parameters", {{"parameters", QJsonArray{bad}}});
             QVERIFY2(failed(r) && text(r).contains("no value SPICE reads"), qPrintable(QString(bad) + ": " + text(r)));
@@ -6989,7 +6992,7 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
-    // A run's commands besides the simulator (bug hunt 2026-09-30, E1): with
+    // A run's commands besides the simulator: with
     // the Simulator Settings' check of commands on, a schematic that
     // carries one is not simulated, nor tuned, unless asked
     // ('allow_commands') - and check_schematic says what they are. Off (the
@@ -8476,7 +8479,7 @@ private slots:
         QVERIFY(asked("simulate", {{"path", plain}}).isEmpty());
         // A schematic whose commands are in an ordinary value, or in a
         // model's continuation lines: asked about too, however the netlist
-        // writes them (bug hunt 2026-10-23 A1).
+        // writes them.
         const QByteArray inAValue = "<Qucs Schematic " PACKAGE_VERSION ">\n<Properties>\n</Properties>\n<Components>\n"
                                     "  <R R1 1 100 100 15 -26 0 1 \"1k\" 1 \"\" 0 \"0\\n.control\\nshell echo qucs-guard-value\\n.endc\" 0 \"0\" 0>\n"
                                     "</Components>\n<Wires>\n</Wires>\n<Diagrams>\n</Diagrams>\n<Paintings>\n</Paintings>\n";
@@ -8801,7 +8804,8 @@ private slots:
     }
 
     // A library's Verilog-A linked into a project is not written through
-    // by the tools that write a file named to them (export_netlist with replace wrote the netlist into the library's
+    // by the tools that write a file named to them (an
+    // Export_netlist with replace wrote the netlist into the library's
     // own file): refused, saying why; the library's file and the link as
     // they were; a file elsewhere written as before.
     void aLibrarysLinkIsNotWrittenThrough()
@@ -9270,7 +9274,8 @@ private slots:
         QVERIFY2(failed(r) && text(r).contains("No project is open"), qPrintable(text(r)));
     }
 
-    // A library brought in whole, or told what it lacks: a SPICE library's includes beside it come along, one out of
+    // A library brought in whole, or told what it lacks:
+    // a SPICE library's includes beside it come along, one out of
     // its folder is refused; a library is not brought into its own folder;
     // one sent without its folder says what is missing, as describe_part
     // and Check Schematic do; one of a newer Qucs-S says why its parts
@@ -11551,7 +11556,8 @@ private slots:
     // A value nested 100,000 deep, built by a script's loop: as its result,
     // given to qucs.log and as a call's arguments it is refused, and the
     // program goes on. Qt's QJSValue::toVariant recursed a level at a time
-    // and overflowed the stack: the program was gone. A value of shared parts doubling 40 times is refused
+    // and overflowed the stack: the program was gone.
+    // A value of shared parts doubling 40 times is refused
     // past a million values, not written out for ever on the GUI thread.
     void aDeepValueFromAScriptIsRefused()
     {
@@ -11597,7 +11603,7 @@ private slots:
     // Where V4's own code recursed without its stack check, a script of
     // values nested 100,000 deep ended the program with no conversion of
     // ours: an array's toLocaleString, a chain of Proxies read, console.log
-    // of a deep array (the re-check of round four's fixes, 14 November, J4).
+    // of a deep array.
     // Each is now an error the script can catch; their plain uses as before.
     void aScriptCannotOverflowTheEnginesStack()
     {
@@ -11635,7 +11641,8 @@ private slots:
     }
 
     // run_script within a script is refused through batch too: a script
-    // called batch, which ran run_script, an engine on an engine. A batch of run_script from outside runs it.
+    // called batch, which ran run_script, an engine on an engine.
+    // A batch of run_script from outside runs it.
     void aScriptCannotRunAScriptThroughBatch()
     {
         if (!control->scriptingBuilt()) QSKIP("no Qml in this build");
@@ -11652,7 +11659,7 @@ private slots:
     // document each moving the rest of the text - it was quadratic: 148 s
     // for 1,000,000 on the GUI thread. An edit
     // making the text past 50,000,000 characters is refused (N9); one
-    // refused for coming out otherwise is not left to Redo (E2).
+    // refused for coming out otherwise is not left to Redo.
     void aReplaceAllIsOnePass()
     {
         const QString file = dir.filePath("many.txt");
@@ -11683,11 +11690,11 @@ private slots:
         QCOMPARE(tab->toPlainText(), after);
         tab->document()->undo();
         QCOMPARE(tab->toPlainText(), before);
-        // N9: past 50,000,000 characters, refused; nothing changed.
+        // Past 50,000,000 characters, refused; nothing changed.
         r = call("edit_text", {{"path", file}, {"edits", QJsonArray{QJsonObject{{"find", "x"}, {"replace", QString(200, 'z')}, {"all", true}}}}});
         QVERIFY2(failed(r) && text(r).contains("80040000 characters long, more than the 50000000"), qPrintable(text(r)));
         QCOMPARE(tab->toPlainText(), before);
-        // E2: a carriage return comes out otherwise in the document: refused,
+        // A carriage return comes out otherwise in the document: refused,
         // taken back, and Redo has nothing to make.
         r = call("edit_text", {{"path", file}, {"edits", QJsonArray{QJsonObject{{"lines", QJsonArray{1, 1}}, {"text", "x\ry"}}}}});
         QVERIFY2(failed(r) && text(r).contains("came out otherwise"), qPrintable(text(r)));
@@ -11760,7 +11767,7 @@ private slots:
         QVERIFY(!failed(call("close_document")));
     }
 
-    // ---- A bug hunt
+    // ---- Claude's tools, as found on 28 September
 
 private:
     QString writeFile(const QString& name, const QByteArray& content)
@@ -11792,7 +11799,7 @@ private:
 
 private slots:
 
-    // A1: a netlist is not written over a document - an open one's file
+    // A netlist is not written over a document - an open one's file
     // (loaded again as the netlist, the schematic gone), nor a schematic's
     // unless 'replace' says so.
     void aNetlistDoesNotReplaceADocument()
@@ -11817,7 +11824,7 @@ private slots:
         QVERIFY(!failed(call("close_document")));
     }
 
-    // A2, A3, A9: a batch, a preview or a script runs alone - a call that
+    // A batch, a preview or a script runs alone - a call that
     // comes meanwhile (another conversation's) waits, and is not taken back
     // with a preview or a failed atomic batch; a batch's calls without a
     // path stay with its document when another is brought to the front.
@@ -11926,7 +11933,7 @@ private slots:
         }
     }
 
-    // A5: a preview, and an atomic script that failed, leave the redo steps.
+    // A preview, and an atomic script that failed, leave the redo steps.
     void aPreviewKeepsWhatRedoWouldDo()
     {
         QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
@@ -11947,7 +11954,7 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
-    // A6, A8: an import keeps the netlist's nodes - their names know no
+    // An import keeps the netlist's nodes - their names know no
     // case, a name made safe does not join another node, a first line of
     // "; comment" is the title (not the first element), two elements of
     // one name are both placed, apart - and each import's subcircuits have
@@ -11980,7 +11987,7 @@ private slots:
         discardAll();
     }
 
-    // A7: keep_as does not write over another schematic's dataset.
+    // Keep_as does not write over another schematic's dataset.
     void keepAsIsNotAnotherSchematicsDataset()
     {
         writeFile("workspace/rc9.sch", schematicOf(""));
@@ -12020,7 +12027,7 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
-    // A11: one file is one document, however its path is spelt.
+    // One file is one document, however its path is spelt.
     void oneFileIsOneDocument()
     {
 #ifdef Q_OS_WIN
@@ -12042,7 +12049,7 @@ private slots:
 #endif
     }
 
-    // A12: a file that can be written but not read is not written over:
+    // A file that can be written but not read is not written over:
     // taken for none, it was deleted when put back.
     void anUnreadableFileIsNotWrittenOver()
     {
@@ -12067,7 +12074,7 @@ private slots:
 #endif
     }
 
-    // B3: arrange takes time in proportion to the parts, not their square:
+    // Arrange takes time in proportion to the parts, not their square:
     // four times the parts, about four times the time (a minute at 3,000
     // parts before, sixteen times the time for four times the parts) -
     // however fast the machine, and each net as it was.
@@ -12196,7 +12203,7 @@ private slots:
         }
     }
 
-    // B4, E7: no message box waits on a call (under --mcp-server no one
+    // No message box waits on a call (under --mcp-server no one
     // answers it): one opened in it is closed with its safe button, what it
     // said in the answer; what the window says in a box - a read-only
     // file, a newer version's, a data display that cannot be made - a
@@ -12266,7 +12273,7 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
-    // D1: real units are no typos (Ohms, Volts, dBV, degC, V/us), 1kk
+    // Real units are no typos (Ohms, Volts, dBV, degC, V/us), 1kk
     // still is; a text that changes no part checks none.
     void realUnitsAreNoTypos()
     {
@@ -12293,7 +12300,7 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
-    // D2: a file dated in the future is not loaded again after it opens.
+    // A file dated in the future is not loaded again after it opens.
     void aFileFromTheFutureIsNotLoadedAgain()
     {
         const QString file = writeFile("workspace/future.sch", schematicOf("  <R R1 1 100 100 15 -26 0 1 \"1k\" 1>\n"));
@@ -12309,7 +12316,7 @@ private slots:
         QVERIFY(!failed(call("close_document")));
     }
 
-    // D3, D4, D5: an expression traced in a diagram is a NutmegEq's
+    // An expression traced in a diagram is a NutmegEq's
     // variable (it was a dead trace); one that does not read is refused
     // before anything is added; a formula's field is 'tex'.
     void anExpressionTraceIsComputed()
@@ -12356,7 +12363,7 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
-    // E1, E4, E6: simulate says what is wrong - no analysis; its schematic
+    // Simulate says what is wrong - no analysis; its schematic
     // closed before it began - and diff's steps are checked before use.
     void simulateSaysWhatIsWrong()
     {
@@ -12376,7 +12383,7 @@ private slots:
         QVERIFY2(text(simulated).contains("was closed"), qPrintable(text(simulated)));
     }
 
-    // E7: a dataset that cannot be written is an error of the run, in its
+    // A dataset that cannot be written is an error of the run, in its
     // answer - it was a message box, and "dataset written": true.
     void aDatasetThatCannotBeWrittenIsSaid()
     {
@@ -12414,7 +12421,7 @@ private slots:
 #endif
     }
 
-    // E5: a library part is placed as find_library_component says: type Lib.
+    // A library part is placed as find_library_component says: type Lib.
     void aLibraryPartIsPlaced()
     {
         const QString library = QFileInfo(QStringLiteral(QUCS_EXAMPLES_DIR) + "/../library").absoluteFilePath();
@@ -13291,7 +13298,7 @@ private slots:
         args.insert("hold", QJsonArray{QJsonObject{{"measure", QJsonObject{{"operating_point", "b"}}}}});
         r = call("tune", args);
         QVERIFY2(failed(r) && text(r).contains("a 'min', a 'max' or both"), qPrintable(text(r)));
-        // (The hunt after round 9, A4.) One hold given as an object, not a
+        // One hold given as an object, not a
         // list of them: refused - it was dropped, and the tune ran free. A
         // misspelt field in a hold's measure: refused, as the target's is.
         args.insert("hold", QJsonObject{{"measure", QJsonObject{{"operating_point", "b"}}}, {"min", 2.4}});
@@ -13340,7 +13347,7 @@ private slots:
     // arrange's 'straighten': a
     // part nudged a grid step or a few so the pins of a wire between two
     // parts line up and it runs straight - here a jog of 10 between R1 and
-    // R2. Not where it would come onto another part.
+    // Not where it would come onto another part.
     void straightenLinesUpTheWires()
     {
         const QString R = "\"1k\" 1 \"26.85\" 0 \"0.0\" 0 \"0.0\" 0 \"26.85\" 0 \"european\" 0>\n";
@@ -14759,18 +14766,17 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
-    // The hunt after round 9:
-    // an argument of another JSON type is refused, not read as its default
-    // (C1); the search hints name what rounds 7 to 9 added (C4);
-    // create_subcircuit names no port GND, ground's name (A1); pins named
-    // IN, OUT1 or OUTA have their roles, and make_symbol sides them (E5); a
-    // run that fails says its subcircuits' errors (A5); a transistor's bench
-    // points in the order tried, one out of its ranges said so (A10); a
-    // power amplifier's speaker is no load to note (A7); the guide's op-amps
-    // are as it says (E1); no library has a part twice (F1).
-    void whatTheHuntAfterRoundNineFound()
+    // An argument of another JSON type is refused, not read as its default;
+    // the search hints name what rounds 7 to 9 added; create_subcircuit
+    // names no port GND, ground's name; pins named IN, OUT1 or OUTA have
+    // their roles, and make_symbol sides them; a run that fails says its
+    // subcircuits' errors; a transistor's bench points in the order tried,
+    // one out of its ranges said so; a power amplifier's speaker is no load
+    // to note; the guide's op-amps are as it says; no library has a part
+    // twice.
+    void assortedToolCases()
     {
-        // C1: 1 for a boolean, "yes", a list for a text, a number for a text.
+        // 1 for a boolean, "yes", a list for a text, a number for a text.
         QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
         QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R1"}, {"x", 200}, {"y", 100}})));
         const struct {
@@ -14804,7 +14810,7 @@ private slots:
         QVERIFY(!failed(call("add_component", {{"type", "R"}, {"name", "R2"}, {"x", 150.0}, {"y", 300}})));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
 
-        // C4: the words a search for what rounds 7 to 9 added uses.
+        // The words a search for what rounds 7 to 9 added uses.
         QHash<QString, QString> hints;
         for (const QJsonValue& t : control->tools())
             hints.insert(t.toObject().value("name").toString(), t.toObject().value("_meta").toObject().value("anthropic/searchHint").toString());
@@ -14814,7 +14820,7 @@ private slots:
             for (const QString& word : QString(words).split(' '))
                 QVERIFY2(hints.value(tool).split(' ').contains(word), qPrintable(QString(tool) + ": " + hints.value(tool)));
 
-        // E5: the names of one pin and of a dual's.
+        // The names of one pin and of a dual's.
         using qucs_s::erc::pinRole;
         for (const char* input : {"IN", "in1", "INA", "VIN", "input", "IN1+", "-INA", "INBN", "NONINV2"})
             QVERIFY2(pinRole(input) == "input", input);
@@ -14838,7 +14844,7 @@ private slots:
                  qPrintable(sides.join(" | ")));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
 
-        // A1: a moved part's pin named GND on a net of its own (a local
+        // A moved part's pin named GND on a net of its own (a local
         // ground, on a mid-rail source in the parent): its port is not
         // named GND - ground's name, which joins that net to ground.
         QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
@@ -14870,7 +14876,7 @@ private slots:
         QVERIFY2(ports.size() == 2 && ports.contains("IN") && !ports.contains("GND", Qt::CaseInsensitive), qPrintable(ports.join(" | ")));
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
 
-        // A5: a clean schematic, a subcircuit with two sources in parallel:
+        // A clean schematic, a subcircuit with two sources in parallel:
         // the run fails, and its errors begin with the subcircuit's.
         if (const QString ngspice = QStandardPaths::findExecutable("ngspice"); !ngspice.isEmpty()) {
             const QString before = QucsSettings.NgspiceExecutable;
@@ -14920,14 +14926,14 @@ private slots:
             ~Back() { QucsSettings.LibDir = was; }
         } back{was};
 
-        // A10: 2N3773 passed at 0.9 mA, after failing at 9 uA: the points
+        // 2N3773 passed at 0.9 mA, after failing at 9 uA: the points
         // in that order, the first said to be out of range.
         const QString said = json(call("describe_part", {{"library", "BJT_Extended"}, {"part", "2N3773"}})).toObject().value("ngspice").toString();
         QVERIFY2(said.contains(QRegularExpression("its bench passes \\(npn: .* - at 9 uA, out of range: Vbe [0-9.]+ V \\(0\\.1 to 1\\.6 V\\), "
                                                   "beta [0-9.]+ \\(3 to 5000\\), Vce [0-9.]+ V; at 0\\.9 mA: Vbe ")),
                  qPrintable(said));
 
-        // A7: an LM3886 into its 8 Ohm speaker: its use, no note; a uA741 into 100 Ohm: the note.
+        // An LM3886 into its 8 Ohm speaker: its use, no note; a uA741 into 100 Ohm: the note.
         for (const auto& [part, load, noted] : {std::tuple("LM3886", "8", false), std::tuple("uA741", "100", true)}) {
             QVERIFY(!failed(call("new_document", {{"kind", "schematic"}})));
             const QJsonObject place = json(call("describe_part", {{"library", "OpAmps"}, {"part", part}})).toObject().value("place").toObject();
@@ -14942,7 +14948,7 @@ private slots:
             QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
         }
 
-        // E1: the guide's op-amps, their - input where it says.
+        // The guide's op-amps, their - input where it says.
         const QString instructions = control->instructions();
         const QRegularExpressionMatch guided = QRegularExpression("\\(upper in ([^;]+); lower in ([^:]+):").match(instructions);
         QVERIFY2(guided.hasMatch(), qPrintable(instructions.mid(instructions.indexOf("How to work"), 600)));
@@ -14956,7 +14962,7 @@ private slots:
                 QVERIFY2(inn == "left, " + side, qPrintable(part + ": INN " + inn));
             }
 
-        // F1: no part named twice within a library (the second could never
+        // No part named twice within a library (the second could never
         // be placed; 13 were so).
         QStringList twice;
         for (const QFileInfo& lib : QDir(library).entryInfoList({"*.lib"}, QDir::Files)) {
@@ -15203,7 +15209,7 @@ private slots:
             if (c.toObject().value("kind").toString() == "tree") tree = c.toObject();
         QCOMPARE(tree.value("checked").toArray().at(r2), QJsonValue(false));
         // A row that is not there, or a text where a box is: said - and
-        // what the tree has (bug hunt 2026-09-30, C7).
+        // what the tree has.
         r = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", id}, {"value", QJsonArray{7, 0, true}}}}}});
         QVERIFY2(failed(r) && text(r).contains("the tree has 2 rows (0 to 1)"), qPrintable(text(r)));
         r = call("set_dialog", {{"set", QJsonArray{QJsonObject{{"control", id}, {"value", QJsonArray{0, 99, true}}}}}});
@@ -15736,7 +15742,7 @@ private slots:
         QVERIFY(!failed(call("close_document", {{"unsaved", "discard"}})));
     }
 
-    // ---- A stress report
+    // ---- Under stress, as found on 1 October
 
     // Select All with the grounds in it: every part moved, the grounds by
     // their refs (it said "There is no component ." once per ground, and

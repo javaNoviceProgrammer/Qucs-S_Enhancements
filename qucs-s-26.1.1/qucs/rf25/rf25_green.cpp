@@ -594,7 +594,7 @@ Layers layersOf(const Stack& stack)
                 // (Read by the retarded Green's functions alone: a static
                 // charge sees the real permittivity.)
                 s.tand = std::max(0.0, l.tand);
-                s.sigma = std::max(0.0, l.sigma);   // (a dielectric's too: F7 of the open items)
+                s.sigma = std::max(0.0, l.sigma);   // (a dielectric's too)
                 s.name = l.name;
                 s.dispersive = !l.dispersion.isEmpty();
                 s.dispersionAt = l.dispersionAt;
@@ -1087,8 +1087,8 @@ double Green::beyondStrongest(double rho, int most, double within) const
     // lid's endless images lost a share of each cell's own potential that
     // hung on which of them were the strongest - a part in a hundred
     // thousand of a layer's permittivity moved a stripline's C by 0.4 %,
-    // its G read from that some ten times what it is (P32 of the open
-    // items). An image where the charge is, too weak to be among the
+    // its G read from that some ten times what it is.
+    // An image where the charge is, too weak to be among the
     // strongest, is the charge's own spread over its cell - a part in a
     // thousand of it at most - and is left out near it, where its 1/rho
     // stands for nothing a cell holds.

@@ -1819,13 +1819,14 @@ private slots:
 
     // Each point's spectrum against the first's, by photon energy: energies
     // that move with the sweep compared where both have them, said (by index,
-    // a point 0.1 eV up read as the first's: a local Δn of 0.037); conservearea where the first point absorbs nothing
+    // a point 0.1 eV up read as the first's: a local Δn of 0.037);
+    // conservearea where the first point absorbs nothing
     // in the window not scaled to nothing, said (every Δn exactly 0: A6); the
     // sum's change of a sweep with no field said by what the sweep changes
     // (a carrier density was told of a field: B6); a local window that makes
     // nothing said - no sweep, a single energy, too narrow, past the
     // spectrum - and one in nm made (B7); the physics said by its own tag,
-    // not "qw." (N1).
+    // not "qw.".
     void spectraComparedByEnergy()
     {
         auto well = [](const char* tag, const QString& params, const QString& steps) {
@@ -1844,7 +1845,7 @@ private slots:
             }
             return double(NAN);
         };
-        // A5: energies from E0, swept with the field.
+        // Energies from E0, swept with the field.
         const Run moving = well("qw", QStringLiteral(R"(, {"name": "E0", "expression": "1.38[eV]"})"),
                                 QStringLiteral(R"({"type": "sweep", "combination": "specified", "parameters": [["F", "0, 1e7", "V/m"], ["E0", "1.38, 1.48", "eV"]]}, )")
                                     + spectrum.arg(QStringLiteral("linspace(E0, E0 + 0.3[eV], 31)"), QStringLiteral(R"(, "dnwindow": ["1.38[eV]", "1.58[eV]"])")));
@@ -1860,21 +1861,21 @@ private slots:
             QVERIFY2(std::isfinite(dnFixed) && std::abs(dnMoved - dnFixed) <= 1e-9 * std::abs(dnFixed) + 1e-15,
                      qPrintable(QStringLiteral("%1 eV: %2 against %3").arg(E).arg(dnMoved).arg(dnFixed)));
         }
-        // A6: a window the first point does not absorb in, its area kept.
+        // A window the first point does not absorb in, its area kept.
         const QString below = spectrum.arg(QStringLiteral("linspace(1.38[eV], 1.44[eV], 7)"), QStringLiteral(R"(, "dnwindow": ["1.38[eV]", "1.44[eV]"], "conservearea": true)"));
         const Run dark = well("qw", QString(), QStringLiteral(R"({"type": "sweep", "parameters": [["F", "0, 4e7", "V/m"]]}, )") + below);
         QVERIFY2(dark.error.isEmpty(), qPrintable(dark.error));
         const double dnDark = at(*dark.study.solutions[1], 1.40, "qw.dnTMloc");
         QVERIFY2(dnDark != 0 && std::isfinite(dnDark), qPrintable(QString::number(dnDark)));
         QVERIFY2(said(dark).contains(QLatin1String("qw: \"conservearea\" over the local window: the first point absorbs nothing there")), qPrintable(said(dark)));
-        // B6: a sweep of the carriers, the field the same at each.
+        // A sweep of the carriers, the field the same at each.
         const Run filled = well("qw", QStringLiteral(R"(, {"name": "N", "expression": "0[1/cm^3]"})"),
                                 QStringLiteral(R"({"type": "sweep", "parameters": [["N", "0, 3e18", "1/cm^3"]]}, )")
                                     + spectrum.arg(QStringLiteral("linspace(1.38[eV], 1.95[eV], 20)"), QStringLiteral(R"(, "density": "N")")));
         QVERIFY2(filled.error.isEmpty(), qPrintable(filled.error));
         QVERIFY2(said(filled).contains(QLatin1String("the field the same at each: what the sweep changes changes it")) && !said(filled).contains(QLatin1String("a state's partners in a field")),
                  qPrintable(said(filled)));
-        // B7: windows that make nothing, said; one in nm made.
+        // Windows that make nothing, said; one in nm made.
         const Run single = well("qw", QString(), spectrum.arg(QStringLiteral("linspace(1.38[eV], 1.60[eV], 23)"), QStringLiteral(R"(, "dnwindow": ["1.38[eV]", "1.50[eV]"])")));
         QVERIFY2(single.error.isEmpty() && said(single).contains(QLatin1String("its local index's window (\"dnwindow\") is a sweep's")), qPrintable(said(single)));
         auto windowed = [&](const char* window) {
@@ -1888,7 +1889,7 @@ private slots:
         QVERIFY2(said(one).contains(QLatin1String("its local index's window (\"dnwindow\") wants two energies, it has 1 - none made")), qPrintable(said(one)));
         QVERIFY2(nm.error.isEmpty() && nm.study.solutions[1]->global(QStringLiteral("qw.dnTMloc")) && !said(nm).contains(QLatin1String("its local index")), qPrintable(said(nm)));
         for (const Run* r : {&narrow, &above, &one}) QVERIFY(!r->study.solutions[1]->global(QStringLiteral("qw.dnTMloc")));
-        // N1: another tag's own name.
+        // Another tag's own name.
         const Run qd = well("qd", QString(), QStringLiteral(R"({"type": "sweep", "parameters": [["F", "0, 1.5e7", "V/m"]]}, )")
                                                  + spectrum.arg(QStringLiteral("linspace(1.38[eV], 1.60[eV], 12)"), QString()));
         QVERIFY2(qd.error.isEmpty(), qPrintable(qd.error));
@@ -1898,7 +1899,8 @@ private slots:
 
     // A field whose drop over the line passes the gap: the lowest electron
     // state below the highest hole state, said - its spectrum was computed and
-    // given, the transitions below zero, said nowhere (e1-hh1 -0.22 eV at 300 MV/m over 10 nm). Not at 10 MV/m.
+    // given, the transitions below zero, said nowhere
+    // (e1-hh1 -0.22 eV at 300 MV/m over 10 nm). Not at 10 MV/m.
     void aFieldPastTheGapSaid()
     {
         auto tilted = [](const char* F) {
@@ -1909,7 +1911,7 @@ private slots:
         const Run strong = tilted("3e8[V/m]"), usual = tilted("1e7[V/m]");
         QVERIFY2(strong.error.isEmpty() && usual.error.isEmpty(), qPrintable(strong.error + usual.error));
         const QString said = strong.study.warnings.join(QLatin1Char('\n'));
-        // (e1-hh1 at -0.22 eV, the hunt's.)
+        // (e1-hh1 at -0.22 eV.)
         QVERIFY2(said.contains(QStringLiteral("Quantum Wells (Schrödinger): in its field, 300 MV/m (3 V over the line's 10 nm), the lowest electron state lies 2"))
                      && said.contains(QLatin1String(" meV below the highest hole state - the gap gone across the line")),
                  qPrintable(said));
@@ -2352,7 +2354,7 @@ private slots:
             QCOMPARE(int(gain.solutions.size()), 4);
             // (Nothing warned: its states, its line shape and its window as
             // their warnings asked - "ask for more states", the Lorentzian's
-            // tails, "widen the energies" before a bug hunt.)
+            // tails, "widen the energies" before 19 October.)
             {
                 QStringList said = gain.warnings;
                 for (const auto& s : gain.solutions) said << s->log;
@@ -2498,11 +2500,11 @@ private slots:
                  qPrintable(states.study.warnings.join(QLatin1Char('\n'))));
     }
 
-    // The spectrum's constants not a finite number refused, each said (an infinite carrier density gave the well
+    // The spectrum's constants not a finite number refused, each said
+    // (an infinite carrier density gave the well
     // gain, an infinite index no absorption, a NaN broadening none - and
-    // "x < 0", "!(x > 0)" let them by); the excitonpairs below 0 said (N2);
-    // a temperature not a number said as such, one past 2000 K warned of
-    // (N7).
+    // "x < 0", "!(x > 0)" let them by); the excitonpairs below 0 said;
+    // a temperature not a number said as such, one past 2000 K warned of.
     void constantsNotFiniteRefused()
     {
         auto spectrum = [this](const QString& extra) {

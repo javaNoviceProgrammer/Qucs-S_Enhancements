@@ -223,7 +223,7 @@ private slots:
     // a <br> in a table's cell, an <hr>, an <img>, a placeholder <name>, a
     // vector<int>, a lone <b>, a "/>" in an HTML block, a tag in CDATA, an
     // alt="a>b" - is rendered whole: the importer dropped everything after
-    // the first (its re-checks). An HTML block is a
+    // the first. An HTML block is a
     // block of its own: centred badges after a heading were in it; one in a
     // list's item is under its bullet.
     void anUnclosedTagKeepsTheRest()
@@ -414,8 +414,7 @@ private slots:
 
     // An SVG whose <use> references ask for more than is drawn here: the
     // note still opens, and at once, with the picture left out. QtSvg
-    // reads it on this thread and expands each reference as it goes (bug
-    // hunt 2026-10-23 A3).
+    // reads it on this thread and expands each reference as it goes.
     void anSvgAskingTooMuchIsLeftOut()
     {
         QByteArray defs = "<rect id='r0' width='1' height='1' fill='#ff0000'/>";
@@ -1451,7 +1450,8 @@ private slots:
             QString md;
             for (int k = 1 + int(rng.bounded(8u)); k-- > 0;) md += block(0);
             // (The current one written first, where QUCS_FUZZ_OUT says: one
-            // that never ends is never kept as slow - a bug hunt's was found by a line added for the run.)
+            // that never ends is never kept as slow - a hang of 9 November
+            // was found by a line added for the run.)
             if (const QString out = qEnvironmentVariable("QUCS_FUZZ_OUT"); !out.isEmpty()) {
                 QDir().mkpath(out);
                 QFile f(out + QStringLiteral("/markdown-current.md"));
@@ -1781,7 +1781,8 @@ private slots:
 
     // A run of 64 braces after HTML in a quote, the quote's next line
     // empty: breaking the long runs went on for ever - its break put in
-    // made the block anew, and the loop met it again (the fuzzer's seed 8).
+    // made the block anew, and the loop met it again
+    // (the fuzzer's seed 8).
     void aRunAfterHtmlInAQuoteEnds()
     {
         const QString md = "><summary></summary>\n>\n><b>b</b>" + QString(64, QLatin1Char('}')) + "\n> \n";
@@ -1935,7 +1936,7 @@ private slots:
     }
 
     // A link never hands a program to the system (it ran: a .command in
-    // Terminal, an .app, an .exe - bug hunt 2026-09-26, B2): another file
+    // Terminal, an .app, an .exe): another file
     // is shown in the file manager once asked, a URL of another scheme goes
     // to the system once asked; web pages and mail go straight there; a
     // document Qucs-S opens opens in a tab.

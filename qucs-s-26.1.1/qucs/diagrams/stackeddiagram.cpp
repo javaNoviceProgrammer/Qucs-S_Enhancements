@@ -444,8 +444,9 @@ QStringList StackedDiagram::valuesAt(double x, int paneIndex, const QString& ove
 QString StackedDiagram::extraMarkerText(Marker const* m) const
 {
     // Every other trace where the marker is: the panes read out together,
-    // in its own precision (they were at six digits under its 0.000) - those over its x variable only (a
-    // spectrum read at a time's x: B10).
+    // in its own precision (they were at six digits under its 0.000)
+    // - those over its x variable only (a
+    // spectrum read at a time's x).
     if (m->varPos().empty() || m->graph() == nullptr || m->graph()->axis(0) == nullptr) return {};
     const double x = m->varPos().front();
     QStringList lines;

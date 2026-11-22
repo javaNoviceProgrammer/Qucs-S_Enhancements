@@ -520,7 +520,8 @@ private slots:
     // ground, a loop - is modelled, its return on its own conductor apart
     // from its cells: by the faces beside its edge port, and by terminals it
     // names. Both were refused ("there is none either side of it", "it would
-    // short the source"), and none of these could be solved. The shorted line against the open one, both ways:
+    // short the source"), and none of these could be solved.
+    // The shorted line against the open one, both ways:
     // Z_short Z_open is Z0 squared and Z_short / Z_open is -tan^2(beta l). The
     // coplanar line (S 50 / G 20 / grounds 160 µm on 500 µm of
     // quartz, nothing below), whose thin-metal Z0 and eps_eff Palace gives as
@@ -583,7 +584,7 @@ private slots:
     // A line's eps_eff read off tips on it by L-2L is the same whether the
     // line is drawn alone or inside its pads with tapers - within 0.1 % at
     // 10 GHz, three cells across - now that the line in the polygon is meshed
-    // as the line alone (B4 of the open items of 8 November: 1.4 % apart
+    // as the line alone (1.4 % apart
     // here, the polygon sized whole by its 2 area / perimeter).
     void aLinesEpsEffIsTheSameDrawnAloneOrInItsPads()
     {
@@ -656,8 +657,8 @@ private slots:
         const rf::PortTerminal ground = patch(QStringLiteral("T1"), QPointF(40, 125), 20);
         QCOMPARE(refused({ground}, QString()), QStringLiteral("solved"));
         // On its own cells, or the cells next to them, it would short the
-        // source; on its own conductor apart from them it solves (B7 of the
-        // open items of 8 November: aShortedLinesPortReturnsThroughItsOwnConductor).
+        // source; on its own conductor apart from them it solves
+        // (aShortedLinesPortReturnsThroughItsOwnConductor).
         QCOMPARE(refused({patch(QStringLiteral("T2"), QPointF(40, 0), 20)}, QStringLiteral("P1's return T2 is on the cells P1 drives")), QString());
         QCOMPARE(refused({patch(QStringLiteral("T2"), QPointF(40, 0), 0)}, QStringLiteral("P1's return T2 is on the cells P1 drives")), QString());
         QCOMPARE(refused({patch(QStringLiteral("T2"), QPointF(40, 23), 0)}, QStringLiteral("P1's return T2 is next to the cells P1 drives")), QString());

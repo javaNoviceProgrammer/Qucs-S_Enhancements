@@ -212,7 +212,8 @@ public:
 
     /// The fill-reducing ordering of Accelerate's analysis: its default, or
     /// METIS's - a 3D model's: at a million unknowns of a 3D Laplacian 2.6
-    /// times less memory and 3.7 times quicker. Before analyzePattern(); Eigen's takes its own (AMD).
+    /// times less memory and 3.7 times quicker (measured on 2 November).
+    /// Before analyzePattern(); Eigen's takes its own (AMD).
     enum class Ordering { Default, Metis };
     void setOrdering(Ordering ordering);
     void analyzePattern(const Matrix& a);

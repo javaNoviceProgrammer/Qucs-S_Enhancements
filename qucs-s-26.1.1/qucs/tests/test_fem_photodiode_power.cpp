@@ -1213,7 +1213,8 @@ private slots:
         QVERIFY2(std::abs(e.values[2].value * R / 0.002 - 1) < 5e-3, qPrintable(QString::number(e.values[2].value * R)));
         // What its times do not resolve, a signal not periodic in f0, a
         // count or periods out of range: said (given without a word - H21 to
-        // H30 of 40 samples a period -, and clamped). 40 a period resolve H19 at most (H20 their half rate).
+        // H30 of 40 samples a period -, and clamped).
+        // 40 a period resolve H19 at most (H20 their half rate).
         QVERIFY2(!d.note.contains(QLatin1String("resolve")) && !d.note.contains(QLatin1String("periodic")), qPrintable(d.note));
         Node many = harm;
         many.props.insert(QStringLiteral("count"), 30);
@@ -1319,7 +1320,7 @@ private slots:
         // through the load a quarter of its own (half its current through
         // the divider) - made with no light too (it was made under the
         // light's modulation alone). In A²/Hz
-        // and A/√Hz (shown "s·A²" and as a plain number: N7).
+        // and A/√Hz (shown "s·A²" and as a plain number).
         const double Rbar = 1 / G;
         QByteArray behind = biased;
         behind.replace(R"("V0": "3[V]", "selection")", QStringLiteral(R"("V0": "0[V]", "circuit": "series", "Rs": "%1[Ohm]", "RL": "0[Ohm]", "selection")")

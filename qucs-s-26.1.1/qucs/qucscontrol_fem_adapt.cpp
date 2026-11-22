@@ -211,7 +211,7 @@ void QucsControl::femConvergeAdaptive(MultiphysicsDoc* doc, const QJsonObject& a
         if (*begun == -1) return done(errorResult(tr("Cancelled by the client before it began.")));
         // The check run with the call's settings over its own (made of them where
         // the model has none): written into it with the result, and not at all if
-        // the run is refused or fails (the review of 063142f, B2).
+        // the run is refused or fails.
         const FNode* existing = tag.isEmpty() ? convergenceNode(d->model(), QString()) : d->model().find(tag);
         const bool create = existing == nullptr;
         const QString check = existing ? existing->tag : QString();

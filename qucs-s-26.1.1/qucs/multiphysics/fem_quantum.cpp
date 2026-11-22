@@ -1765,7 +1765,7 @@ int QuantumProblem::solveModes(const SolveOptions& options, int count, double gu
                    .arg(kpSaid);
     // A field past the gap's drop: the lowest electron state below the
     // highest hole's, each held by the line's ends alone - its spectrum was
-    // computed from them and given, the transitions below zero, said nowhere
+    // computed from them and given, the transitions below zero, said nowhere.
     if (a_F != 0) {
         double lowest = Inf(), highest = -Inf();
         for (int c = 0; c < Carriers; ++c)

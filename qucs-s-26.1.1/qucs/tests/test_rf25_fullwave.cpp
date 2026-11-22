@@ -809,15 +809,15 @@ private slots:
     // spread the more evenly across the strip the more resistive its surface,
     // its edges' crowding the less (measured x1.865 for Huray's 1.939, x1.748
     // for Hammerstad's 1.807; a perfect metal's 0.02 Np/m against 2.24).
-    // A dielectric conducts as a substrate does (F7 of the open items: a
+    // A dielectric conducts as a substrate does (a
     // stack had one conducting layer at most, the substrate - no epi on bulk,
     // no SOI device layer, no trap-rich layer): 200 µm of silicon at 2 S/m
     // solved whole, and as 150 µm of substrate and 50 µm of a dielectric of
     // the same, the same Z to the tables' rounding; the dielectric at 20 S/m,
     // an epi on bulk, the line's loss the more. And the model reads it.
-    // A MIM's full-wave C at 1 GHz is its quasi-static one (P30 of the open
-    // items: 4-6.5 % under it, and slow to converge - its plates' cells under
-    // each other misaligned, as P28's were): a 10 µm square over an 11.2 µm
+    // A MIM's full-wave C at 1 GHz is its quasi-static one
+    // (4-6.5 % under it, and slow to converge - its plates' cells under
+    // each other misaligned): a 10 µm square over an 11.2 µm
     // one, 40 nm of 6.892 between, driven between them, within 2 % at cells
     // of 2.5, 1.25 and 0.625 µm (+0.3, +0.3 and +0.2 %; +8.6, +1.2 and +1.0 %
     // before each cell's own remainder was taken on rectangles graded to its
@@ -892,7 +892,8 @@ private slots:
         }
     }
 
-    // A square turned 45 degrees is the square. Found a strip of one segment, as the processing finds it,
+    // A square turned 45 degrees is the square. Found a strip of one
+    // segment, as the processing finds it,
     // it is cut along its centreline in cells of its own frame - the
     // square's cells, turned -, each solver taking a point into that frame
     // and its edge cells' profile across their own sides: within 0.02 % of
@@ -935,7 +936,7 @@ private slots:
                  qPrintable(QStringLiteral("clipped: %1, %2 against %3, %4").arg(quasi.at(2)).arg(full.at(2)).arg(quasi.at(0)).arg(full.at(0))));
     }
 
-    // A line at an angle is the line (P49's third fix): a microstrip of
+    // A line at an angle is the line: a microstrip of
     // copper turned 30 degrees, found a strip of one segment, is cut along
     // its centreline into the line's own cells, turned - its runs at the
     // angle, its ports on its slanted ends -, and its S is the line's along
@@ -998,7 +999,8 @@ private slots:
     }
 
     // A wire as thick as it is wide, solved as its two faces, holds its own
-    // inside at a low frequency, not a wide slab's: a square loop of 0.5 by 0.5 mm wire read 24.7, 25.9 and
+    // inside at a low frequency, not a wide slab's:
+    // a square loop of 0.5 by 0.5 mm wire read 24.7, 25.9 and
     // 26.7 nH at 2, 4 and 8 cells across, heading for 27.8, where a Neumann
     // sum over 16 by 16 filaments of each side gives 24.17 - the faces'
     // surface impedance held mu0 t/12 a square, 4.17 nH over the loop, where
@@ -1061,8 +1063,7 @@ private slots:
     // out faster than the slab's own fell. Each L now no more than the
     // one before it, and its fall from 1 kHz the 2D eddy solve's of the
     // wire's section over the loop's 40 mm within 0.6 nH, 0.47 at most
-    // (the wire 5 mm
-    // over a perfect ground, its image the return).
+    // (the wire 5 mm over a perfect ground, its image the return).
     void aThickLoopsInductanceFallsWithFrequency()
     {
         rf::Stack st = grounded(1, 5e-3, 0, 0.5e-3, 6e7);
@@ -1102,8 +1103,8 @@ private slots:
     }
 
     // At a low frequency the dense solve keeps the cells' charges as unknowns
-    // of their own (the production-readiness review:
-    // P53's breakdown, of which only the hint had been mended). The square
+    // of their own
+    // (the breakdown, of which only the hint had been mended). The square
     // copper loop as its two faces at 1 kHz is the 6e5 S/m one's at 100 kHz -
     // the same thickness against the skin, the field quasi-static at both -:
     // it read 25.95 and 21.40 nH at 2 and 4 across, the currents lost in the
@@ -1204,8 +1205,8 @@ private slots:
         }
     }
 
-    // One model for the loop inductance and the full wave (the production-
-    // readiness review): a loop's one port that returns
+    // One model for the loop inductance and the full wave (the production):
+    // a loop's one port that returns
     // through a terminal at its other end - as the full wave takes a loop -
     // makes the loop's two ends, the port's and the terminal's, on the
     // terminal's metal; where it named none, one port is no loop, as before.
@@ -1250,7 +1251,7 @@ private slots:
     }
 
     // A via farm merged feeds its plate across its area in the full wave too
-    // (P44 of the open items of 8 November: a capacitor's plate fed by 544
+    // (a capacitor's plate fed by 544
     // vias read 1.21 Ohm in series merged, 0.774 unmerged): the vias' runs
     // conduct as their metal in the footprint (Conductor::share). Two plates
     // 60 µm square of 0.2 µm metal on M1 and M2, fed by strips 40 µm long,
@@ -1304,7 +1305,7 @@ private slots:
     }
 
     // A coplanar line in air is as fast as light, whatever its cross-section
-    // and its cells (P1 of the open items of 8 November): the signal 50 µm,
+    // and its cells: the signal 50 µm,
     // its gaps 2 and 5 µm, its grounds 160, 2 µm of metal as its two faces,
     // at 30 GHz from lines 0.5 and 1.5 mm long. Its cells beside the gaps,
     // fractions of a micrometre wide and tens long, beside shorter ones: each
@@ -1408,13 +1409,12 @@ private slots:
         QVERIFY2(most < 1e-9, qPrintable(QStringLiteral("S %1 apart; %2 against %3").arg(most).arg(solved.at(1).portsSaid.at(0), solved.at(0).portsSaid.at(0))));
     }
 
-    // Past its low-frequency limit a solve says so (N4 of the open items: a
+    // Past its low-frequency limit a solve says so (a
     // spiral at 10 Hz read S21 -118 dB, an open, with nothing but GMRES's
     // iterations said): a copper line's charges' term outweighs its
     // currents' some 2.6e16 times at 1 Hz, its loss 2 % off when it was
     // solved with the charges eliminated - warned; from 10 Hz up not. With
-    // the charges kept as unknowns of their own past 1e10 of it (the
-    // production-readiness review, and its follow-ups), it
+    // the charges kept as unknowns of their own past 1e10 of it, it
     // is not past its limit at 1 Hz: its loss there that at 10 Hz within a
     // part in a thousand, dense and compressed, the compressed solve's Z the
     // dense one's to a part in 10^4, and said solved so. Compressed, in the
@@ -2773,7 +2773,7 @@ private slots:
             const rf::FullWave a = solve(st, 1000, 1e9), c = solve(st, 2000, 1e9);
             QVERIFY2(a.ok() && c.ok() && e.ok(), qPrintable(why(a) + why(c)));
             // Its sides open, its ports returning through the ground: the
-            // guide they feed warned of, not only noted (P38 of the open items).
+            // guide they feed warned of, not only noted.
             QVERIFY2(says(a.warnings, "The lid has no side walls"), qPrintable(a.warnings.join(" | ")));
             const LowFrequency lf = lowFrequency(a, c, 0, 1000e-6, 2000e-6);
             const rf::LineParameters lp = rf::lineParameters(e, 0, 1000e-6, 1e9);
@@ -2898,7 +2898,7 @@ private slots:
             const rf::FullWave off = solve(boxed(er, b, QRectF(QPointF(-100e-6, -2e-3), QPointF(1000e-6, 2.1e-3))), 1000, 100, {fl});
             QVERIFY2(!off.ok() && says(off.problems, "In a box a port stands at a wall"), qPrintable(why(off)));
             // A shape past the walls, or wholly outside the box: refused by
-            // name - each came to "nothing finite" (a bug hunt's second hour).
+            // name - each came to "nothing finite".
             {
                 const QList<rf::Conductor> cs{strip(0, 0, 1000, 100), strip(0, 2500, 1000, 100)};
                 const rf::FullWave outside = rf::fullWaveOf(meshed(cs, 4, 100e-6, 4), cs, stack(1000),
@@ -2984,7 +2984,8 @@ private slots:
     // for ever; a permittivity of "0/0" solved to answers said to be right;
     // a lumped element's R of "0/0" passed its check of nought or above as
     // NaN, its S NaN and said to be right.
-    // What a stack says that it was solved without (a bug hunt's second hour): a metal with a conductivity and no thickness,
+    // What a stack says that it was solved without:
+    // a metal with a conductivity and no thickness,
     // lossless in the full wave - a 1 mm line's series R 3.7e-8 Ohm at 1 GHz
     // -, warned of; and a dielectric whose loss tangent is too high for
     // Djordjevic-Sarkar - eps -0.33 at 300 GHz of 0.3 at 1 GHz, gain -,
@@ -3337,8 +3338,8 @@ private slots:
     // A bond wire high over its ground, meshed as the app meshes it (the
     // solve stack's round-wire layers): its R is a round wire's, Rs/(2 pi
     // a) along its span and its legs, whatever the cells across - each of
-    // its strips one cell across and each leg one bar (P34 of the open
-    // items: at six across, its strips' current crowded to their edges and
+    // its strips one cell across and each leg one bar
+    // (at six across, its strips' current crowded to their edges and
     // its legs were bundles of thin vias, 1.8 to 2.3 times a round wire's,
     // where one across read 1.04). Gold, 25 µm, 1.5 mm, its pads 254 µm over
     // the ground, at 1 GHz.
@@ -3644,7 +3645,8 @@ private slots:
         }
     }
 
-    // An edge port on a slanted face drives the whole face: its cells' corners, cut by the layout's booleans, lie up
+    // An edge port on a slanted face drives the whole face:
+    // its cells' corners, cut by the layout's booleans, lie up
     // to 0.7 nm off the face's line, where they were looked for within 1e-6
     // of its length - none of a 100 µm face's at 30 degrees, and the port
     // drove the one cell nearest, a 2 mm line's S21 -55.6 degrees at 10
@@ -3724,7 +3726,8 @@ private slots:
         }
     }
 
-    // An edge port on a corner, no facing given, is asked for one: of the two edges it is on, it took one as found
+    // An edge port on a corner, no facing given, is asked for one:
+    // of the two edges it is on, it took one as found
     // - a port at a line's end's corner drove its 2000 µm side, 32 cells,
     // and nothing said. Given its facing, the end. Where two shapes meet
     // along the line's axis, their edges between them are no corner.
@@ -3756,8 +3759,8 @@ private slots:
         QCOMPARE(rf::portPlace(longLine, QPointF(0, -5)), rf::PortPlace::OnCorner);
         // On a keyhole's slit - the cut of no width from the outline to the
         // hole, metal on both its sides -: inside, not on a face, with a
-        // facing or without; it drove 12 cells along the slit as its face
-        // (a bug hunt's second hour). On the outline beside
+        // facing or without; it drove 12 cells along the slit as its face.
+        // On the outline beside
         // it, an edge.
         {
             rf::Conductor keyhole;
@@ -3791,8 +3794,8 @@ private slots:
         // Meshed as the app meshes it (MeshSettings' plane, the tab's from the
         // Processing): a stepped line's half is the whole's cells above the
         // plane, exactly half of them, its edges graded as the whole's and
-        // its cut not - and its two ends alike, S11 its S22 (P36 of the open
-        // items: meshed alone, two thirds of the whole's cells, its strips
+        // its cut not - and its two ends alike, S11 its S22
+        // (meshed alone, two thirds of the whole's cells, its strips
         // cut twice as finely, its ends 2e-4 apart). A sheet, and one 35 µm
         // thick, whose walls' charge is in it: the half's cut no wall.
         for (const double thickness : {0.0, 35e-6}) {
@@ -4135,7 +4138,7 @@ private slots:
     // conductors either side of it on the line of its edge, as a ground-
     // signal-ground probe's do, or through the ground plane: 100 µm on 200
     // µm of 9.8, 50 µm slots, 250 µm grounds with a fence of vias down each.
-    // A phase C check (F6) had a millimetre of it lose a
+    // A millimetre of it once lost a
     // third of the power at 60 GHz through the ground and less as the line
     // was longer - at the ends - which was the ports' own paths up from the
     // ground, without a field then (G9 of the phase E check, addPortPaths()):
@@ -4298,7 +4301,8 @@ private slots:
         QVERIFY2(none.problems.join(' ').contains(QStringLiteral("rectangle at 1000, 400 µm is over no cell of M1")),
                  qPrintable(why(none)));
         // A point off the metal: refused, as the rectangle is - it drove the
-        // nearest cell and named its own point as the cell's (a bug hunt's second hour). On the strip's edge, taken.
+        // nearest cell and named its own point as the cell's.
+        // On the strip's edge, taken.
         const rf::FullWave offPoint = rf::fullWaveOf(mesh, line, stack, {internalPort(QPointF(1000, 120), QStringLiteral("M1"))}, fs);
         QVERIFY2(!offPoint.ok() && says(offPoint.problems, "is over no cell of M1 that a current reaches"), qPrintable(why(offPoint)));
         const rf::FullWave onEdge = rf::fullWaveOf(mesh, line, stack, {internalPort(QPointF(1000, 100), QStringLiteral("M1"))}, fs);
@@ -4328,7 +4332,8 @@ private slots:
         }
     }
 
-    // A GSSG on 150 µm of InP with nothing under it. A port on each signal returns through the two
+    // A GSSG on 150 µm of InP with nothing under it.
+    // A port on each signal returns through the two
     // grounds - the outermost of the four, there being no ground plane and
     // none marked - past the other signal, the grounds tied as a GSSG
     // probe's are; the two at each end a differential pair. With no plane
@@ -4430,7 +4435,7 @@ private slots:
     }
 
     // A differential pair, and the conductors a coplanar port returns
-    // through named (the GSSG review's G5). The mixed-mode S is T S T',
+    // through named. The mixed-mode S is T S T',
     // T orthogonal: each pair's differential mode, then each common mode,
     // then the ports of no pair - as Touchstone 2.0's [Mixed-Mode Order]
     // writes it. A pair is checked as given; and over a ground plane, where
@@ -4742,7 +4747,7 @@ private slots:
         QVERIFY2(refused(over, "held compressed, would take some") && refused(over, "a solve may take here"), qPrintable(why(over)));
         // A port inside a conductor, on none of its edges, drives the one
         // cell nearest and says so, warned (anEdgePortStandsOnTheEdgeItDrives:
-        // it drove the face nearest it, however far, before a bug hunt).
+        // it drove the face nearest it, however far, until 18 November).
         const rf::FullWave inside = rf::fullWaveOf(mesh, one, stack, {QPointF(200, 70)}, {1e9});
         QVERIFY2(inside.ok(), qPrintable(why(inside)));
         QVERIFY2(says(inside.portsSaid, "is on no face, and drives the one cell nearest"), qPrintable(inside.portsSaid.join(" | ")));
@@ -4784,7 +4789,8 @@ private slots:
         QVERIFY2(!says(joined.warnings, "land on no metal"), qPrintable(joined.warnings.join(" | ")));
         // A via from M1 to M3 through a shape of M2 between them, which it
         // does not join: warned of - as made it shorts to it, and a 3D
-        // solver's export does; it was solved apart with no word (a bug // hunt's second hour). Clear of M2, not.
+        // solver's export does; it was solved apart with no word.
+        // Clear of M2, not.
         {
             rf::Stack three = two;
             three.layers.removeIf([](const rf::Layer& l) { return l.kind == rf::Layer::Via; });
@@ -5197,7 +5203,7 @@ private slots:
         QVERIFY2(std::abs(through) > 0.9, qPrintable(QString::number(std::abs(through))));
         // Two shapes over each other, unmerged: the mesh refuses them, as
         // overlapping - solved, they shared no cell's edge and the overlap
-        // was meshed twice, warned of alone, before a bug hunt.
+        // was meshed twice, warned of alone, until 18 November.
         const QList<rf::Conductor> overlapping = {strip(0, 0, 20000, 4000), strip(9000, 700, 21000, 3300)};
         const rf::Mesh apart = rf::meshOf(overlapping, settings, stack, 3e9);
         QVERIFY2(!apart.ok() && says(apart.problems, "2 shapes on M1 overlap"), qPrintable(apart.problems.join(" | ")));
@@ -5208,7 +5214,8 @@ private slots:
     // 1 µm gaps, sixteen cells across them, held compressed, converges at
     // 100 GHz in a few dozen iterations - 1253 with the near field's
     // preconditioner reaching the touching cells alone, and on the
-    // twelve-finger comb none at all past ten across. Its bar is told how far GMRES has got. A
+    // twelve-finger comb none at all past ten across.
+    // Its bar is told how far GMRES has got. A
     // GMRES held near its limit says so; held short of its residual, every
     // frequency is still solved, and each says it is near, not exact.
     void gmresKeepsItsHoldAsTheMeshIsRefined()
@@ -5259,7 +5266,7 @@ private slots:
     // charge on its side walls, which face each other across the gaps: 31.94
     // fF at six cells across, Palace's 31.8 within 0.5 % (the lumped 2D
     // capacitance it had before, 31.40), its rise from 1 to 100 GHz within
-    // 1 % of Palace's 1.135. Without the walls it read 25.1 fF, 21 % under
+    // 1 % of Palace's 1.135. Without the walls it read 25.1 fF, 21 % under.
     // (The quasi-static solve and the thin limit are
     // the two functions after it: the three were one, past QtTest's 300 s on
     // CI's macOS 15 runner.) Not where Eigen's LU factorizes the near field
@@ -5462,7 +5469,8 @@ private slots:
         }
     }
 
-    // An edge port stands on the edge it drives: the nearest edge was taken however far, so that a port 4
+    // An edge port stands on the edge it drives:
+    // the nearest edge was taken however far, so that a port 4
     // mm off a strip drove its face, one in its middle its whole 1000 µm
     // long side - faceWidths 1000 -, one facing the wrong way its other
     // end, and nothing was said. Off every shape, or on an edge facing
@@ -5495,7 +5503,7 @@ private slots:
 
     // Cells on a layer the stack has not, or on a dielectric, are said as
     // such: the full wave said "no two cells of the mesh share an edge...
-    // mesh the layout more finely" where the quasi-static solve said which
+    // mesh the layout more finely" where the quasi-static solve said which.
     void aCellOnALayerTheStackHasNotIsSaid()
     {
         const QList<rf::Conductor> c{strip(0, 0, 600, 50)};
@@ -5516,7 +5524,8 @@ private slots:
     // ports' ties, along one ground and back along the other, is a loop of
     // the line's jwL - as a difference of the returns' two differences of
     // 10^12 Ohm each it was their rounding, a 2 mm line's Z at 1 Hz dense
-    // with real parts as large as itself and S21 nought (on its own fix). The loop a column of its own
+    // with real parts as large as itself and S21 nought (on 18 November,
+    // after its own fix). The loop a column of its own
     // (columnBasis()): Re Z within 10^-9 of |Z|, dense and compressed, and
     // dense S21 the line's through. (Compressed, S21 at 1 Hz wants Z11 - Z21
     // to 10^-11 of Z, past GMRES's residual: said, not held here.)

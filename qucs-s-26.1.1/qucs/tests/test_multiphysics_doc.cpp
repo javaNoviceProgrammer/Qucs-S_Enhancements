@@ -1123,7 +1123,8 @@ private slots:
 
     // Closed while it solves, at once: the graded-index lens with its air's
     // corner at -4e-300 for -4 traces for minutes - its trace deaf to a stop,
-    // and the tab's close waiting for it with no end, the window frozen. Now the trace asks, and a job that does not
+    // and the tab's close waiting for it with no end, the window frozen.
+    // Now the trace asks, and a job that does not
     // is waited for 2 s, then left to end on its own.
     void closedWhileItTraces()
     {
@@ -1818,7 +1819,8 @@ private slots:
 
     // A model saved here is not read again by the window's watcher: its
     // save is dated by the clock, not by the file (a change on disk is a date
-    // newer than it - or, that date in the future, any other). Read again, its steps of Undo were gone.
+    // newer than it - or, that date in the future, any other).
+    // Read again, its steps of Undo were gone.
     void aModelSavedHereIsNotReadAgain()
     {
         MultiphysicsDoc* doc = open(copyOf(QStringLiteral("bratu_ode.qfem")));
@@ -2095,7 +2097,7 @@ private slots:
                  qPrintable(QJsonDocument(h).toJson()));
         for (auto it = values.begin(); it != values.end(); ++it) QVERIFY2(!it.key().contains(QLatin1String("t = ")), qPrintable(it.key()));
         QVERIFY2(h.value("note").toString().startsWith(QLatin1String("over 1 periods of 1e+09 Hz, 41 output times; past H19")), qPrintable(QJsonDocument(h).toJson()));
-        // Its times asked as the answers write them, or refused, said (B9).
+        // Its times asked as the answers write them, or refused, said.
         QJsonObject e = call("fem_evaluate", {{"path", file}, {"expression", "semi.I_2"}, {"time", "0.5 ns"}});
         QVERIFY2(!failed(e) && json(e).value("solutions").toString() == QLatin1String("t = 500 ps"), qPrintable(text(e)));
         e = call("fem_evaluate", {{"path", file}, {"expression", "semi.I_2"}, {"time", "5[ns]"}});
@@ -2111,8 +2113,9 @@ private slots:
     // refused, said; "1.5 eV" as its answers write one read; with 'all', at
     // that energy at each point. (Each gave the last output or the nearest
     // end without a word, a plain number taken as hertz; with 'all' the
-    // energy was ignored, every output given.) And fem_plot of a global over the outputs graphs it against them
-    // (a surface of it, one colour at the last energy: N11).
+    // energy was ignored, every output given.)
+    // And fem_plot of a global over the outputs graphs it against them
+    // (a surface of it, one colour at the last energy).
     void outputsAskedAsAnswersSayThem()
     {
         const QString file = path(QStringLiteral("asked_outputs.qfem"));
@@ -2175,9 +2178,9 @@ private slots:
 
     // The panel shows a flag given as an expression of the parameters as its
     // text, to edit - and what is shown only while the flag is on as shown:
-    // "excitons": "ex" (on) was an unchecked box, the exciton model hidden
+    // "excitons": "ex" (on) was an unchecked box, the exciton model hidden.
     // "true" typed makes it a box again. Under
-    // the continuum "bound", "pmin" is shown: it is read there (N2).
+    // the continuum "bound", "pmin" is shown: it is read there.
     void thePanelShowsAnExpressionFlag()
     {
         const QString file = path(QStringLiteral("panel_flags.qfem"));
@@ -2249,8 +2252,8 @@ private slots:
     }
 
     // A process flow's geometry built in the background - its anneals take
-    // seconds to minutes (71 s an opening for one of the fuzz of 21
-    // October's, the window frozen): the model open at once, its structure
+    // seconds to minutes (71 s an opening for one hostile flow, the window
+    // frozen): the model open at once, its structure
     // there once built, the window going on meanwhile and its progress said;
     // Cancel stopping it in its anneal, the geometry left stale, not built
     // again by itself; a change of the model as it is built stopping that
@@ -2475,8 +2478,8 @@ private slots:
     }
 
     // fem_build of a geometry built and not changed since: as it is - its
-    // process flow not run again (18.7 s for one of the fuzz of 21 October,
-    // N2), its mesh still current. Its materials changed - a flow reads
+    // process flow not run again (18.7 s for a hostile one), its mesh still
+    // current. Its materials changed - a flow reads
     // them, a III-V's composition -: built again; a model without a flow's
     // not.
     void aBuiltGeometryIsNotBuiltAgain()

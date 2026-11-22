@@ -108,8 +108,8 @@
  * and its half of the wall, and so is a cell at the edge, each part's share
  * of the current by length and of the charge by area; and the run's loss is
  * that band's of the metal's edge solved in its cross-section (rf25_edge.h),
- * where the current crowds to the corner (A1 and A2 of the open items of 8
- * November: L 3 to 9 % high without them, Z0 2.7 % on a coplanar line of 2
+ * where the current crowds to the corner
+ * (L 3 to 9 % high without them, Z0 2.7 % on a coplanar line of 2
  * µm gold, the loss 9 % from 2D solves on average). A port on
  * such a metal drives both faces of its face, half each, and an internal
  * port or a via up from it stands on its top. With no ground plane under
@@ -198,7 +198,8 @@ struct FullWavePort {
     /// An edge port that returns through the conductors beside it on its
     /// own metal, at its own edge's line - as a ground-signal-ground
     /// probe's grounds touch them - rather than through the ground plane:
-    /// what a coplanar line wants, whose ground-plane return radiated. The grounds either side are tied
+    /// what a coplanar line wants, whose ground-plane return radiated. The
+    /// grounds either side are tied
     /// together, and the solve shares the current out between them.
     bool coplanar = false;
     /// A port, edge or internal, that returns through the terminals and the
@@ -316,8 +317,7 @@ struct Feed {
     /// An edge port that names its returns, each a face on its own face's
     /// line (a probe's tips at a port wall): each return's metal and its
     /// stretch across, as \a Via's are - strips of the feed have them along
-    /// their whole length, and the same terminals at both ends (P45 of the
-    /// open items of 8 November).
+    /// their whole length, and the same terminals at both ends.
     struct Return {
         QString metal;
         double across0 = 0, across1 = 0;
@@ -397,8 +397,8 @@ struct FullWaveControl {
     double mostBytes = 0;
     /// A compressed solve's GMRES as it goes, for its bar: the most
     /// iterations the frequencies under way have taken so far and the
-    /// residual of the one furthest on (B3 of the open items of 8 November:
-    /// "0 of 1 frequencies" for fifteen minutes said nothing of it).
+    /// residual of the one furthest on
+    /// ("0 of 1 frequencies" for fifteen minutes said nothing of it).
     std::atomic_int* gmresIterations = nullptr;
     std::atomic<double>* gmresResidual = nullptr;
     /// How many frequencies it solves at a time, once it knows: a sweep of
@@ -680,7 +680,7 @@ QStringList returnSharesOf(const FullWave& solved);
 
 /// The most a sweep's currents hold, bytes, before they are kept at some
 /// of its frequencies alone: a 10,001-point sweep of a four-port of 30,000
-/// runs held 19 GB of them, and wrote them all to its .solution file (a bug hunt's second hour).
+/// runs held 19 GB of them, and wrote them all to its .solution file.
 constexpr double kKeptCurrentsBytes = 256.0 * 1024 * 1024;
 
 /// Which of \a count frequencies keep their currents, \a perFrequency

@@ -2550,12 +2550,12 @@ void Diagram::calcSmithAxisScale(Axis *Axis, int &GridX, int &GridY) {
         Axis->up = Axis->limit_max = fabs(Axis->limit_max);
         // Qucs-S: the step is a count of arcs, taken as a double and kept
         // to MaxGridLines - of 1e307 an int was undefined, and the arcs
-        // appended until memory ran out (round three of crash hardening, D2).
+        // appended until memory ran out.
         const double arcs = Axis->step;
         GridX = GridY = arcs >= 0.0 ? int(arcs <= MaxGridLines ? arcs : MaxGridLines) : 0;
     }
     // Qucs-S: a radius that is not a number, none or past 1e100 has no chart
-    // (its arcs' angles were an int of NaN, U6).
+    // (its arcs' angles were an int of NaN).
     if (!(Axis->up >= 1e-100 && Axis->up <= 1e100)) Axis->up = 1.0;
 }
 
@@ -2663,7 +2663,7 @@ void Diagram::createSmithChart(Axis *Axis, int Mode) {
             if (im >= 1.0)
                 Arcs.append(as(Part::Grid, new struct qucs::Arc(x, (x2 + y) >> 1, y, y, beta, theta, GridPen)));
             else {
-                phi = int(16.0 * 180.0 / pi * acos(std::max(im, -1.0)));   // Qucs-S: below -1 its acos was NaN (U6)
+                phi = int(16.0 * 180.0 / pi * acos(std::max(im, -1.0)));   // Qucs-S: below -1 its acos was NaN
                 len = 16 * 180 - phi;
                 if (Above && Below) len += len;
                 else if (Below) phi = 16 * 180;
@@ -3184,7 +3184,7 @@ void Diagram::paintLimits(QPainter *painter) {
     // symbols' points in them, drawn once. Once a stretch, clipped, a trace
     // of 30,000 points with 7,500 of them was stroked 7,500 times; once,
     // clipped to all of them, a diagram 100,000 pixels tall rasterized the
-    // clip for minutes (round three of crash hardening, D3).
+    // clip for minutes.
     QHash<int, std::vector<std::pair<double, double>>> beyond;
     for (const qucs_s::limits::Violation &v: std::as_const(a_violations)) {
         Graph *g = Graphs.value(v.graph);

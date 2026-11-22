@@ -4,8 +4,8 @@
  *                        scattering table against the Coulomb limit, its
  *                        amorphous range against the tables, channelling on
  *                        axis, its dose kept, its runs the same for a seed;
- *                        through a process flow against Cai et al.'s SIMS
- * The tilt not
+ *                        through a process flow against Cai et al.'s SIMS,
+ *                        the tilt not
  *                        projected twice, its cache, its cancel, what it
  *                        refuses; the dual Pearson's report and moments
  *                        along the normal
@@ -504,7 +504,7 @@ private slots:
         QVERIFY2(runFlow(implantFlow(QStringLiteral(R"("energy": "100", "dose": "1e13")"), 1.0, QStringLiteral("100"), QStringLiteral("Gallium arsenide"))).ok(), "GaAs, Pearson");
     }
 
-    // F2: a dual Pearson's report says its channelled part. F3: moments
+    // A dual Pearson's report says its channelled part. Moments
     // given along the normal with a tilt are not projected again - its peak
     // at their Rp, not Rp cos 30°.
     void dualReportAndMomentsAlongTheNormal()
@@ -524,7 +524,7 @@ private slots:
         const QString given = QStringLiteral(R"("energy": "100", "dose": "1e13", "tilt": "30", "profile": "gaussian",
             "moments": [["Silicon", "0.2[um]", "0.02[um]", "0", "3", "0.03[um]"]])");
         // (Bare silicon: under even a native oxide Ryssel's dose matching moves
-        // a profile this narrow - a finding of its own.)
+        // a profile this narrow.)
         auto bare = [](const QString& implant) {
             return flowModel(QStringLiteral(R"({"type": "substrate", "tag": "sub", "label": "si", "material": "Silicon", "thickness": "3"},
                 {"type": "implant", "tag": "imp", "label": "P_implant", "species": "P", %1})").arg(implant),

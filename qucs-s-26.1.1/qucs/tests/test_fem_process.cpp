@@ -587,7 +587,7 @@ private slots:
                  qPrintable(QStringLiteral("profile %1 of its peak, dose %2; %3").arg(worst).arg(kept / dose - 1).arg(said(r))));
     }
 
-    // Implant and anneal: boron through a mask's window (0.3
+    // An implant and an anneal: boron through a mask's window (0.3
     // to 0.7 µm, resist 2 µm), Rp 0.1 µm, straggles 30 nm, annealed 30
     // minutes at 1000 °C - the grid's against the Implant profile's formula
     // (its depth's Gaussian and image, its window's erf edges) to 1e-3 of
@@ -1242,13 +1242,13 @@ private slots:
         QVERIFY2(stopped.error.contains(QLatin1String("cancelled")), qPrintable(stopped.error));
     }
 
-    // Flows the fuzz of 21 October found. One narrower than a dopants'
+    // Hostile flows. One narrower than a dopants'
     // column (1e-6 µm wide, cells 2.5 nm), intermixed through openings past
-    // it: its grid of no rows read at row -1 (PF1) - run. One whose
+    // it: its grid of no rows read at row -1 - run. One whose
     // dopants' grid would have 8 million cells (0.1 nm rows 2 µm down),
     // annealed for an hour: minutes; and one filled to 300 µm after its
     // dopants were made in 1 nm rows - 10⁷ cells, memory past a machine's
-    // at 0.1 nm (PF2): each refused at once, said why.
+    // at 0.1 nm: each refused at once, said why.
     void hostileFlows()
     {
         const ProcessRun narrow = runFlow(flowModel(QStringLiteral(R"(

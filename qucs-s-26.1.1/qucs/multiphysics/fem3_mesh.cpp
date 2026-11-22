@@ -827,7 +827,7 @@ Mesh3Build buildMesh3Within(const Model& model, const ParameterScope& parameters
     }
     // Its prisms counted before they are made: a size far smaller than the
     // geometry (1e-9 for 1e-3, a slip) asked for more than the memory
-    // holds, and running out of it in the mesh's thread aborted Qucs-S
+    // holds, and running out of it in the mesh's thread aborted Qucs-S.
     {
         double prisms = 0, nodeSlots = 0, triangles = 0;
         for (int b = 0; b < NB; ++b) {

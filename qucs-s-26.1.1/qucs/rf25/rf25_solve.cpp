@@ -74,8 +74,7 @@ MeshSettings tabMeshSettings(const Model& model, QStringList* said)
     MeshSettings how = meshSettingsOf(model.mesh(), model.parameters(), said);
     how.compressed = meshedCompressed(model);
     // (A quasi-static study's charge is solved compressed past the dense
-    //  limit - the production-readiness review -, so its mesh
-    //  is not refused there.)
+    //  limit, so its mesh is not refused there.)
     if (const Node* study = model.root.child(QStringLiteral("rf_study")))
         how.chargeCompressed = textOf(*study, QStringLiteral("kind")) != QLatin1String("full_wave");
     how.gaps = true;
@@ -136,8 +135,8 @@ std::optional<FullWave> solvedStandard(const QString& path, const QList<double>&
     if (!model) return fail(tr("%1 is no RF 2.5D model: %2").arg(name, notes));
     const QString named = textOf(model->layout(), QStringLiteral("file")).trimmed();
     // (A standard of its own shapes alone names no file: they are processed
-    //  over an empty layout, as its tab does - NF2 of the open items, where
-    //  such a standard solved alone and was refused here.)
+    //  over an empty layout, as its tab does - such a standard solved alone
+    //  was refused here.)
     const Node* own = model->layout().child(QStringLiteral("rf_shapes"));
     const bool shapesAlone = named.isEmpty() && own != nullptr && std::any_of(own->children.cbegin(), own->children.cend(), [](const Node& n) {
         return n.enabled && n.type == QLatin1String("rf_shape");
@@ -380,7 +379,7 @@ bool studyIsFullWave(const Model& model)
 /// What a solve's mesh is against what it cuts - its smallest and largest
 /// cells, the cells across the narrowest conductor and the narrowest gap -,
 /// the first of the solve's own lines: how fine it is, said where the
-/// answer is (F1 of the open items of 8 November).
+/// answer is.
 QString meshNoteOf(const Mesh& mesh)
 {
     if (mesh.cells.isEmpty()) return QString();
@@ -409,7 +408,7 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
     // solve takes its dielectrics at one frequency: taken, a layer has no
     // dispersion left to check, and Djordjevic-Sarkar past its loss tangent -
     // which the full wave refuses - was solved (eps_r 1.5, tan d 0.3 gave
-    // eps_eff 0.884: P56 of the open items). The loop's solve reads no
+    // eps_eff 0.884). The loop's solve reads no
     // layersOf(), and took a metal's roughness below nought as smooth.
     if (const QStringList wrong = valueProblemsOf(job.stack); !wrong.isEmpty()) return said(wrong.join(QLatin1Char(' ')));
     // (The Cutout's, as processing kept them: matched by their text, they
@@ -487,7 +486,7 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
                                                           : QList<double>{topFrequency(model)};
         // (A sweep from nought - linear, 0 to 10 GHz -: its nought left out
         //  and said, as the full wave solves above it; it was refused as asking
-        //  for no frequencies - a bug hunt's second hour.)
+        //  for no frequencies.)
         if (job.frequencies.size() > 1 && job.frequencies.first() == 0 && job.frequencies.at(1) > 0) {
             job.frequencies.removeFirst();
             job.notes << tr("The sweep's first frequency, nought, is left out: the full wave solves above it, here from %1 GHz.")
@@ -615,8 +614,7 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
         // the port to that terminal - the model a full-wave solve of the
         // loop takes, its one port returning through its other end, serving
         // the loop inductance too, where it wanted two ports, and a full wave
-        // of two refused a terminal on the other's cells (the production-
-        // readiness review).
+        // of two refused a terminal on the other's cells (the production).
         QString through;
         if (at.size() == 1 && textOf(*ends.first(), QStringLiteral("return")) == QLatin1String("terminals")) {
             for (const QString& name : namesOf(*ends.first(), QStringLiteral("returns"))) {
@@ -646,8 +644,8 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
             // Each end on its own metal: two internal ports that start from
             // one ground plate (a model built for the full wave, its via
             // ports) end the loop on the metals they reach, not on the plate
-            // under both - "both ends of the loop on the same face" (P42 of
-            // the open items). A stack's own ground is no metal of the mesh.
+            // under both - "both ends of the loop on the same face".
+            // A stack's own ground is no metal of the mesh.
             // (The stack held here: named() points into it, and a Stack
             //  model.stack() returns died with its line - a use after free,
             //  CI's Linux ASan job of 5821c258.)
@@ -690,7 +688,7 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
     // taken at the one its losses are asked at, else at the study's highest,
     // where its losses are said - the full wave takes them at each of its
     // own. (They were taken at the study's highest whatever was asked, so
-    // that R and G at 1 GHz came with eps at 20: P33 of the open items.)
+    // that R and G at 1 GHz came with eps at 20.)
     if (!job.fullWave && job.stack.dispersive()) {
         QStringList taken;
         const bool asked = !request.frequencies.isEmpty() && request.frequencies.first() > 0;
@@ -816,7 +814,7 @@ std::shared_ptr<FullWave> trlOn(SolveJob& job, const FullWave& wave)
             // Z of S in the lines' impedance, and S of Z in each port's own
             // reference: both ports were put into the first's, Z then made
             // with the second's, and the references left as they were - Z
-            // and a Touchstone file's [Reference] wrong where they differ
+            // and a Touchstone file's [Reference] wrong where they differ.
             const Eigen::Matrix2cd z = t.impedance * (one + S) * (one - S).inverse();
             out->z[k] = {{z(0, 0), z(0, 1)}, {z(1, 0), z(1, 1)}};
             out->s[k] = scatteringOf(out->z.at(k), out->references);
@@ -859,7 +857,7 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
     // (calibrationAt()), a calibration that changes strips at a frequency is
     // no rational function, and the de-embedded S missed by 4.5 to 12 times
     // the sweep's tolerance where its own check, of the structure's S, was
-    // met - D3 of the open items. Strips are a fraction of the structure.
+    // met. Strips are a fraction of the structure.
     const QList<double> solvedAt = frequencies;
     QList<double> structureAt = frequencies;
     if (adaptive) {
@@ -948,7 +946,7 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
             job.calibrated = 0;
             ++job.calibrationsBegun;
             // (Its strips not converged, solved once more with longer cells:
-            //  calibrate()'s own, P14 of the open items.)
+            //  calibrate()'s own.)
             // (Its strips on the layers that end as the feed stands on them,
             //  laid along them: the feed's key has them, so that a feed on
             //  another mesa is calibrated of its own.)
@@ -968,7 +966,7 @@ std::shared_ptr<FullWave> solveWaveOn(SolveJob& job, const Mesh& mesh, const Mes
         if (!calibration->ok()) {
             // (A warning too: its S is uncalibrated, its port's own
             //  discontinuity in it - said in the notes alone, it read as the
-            //  calibrated answer that was asked for: P14 of the open items.)
+            //  calibrated answer that was asked for.)
             const QString why = tr("%1's feed could not be calibrated: %2 It is solved as it is - its S uncalibrated, the "
                                    "port's own discontinuity in it.")
                                     .arg(name, calibration->problems.join(QLatin1Char(' ')));

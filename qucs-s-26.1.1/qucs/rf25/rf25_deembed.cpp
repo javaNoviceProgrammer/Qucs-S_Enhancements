@@ -212,7 +212,7 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
             }
         }
         // A feed returning through faces on its own face's line: its returns
-        // along the strip, each a face terminal at both its ends (P45).
+        // along the strip, each a face terminal at both its ends.
         for (const Feed::Return& r : feed.returns) rect(r.metal, 0, r.across0, l, r.across1);
         const Mesh mesh = meshOf(parts, how, stack, top, micrometre);
         out.facing = std::max(out.facing, mesh.facing);
@@ -273,8 +273,8 @@ Strips solveStrips(const Stack& stack, const MeshSettings& how, double top, cons
     // (From where the stack carries a second surface wave the line may leak
     //  into it, its loss its own: a conductor-backed coplanar line on 500 µm
     //  of alumina lost 15-38 dB/m so at 80-100 GHz, and taken lossless that
-    //  went into its ports' boxes, the line de-embedded gaining - P13 of the
-    //  open items. A microstrip on 100 µm of it carries none to 250 GHz.)
+    //  went into its ports' boxes, the line de-embedded gaining.
+    //  A microstrip on 100 µm of it carries none to 250 GHz.)
     double leakFrom = 0;
     if (!loses && !out.at.isEmpty()) leakFrom = secondSurfaceWave(stack, 2 * *std::max_element(out.at.cbegin(), out.at.cend()));
     if (leakFrom > 0) out.leakFrom = leakFrom;
@@ -421,7 +421,7 @@ static Calibration calibrateOnce(const Stack& stack, const MeshSettings& how, do
     // substrate's height a bound on them: with no plane, it bounds nothing.)
     bool plane = false;
     for (const Layer& l : stack.layers) plane = plane || (l.kind == Layer::Ground && l.variant != QLatin1String("open"));
-    // (A feed returning through faces beside it - P45 -: its span to them,
+    // (A feed returning through faces beside it: its span to them,
     //  as a coplanar feed's to its grounds.)
     double low = 0, high = width;
     for (const Feed::Return& r : feed.returns) {
@@ -488,7 +488,7 @@ static Calibration calibrateOnce(const Stack& stack, const MeshSettings& how, do
     //  number of halves, what they read of the line is ill-conditioned: a
     //  coplanar line's Zc 67 Ohm for 77, eps_eff 1.5 % low and false loss at
     //  100-110 GHz, its 1 and 2 mm strips half a wavelength apart, and
-    //  nothing said - P15 of the open items. Within some 12 degrees of it.)
+    //  nothing said. Within some 12 degrees of it.)
     // (Each band of them said: around pi and around 2 pi, the good
     //  frequencies between, were one band - the review of 26ff2805.)
     QList<std::pair<double, double>> halfBands;
@@ -498,7 +498,7 @@ static Calibration calibrateOnce(const Stack& stack, const MeshSettings& how, do
     // across 3 % either side of the change: taken whole, S stepped there by
     // some 0.02 against a slope ten times smaller - a spiral's S21 -2.11,
     // -2.23, then -2.13 dB at 94, 95 and 96 GHz -, which an adaptive fit
-    // bent to meet (D5 of the open items). Each set was solved at every
+    // bent to meet. Each set was solved at every
     // frequency; the one taken away is as good as the other a little way
     // past where it falls short.
     QList<int> chosenAt;
@@ -722,8 +722,8 @@ Calibration calibrate(const Stack& stack, const MeshSettings& how, double top, c
     Calibration out = calibrateOnce(stack, how, top, feed, frequencies, micrometre, control, chosen);
     // Its strips' solve not converged - an 8.2 mm strip held compressed,
     // past the dense bound -: tried once more with its cells twice as long
-    // along them, few enough to solve dense, and said (P14 of the open
-    // items: there was no retry). (Here, not in the solve alone: any caller
+    // along them, few enough to solve dense, and said
+    // (there was no retry). (Here, not in the solve alone: any caller
     // has it, and a test reaches it - the review of 26ff2805.)
     const bool stopped = control != nullptr && control->stop != nullptr && control->stop->load();
     if (out.ok() || stopped || !out.problems.join(QLatin1Char(' ')).contains(QLatin1String("GMRES"))) return out;
@@ -937,7 +937,7 @@ FullWave deembedded(const FullWave& solved, const QList<Deembedding>& ports)
             // (How much it moves the answer is said by how short the feed is,
             //  not as "not to be trusted at any frequency": a spiral with feeds
             //  at nine tenths of the reach moved its L and Q by a few tenths of
-            //  a per cent to 15 GHz, 1.4 % at 30 - N6 of the open items.)
+            //  a per cent to 15 GHz, 1.4 % at 30.)
             out.warnings << tr("%1's feed is as wide as its face and alone for %2 µm in from it, %3 % of the some %4 µm the "
                                "port's own field reaches along it - four heights over the ground and its width: its own "
                                "discontinuity there is not quite the one its strips find, and its de-embedding leaves the "

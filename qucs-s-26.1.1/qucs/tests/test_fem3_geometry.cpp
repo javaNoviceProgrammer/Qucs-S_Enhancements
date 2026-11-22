@@ -505,7 +505,7 @@ private slots:
     }
 
     /// An Extrude's sketch of a ring 9e6 mm across built; one 1e308 across a
-    /// failed build, said: Clipper threw on both, and nothing caught it
+    /// failed build, said: Clipper threw on both, and nothing caught it.
     void hugeSketches()
     {
         for (const char* r : {"9e6", "2147483648", "1e308"}) {
@@ -719,7 +719,8 @@ private slots:
     /// A side rule on nested solids - a shell round a gap round a core, each
     /// a cylinder from z = 0 -: "of" the shell's floors every floor in its
     /// footprint (the gap's and the core's too), "own" its own annulus
-    /// alone; the core's floor the same either way (a review had to give the shell's by its face's number).
+    /// alone; the core's floor the same either way (the shell's had to be
+    /// given by its face's number).
     void ownFacesOfNestedSolids()
     {
         Model m = model3d();

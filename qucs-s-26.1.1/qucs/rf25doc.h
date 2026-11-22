@@ -142,7 +142,7 @@ public:
     /// What reading its file last noted, or why it could not be read.
     QString readNotes() const { return a_readNotes; }
     /// What Read the Layout Again found: the file as it was or changed, its
-    /// shapes, the rulers kept and dropped (V3 of the open items: it said
+    /// shapes, the rulers kept and dropped (it said
     /// nothing); empty before one.
     QString rereadSaid() const { return a_rereadSaid; }
     /// SHA-1 of the layout file's bytes as they were read - what was meshed
@@ -570,7 +570,7 @@ public:
     QString placeTerminal(const QRectF& box, QString* why = nullptr);
 
     /*!
-     * Drawing the shapes themselves (F4 of the open items of 8 November):
+     * Drawing the shapes themselves:
      * with the Rectangle tool a drag draws a rectangle, with the Polygon
      * tool each click a corner - a double click, Enter or a click on the
      * first corner closes it, Backspace takes the last back -, with the Via

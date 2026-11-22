@@ -2054,8 +2054,8 @@ private slots:
 
     void aProfileDrawnInPiecesIsOneCurve()
     {
-        // As Chen et al. (1996) draw SIMS profiles (the open items' B1, B2,
-        // B6): a log axis, each noisy line written as a piece per run of
+        // As Chen et al. (1996) draw SIMS profiles:
+        // a log axis, each noisy line written as a piece per run of
         // counts, broken at each zero, which a log axis cannot show; a
         // histogram held along the frame's bottom where it falls under the
         // axis; the x axis's first and last labels at the frame's corners
@@ -2139,7 +2139,7 @@ private slots:
         Source source(&pdf, file);
         Plot plot = firstPlot(source);
         QVERIFY(plot.calibration.valid());
-        // B1: four labels, linear, from 0.
+        // Four labels, linear, from 0.
         QCOMPARE(plot.xAxis.scale, Scale::Linear);
         QVERIFY2(!plot.xAxis.scaleGuessed, "with 0.0 and 0.3 read, linear is no guess");
         int used = 0;
@@ -2156,7 +2156,7 @@ private slots:
             if (s.colour == QColor(Qt::red)) reds << &s;
             else if (s.colour == QColor(Qt::blue)) blues << &s;
         }
-        // B2: a profile is one curve, a gap at each zero.
+        // A profile is one curve, a gap at each zero.
         QCOMPARE(reds.size(), 2);
         int breaks = 0, points = 0;
         for (const Series* s : std::as_const(reds)) {
@@ -2169,7 +2169,7 @@ private slots:
             for (const QPolygonF& piece : pieces) drawnPoints += int(piece.size());
         QCOMPARE(points, drawnPoints);
         QVERIFY(!reds.first()->dashed);
-        // B6: the histogram's run along the bottom is not data: left out,
+        // The histogram's run along the bottom is not data: left out,
         // a gap between the two bumps.
         QCOMPARE(blues.size(), 1);
         for (const QPointF& v : values(plot, *blues.first())) QVERIFY2(v.y() > 1.05e15, qPrintable(QString::number(v.y())));
@@ -2179,7 +2179,7 @@ private slots:
 
     void arrowsNameTheCurvesTheyPointAt()
     {
-        // As Chen et al. (1996) label theirs (the open items' B4, B5): two
+        // As Chen et al. (1996) label theirs: two
         // pairs of curves, measured (red) and model (blue, a few points off),
         // a legend in a rounded black box; a black arrow from "dose A" to the
         // first pair, one from "dose B" to an ellipse round the second.
@@ -2396,7 +2396,7 @@ private slots:
             if (s.colour == QColor(Qt::blue)) blues << &s;
             else if (s.colour == QColor(Qt::darkGreen)) greens << &s;
         }
-        // D2: the sample names the curve and is no series; D1: the curve is
+        // The sample names the curve and is no series; the curve is
         // its two pieces, and the stroke far above its end is not joined on.
         QCOMPARE(blues.size(), 2);
         const Series* curve = blues.first()->points.size() > blues.last()->points.size() ? blues.first() : blues.last();
@@ -2411,7 +2411,7 @@ private slots:
             QVERIFY2(v.x() > 0.284, qPrintable(QString::number(v.x())));
             QVERIFY2(std::abs(std::log10(v.y()) - 20) < 0.05, qPrintable(QString::number(v.y())));
         }
-        // D3: the bar is the end of the curve it was drawn before.
+        // The bar is the end of the curve it was drawn before.
         QCOMPARE(greens.size(), 1);
         QCOMPARE(greens.first()->breaks.size(), 1);
         const QList<QPointF> green = values(plot, *greens.first());
@@ -2422,7 +2422,7 @@ private slots:
 
     void seriesLeftOutAndWhatWasAskedAreKept()
     {
-        // B3: series beyond those asked for are counted and said; B8: what
+        // Series beyond those asked for are counted and said; what
         // the call asked is kept with the plot, a path's own ink is not
         // said, and a line starting a hair before the axis starts on it.
         const QString file = path(QStringLiteral("leftout.pdf"));
@@ -2882,7 +2882,7 @@ private slots:
         // A series with gaps: its pieces numbered in the csv; in the dataset
         // all of it under its name, a NaN in each gap (where a diagram ends
         // the line), whether it has gaps or not - and a variable each piece
-        // too. Each series' own name taken first (the open items' A1).
+        // too. Each series' own name taken first.
         Plot gapped = plot;
         gapped.series.clear();
         Series model;
@@ -3079,7 +3079,7 @@ private slots:
     {
         // Options::maxSeries of any value, by either route: INT_MAX's six
         // times overflowed in the raster route, a negative one counted more
-        // series left out than were found (the robustness hunt's R2).
+        // series left out than were found.
         const QString file = path(QStringLiteral("counts.pdf"));
         Axes a;
         QVERIFY(writeVector(file, [&](QPainter& p, double u) { drawPlot(p, a, {Curve{sine, Qt::blue}, Curve{cosine, Qt::red}}, u); }));
@@ -3407,7 +3407,7 @@ private slots:
         // A scatter of 120,000 markers about a plot (a million points of
         // paths): QtPdf parses the page again at each question about its
         // text, 0.15 s here, and the fuzzer's page of this kind took 42 s
-        // for one plot's labels (the robustness hunt's R1). Now a heavy page
+        // for one plot's labels. Now a heavy page
         // has its calls in inverse proportion to its weight, each label read
         // whole by one, short runs first: the axes still read, the caption's
         // lines left unread - and not said, being no labels.
@@ -3469,7 +3469,7 @@ private slots:
     {
         // A paper's page of two columns: two plots in one, the other's text
         // beside them, and enough paths elsewhere (10,000 dots) that its
-        // text has a budget (the robustness hunt's R1). The first plot's
+        // text has a budget. The first plot's
         // read took the page's calls - the text between its labels and the
         // next plot's is the column beside, and read all - and the plot read
         // second was left with none, uncalibrated: which, by the order they

@@ -291,7 +291,8 @@ bool tableOf(const QList<Row>& rows, QChar delimiter, QList<Column>* columns, QS
     // Where the numbers begin: the first row within one value of the
     // table's width. Taking the first row of exactly that width sent this
     // past the rows before it - a file whose rows are not all one width
-    // lost both its header and every data row ahead of the widest one. A count on a line of its own ("3" above a
+    // lost both its header and every data row ahead of the widest one.
+    // A count on a line of its own ("3" above a
     // table of three columns) is still not taken for data: it is more than
     // one value off.
     // Near enough the table's width to be one of its rows: within one of
@@ -770,7 +771,7 @@ bool readTouchstone(const QString& path, const QByteArray& bytes, Data* data, QS
     if (ports < 1) return fail(tr("How many ports the Touchstone file has is not known: its suffix (.s2p) or [Number of Ports] says."));
     if (ports > 99) return fail(tr("A Touchstone file of %1 ports is not read (99 at most).").arg(ports));
     // A unit the option line names and we cannot read is refused, not
-    // guessed: guessing it cost a factor of 10^9 in silence (A11).
+    // guessed: guessing it cost a factor of 10^9 in silence.
     if (optionSeen && !unitSaid)
         return fail(tr("The Touchstone file's option line does not say a frequency unit we read (Hz, kHz, MHz or GHz): \"%1\". "
                        "Its frequencies cannot be known.").arg(optionLine.simplified()));
@@ -791,7 +792,7 @@ bool readTouchstone(const QString& path, const QByteArray& bytes, Data* data, QS
         const double f = numbers.at(at) * unit;
         // A two-port's noise data begins where the frequency starts over.
         // Which also means a file whose points are not in rising order
-        // stops here - said below, where it used to lose them in silence
+        // stops here - said below, where it used to lose them in silence.
         if (ports == 2 && !x.re.isEmpty() && f <= x.re.last()) {
             stopped = true;
             break;
@@ -839,7 +840,7 @@ bool readTouchstone(const QString& path, const QByteArray& bytes, Data* data, QS
     // What was left where the frequency stopped rising. A two-port's noise
     // data is five numbers a row, so a leftover that is a multiple of five
     // is the ordinary case and says nothing; anything else is points that
-    // were dropped, which used to happen in silence (A10).
+    // were dropped, which used to happen in silence.
     if (stopped && (numbers.size() - read) % 5 != 0)
         data->notes << tr("%1 number(s) after the %2 point(s) read were left out: they begin where the frequency stops rising, "
                           "which is where a two-port file's noise data begins, and that is how they are read. A file whose "
@@ -863,7 +864,7 @@ void variablesOf(QList<Column> columns, const Options& options, Data* data)
     QSet<QString> used;
     // What each name of the file became, in order: several columns of one
     // name all mapped to the same key of 'renamed', so only the last of
-    // them was reported - "a" became "a_3" and nothing was said of "a_2"
+    // them was reported - "a" became "a_3" and nothing was said of "a_2".
     QMap<QString, QStringList> became;
     for (Column& c : columns) {
         QString name = safeName(c.name);

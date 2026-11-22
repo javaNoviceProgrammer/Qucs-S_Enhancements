@@ -3171,7 +3171,7 @@ bool Schematic::heal(const HealingParams* params) {
 
     // From here on again while merging made a wire longer: a diagonal
     // wire's tolerance widens with its length, and the whole may lie over a
-    // node its pieces did not (bug hunt 2026-09-24, B1: noNodesOnWires
+    // node its pieces did not (noNodesOnWires
     // failed after a rotate). A node split into a wire has three connections
     // at least and is never merged away, and each merge takes a node of two:
     // this ends. The bound is a backstop.

@@ -494,7 +494,7 @@ private slots:
     // The review of 063142f: B1, a failed run answered with the last good result;
     // B2, a call's settings kept by a refused run; B3, "action" ignored without
     // "method"; K2, the two routes' unknowns counted differently.
-    void theReviewsToolFindings()
+    void theToolFindings()
     {
         QString file;
         MultiphysicsDoc* doc = model(QByteArray(), &file);
@@ -503,12 +503,12 @@ private slots:
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QVERIFY(json(r).value("settings").toObject().value("check").toBool());
         const QJsonValue good = doc->model().find(QStringLiteral("conv1"))->value(QStringLiteral("result"));
-        // B1: a value the results lack is an error, the good result kept as it was.
+        // A value the results lack is an error, the good result kept as it was.
         r = call("fem_converge", {{"path", file}, {"method", "adaptive"}, {"values", QJsonArray{"es.nosuch"}}}, jobWait());
         QVERIFY2(failed(r) && text(r).contains(QStringLiteral("es.nosuch")), qPrintable(text(r)));
         QCOMPARE(doc->model().find(QStringLiteral("conv1"))->value(QStringLiteral("result")), good);
         QCOMPARE(doc->model().find(QStringLiteral("conv1"))->value(QStringLiteral("values")).toArray().at(0).toArray().at(0).toString(), QStringLiteral("es.W"));
-        // B2: a refused call's settings are not kept; the next call runs.
+        // A refused call's settings are not kept; the next call runs.
         r = call("fem_converge", {{"path", file}, {"method", "adaptive"}, {"study", "nosuch"}, {"check", false}, {"max_meshes", 2}});
         QVERIFY(failed(r) && text(r).contains(QStringLiteral("nosuch")));
         QVERIFY(doc->model().find(QStringLiteral("conv1"))->text(QStringLiteral("study")) != QLatin1String("nosuch"));
@@ -517,7 +517,7 @@ private slots:
         QVERIFY2(!failed(r), qPrintable(text(r)));
         QCOMPARE(json(r).value("settings").toObject().value("max_meshes").toInt(), 25);
         QVERIFY(json(r).value("settings").toObject().value("check").toBool());
-        // B3: "action" alone is the adaptive check's.
+        // "action" alone is the adaptive check's.
         r = call("fem_converge", {{"path", file}, {"action", "result"}});
         QVERIFY2(!failed(r) && json(r).value("convergence").toString() == QLatin1String("conv1"), qPrintable(text(r)));
         r = call("fem_converge", {{"path", file}, {"action", "keep"}, {"values", QJsonArray{"es.W"}}});
@@ -529,7 +529,7 @@ private slots:
         QVERIFY(!doc->convergenceStale(QStringLiteral("conv1")));
         r = call("fem_converge", {{"path", file}, {"method", "uniform"}, {"action", "keep"}, {"values", QJsonArray{"es.W"}}});
         QVERIFY(failed(r) && text(r).contains(QStringLiteral("adaptive")));
-        // K2: on a mode analysis (edge elements) both routes count the first mesh alike.
+        // On a mode analysis (edge elements) both routes count the first mesh alike.
         const QString wr90 = path(QStringLiteral("wr90.qfem"));
         QFile::remove(wr90);
         QVERIFY(QFile::copy(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/wr90_modes.qfem"), wr90));

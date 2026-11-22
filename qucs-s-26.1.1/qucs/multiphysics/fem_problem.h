@@ -46,8 +46,8 @@ void parallelFor(int n, const std::function<void(int, int)>& work);
 
 /// Threads of 8 MB stacks, a main thread's - std::thread's are the
 /// system's, 512 kB on macOS, and a solve on one parses and compiles its
-/// expressions by recursion (a sweep's points each on its own: the fuzz
-/// of 21 October, E3). Each started at once; all waited for by join(), or
+/// expressions by recursion (a sweep's points each on its own). Each
+/// started at once; all waited for by join(), or
 /// when it goes.
 class Threads
 {

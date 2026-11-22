@@ -773,8 +773,8 @@ public:
         double values[512];
         // (Odd, the middle with as many each side: an even 512 had the
         // search's last step from the middle read values[512] - a band of
-        // dark fill followed as a line 100 pixels thick; the robustness
-        // hunt's fuzzer, seed 21, round 35.)
+        // dark fill followed as a line 100 pixels thick; a fuzzer's seed 21,
+        // round 35.)
         const int size = std::min(2 * count + 1, 511);
         const int mid = size / 2;
         double peak = 0;
@@ -1708,7 +1708,7 @@ Marks marksOf(Traced& t, int family, const std::vector<int>& hrun, const std::ve
                 const float v = dt[size_t(t.at(x, y))];
                 // (Up to nearly a marker's width: a ring a line of another
                 // colour runs through, its middle filled by it, is deeper
-                // than a lone one - the open items' A2, Fig. 5's steep side.)
+                // than a lone one, as on a curve's steep side.)
                 if (v < least || v > 0.95 * typical) continue;
                 bool top = true;
                 for (int dy = -1; dy <= 1 && top; ++dy)

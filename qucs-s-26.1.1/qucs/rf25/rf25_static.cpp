@@ -821,8 +821,7 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         for (const Net& n : nets) charges += n.cells.size();
         // (Past the dense limit the charge is solved compressed - its far
         //  blocks of low rank, by iteration -, to the compressed mesh's own
-        //  bound: the production-readiness review, where
-        //  past 8,000 cells it was refused.)
+        //  bound, where past 8,000 cells it was refused.)
         if (charges > kMostCompressedCells) {
             out.unknowns = int(charges);
             out.problems << tr("%1 cells is more than this build will solve the charge on, compressed (%2 at most): ask for "
@@ -1911,7 +1910,8 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             // (A straight line drawn at an angle, every conductor a rectangle
             //  along one way that is no axis, is uniform but not taken so -
             //  its cross-section is cut along x or y -: said so, where it was
-            //  "not the same along all of it", its length the x projection's. Each within the grid the corners
+            //  "not the same along all of it", its length the x projection's.
+            //  Each within the grid the corners
             //  are on, a GDS file's and the booleans' - kBooleanGrid -: to
             //  1e-6 of its sides' lengths, a rectangle of 2000 by 100 µm at
             //  30 degrees, its corners on a nanometre, was no rectangle, the
@@ -2011,8 +2011,7 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                                        "or a cell of no size.");
                     return out;
                 }
-    // Physical, or said: a matrix no Maxwell matrix is not to be trusted
-    // (P27 of the open items).
+    // Physical, or said: a matrix no Maxwell matrix is not to be trusted.
     if (const QStringList doubts = maxwellDoubts(out.maxwell, out.names); !doubts.isEmpty()) {
         const QString w = tr("The capacitance matrix is no Maxwell matrix - %1: it is not physical, and its values are not "
                              "to be trusted. A finer mesh across the narrowest gaps, or the metals as sheets, may solve it "
@@ -2226,7 +2225,8 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
     // A layout that is no uniform line - a tee, a bend, a step, a pad - has
     // no values per metre: what it holds over its length is no line's, and
     // a two-port of a line that long is no circuit it makes. It was given
-    // one anyway, the whole over its length (a tee's "Z0 31 Ohm"). Its capacitance stands whole, and its
+    // one anyway, the whole over its length (a tee's "Z0 31 Ohm"). Its
+    // capacitance stands whole, and its
     // ports' S are the full-wave solve's.
     const Extraction::PerMetre& pm = extraction.perMetre;
     if (!pm.fromMiddle || index >= pm.maxwell.size() || index >= pm.maxwell0.size()) {

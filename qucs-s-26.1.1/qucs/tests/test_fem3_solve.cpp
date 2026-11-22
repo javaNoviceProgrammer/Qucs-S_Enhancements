@@ -1076,7 +1076,7 @@ private slots:
         QVERIFY2(run.stopped.contains(QStringLiteral("point 2 of 2")) && run.stopped.contains(QStringLiteral("its point before kept")), qPrintable(run.stopped));
         // A row whose values have no unit, its parameter a length: said as
         // the sweep is written (sweepProblems, which fem_model and fem_edit
-        // report), not first when it is solved - a review's "len is in m".
+        // report), not first when it is solved ("len is in m").
         QVERIFY(sweepProblems(bar(QStringLiteral("L"), QStringLiteral("2, 4"), QStringLiteral("mm"))).isEmpty());
         QVERIFY(sweepProblems(bar(QStringLiteral("L"), QStringLiteral("2[mm], 4[mm]"), QString())).isEmpty());
         const QStringList bare = sweepProblems(bar(QStringLiteral("L"), QStringLiteral("2, 4"), QString()));
@@ -1794,8 +1794,8 @@ private slots:
             QCOMPARE(patternNonzeros(sp, 7), qint64(pairs.size()));
         }
         // The fits, against what was measured (M2 Ultra): the app's own solves
-        // of boxes of order 1 and 2 (estimate_probe) and phase C's order-1
-        // Laplacians (amg_bench.tsv) - the solver's own part of each peak,
+        // of boxes of order 1 and 2 and order-1 Laplacians - the solver's own
+        // part of each peak,
         // its matrix and vectors aside; multigrid's within 7 %, the
         // Cholesky's within 17 % and its time within a factor of two.
         const double MB = 1048576;

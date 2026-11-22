@@ -1723,8 +1723,8 @@ QString badFileName(const QString& name)
         return tr("\"%1\" is no file's name: it begins with a space or ends with a space or a dot").arg(name);
     // The characters that are not drawn but change how the rest reads: a
     // right-to-left override turns a name round in every list that shows
-    // it, so "x\u202Egnp.sch" looks like "xhcs.png" (bug hunt 2026-10-23
-    // N3). Unicode's own formatting characters and the zero-width ones.
+    // it, so "x\u202Egnp.sch" looks like "xhcs.png".
+    // Unicode's own formatting characters and the zero-width ones.
     static const QRegularExpression unseen(QStringLiteral("[\\x{200b}-\\x{200f}\\x{202a}-\\x{202e}\\x{2066}-\\x{2069}\\x{feff}]"));
     if (unseen.match(name).hasMatch())
         return tr("%1 is no file's name: it holds a character that is not drawn but changes how the name reads (a "
@@ -6314,7 +6314,7 @@ QJsonObject QucsControl::openDocument(const QJsonObject& args)
         QString why;
         // The file is open, whatever 'page' said: a slide it has not is
         // said with the rest, not answered as though nothing had been
-        // opened (bug hunt 2026-10-23 N6).
+        // opened.
         const bool went = viewPptx(deck, view, &at, &why);
         if (!went) text += QLatin1Char(' ') + why;
         else
@@ -12010,7 +12010,7 @@ QJsonObject QucsControl::screenshot(const QJsonObject& args)
         a_app->showDocument(w);
         // A PDF's pages drawn sharp first: one paint draws what fits in its
         // time and none while a zoom settles, the rest blurred from another
-        // zoom's tiles (the PDF open items' C2).
+        // zoom's tiles.
         if (auto* pdf = dynamic_cast<PdfDoc*>(doc)) pdfTilesLeft = pdf->view()->renderInSight(5000);
         image = (sch != nullptr ? sch->viewport() : w)->grab().toImage();
     }
@@ -12521,7 +12521,8 @@ QAction* QucsControl::actionNamed(const QString& wanted) const
 {
     // Nothing names no action. Most QActions never have an object name
     // set, so an empty 'wanted' equalled the first one's and fired it -
-    // File > New, as the menus happen to be ordered, and trigger_action reaches every menu item there is.
+    // File > New, as the menus happen to be ordered,
+    // and trigger_action reaches every menu item there is.
     if (wanted.trimmed().isEmpty()) return nullptr;
     QStringList paths;
     const QList<QAction*> actions = menuActions(&paths);
@@ -14287,7 +14288,7 @@ void QucsControl::fillControls(QWidget* dialog, const QJsonObject& args, const D
             // What the control took, where that is not what was asked: a
             // field of numbers holds its value within its own bounds, or
             // ignores one it cannot read, and saying it was set alone read
-            // as though it had taken it (bug hunt 2026-10-23 N7).
+            // as though it had taken it.
             QString now;
             // (A spin box's number without its prefix and suffix, or its
             //  special value's words: "20000 runs and cells" was taken for

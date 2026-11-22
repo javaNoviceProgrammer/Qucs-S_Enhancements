@@ -123,8 +123,8 @@ private:
     quint64 a_revision = 0;
 };
 
-/// \a strokes as JSON, to keep them beside what they are drawn on (V1 of
-/// the RF 2.5D open items: a tab closed, its strokes were lost), and read
+/// \a strokes as JSON, to keep them beside what they are drawn on
+/// (a tab closed, its strokes were lost), and read
 /// back - what cannot be read left out.
 QJsonArray strokesJson(const QList<Stroke>& strokes);
 QList<Stroke> strokesOf(const QJsonArray& json);

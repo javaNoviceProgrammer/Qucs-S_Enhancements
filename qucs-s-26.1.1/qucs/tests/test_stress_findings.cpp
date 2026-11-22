@@ -696,7 +696,7 @@ private slots:
 
     // Two halves of a diagonal wire, merged by the healer at their bend,
     // lie over a node neither half's tolerance took - 1.5 units off a
-    // 520-unit wire, inside the whole's (bug hunt 2026-09-24, B1: after a
+    // 520-unit wire, inside the whole's (after a
     // rotate the node lay "on" the wire, not joined to it). It is joined.
     void aNodeByALengthenedDiagonalWireIsJoined()
     {
@@ -723,8 +723,8 @@ private slots:
         QCOMPARE(meeting, 1);
     }
 
-    // Labels saved on the supply pins of library parts (bug hunt
-    // 2026-09-24, B2): Lorenz's SpLib parts name their files where they
+    // Labels saved on the supply pins of library parts:
+    // Lorenz's SpLib parts name their files where they
     // were on the author's machine - found now in user_lib beside it, so
     // the parts have pins and the labels something on them. And a label
     // on a pin of a part whose library is not found at all is kept through

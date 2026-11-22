@@ -410,7 +410,8 @@ QByteArray solveStampOf(const Model& model, const QString& folder)
 {
     // The files a TRL calibration's standards are read from at the solve,
     // each a model of its own, and the layout each names: an answer
-    // calibrated by them stood as current when one was edited. With none, the model's own stamp alone, so that
+    // calibrated by them stood as current when one was edited.
+    // With none, the model's own stamp alone, so that
     // what was kept before reads as before.
     const QDir dir(folder);
     const auto pathOf = [](const QDir& in, const QString& v) {

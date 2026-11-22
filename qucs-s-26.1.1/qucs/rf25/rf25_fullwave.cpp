@@ -79,7 +79,7 @@ constexpr int kMostUnknowns = 6000;
 /// across, 108 at eight and none converging at ten or twelve (a residual of
 /// 3.4e-7 after 3000), its thick-metal twin no frequency in 900 s -: at a
 /// side and a half, 23, 24, 26 and 28, the thick one 96-121, S the same to
-/// every digit the answer gives (B3 of the open items of 8 November; one
+/// every digit the answer gives (one
 /// side 52-69 at twelve across, two the six-across comb four times slower). GMRES to a residual
 /// of kResidual, kRestart vectors at a time, kMostIterations in all; the
 /// ports' Z then from the currents variationally, its error the residual's
@@ -354,8 +354,8 @@ struct Beside {
 /// as the port's own face. A side with none is empty. Given \a netOf (a
 /// cell's net), the face's own net only across a gap from the face on that
 /// line - a shorted coplanar line's grounds, a loop's other end: a source
-/// between two places of one conductor, apart, is no short (B7 of the open
-/// items of 8 November; refused before, "there is none either side of
+/// between two places of one conductor, apart, is no short
+/// (refused before, "there is none either side of
 /// it") -, never its own cells' neighbours there; and given \a isReturn (a net's)
 /// with a return among them, only the returns' cells, a conductor that is
 /// no return passed over - a GSSG's other signal - and said (Beside::passed).
@@ -715,7 +715,7 @@ std::atomic<double> sweepMemorySet{0};
 /// where there is none on that layer, or none so near: the nearest cell
 /// however far, as it was, took an internal port between two strips onto
 /// the nearer, and one whose other metal ended 400 µm short onto that end,
-/// said as "the cell under it" (a bug hunt's second hour).
+/// said as "the cell under it".
 int cellUnder(const Mesh& mesh, const QList<int>& reached, QPointF where, const QString& layer)
 {
     const auto distance = [&where](const QPolygonF& outline) {
@@ -984,7 +984,8 @@ QList<ViaRun> viaRunsOf(const Mesh& mesh, const Stack& stack, double micrometre,
     // (A via's cells through a shape of a metal between its two, which it
     //  does not join: as made it would short to it, and a 3D export does -
     //  a via from M1 to M3 through an M2 strip left it a net of its own, |S31|
-    //  0.021 where joined it reads some 0.5, nothing said: a bug hunt's second hour. Of each via and metal, how many.)
+    //  0.021 where joined it reads some 0.5, nothing said.
+    //  Of each via and metal, how many.)
     QMap<QPair<QString, QString>, int> through;
     for (int index = 0; index < mesh.cells.size(); ++index) {
         const MeshCell& cell = mesh.cells.at(index);
@@ -1193,8 +1194,8 @@ struct Context {
     /// Empty where the run is its cells alone. On a metal solved as its two
     /// faces a run along an edge is its face's strip and its half of the
     /// wall there - from the face to the metal's middle - its current shared
-    /// by length (wallsOf(); A1 of the open items of 8 November: walls that
-    /// carry no current left L 3 to 9 % high).
+    /// by length (wallsOf(); walls that carry no current left L 3 to 9 %
+    /// high).
     struct Part {
         Filament run, image;
         double weight = 1;
@@ -1478,7 +1479,7 @@ struct AtFrequency {
     /// How far the charges' term outweighs the rest of a run's own in M, at
     /// its largest over the runs: past some 1e11 the currents are lost in
     /// its rounding - the mixed potential's breakdown at a low frequency,
-    /// an open where a coil is (N4 of the open items). Nought: not measured.
+    /// an open where a coil is. Nought: not measured.
     double chargeOverSeries = 0;
     /// At a low frequency: solved with the cells' charges as unknowns of
     /// their own (kAugmentedFrom).
@@ -2147,7 +2148,8 @@ template <typename Add> void ownImpedances(const Context& c, double f, Add rawAd
         // current is on the faces' skins, whose reactance is a narrow
         // conductor's as it is a wide one's. A square loop of wire took a
         // wide slab's inside, six times its own beyond its faces' field, and
-        // read the more the finer its cells across. Both non-increasing in X/omega, so is their least:
+        // read the more the finer its cells across.
+        // Both non-increasing in X/omega, so is their least:
         // the share faded as 1/(1 + (t/2 delta)^4), from whole to nought
         // between one skin depth and three, went faster than the slab's own
         // reactance fell, and gave back what it took - the loop's L rose 6 %
@@ -2543,7 +2545,7 @@ double staticPotentialOf(const Context& c, int i, int j)
     // a long cell, and the solve's mean of the two ways, made symmetric, took
     // it for one: a coplanar line's gap cells 0.31 µm wide and 143 µm long
     // read eps_eff 1.12 in air as a sheet, and 1.37 as its two faces, where
-    // it is 1 (P1 of the open items of 8 November). This is Galerkin's
+    // it is 1. This is Galerkin's
     // entry, nearly - symmetric and positive, as P must be for a passive
     // solve -, where the centre taken of the shorter cell alone left
     // solves that gave power.
@@ -2917,7 +2919,8 @@ private:
  * Ohm of a coplanar line's signal, in every term alike, and the columns'
  * matrix all but one of rank. Tied as (B^T Z^-1 B)^-1, that inverse lost
  * what was below it - the line's C at 1 Hz 234 % off, a part in 10^13 at 10
- * Hz, two terminals' 10^59, with nothing said. A port's other columns less its first carry the ampere between
+ * Hz, two terminals' 10^59, with nothing said.
+ * A port's other columns less its first carry the ampere between
  * its returns alone, the own cells' drive cancelling to the bit, so that
  * that term is in each port's first column alone. And of two ports whose
  * returns are on the same two conductors, those differences less each other
@@ -3089,7 +3092,7 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, dou
     // A^T P A / jw beside its currents' Zs + jw L, and past some 1e15 of
     // that the currents are lost in its rounding - a centimetre loop read
     // 21.4 to 26.0 nH at 1 kHz from one mesh to the next, where 24.2 is
-    // right (the production-readiness review: P53's
+    // right (the
     // breakdown, of which only the hint had been mended).
     const bool augmented = out.chargeOverSeries > (augmentedFrom > 0 ? augmentedFrom : kAugmentedFrom);
     if (!augmented) sharedOut(nr, threads, [&c, &p, &m, jw](int b) { chargeColumn(c, p, jw, m, b); });
@@ -4516,7 +4519,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     }
     // Each cell on a layer of the stack that carries a current: one it has
     // not was passed over as reaching nothing, and the solve said "no two
-    // cells of the mesh share an edge... mesh the layout more finely" - the quasi-static solve said which.
+    // cells of the mesh share an edge... mesh the layout more finely"
+    // - the quasi-static solve said which.
     {
         QSet<QString> seen;
         for (const MeshCell& cell : mesh.cells) {
@@ -4591,7 +4595,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             }
         }
         // (Every shape inside the walls: a strip run past them, or one wholly
-        //  outside, came to "nothing finite" at every frequency - a bug hunt's second hour.)
+        //  outside, came to "nothing finite" at every frequency.)
         for (const Conductor& conductor : conductors) {
             const QRectF bounds = conductor.outline.boundingRect();
             const QRectF at(bounds.topLeft() * micrometre, bounds.bottomRight() * micrometre);
@@ -4743,8 +4747,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         }
         // (Its discontinuity taken out by strips of its feed: where each
         //  return is a face, the strips have it along them and at both ends,
-        //  as gds2palace's port walls do - P45 of the open items of 8
-        //  November, where the double delay was done by hand. Another
+        //  as gds2palace's port walls do, where the double delay was done by
+        //  hand. Another
         //  port, or the cells under a rectangle, a strip cannot have.)
         bool faces = !port.internal;
         for (const PortTerminal& t : port.returns) faces = faces && !t.port && t.face;
@@ -4999,8 +5003,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     const bool compress = !c.boxed && c.symAxis == 0
                           && (asked == FullWaveControl::Matrix::Compressed || (asked == FullWaveControl::Matrix::Automatic && nr + nc > most));
     // (A box or a plane of symmetry is held dense alone: told to hold it
-    //  compressed, which it cannot, and asked to, solved dense with no word -
-    //  a bug hunt's second hour.)
+    //  compressed, which it cannot, and asked to, solved dense with no word.)
     const bool denseAlone = c.boxed || c.symAxis != 0;
     const QString why = c.boxed ? tr("a box") : tr("a plane of symmetry");
     if (!compress && nr + nc > most) {
@@ -5146,7 +5149,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             ownNet[p] = netOf.value(to.first().first, -1);
             // (A rectangle over pieces of metal not otherwise joined ties them
             //  through the port, which no probe does: two strips under one
-            //  read |S21| 0.17 where one alone reads 0.9998, nothing said - a bug hunt's second hour. An element across a gap
+            //  read |S21| 0.17 where one alone reads 0.9998, nothing said.
+            //  An element across a gap
             //  is a port over one pad returning through a terminal over the
             //  other.)
             {
@@ -6172,7 +6176,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             out.symmetricLu = out.symmetricLu || a.symmetric;
         }
         // (Held dense, said as the compressed one is: the mesh's estimate of
-        //  it held compressed is not what was done - NF6 of the open items.)
+        //  it held compressed is not what was done.)
         const double bytes = 16.0 * double(nr + nc) * double(nr + nc);
         out.lines << tr("The system held dense (%1 runs and cells, %2 a dense matrix is set up for): %3 a frequency, "
                         "solved by LU.")
@@ -6239,7 +6243,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                          .arg(gap * 1e6, 0, 'g', 4);
         // Open at its sides, the guide takes what a port returning through
         // the ground puts into it away along it and back: a warning, not a
-        // note alone (P38 of the open items: a stripline under such a lid
+        // note alone (a stripline under such a lid
         // read eps_eff 3.14 for 3, its loss four times its metal's).
         bool fromGround = false;
         for (const FullWavePort& p : ports) fromGround = fromGround || !p.coplanar;
@@ -6254,8 +6258,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // (A metal with a conductivity and no thickness: a sheet of no
     //  resistance, its sigma unused - a 1 mm line's series R 3.7e-8 Ohm at 1
     //  GHz, said as a sheet "with the surface impedance of its thickness"; the
-    //  quasi-static solve said it - a bug hunt's second
-    //  hour.)
+    //  quasi-static solve said it.)
     {
         QStringList thin;
         for (const Layer& l : stack.layers) {
@@ -6414,7 +6417,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         // Compressed with the charges as unknowns, Z is first order in GMRES's
         // residual: where that leaves Z's terms further apart than a part of
         // the ports' references, S - a line's S21 wants Z11 - Z21 to some
-        // 10^-11 of Z at 1 Hz - is not to the digits, said (a 2 mm coplanar line's S21 at 1 Hz 0.42, its Z right).
+        // 10^-11 of Z at 1 Hz - is not to the digits, said
+        // (a 2 mm coplanar line's S21 at 1 Hz 0.42, its Z right).
         if (a.loopTree && a.z.size() > 0) {
             const double largest = a.z.cwiseAbs().maxCoeff();
             const double least = *std::min_element(out.references.begin(), out.references.end());
@@ -6449,7 +6453,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             out.gain = eig.eigenvalues().maxCoeff() - 1;
             out.gainAt = frequencies.at(k);
         }
-        // Past its low-frequency limit (N4 of the open items): the charges'
+        // Past its low-frequency limit: the charges'
         // term so far over the currents' that they are lost in its rounding -
         // a spiral at 10 Hz read S21 -118 dB, an open, with nothing but
         // GMRES's iterations said. Dense, some 1e15 - a line's loss within a

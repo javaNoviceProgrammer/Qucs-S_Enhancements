@@ -421,7 +421,8 @@ private:
     double a_losses = 0, a_magneticLosses = 0;
     // The last factorization, and the matrix it is of: a matrix the same at
     // the next solve - a cycle's next pass, a step in time's next step at
-    // rest, of a linear model - solved with it, not factorized again (a coil's 1.7 M unknowns factorized twice, 2739
+    // rest, of a linear model - solved with it, not factorized again
+    // (a coil's 1.7 M unknowns factorized twice, 2739
     // s and 717 s, for one solve).
     std::unique_ptr<SparseRealLdlt> a_lu;
     Eigen::SparseMatrix<double> a_factored;

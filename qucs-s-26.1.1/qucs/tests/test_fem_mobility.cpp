@@ -504,7 +504,8 @@ private slots:
     }
 
     // Masetti's constants not a finite number - µ1 or µmax 1/0, m1 or Pc
-    // sqrt(-1) - refused, the constant named (an infinite µ1 solved, a diode's current 170 times too small; the
+    // sqrt(-1) - refused, the constant named
+    // (an infinite µ1 solved, a diode's current 170 times too small; the
     // others failed as "its Jacobian is singular", naming nothing).
     void masettisConstantsFinite()
     {

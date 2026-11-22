@@ -132,7 +132,7 @@ void TornadoDiagram::collect()
         };
         // The point: 'at' on its first curve, straight between the samples
         // either side, as a box plot's; the
-        // end nearest when it is beyond the sweep - said (N3).
+        // end nearest when it is beyond the sweep - said.
         Bar b;
         b.name = bare(g->Var);
         b.graph = k;

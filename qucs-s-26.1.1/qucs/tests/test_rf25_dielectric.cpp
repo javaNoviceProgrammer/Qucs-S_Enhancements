@@ -1,6 +1,6 @@
 /*
  * test_rf25_dielectric.cpp - a dielectric of an RF 2.5D stack that ends
- * (rf25/rf25_dielectric.h, F2 of the open items of 8 November): the panel's
+ * (rf25/rf25_dielectric.h): the panel's
  * closed form against quadrature, a wall's potential against the Green's
  * function summed over it, and a plate's capacitance over a substrate that
  * ends - against the stack's own Green's function where it ends nowhere
@@ -403,8 +403,8 @@ private slots:
         const rf::DielectricCorrection whole = rf::dielectricCorrection(flush, cells);
         QVERIFY2(whole.ok(), qPrintable(whole.problems.join(" | ")));
         // Its Green's functions counted as they are built, on every thread,
-        // up to all of them, and then its panels' system said (P40 of the open
-        // items: thousands of them built one after another with nothing said,
+        // up to all of them, and then its panels' system said
+        // (thousands of them built one after another with nothing said,
         // the tab at the stack's "20 of 20" through twenty minutes). The
         // answer is the one without the count to the last digit.
         // (Told by whichever thread built one: from the caller's alone, the

@@ -1085,11 +1085,11 @@ private slots:
     // The barriers' bulk is each barrier's own - its material, gap and
     // thickness -, not the material where the line starts: a well there got
     // its own excitons over the barriers' thickness and its steps faded above
-    // its own gap, and barriers of two alloys were 11 times apart mirrored
+    // its own gap, and barriers of two alloys were 11 times apart mirrored.
     // And their excess under "states" only
     // adds: a wide line's free part, or a Lorentzian's tail, took more than
     // the box gave - -468 /cm with no carriers, 115 /cm off half an eV below
-    // the barriers' gap (A2).
+    // the barriers' gap.
     void theBarriersEachTheirOwn()
     {
         auto stack = [](const char* first, const char* firstX, const char* second, const char* secondX, const char* third, const char* thirdX,
@@ -1155,7 +1155,7 @@ private slots:
             QVERIFY2(same(alphas(wellFirst), alphas(barrierFirst)) && alphas(wellFirst)[1] < 1,
                      qPrintable(said(alphas(wellFirst)) + QLatin1String(" against ") + said(alphas(barrierFirst))));
         }
-        // A2: few states, a wide line and a narrow Urbach (2 nm GaAs in 50 nm
+        // Few states, a wide line and a narrow Urbach (2 nm GaAs in 50 nm
         // of Al0.3): never negative; a Lorentzian line: nothing taken off half
         // an eV below the barriers' gap.
         const QString thin = QStringLiteral("50,2,50");

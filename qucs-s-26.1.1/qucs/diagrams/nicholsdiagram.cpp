@@ -235,7 +235,7 @@ int NicholsDiagram::turnsInView() const
     if (!std::isfinite(xAxis.low) || !std::isfinite(xAxis.up)) return 0;
     // Qucs-S: counted as doubles - of an axis from -1e308 the int was
     // undefined, often small, and the grid drawn for 2.5e13 turns without
-    // end (round three of crash hardening, D4).
+    // end.
     const double turns = std::ceil(xAxis.up / 360.0) + 1 - std::floor(xAxis.low / 360.0) + 1;
     return turns <= MostTurns ? int(turns) : MostTurns + 1;
 }
@@ -326,7 +326,7 @@ void NicholsDiagram::paintInFront(QPainter* painter, const Colors& colors)
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
     painter->setPen(QPen(qucs_s::ink::on(QColor(210, 30, 30)), 2));
-    // (Over MostTurns, none: their count is not an int's, D4.)
+    // (Over MostTurns, none: their count is not an int's.)
     if (!std::isfinite(xAxis.low) || !std::isfinite(xAxis.up) || turnsInView() > MostTurns) {
         painter->restore();
         return;

@@ -437,8 +437,8 @@ private slots:
 
     // A microstrip as wide as it is thick, 10 µm, as its two faces, 10 µm
     // over a perfect ground in air, against the 2D eddy solve of its section
-    // where its metal
-    // is a quarter to four skin depths thick: L' was 1.4 % under it at one skin depth and 6.5 % over at
+    // where its metal is a quarter to four skin depths thick:
+    // L' was 1.4 % under it at one skin depth and 6.5 % over at
     // two, its section's own inside, held at its share of the slab's at a low
     // frequency, faded out faster than the slab's own fell. Now within 4 %
     // at each, 3.6 at four skin depths, and falling as the eddy solve's does.
@@ -513,13 +513,15 @@ private slots:
         QTest::newRow("alumina") << 0 << 0.05 << 0.012 << 0.05;
         QTest::newRow("copper") << 1 << 0.03 << 0.01 << 0.03;
         // (The film's L at 10 GHz -1.46 %, -1.0 before a metal as its faces
-        //  held its section's own inside, not a wide slab's: a 1 µm film 1.3 skin depths thick, its
+        //  held its section's own inside, not a wide slab's:
+        //  a 1 µm film 1.3 skin depths thick, its
         //  current still filling it, and 3 cells across, which read low as
         //  any mesh does - a square loop's 6 % low at 2 across, 1.5 % at 8.)
         QTest::newRow("film") << 2 << 0.065 << 0.02 << 0.065;
         // (The narrow line's L at 10 GHz -1.0 %, -0.8 before a faces metal's
         //  inside was held under both its share of the slab's and the slab's
-        //  own, so that no L rises with frequency: 3 µm of gold 3.8 skin depths thick, its slab's own
+        //  own, so that no L rises with frequency: 3 µm of gold 3.8 skin
+        //  depths thick, its slab's own
         //  reactance still over its share there, the share's correction kept
         //  where the fade had all but let it go.)
         QTest::newRow("narrow") << 3 << 0.085 << 0.012 << 0.085;
@@ -541,8 +543,8 @@ private slots:
     }
 
     // The five lines' attenuation on the whole, against their 2D solves: the
-    // edge band's loss (A2) within 5 % on average and 10 % at worst, where
-    // crowding() was 8.6 and 19.9 on an emulator (the
+    // edge band's loss within 5 % on average and 10 % at worst, where
+    // crowding() was 8.6 and 19.9 on an emulator of 4 November (the
     // microstrip's 30 GHz left out: its loss there is more than its metal's,
     // the plan's phase 6).
     void theLinesLossOnTheWhole()
@@ -604,7 +606,7 @@ private slots:
             //  where 100 µm cells read 2.4008, the remainder along a ground's
             //  100 µm cells taken by eight points. +0.60, +0.60 and +0.56 %
             //  since a long cell's potential of a shorter one's charge is its
-            //  mean along it (P1 of the open items of 8 November), where it
+            //  mean along it, where it
             //  was +0.78, +0.79 and +0.75. Held to a band about its own, so
             //  that a drift is caught.)
             QVERIFY2(std::abs(z / mid - 1) < 0.01, qPrintable(QStringLiteral("Z0 %1 Ohm at %2 GHz").arg(z).arg(ref[k].ghz)));
@@ -612,8 +614,7 @@ private slots:
         }
     }
 
-    // GSG pads with tapers (A3 of the open items of 8 November, phase 6 of
-    // the accuracy limits): what the pads lose above 35 GHz is the
+    // GSG pads with tapers: what the pads lose above 35 GHz is the
     // structure's. Their metal perfect, nothing in them dissipates, and what
     // goes is radiated - into the air and the quartz, open below - by their
     // ends: Palace 3D (the pads in a half model, lumped ports across the
@@ -711,7 +712,7 @@ private slots:
         }
     }
 
-    // Phase 7 (A4 of the open items of 8 November): a bandstop filter's
+    // Phase 7: a bandstop filter's
     // stopband against Palace 3D - our own filter, stubFilter(), lossless,
     // edge ports at its ends. Palace (a half model, wave ports on the board's
     // ends, 3.5 million unknowns): -20 dB from 7.4377 to 13.6737 GHz, its

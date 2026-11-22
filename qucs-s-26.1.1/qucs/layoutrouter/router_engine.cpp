@@ -2475,7 +2475,7 @@ Result Router::Impl::runAll(const QStringList& which, const QVector<Kept>& kept,
     result.statesSearched = searched.load();
     result.peakBytes = memory.peak();
     result.seconds = total.elapsed() / 1000.0;
-    // Kept routes that did not hold: a full negotiation, as the proposal asks.
+    // Kept routes that did not hold: a full negotiation.
     return result;
 }
 

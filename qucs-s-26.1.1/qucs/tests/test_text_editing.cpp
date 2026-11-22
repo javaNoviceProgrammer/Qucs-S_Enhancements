@@ -1,5 +1,5 @@
 /*
- * The text editor keeps what is in a file (bug hunt 2026-09-26, A4-A6):
+ * The text editor keeps what is in a file:
  * Edit > Comment/Uncomment changes the lines selected and nothing else, in
  * one step; Undo right after opening does not empty the document; a file
  * is read as its bytes are - UTF-8, UTF-16 with its mark, Windows-1252 -

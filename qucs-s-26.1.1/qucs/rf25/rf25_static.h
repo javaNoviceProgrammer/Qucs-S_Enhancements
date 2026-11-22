@@ -271,8 +271,8 @@ struct ExtractControl {
         Loop,
         /// The layers that end: their correction's Green's functions, one for
         /// each pair of heights its panels and cells are at - thousands,
-        /// where the stack's own are some tens: done of all (P40 of the open
-        /// items: the tab said the stack's "20 of 20" through 20 minutes).
+        /// where the stack's own are some tens: done of all
+        /// (the tab said the stack's "20 of 20" through 20 minutes).
         Ended
     };
     const std::atomic_bool* stop = nullptr;
@@ -320,8 +320,8 @@ QString extractStepSaid(int step, int done, int all, int images);
 /// matrix: a self capacitance not above nought, a mutual one above it, or a
 /// row summing to less than nothing - a conductor's capacitance to the
 /// ground and to infinity below nought -, each beyond a part in 1e6 of the
-/// largest self capacitance. Empty where it is one. (P27 of the open items:
-/// silicon beside a metal's walls through a thin film read C12 positive, and
+/// largest self capacitance. Empty where it is one.
+/// (silicon beside a metal's walls through a thin film read C12 positive, and
 /// nothing said so.)
 QStringList maxwellDoubts(const QList<QList<double>>& maxwell, const QStringList& names);
 

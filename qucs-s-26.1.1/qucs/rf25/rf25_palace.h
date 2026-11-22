@@ -59,7 +59,8 @@ struct PalaceOptions {
     int order = 2;
     /// Palace's linear solver: "default", Palace's own choice - a sparse
     /// direct solver where it was built with one, under its p-multigrid -,
-    /// or "ams", auxiliary-space multigrid alone. On a microstrip the default took a third of the time in the same memory.
+    /// or "ams", auxiliary-space multigrid alone. On a thick microstrip the
+    /// default took a third of the time in the same memory.
     QString solver = QStringLiteral("default");
     /// The adaptive sweep's tolerance (Palace's AdaptiveTol): a few
     /// frequencies solved and the rest from a reduced model through them.

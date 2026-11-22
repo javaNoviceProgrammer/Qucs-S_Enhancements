@@ -1569,7 +1569,7 @@ private slots:
     /// GaAs side's, and read the AlGaAs's from it: 46 times too many 1.5 nm
     /// in.) Its "at" not finite, said as such
     /// (it was "its domains have no extent along the line": N10); a failure
-    /// at a low temperature, the temperature said (N9).
+    /// at a low temperature, the temperature said.
     void semiconductorIn1DAcrossAHeterojunction()
     {
         auto hj = [](const char* space, const QString& mesh, const QString& hmax, const QString& more, const QString& T = QStringLiteral("300[K]")) {
@@ -1738,7 +1738,7 @@ private slots:
             auto strip = [](const Solution& s) { return s.fields()[std::size_t(s.fieldIndex(QStringLiteral("semi")))].line; };
             auto steps = [](const Solution& s) {
                 const QRegularExpressionMatch m = QRegularExpression(QStringLiteral("voltages reached in (\\d+) steps")).match(s.log.join(QLatin1Char('\n')));
-                return m.hasMatch() ? m.captured(1).toInt() : 1;   // (none said: one step - 0.5 V from 0.3 V's)
+                return m.hasMatch() ? m.captured(1).toInt() : 1;   // (none said: one step - 0.5 V from 0.3 V's, since 19 October)
             };
             QVERIFY(strip(*sweep.study.solutions[0]) && strip(*sweep.study.solutions[1]) && strip(*one.solution));
             QVERIFY(strip(*sweep.study.solutions[1])->meshPtr() == strip(*sweep.study.solutions[0])->meshPtr());

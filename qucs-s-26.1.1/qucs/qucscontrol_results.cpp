@@ -204,9 +204,10 @@ QStringList diagramNotes(const Diagram* d, bool legendNote)
     return notes;
 }
 
-// A trace over another x than its type reads (a spectrogram cut an AC sweep as time; a Bode diagram, a Nichols
+// A trace over another x than its type reads
+// (a spectrogram cut an AC sweep as time; a Bode diagram, a Nichols
 // chart and a pole-zero map took a transient), and a stacked diagram's
-// traces over different x on its one axis (B10).
+// traces over different x on its one axis.
 QStringList domainNotes(const Diagram* d)
 {
     QStringList notes;
@@ -374,7 +375,7 @@ bool applyAxis(Axis* a, const QJsonObject& o, const QString& which, QString* err
         }
         if (stepIsACount) {
             // A Smith chart's step is its number of arcs each way, not a
-            // spacing: none swapped for a spacing (round three, D2).
+            // spacing: none swapped for a spacing.
             if (step > Diagram::MaxGridLines) {
                 *error = tr("%1: a Smith chart's 'step' is its number of arcs, 1 to %2.").arg(which).arg(Diagram::MaxGridLines);
                 return false;
@@ -3240,7 +3241,8 @@ QJsonArray diagramsJson(Schematic* sch)
                 ++k;
                 const SpectrumDiagram::Result r = s->resultOf(g);
                 if (r.spectrum.amplitude.isEmpty()) {
-                    // A trace with data and no spectrum: said (the diagram was empty, no reason given).
+                    // A trace with data and no spectrum: said
+                    // (the diagram was empty, no reason given).
                     const DataX* xs = g->axis(0);
                     if (g->cPointsY == nullptr || xs == nullptr || xs->count < 1) continue;
                     const double end = xs->Points[xs->count - 1];
@@ -3316,7 +3318,7 @@ QJsonArray diagramsJson(Schematic* sch)
                 QJsonArray list;
                 // At most 500 a trace: a pole-zero run finds tens; a
                 // trace of 600,000 numbers answered each, and its JSON was
-                // not done in 120 s (round three of crash hardening, D5).
+                // not done in 120 s.
                 constexpr qsizetype kMostRoots = 500;
                 const QList<PoleZeroDiagram::Root> all = PoleZeroDiagram::rootsOf(g);
                 for (const PoleZeroDiagram::Root& r : all) {
@@ -3324,7 +3326,8 @@ QJsonArray diagramsJson(Schematic* sch)
                     QJsonObject ro{{QStringLiteral("re"), number(r.re)}, {QStringLiteral("im"), number(r.im)}, {QStringLiteral("wn"), number(r.wn())},
                                    {QStringLiteral("f"), number(r.wn() / (2 * 3.14159265358979323846))}};
                     // A pole's is stability; a zero's, whether it is in the
-                    // left half-plane - minimum phase (a zero at the origin was "unstable").
+                    // left half-plane - minimum phase
+                    // (a zero at the origin was "unstable").
                     if (PoleZeroDiagram::isZero(g)) ro.insert(QStringLiteral("minimum phase"), r.re < 0);
                     else ro.insert(QStringLiteral("stable"), r.re < 0);
                     if (r.re == 0) ro.insert(QStringLiteral("on the imaginary axis"), true);
@@ -5038,7 +5041,8 @@ QJsonObject QucsControl::addDiagram(const QJsonObject& args)
         if (!expression && !error.isEmpty()) return errorResult(error);
         if (!expression) var = traceVariable(sch, d.get(), wanted, &note, &error);
         if (var.isEmpty()) return errorResult(error);
-        // From a kept run, as add_trace takes one (refused here, a before-and-after took two calls).
+        // From a kept run, as add_trace takes one
+        // (refused here, a before-and-after took two calls).
         const bool fromRun = t.contains(QLatin1String("run"));
         if (fromRun) {
             const QString run = t.value(QLatin1String("run")).toString().trimmed();

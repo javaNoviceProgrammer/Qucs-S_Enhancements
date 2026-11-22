@@ -271,11 +271,11 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
  * none facing that way; inside a shape, on none of its edges; or on no
  * shape at all. The nearest edge was taken however far: a port 4 mm off a
  * strip drove its face, one in the middle of a 1000 µm strip its whole
- * long side, one facing the wrong way its other end, and nothing said
+ * long side, one facing the wrong way its other end, and nothing said.
  * And, no facing given, on a corner: on two
  * edges facing ways apart by more than 45 degrees - an edge whose outside
  * is another shape of the layer none -, which of them it drives a guess:
- * a port at a strip's end's corner drove its long side, and nothing said
+ * a port at a strip's end's corner drove its long side, and nothing said.
  */
 enum class PortPlace { OnEdge, FacingOtherWay, Inside, Outside, OnCorner };
 PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QString& layer = QString(),
@@ -284,7 +284,7 @@ PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QSt
 /// Where an edge port at \a place on \a layer stands, as a clause for why
 /// it is not taken - "it is on a corner of a shape on M1, ..."; empty at
 /// PortPlace::OnEdge. (The exports said every place as no edge facing its
-/// way, a corner's too, where the solve said give it its facing - a bug /// hunt's second hour.)
+/// way, a corner's too, where the solve said give it its facing.)
 QString portPlaceSaid(PortPlace place, const QString& layer);
 
 /*!
@@ -306,7 +306,7 @@ QString portPlaceSaid(PortPlace place, const QString& layer);
  */
 /// How far a loop's solve has got, for what is said while it runs: its runs
 /// and cells once it has them, and its GMRES's iteration and residual where
-/// it is held compressed (P26 of the open items: eight minutes of "finding
+/// it is held compressed (eight minutes of "finding
 /// the loop's inductance…" and nothing more).
 struct LoopProgress {
     std::atomic_int runs{0}, cells{0}, iterations{0};
@@ -324,7 +324,7 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
 
 /// How many runs and cells a loop is solved dense up to: 3000, or RF 2.5D >
 /// Settings…' dense limit where that is lower. Past it inductanceOf() holds
-/// L compressed and solves by GMRES (F5 of the open items of 8 November).
+/// L compressed and solves by GMRES.
 int loopDenseLimit();
 /// Tests: that limit set (0: as above).
 void setLoopDenseLimit(int runsAndCells);

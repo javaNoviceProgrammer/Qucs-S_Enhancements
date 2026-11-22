@@ -5369,7 +5369,7 @@ std::optional<Node> nodeFrom(const QString& parentType, const QJsonValue& value,
     const QJsonObject o = value.toObject();
     Node n;
     n.type = longType(parentType, o.value(QStringLiteral("type")).toString(defaultType));
-    // "name" is a geometry object's label too, as the proposal writes it.
+    // "name" is a geometry object's label too.
     n.tag = o.value(QStringLiteral("tag")).toString();
     n.label = o.value(QStringLiteral("label")).toString();
     n.enabled = o.value(QStringLiteral("enabled")).toBool(true);
@@ -5391,7 +5391,7 @@ std::optional<Node> nodeFrom(const QString& parentType, const QJsonValue& value,
     return n;
 }
 
-/// A selection rule as the proposal writes some: {"bottom of": [...]} is
+/// A selection rule in its short form: {"bottom of": [...]} is
 /// {"of": [...], "side": "bottom"}.
 void normaliseRule(QJsonObject& rule)
 {
@@ -5407,7 +5407,7 @@ void normaliseRule(QJsonObject& rule)
 
 void normaliseSelections(Node& node)
 {
-    // "domains"/"boundaries"/"points" as the proposal writes a selection.
+    // "domains"/"boundaries"/"points", a selection's short form.
     for (const char* key : {"domains", "boundaries", "points"}) {
         const QString k = QString::fromLatin1(key);
         if (node.props.contains(k) && node.props.value(k).isObject() && !node.props.contains(QStringLiteral("selection"))) {

@@ -51,7 +51,7 @@ constexpr double kMu0 = 4e-7 * M_PI;
 /// Beyond this many runs and cells a dense solve is not set up (nor beyond
 /// RF 2.5D > Settings…' dense limit, denseLimit(), where that is lower):
 /// the loop is solved compressed instead, as the full-wave solve is past
-/// its own (F5 of the open items of 8 November) - up to
+/// its own - up to
 /// kMostCompressedRuns, past which nothing is set up.
 constexpr int kMostRuns = 3000;
 constexpr int kMostCompressedRuns = 1000000;
@@ -315,7 +315,8 @@ double partialInductance(const Filament& a, const Filament& b)
     // the first and without the cosine, as this was, a pair at 60 degrees was
     // 2.11 times Neumann's double integral, and the dense loop of a strip at
     // 45 degrees came out 30 to 50 % over the same strip along x - the
-    // compressed one, past the dense limit, the same as it to 0.1 % (a review's octagonal spirals).
+    // compressed one, past the dense limit, the same as it to 0.1 % (on
+    // octagonal spirals).
     if (std::abs(std::abs(along) - 1) >= 1e-12 && a.z0 == a.z1 && b.z0 == b.z1) return along * alignedInductance(a, b);
     const double sign = along > 0 ? 1.0 : -1.0;
 
@@ -642,7 +643,7 @@ bool faceEdge(const QList<Conductor>& conductors, QPointF where, const QString& 
             if (c.outline.containsPoint(middle + normal * (1e-3 * len), Qt::OddEvenFill)) {
                 // (Metal on both its sides - a keyhole's slit, the cut of no
                 //  width that joins a hole to its outline -: no face. A port
-                //  on it drove "the face" along the slit - a bug hunt's second hour.)
+                //  on it drove "the face" along the slit.)
                 if (c.outline.containsPoint(middle - normal * (1e-3 * len), Qt::OddEvenFill)) continue;
                 normal = -normal;
             }
@@ -1136,7 +1137,8 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     for (Filament& f : out.runs)
         if (f.z0 == f.z1 && !(f.rise > 0) && f.thickness > 0 && thick.contains(f.z0)) f.bar = f.thickness;
     // (Cells too thin to tell their edges apart: a run lost at each, and the
-    //  path broken where a column of them crossed it - A review, a spiral's loop "solved" at 0.015 Ohm of its 8.7.)
+    //  path broken where a column of them crossed it - a spiral's loop
+    //  "solved" at 0.015 Ohm of its 8.7.)
     const QString clashSaid = clashes > 0 ? tr(" %1 edge(s) between cells under a nanometre across could not be told "
                                                "apart, and no current crosses them: the mesh is at fault - a finer or a "
                                                "coarser largest cell may mesh it cleanly.")
@@ -1156,8 +1158,8 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         if (!nodeOf.contains(e.second)) nodeOf.insert(e.second, nodeOf.size());
     }
     out.nodes = int(nodeOf.size());
-    // Past the dense limit, compressed (F5 of the open items of 8
-    // November); past what that sets up, refused.
+    // Past the dense limit, compressed;
+    // past what that sets up, refused.
     if (out.branches + out.nodes > kMostCompressedRuns) {
         out.problems << tr("%1 runs of current over %2 cells is more than this build will set up even compressed "
                            "(%3 in all). Mesh the layout more coarsely: fewer cells across a conductor (the Mesh "
@@ -1265,9 +1267,9 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     // (Numbered past every cell of the mesh: they are keys among the cells'
     //  own numbers in nodeOf. As out.nodes and the next - the cells a run
     //  reaches - they were the numbers of real cells wherever a cell was
-    //  joined to nothing, and the current went in at a cell turns away: the
-    //  short of A review, a spiral of 8.7 Ohm at
-    //  0.015 where cells too thin to join had been left out.)
+    //  joined to nothing, and the current went in at a cell turns away: a
+    //  short, a spiral of 8.7 Ohm at 0.015 where cells too thin to join had
+    //  been left out.)
     const int portIn = int(mesh.cells.size()), portOut = int(mesh.cells.size()) + 1;
     int stubs = 0;
     for (const int cell : sourceFace) {
@@ -1375,7 +1377,8 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     // How far the current goes along the runs from where it goes in to
     // every cell, at the least: no path of runs is shorter than the straight
     // line between its ends, so one from end to end shorter than the ends
-    // are apart is a mesh or a loop made wrong - the short of a review went in by a stub that landed turns away, 0.6 µm along
+    // are apart is a mesh or a loop made wrong - a short once went in by a
+    // stub that landed turns away, 0.6 µm along
     // runs from where it came out, 241 µm away. (And what R at direct
     // current is checked against below.)
     std::vector<double> far(std::size_t(nn), std::numeric_limits<double>::infinity());
@@ -1545,7 +1548,7 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         const double left = budget - held - vectors - matrix;
         // Factorized on a thread of its own, watched: Accelerate's
         // factorization has no stop of its own, and a solve asked to stop
-        // in it went on, "still at work after 60 s", until Qucs-S was quit
+        // in it went on, "still at work after 60 s", until Qucs-S was quit.
         // Asked to stop, the solve lets
         // it finish in the background - it holds what it works on - and
         // ends at once.
@@ -1726,9 +1729,8 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         // the one that rises with the distance along the runs, d / D, clipped
         // - no run rises by more than its length over D -, holds 1/R at most
         // its G's energy (Dirichlet's principle). A nodal solve under it is
-        // wrong, whatever made it so: the check a review
-        // asked for, R at direct current against the metal's resistance
-        // along its length, made exact.
+        // wrong, whatever made it so: R at direct current checked against
+        // the metal's resistance along its length, made exact.
         if (const double whole = far[std::size_t(drop)]; out.rDc > 0 && whole > 0 && std::isfinite(whole)) {
             double bound = 0;
             for (int b = 0; b < nb; ++b) {

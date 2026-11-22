@@ -58,7 +58,7 @@ public:
   /// so inside an event loop below the call that is running now. Such a
   /// document is not freed until its own call returns: the dialog is
   /// often a local object of that call, and freeing the document would
-  /// free what the call owns (bug hunt 2026-10-23 A6). Held by
+  /// free what the call owns. Held by
   /// InADialog, around every dialog a document opens.
   bool inADialog() const { return a_inADialog > 0; }
   /// Holds inADialog() while it lives.

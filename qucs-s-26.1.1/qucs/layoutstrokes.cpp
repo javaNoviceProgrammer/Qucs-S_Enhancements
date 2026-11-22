@@ -641,8 +641,7 @@ markup::Snaps snapsNear(const Layout& layout, const Query& base, const QList<Nea
                 }
             // (A strip drawn as a rectangle has a centre line too, along its
             //  length: a highlighter along a 20 µm strip's middle snapped to
-            //  a small square's edge beside it - V6 of the RF 2.5D open
-            //  items.)
+            //  a small square's edge beside it.)
             if (pass == 0 && !l.path && n.outline.size() == 4) {
                 const QRectF box = n.box;
                 double twice = 0;

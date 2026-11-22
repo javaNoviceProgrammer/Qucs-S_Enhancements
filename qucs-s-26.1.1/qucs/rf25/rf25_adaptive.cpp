@@ -335,8 +335,8 @@ Adapted adaptiveSweep(const QList<double>& sweep, const std::function<FullWave(c
     // The ends of the band: a gap at either end wider than the median gap
     // has its middle solved and held to the fit before the sweep may stop -
     // a spiral's 87 to 100 GHz, the widest gap, missed by three times the
-    // tolerance at 99 GHz where the test, met in the middle, never looked
-    // (D4 of the open items). True where every such check was met.
+    // tolerance at 99 GHz where the test, met in the middle, never looked.
+    // True where every such check was met.
     int endChecks = 0;
     const auto endsHold = [&]() -> bool {
         if (solved.size() < 3) return true;
@@ -807,7 +807,7 @@ void judge(MeshConvergence& check)
         if (l.across != l.asked) line += tr(" (%1 asked: the solver's cells ran out)").arg(l.asked);
         line += tr(", %1 cells from %2 to %3 µm, %4 unknowns, %5 s.")
                     .arg(l.cells).arg(l.smallest, 0, 'g', 3).arg(l.largest, 0, 'g', 3).arg(l.unknowns).arg(l.seconds, 0, 'f', 1);
-        // (What the Mesh node takes to make it: D2 of the open items.)
+        // (What the Mesh node takes to make it.)
         if (l.perWavelength > 0)
             line += tr(" As the Mesh node: Cells across a conductor %1, Cells per wavelength %2, Largest cell %3, Gap share %4.")
                         .arg(l.asked)
@@ -850,7 +850,7 @@ QList<int> defaultLevels(int cellsAcross)
 {
     // (One finer than the model's own besides: the three coarse ones alone,
     //  1, 2 and 3 across, put a C within 0.59 % of a limit it passed by 5 %
-    //  at 8 - D1 of the open items. The verdict is the last three's; the
+    //  at 8. The verdict is the last three's; the
     //  model's own is said against it.)
     if (cellsAcross < 3) return {std::max(1, cellsAcross), std::max(1, cellsAcross) * 2, std::max(1, cellsAcross) * 4};
     QList<int> out;

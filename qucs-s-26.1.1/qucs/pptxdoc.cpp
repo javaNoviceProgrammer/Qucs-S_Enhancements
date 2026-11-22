@@ -391,7 +391,7 @@ void SlideView::setZoom(qreal zoom)
     // Not above the slide kept: where it stood at the view's very top, its
     // place within it is a hair negative, and the view would open on the
     // end of the slide before - which is then the slide shown
-    // (updateCurrent) (bug hunt 2026-10-23 B2).
+    // (updateCurrent).
     verticalScrollBar()->setValue(held(std::max(after.top() - Gap, after.top() + offset * after.height())));
     // And it stays the slide shown, as goToSlide() keeps it: at the end of
     // the deck the view stops short of its top, and a third of the way down

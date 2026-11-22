@@ -51,7 +51,7 @@ public:
   /// lines - which the netlist takes as written. Every other value is one
   /// token of its line: getSpiceNetlist() keeps it on that line, so a
   /// newline left in a value (a resistor's Tc1, a diode's Area) cannot
-  /// write a line of its own into the netlist (bug hunt 2026-10-23 A1).
+  /// write a line of its own into the netlist.
   virtual bool propertyHoldsLines(const QString& name) const;
   QString getVerilogACode();
   virtual QString getExpression(spicecompat::SpiceDialect dialect = spicecompat::SPICEDefault);

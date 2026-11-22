@@ -762,7 +762,8 @@ private slots:
     // A record edited by hand, or come with a project from elsewhere,
     // names files out of its folder - by ".." anywhere in the path, an
     // absolute path, a folder that is a link to one elsewhere: none is taken
-    // away, in Libraries/ or in a folder of before (./../../victim.txt took the project's file away). In its folder,
+    // away, in Libraries/ or in a folder of before (a ./../../victim.txt
+    // took the project's file away). In its folder,
     // a copy is taken away only while it is the copy Qucs-S made: the
     // record's sum, or - a record of before sums - its original's bytes.
     void aRecordTakesAwayNothingOutsideItsFolder()
@@ -930,7 +931,7 @@ private slots:
     }
 
     // A library's Verilog-A the project keeps is not to be written - its
-    // link would write the library's own file (the hunt's A2) - told by the
+    // link would write the library's own file - told by the
     // file however its path is spelled; the library's own file, a new file
     // beside it, the record: not refused. A copy: said as a copy. In the
     // window: the save dialogs say it (misc::refusesToWrite()).

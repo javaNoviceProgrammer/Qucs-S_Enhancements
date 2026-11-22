@@ -1971,7 +1971,7 @@ QJsonObject QucsControl::femBuilt(MultiphysicsDoc* doc, const QJsonObject& args)
         return jsonResult(o);
     }
     // (Built again only when changed: a process flow's anneals ran again
-    // each time, 18.7 s for the fuzz of 21 October's, its mesh made stale.)
+    // each time, 18.7 s for a hostile flow's, its mesh made stale.)
     if (!doc->currentGeometry(&why)) return errorResult(tr("The geometry stopped at %1").arg(why));
     if (what == QLatin1String("geometry")) {
         doc->showGeometry();
@@ -2363,7 +2363,7 @@ QJsonArray valuesAgainst(const QJsonArray& values, const QJsonObject& reference,
         // it was given without a name at all ('reference': 1e-10 arrives
         // under an empty key). A number given under a name is matched by
         // that name: one that names nothing used to be measured against
-        // anyway, and counted as matched so the answer said nothing of it
+        // anyway, and counted as matched so the answer said nothing of it.
         QJsonValue want = reference.value(name);
         if (want.isUndefined() && reference.size() == 1 && values.size() == 1 && reference.constBegin().key().isEmpty())
             want = reference.constBegin().value();
@@ -2925,7 +2925,8 @@ QJsonObject refineMesh(Model& m, const Node& meshWas, double h0, double hmin0, d
     // the sizes the model began with, not the ones the mesh before it was
     // given. Restoring the node's own properties alone had the second mesh
     // divide the first's again - 0.05 to 0.025 to 0.00625 at two and four
-    // - so the steps compounded and came out uneven, and the model was left holding the finest one's.
+    // - so the steps compounded and came out uneven, and the model was left
+    // holding the finest one's.
     *mesh = meshWas;
     const bool wasCustom = meshWas.props.value(QLatin1String("custom")).toBool();
     // (Not custom before: the other fields may hold what an earlier try
@@ -2939,7 +2940,8 @@ QJsonObject refineMesh(Model& m, const Node& meshWas, double h0, double hmin0, d
     // The smallest element divided too, whatever says it - the preset's,
     // or the node's own. It is a floor: left where it was, it holds the
     // finer meshes back and the steps come out uneven (138k to 360k
-    // unknowns at twice, then 4.47M at four times - a re-check - where each halving should give about four).
+    // unknowns at twice, then 4.47M at four times - where each halving
+    // should give about four).
     if (hmin0 > 0 && hmin0 / factor < h0 / factor) {
         mesh->props.insert(QStringLiteral("hmin"), formatNumber(hmin0 / factor, 6));
         set.insert(QStringLiteral("hmin"), mesh->props.value(QLatin1String("hmin")));
@@ -2993,7 +2995,7 @@ void QucsControl::femConverge(const QJsonObject& args, const Done& done)
     // Refined where the error is, until the values settle: a job of the model's
     // own, its node and page (qucscontrol_fem_adapt.cpp).
     // ("action" result and keep are the adaptive check's: given alone they ran a
-    // whole uniform study, or asked for its values - the review of 063142f, B3.)
+    // whole uniform study, or asked for its values.)
     const QString action = args.value(QLatin1String("action")).toString().trimmed();
     const bool adaptiveAction = action == QLatin1String("result") || action == QLatin1String("keep");
     const QString method = args.value(QLatin1String("method")).toString(adaptiveAction ? QStringLiteral("adaptive") : QStringLiteral("uniform")).trimmed();

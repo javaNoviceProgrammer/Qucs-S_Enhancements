@@ -560,7 +560,7 @@ EquivalentCircuit fitCircuit(const QStringList& ports, const QList<double>& freq
     c.branchwiseRms = c.rms;
     c.branchwiseWorst = c.worst;
     // Then every value at once, fitted to the solve's S rather than each
-    // branch to its own share of Y (F6 of the open items of 8 November): a
+    // branch to its own share of Y: a
     // branch's share weighs each frequency by its own Y, the circuit's S by
     // what the ports see. From each branch's fit, and from those of the
     // forms that fitted their share nearly as well, taken together; the

@@ -314,7 +314,7 @@ void StackView::mousePressEvent(QMouseEvent* event)
 /// reads it, so that a large GDSII file never holds the window.
 struct RF25Doc::Job {
     QString path;
-    QByteArray stamp;   ///< of the file's bytes, as read (V3)
+    QByteArray stamp;   ///< of the file's bytes, as read
     std::shared_ptr<Layout> result;
     QString error;
     std::atomic_bool cancelled{false};
@@ -535,7 +535,7 @@ void RF25Doc::buildUi()
         if (on) setPlacing(Placing::InternalPort);
         else if (a_placing == Placing::InternalPort) setPlacing(Placing::None);
     });
-    // The shapes themselves drawn (F4 of the open items of 8 November): the
+    // The shapes themselves drawn: the
     // button takes the last tool up again, its arrow chooses the tool, the
     // layer, the via's size.
     a_viaSize = std::max(1e-3, settings.value(QLatin1String("RF25/viaSize"), 1.0).toDouble());
@@ -820,8 +820,8 @@ bool RF25Doc::load()
     applyModel(*m, true);
     a_undo->setClean();
     setDocChanged(false);
-    // The pen's strokes on its view, kept beside it (V1 of the open items:
-    // saved nowhere, a tab closed lost them).
+    // The pen's strokes on its view, kept beside it
+    // (saved nowhere, a tab closed lost them).
     a_view->keepDrawingIn(a_DocName + QStringLiteral(".drawings"));
     stampedAs(asRead);
     readKeptSolution();
@@ -1075,7 +1075,7 @@ void RF25Doc::showProblems()
         for (const QString& line : a_convergence->problems) lines << QStringLiteral("  • ") + line;
     }
     // What became of the solution kept beside the model: shown, or why not;
-    // and what the last Read the Layout Again found (V3).
+    // and what the last Read the Layout Again found.
     if (!a_keptSaid.isEmpty()) lines << a_keptSaid;
     if (!a_rereadSaid.isEmpty()) lines << a_rereadSaid;
     if (!a_drawingSaid.isEmpty()) lines << a_drawingSaid;
@@ -1108,8 +1108,8 @@ void RF25Doc::showProblems()
                        .arg(s.conductors().size())
                        .arg(qucs_s::fem::formatQuantity(s.height(), qucs_s::fem::Dim::length()),
                             said.isEmpty() ? tr("nothing is missing") : tr("%1 thing(s) missing").arg(said.size()));
-    // The unknowns, where the mesh has them: what the proposal asks the
-    // panel to show before a solve is ever started.
+    // The unknowns, where the mesh has them: shown before a solve is ever
+    // started.
     if (a_prepareJob) tail += tr("; the shapes and the mesh are being made");
     else if (a_mesh && !a_mesh->cells.isEmpty())
         // (The charges the solve has, which the log counts: a metal solved
@@ -1220,7 +1220,7 @@ void RF25Doc::refreshLayout()
 
 void RF25Doc::rereadLayout()
 {
-    // (What was read before, to say what this read found: V3.)
+    // (What was read before, to say what this read found.)
     a_rereadAsked = true;
     a_rereadShapes = a_layout ? a_layout->shapeCount : 0;
     a_rereadStamp = a_readStamp;
@@ -1245,7 +1245,7 @@ void RF25Doc::readingDone()
     a_readStamp = job->result ? job->stamp : QByteArray();
     a_rulersKept = a_rulersDropped = 0;
     showLayout();
-    // Read the Layout Again: what it found, said (V3 of the open items: no
+    // Read the Layout Again: what it found, said (no
     // word, so that a user could not tell it did anything).
     if (a_rereadAsked) {
         a_rereadAsked = false;
@@ -1406,7 +1406,7 @@ void RF25Doc::showLayout()
     const QList<QLineF> rulers = again || a_keepView ? a_view->rulers() : QList<QLineF>();
     // The same file read again (Read the Layout Again): its rulers kept,
     // but for one an end of which was snapped to a corner or an edge that is
-    // no longer there - cleared, every one went (V2 of the open items).
+    // no longer there - cleared, every one went.
     const bool reread = !again && !a_keepView && a_view->layout() && a_view->layout()->file == a_layout->file
                         && a_view->cell() >= 0 && a_layout->cellIndex(a_view->layout()->cells.at(a_view->cell()).name) >= 0;
     QList<std::pair<QLineF, std::pair<bool, bool>>> held;   // (each ruler, and whether each end was snapped)
@@ -1431,7 +1431,7 @@ void RF25Doc::showLayout()
     for (const QLineF& r : rulers) a_view->addRuler(r);
     a_view->setStyles(stylesFor(*a_layout));
     // The stack's names for the file's layers, by the layer map: a stroke's
-    // reading says "V2 (12/0)" where it said "12/0" (V5 of the open items).
+    // reading says "V2 (12/0)" where it said "12/0".
     {
         const qucs_s::rf25::LayerMap map = qucs_s::rf25::layerMapOf(a_model);
         QHash<int, QString> names;
@@ -1516,7 +1516,7 @@ void RF25Doc::prepare()
         }
         // A solve waiting for this is told now - there is nothing to solve,
         // and why -, from the event loop: it waited on for ever, its button
-        // "Stop" (found with P25 of the open items).
+        // "Stop".
         // (Still wanted until it has said so, so that what waits for it
         //  waits for the answer.)
         if (a_solveWhenPrepared && !a_solveJob)
@@ -2282,8 +2282,8 @@ void RF25Doc::solveWith(const SolveRequest& request)
         // What is missing, said: a layout file that is not there (a relative
         // path, the model copied elsewhere), the processing's and the mesh's
         // own problems - where it said only "give the model a layout and a
-        // layer map", a layout that was there all along (P25 of the open
-        // items, and P6: shapes a hundred metres long).
+        // layer map", of a layout that was there all along or of shapes a
+        // hundred metres long.
         QStringList why{tr("There is no mesh to solve on:")};
         if (!a_layoutProblem.isEmpty()) why << a_layoutProblem;
         if (a_processed) why += a_processed->problems;
@@ -2325,7 +2325,8 @@ void RF25Doc::solveWith(const SolveRequest& request)
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     // Its matrices, gigabytes of them, freed as the thread goes - a solve
     // stopped, or overtaken, too -, and offered back to the system: after a
-    // Stop the app held 18.9 GB of what it had freed. (A turn of the loop on, once the thread's last
+    // Stop the app held 18.9 GB of what it had freed.
+    // (A turn of the loop on, once the thread's last
     // reference to the job has gone with it.)
     connect(thread, &QObject::destroyed, qApp, [] { QTimer::singleShot(0, qApp, [] { misc::releaseFreedMemory(); }); });
     thread->start();
@@ -2486,7 +2487,7 @@ RF25Doc::Count RF25Doc::countNow() const
         const int step = job->step.load(), done = job->stepDone.load(), all = job->stepAll.load();
         c.said = tr("Solving quasi-statically: %1…").arg(extractStepSaid(step, done, all, job->images.load()));
         // The loop: how large, and how far its GMRES has got where it is held
-        // compressed (P26 of the open items).
+        // compressed.
         if (step == ExtractControl::Loop) {
             const LoopProgress& lp = job->loopProgress;
             if (const int runs = lp.runs.load(); runs > 0)
@@ -2984,7 +2985,7 @@ QStringList RF25Doc::lineSummary() const
                                           .arg(cl.names.join(QStringLiteral(", ")), returning.join(QStringLiteral(", ")))
                                           .arg(a_solvedLength * 1e6, 0, 'g', 4)
                                           .arg(modes.join(QStringLiteral("; "))));
-        // Their matrices per metre (G3).
+        // Their matrices per metre.
         const auto rows = [](const fem::CoupledLines::Matrix& m, double scale) {
             QStringList all;
             for (const std::vector<double>& r : m) {

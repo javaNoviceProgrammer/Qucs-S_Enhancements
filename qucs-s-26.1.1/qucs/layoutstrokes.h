@@ -38,7 +38,7 @@ namespace qucs_s::layout {
 /// along a path or an edge), "polyline" (a line, a corner, a mark or a
 /// ring that is a few straight runs); \a points, its points simplified.
 /// (\a layerNames, given: a tab's names for the file's layers, by index -
-/// each layer said as "V2 (12/0)", V5 of the RF 2.5D open items.)
+/// each layer said as "V2 (12/0)".)
 QJsonArray readStrokes(const Layout& layout, const Query& base, const QList<markup::Stroke>& strokes, bool points,
                        const QHash<int, QString>* layerNames = nullptr);
 

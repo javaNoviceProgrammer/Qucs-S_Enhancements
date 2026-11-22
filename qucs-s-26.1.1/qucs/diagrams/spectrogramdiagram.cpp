@@ -106,7 +106,8 @@ ContourDiagram::Grid SpectrogramDiagram::gridFor(const Graph* g) const
         return grid;
     }
     // A segment holds 8 samples or more, as a spectrum needs: a shorter one
-    // gives none, and cut a run into billions of steps (a file that kept one could not be opened).
+    // gives none, and cut a run into billions of steps
+    // (a file that kept one could not be opened).
     const double interval = (t.last() - t.first()) / (t.size() - 1);
     if (length < 8 * interval) {
         grid.error = QObject::tr("a segment of %1 s holds fewer than 8 of the run's samples (%2 s apart on average): give a "
@@ -153,7 +154,7 @@ ContourDiagram::Grid SpectrogramDiagram::gridFor(const Graph* g) const
     for (const sp::Spectrum& s : std::as_const(spectra)) bins = std::min(bins, int(s.amplitude.size()));
     const double df = spectra.first().df;
     if (std::isfinite(upTo) && upTo > 0) {
-        // (As a double: 1.25e17 was an int's - round three of crash hardening, U6.)
+        // (As a double: 1.25e17 was an int's.)
         const double rows = std::ceil(upTo / df) + 1;
         bins = rows > double(bins) ? bins : rows >= 2.0 ? int(rows) : 2;   // (NaN: 2)
     } else {

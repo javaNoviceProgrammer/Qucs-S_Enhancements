@@ -36,8 +36,8 @@ QString tr(const char* text)
 }
 
 /// How many unknowns this build will set up a dense matrix for. Beyond it
-/// the matrix alone is more memory than a desktop has, and the proposal
-/// asks for a refusal rather than a machine that fills its swap.
+/// the matrix alone is more memory than a desktop has: a refusal rather
+/// than a machine that fills its swap.
 constexpr int kMostUnknowns = 60000;
 /// And held compressed: the full-wave solve's own bound.
 constexpr int kMostCompressedUnknowns = 2000000;
@@ -358,7 +358,8 @@ struct Slab {
  * drawn alone's. Sized by the conductor's 2 area / perimeter whole, the line
  * inside the polygon was meshed unlike the line drawn alone - its eps_eff
  * 0.6-0.8 % over it -, and a filter's 0.7 mm line in a polygon called 2694
- * µm wide had one or two cells across it. Empty where the pieces' areas do not add up to the outline's
+ * µm wide had one or two cells across it.
+ * Empty where the pieces' areas do not add up to the outline's
  * (it crosses itself, or is no simple outline).
  */
 QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved = nullptr, double across = 0)
@@ -415,7 +416,8 @@ QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved =
         // their corners at heights of their own, and a part between an
         // inner corner and an outer one a hair higher was a sliver, meshed
         // by its own depth - a circle of 180 segments a turn, its parts
-        // 0.0098 µm deep, 170,381 cells for a strip of 1,335 by 8 µm. Moved across the cuts alone, along
+        // 0.0098 µm deep, 170,381 cells for a strip of 1,335 by 8 µm. Moved
+        // across the cuts alone, along
         // a side near the slabs' way it moves little of the area.
         //
         // Each moved along the steeper of its two sides down to its
@@ -531,7 +533,8 @@ QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved =
             // is only how far apart two corners of the outline are - a
             // dodecagonal spiral's turns have corners 0.012 µm apart in height,
             // and the slab between them was meshed as a conductor 0.012 µm wide,
-            // 12,770 cells for a spiral of 6,500 - so it goes by its width across the slab, its length across
+            // 12,770 cells for a spiral of 6,500 - so it goes by its width
+            // across the slab, its length across
             // the slabs.
             const double e = 1e3 * tol;
             const bool lowCut = whole.containsPoint(at(0.5 * (sp.u0[0] + sp.u1[0]), sp.c0 - e), Qt::OddEvenFill);
@@ -1046,14 +1049,14 @@ QStringList facesDecided(Stack* stack, const QList<Conductor>& conductors, const
     // A metal Solved as Automatic: as its two faces where it is at least a
     // fortieth as thick as the narrowest gap beside it (kAutomaticFaces) -
     // where a sheet, which has no thickness in the field and no walls,
-    // reads Z0 a per cent and more high (A1 of the open items of 8
-    // November) -, else a sheet. Said either way, and decided before
+    // reads Z0 a per cent and more high
+    // -, else a sheet. Said either way, and decided before
     // anything else reads the stack.
     QStringList words;
     // (Near a threshold the answer steps as a dimension crosses it - a gap
     //  swept across forty times the thickness stepped C12 3.3 %, a width
-    //  across fifty times it stepped C 0.86 %
-    //  second hour -: said, with how to hold it steady.)
+    //  across fifty times it stepped C 0.86 % -: said, with how to hold it
+    //  steady.)
     const auto nearThreshold = [](double ratio, const QString& metal) {
         return ratio > 0.85 && ratio < 1.0 / 0.85
                    ? QLatin1Char(' ') + tr("That is near the threshold: a sweep or an optimization across it steps the answer "
@@ -1162,8 +1165,7 @@ MeshSettings meshSettingsOf(const Node& node, const QList<fem::Model::Parameter>
     if (across.isDouble()) how.cellsAcross = across.toInt();
     else if (across.isString() && !across.toString().trimmed().isEmpty()) how.cellsAcross = across.toString().toInt();
     how.stretch = numberIn(node, QStringLiteral("stretch"), scope, how.stretch, tr("Mesh"), problems);
-    // (A convergence check's mesh written back: its share at the gaps too -
-    //  D2 of the open items.)
+    // (A convergence check's mesh written back: its share at the gaps too.)
     how.gapShare = numberIn(node, QStringLiteral("gap_share"), scope, how.gapShare, tr("Mesh"), problems);
     if (!(how.gapShare > 0 && how.gapShare <= 1)) {
         if (problems != nullptr) *problems << tr("Mesh: the share of a gap its outermost cells come down to is above nought and one at most.");
@@ -1218,8 +1220,7 @@ MeshCost costOf(int unknowns, bool compressed)
         cost.tooBig = unknowns > kMostCompressedUnknowns;
         const double mb = cost.matrixBytes / (1024 * 1024);
         // (Where: a study's Automatic holds a system under its dense limit
-        //  dense, which the solve says - this an estimate, not what it did,
-        //  NF6 of the open items.)
+        //  dense, which the solve says - this an estimate, not what it did.)
         cost.said = mb >= 1024 ? tr("%1 unknowns; some %2 GB where they are held compressed").arg(unknowns).arg(mb / 1024, 0, 'f', 1)
                                : tr("%1 unknowns; some %2 MB where they are held compressed").arg(unknowns).arg(mb, 0, 'f', 1);
         if (cost.tooBig)
@@ -1312,8 +1313,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // ends as alike as the whole's. Meshed alone, its cut was graded as an
     // edge, its strips cut twice as finely, and the outline the cut leaves
     // split into pieces otherwise than the whole's - two thirds of the
-    // whole's cells, a fill no quicker, and S11 and S22 of a line 2e-4 apart
-    // (P36 of the open items).
+    // whole's cells, a fill no quicker, and S11 and S22 of a line 2e-4 apart.
     const int axis = how.symmetryAxis;
     const double plane = how.symmetryAt;
     // (One that reaches the plane united with its mirror - one outline,
@@ -1424,7 +1424,8 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // A strip (Conductor::spine) is no piece: it is cut along its centreline,
     // in cells of each segment's own frame (stripCells()), below - a spiral
     // of 180 segments a turn cut into the parts between its corners was
-    // 26,538 cells where the strip needs some 2,000. Not on a metal standing for a round wire, nor with a
+    // 26,538 cells where the strip needs some 2,000. Not on a metal
+    // standing for a round wire, nor with a
     // plane of symmetry: the half is meshed as the whole is.
     QList<StripQuads> quadsOf(conductors.size());
     int stripsCut = 0, stripSegments = 0;
@@ -1481,7 +1482,8 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     // (a strip at an angle its own width). By its own depth,
                     // a part of a circle's cap 0.002 µm deep had its cells so
                     // fine, and its lines taken by its neighbours, that a disc
-                    // of 100 µm was 37,000 cells of down to 1e-6 µm², and cells under a nanometre wide.
+                    // of 100 µm was 37,000 cells of down to 1e-6 µm², and
+                    // cells under a nanometre wide.
                     if (!slab.rectangle && piece.feature > 0) {
                         const QPointF middle = centroidOf(slab.outline, areaOf(slab.outline));
                         double width = std::numeric_limits<double>::infinity();
@@ -1539,7 +1541,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // raised by. Left out, a lower plate's top face came out above the
     // upper plate - a MIM's plates of 0.49 and 0.15 µm 40 nm apart as their
     // faces, the gap -0.45 µm - and its cells were never aligned: 52 % low at
-    // 5 µm cells, as P28 had been.
+    // 5 µm cells.
     QHash<QString, QPair<double, double>> span;
     {
         double z = 0;
@@ -1563,7 +1565,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // banded with its feed: each cut at the other's edges, so that where
     // they overlap each is a piece of its own, its lines shared with the
     // other's below and none crossing the rest of it. Left whole, their
-    // cells stayed misaligned and their C read as low as P28's did, with
+    // cells stayed misaligned and their C read as low as before, with
     // nothing said (the review of 26ff2805). (Wherever the gap is under a
     // tenth of the cells, as the plates' rule: misaligned, a coplanar line's
     // signal 2 µm over its ground read its C 32 % low at 50 µm cells, 25
@@ -1667,7 +1669,8 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         // run along x or y on one line: those lines shared too, so that its
         // clipped cells there share whole edges with the other's. Left out,
         // two touching pieces the union had not joined met through no run of
-        // current at all where one had a slanted side. (Its sides stay graded as they were.)
+        // current at all where one had a slanted side.
+        // (Its sides stay graded as they were.)
         const auto outlineOf = [&pieces, &conductors](int i) {
             const Piece& p = pieces.at(i);
             return p.rectangle ? QPolygonF(p.box) : !p.outline.isEmpty() ? p.outline : conductors.at(p.conductor).outline;
@@ -1824,7 +1827,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // charges must mirror across the gap, which uniform cells on two grids
     // cannot: a MIM's plates 40 nm apart read their C 52 % low at cells of
     // 5 µm, 25 % at 2.5, the bottom plate's cells under the top's
-    // misaligned (P28 of the open items).
+    // misaligned.
     int stackedShared = 0;
     struct Facing {
         int a, b;
@@ -1988,7 +1991,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // strip's current crowded to its edges, as a flat strip's does and a
     // round wire's does not, and a leg was a bundle of thin vias each with
     // its own skin: at six across, with a pad's cells, the wire's R read 1.8
-    // to 2.3 times a round wire's (P34 of the open items).
+    // to 2.3 times a round wire's.
     QSet<QString> roundWires;
     for (const Layer& l : stack.layers)
         if (l.roundWire) roundWires << l.name;
@@ -2143,7 +2146,8 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         // them, and from those to the other rectangles (a pad), each piece
         // taking its stronger neighbours' lines where it meets them in place
         // of its own. Shared both ways, a pad's lines came through its taper
-        // into the line across its width. Then shared both ways, so that cells meet edge to edge
+        // into the line across its width.
+        // Then shared both ways, so that cells meet edge to edge
         // whatever was left.
         bool parts = false;
         for (const Piece& p : std::as_const(pieces)) parts = parts || (!p.rectangle && !p.outline.isEmpty());
@@ -2301,8 +2305,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         return mesh;
     }
     // (A warning too, in the solve's answer: said in the tab's notes alone,
-    //  a model asking for 8 across solved at 2 without a word in it - D2 of
-    //  the open items.)
+    //  a model asking for 8 across solved at 2 without a word in it.)
     if (perFeature < how.cellsAcross && fits) {
         const QString w = tr("%1 cells across a conductor would be more than the %2 this build solves: %3 across instead "
                              "(Most cells on the Mesh node raises it).")
@@ -2439,7 +2442,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // µm metal in 1 µm gaps it was 19 % under Palace, two sheets with no
     // walls giving 0.82 of solid metal; 3 µm in 50 µm gaps, as rf25_fullwave.h
     // validates, is a few per cent. Said where the thickness is a quarter of
-    // the narrowest gap or more (B2 of the open items of 8 November: nothing
+    // the narrowest gap or more (nothing
     // was said).
     QSet<QString> wallsWarned;   // (a sheet's layers said so: their thickness over the ground is not said again, below)
     {
@@ -2503,10 +2506,11 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         }
     }
     // A metal thick against its own width: the full wave's inductance at a
-    // low frequency reads high, and the more the thicker (a square loop of wire 0.5 by 0.5 mm, 24.2 nH, read 33.4
+    // low frequency reads high, and the more the thicker
+    // (a square loop of wire 0.5 by 0.5 mm, 24.2 nH, read 33.4
     // as a sheet). A sheet's field is of no thickness, and its surface
     // impedance adds the inside of a slab on top. As its two faces it holds
-    // its section's own inside (facesInside(), P52), except a conductor more
+    // its section's own inside (facesInside()), except a conductor more
     // than about twice as tall as it is wide, whose faces' field alone holds
     // more than its section's. The loop inductance (rf25_inductance) takes
     // each run as the bar it is.
@@ -2514,7 +2518,8 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // (Which metals are their faces as the solvers decide it, thickened()'s
     // facesDecided(), not the stack's flags: an Automatic metal with no gap
     // beside it is a sheet, which this took for faces and said nothing of -
-    // a lone wire 10 µm wide of 8 µm metal read L 27 % high. Of the conductors whole, their mirrors with them.)
+    // a lone wire 10 µm wide of 8 µm metal read L 27 % high.
+    // Of the conductors whole, their mirrors with them.)
     Stack decided = stack;
     const QStringList facedMetals = facesDecided(&decided, conductors, mesh.gapByLayer, nullptr);
     {
@@ -2556,14 +2561,13 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // A sheet thick against how high it stands over the ground: its walls and
     // its top, a thickness higher, are not in a sheet, and Wheeler's
     // correction says how much wider they make it - laminate copper 15 µm
-    // thick on 60 µm read its C 7 % under a 3D solve's, with no word (P39 of
-    // the open items).
+    // thick on 60 µm read its C 7 % under a 3D solve's, with no word.
     if (!stack.layers.isEmpty() && stack.layers.first().kind == Layer::Ground) {
         // (Each conductor's width - a rectangle's short side; a trace of any
         //  other shape twice its area over its perimeter, which is its width
         //  where it is long - and its length, its area over that. With their
         //  mirrors, on a plane of symmetry: a strip the plane halves is as
-        //  wide as the whole - P36's half warned of strips half as wide as
+        //  wide as the whole - the half warned of strips half as wide as
         //  the whole's, which it did not. And
         //  none that faces another metal across a thin gap, whose charge
         //  is the plates'.)
@@ -2673,7 +2677,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             }
             // (Its conductors' C to the ground, each by its length, as sheets
             //  and widened: laminate copper 15 µm thick on 60 µm, 120 µm wide,
-            //  6.9 % - its C was 7 % under a 3D solve's, P39 of the open items;
+            //  6.9 % - its C was 7 % under a 3D solve's;
             //  35 µm copper on 1.6 mm of FR-4, 3 mm wide, 1 %, and on 0.5 mm,
             //  0.96 mm wide, 2.8 %: not said.)
             double asSheets = 0, widened = 0;

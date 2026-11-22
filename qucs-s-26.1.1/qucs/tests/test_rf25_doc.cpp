@@ -828,7 +828,7 @@ private slots:
         QVERIFY2(doc->layoutProblem().contains(QStringLiteral("not there")), qPrintable(doc->layoutProblem()));
         QVERIFY(doc->problemsText()->toPlainText().contains(QStringLiteral("not there")));
         // Named as the Layout gives it, where it was looked for; and a solve
-        // says that, not "give the model a layout" (P25 of the open items).
+        // says that, not "give the model a layout".
         QVERIFY2(doc->layoutProblem().contains(QStringLiteral("the Layout names \"nowhere.gds\", read beside the model")),
                  qPrintable(doc->layoutProblem()));
         doc->solve();
@@ -1086,7 +1086,7 @@ private slots:
         QTRY_COMPARE(itemOf(tree, QStringLiteral("cutout"))->text(1), QStringLiteral("1 region(s)"));
         QCOMPARE(itemOf(tree, tag)->text(1), QStringLiteral("kept"));
         // One that cannot be read is marked on its row, why in its tip, and
-        // the Cutout counts what is applied (C1 of the open items: it read
+        // the Cutout counts what is applied (it read
         // "kept", the Cutout "1 region(s)", and was dropped with no sign).
         QVERIFY(doc->editNode(tag, [](rf::Node& n) { n.props.insert(QStringLiteral("x1"), QStringLiteral("no_such_length")); },
                               QStringLiteral("unreadable")));
@@ -1146,7 +1146,7 @@ private slots:
         panel()->selectNode(QStringLiteral("cutout"));
         QTRY_VERIFY2(reportText().contains(QStringLiteral("masked")), qPrintable(reportText()));
         // A region beside it that cannot be read: among the solve's warnings,
-        // not only in the panel (C1 of the open items; kept apart from the
+        // not only in the panel (kept apart from the
         // processing's other problems since the review of 26ff2805).
         {
             rf::Model m = doc->model();
@@ -1395,8 +1395,8 @@ private slots:
         QVERIFY2(dispersed->selfCapacitance(0) < plain,
                  qPrintable(QStringLiteral("%1 against %2").arg(dispersed->selfCapacitance(0)).arg(plain)));
         // Asked at 1 GHz (rf25_solve's 'frequency'), it is taken there, the
-        // frequency its 11.9 is given at: C as the plain substrate's (P33 of
-        // the open items - it was taken at 40 GHz whatever was asked).
+        // frequency its 11.9 is given at: C as the plain substrate's (it was
+        // taken at 40 GHz whatever was asked).
         RF25Doc::SolveRequest atOne;
         atOne.solver = QStringLiteral("quasi_static");
         atOne.frequencies = {1e9};
@@ -1411,7 +1411,7 @@ private slots:
         // Its loss tangent too high for Djordjevic-Sarkar (0.3 of 11.9 at
         // 1 GHz: eps at a high frequency under 1): refused, as the full wave
         // refuses it - taken at the one frequency first, the layer had no
-        // dispersion left to check, and it was solved (P56 of the open items).
+        // dispersion left to check, and it was solved.
         QVERIFY(doc->editNode(substrate, [](rf::Node& n) { n.props.insert(QStringLiteral("tand"), QStringLiteral("0.3")); },
                               QStringLiteral("too lossy for its model")));
         QVERIFY(doc->waitForPrepared(60000));
@@ -1991,7 +1991,8 @@ private slots:
     // said "Solving…" and nothing more, and its Stop let it go to run on to
     // its end: a coplanar line on thin-film lithium niobate, whose stack's
     // Green's function did not end, held a core and gigabytes until Qucs-S
-    // was killed, and a second solve ran beside it. And the status line counts the charges the solve has: a
+    // was killed, and a second solve ran beside it.
+    // And the status line counts the charges the solve has: a
     // metal solved as its two faces has each cell twice (it said 924 to
     // solve the charge on, where the solve had 1848), its count and its cost.
     void aQuasiStaticSolveSaysWhatItDoesAndStops()
@@ -2187,7 +2188,8 @@ private slots:
         QVERIFY2(doc->currentsSaid().contains(QStringLiteral("round its sides")), qPrintable(doc->currentsSaid()));
 
         // Quasi-static the via holds the strip at the ground's potential: a
-        // return, solved, and no line of its own (once refused, "solve it full-wave").
+        // return, solved, and no line of its own (once refused, "solve it
+        // full-wave").
         RF25Doc::SolveRequest quasi;
         quasi.solver = QStringLiteral("quasi_static");
         doc->solveWith(quasi);
@@ -2203,7 +2205,7 @@ private slots:
     // frequencies, and the tab, the panel and the export give the ports' S;
     // the currents are drawn on the layout; a stop stops it; an edit throws
     // it away; and a solve asked for by the other solver is that solver's.
-    // A phase C check, through the tab: an edge port's
+    // Through the tab: an edge port's
     // Return read - a coplanar line's three strips driven from its signal
     // against the grounds beside it. One that asks has its own
     // discontinuity taken out by strips of its coplanar feed, grounds and
@@ -2344,7 +2346,8 @@ private slots:
         QVERIFY(overlay(QStringLiteral("the ports")) != nullptr);
     }
 
-    // A coplanar port's grounds drawn where it returns: on a GSSG whose grounds are marked as Return
+    // A coplanar port's grounds drawn where it returns:
+    // on a GSSG whose grounds are marked as Return
     // Conductors - named G1, G2 as they are put down, and drawn by their
     // names - S1's port's grounds are the two grounds' edges, past S2, as
     // the solve has them; not the nearest conductor either side. And the
@@ -2515,7 +2518,7 @@ private slots:
         QVERIFY2(w->portsSaid.join(' ').contains(QStringLiteral("cell(s) of M1 under its")), qPrintable(w->portsSaid.join(" | ")));
     }
 
-    // The shapes drawn on the tab (F4 of the open items of 8 November): a
+    // The shapes drawn on the tab: a
     // model that names no layout begins one beside itself at its first
     // shape - its Layout naming it, the map sending a layer of it to the
     // layer drawn on -, each shape one step of Undo that puts the file and
@@ -3121,7 +3124,7 @@ private slots:
             QCOMPARE(m.wave->lines.value(0), tab->lines.value(0));   // (the mesh's note first)
         }
         // Its Most cells too few for its cells across: fewer across, and a
-        // warning among the full wave's (D2 of the open items: said in the
+        // warning among the full wave's (said in the
         // tab's notes alone) - the mesh's warnings are the full wave's.
         {
             rf::Model few = doc->model();
@@ -3137,8 +3140,7 @@ private slots:
         }
         // A sweep from nought, linear to 5 GHz in three points: its nought
         // left out and said, solved at 2.5 and 5 GHz - it was refused as
-        // asking for no frequencies (a bug hunt's second
-        // hour).
+        // asking for no frequencies.
         {
             rf::Model zero = doc->model();
             zero.root.child(QStringLiteral("rf_study"))->props.insert(QStringLiteral("from"), QStringLiteral("0"));
@@ -3602,7 +3604,7 @@ private slots:
         QVERIFY(m.add(m.layout().child(QStringLiteral("rf_shapes"))->tag, strip) != nullptr);
         // (P2 on the strip's far end, wherever L puts it: an edge port is on
         //  the edge it drives - 100 µm past it, at L 900, it drove that end
-        //  before a bug hunt.)
+        //  until 18 November.)
         for (rf::Node& p : m.ports().children)
             if (p.label == QLatin1String("P2")) p.props.insert(QStringLiteral("x"), QStringLiteral("L"));
         m.root.child(QStringLiteral("rf_study"))->props.insert(QStringLiteral("kind"), QStringLiteral("quasi_static"));
@@ -3641,7 +3643,7 @@ private slots:
         QCOMPARE(r.points.size(), 3);
         QCOMPARE(r.solved, 3);
         // (C11 read twice: each column named by how - alike, the second
-        //  overwrote the first where the points are kept by name, NF1.)
+        //  overwrote the first where the points are kept by name.)
         QCOMPARE(r.columns, (QStringList{QStringLiteral("w"), QStringLiteral("Z0"), QStringLiteral("C11 max"), QStringLiteral("C11 min"), QStringLiteral("alpha_dB")}));
         QCOMPARE(r.units.at(1), qucs_s::fem::dimName(qucs_s::fem::parseUnit(QStringLiteral("Ohm"))->dim));
         // (alpha_dB in dB/m, not its dimension's 1/m; a quantity with no
@@ -3991,7 +3993,7 @@ private slots:
         app->closeAllFiles();
     }
 
-    // A substrate that ends (F2 of the open items of 8 November), drawn on
+    // A substrate that ends, drawn on
     // the tab: a rectangle drawn on the Substrate is where it is - the map
     // sending its layer of the file there, the processing keeping it apart
     // from the conductors as the substrate's extent, the tab outlining it.
@@ -4197,7 +4199,7 @@ private slots:
         app->closeAllFiles();
     }
 
-    // A TRL calibration (F3 of the open items of 8 November): 150 µm pads
+    // A TRL calibration: 150 µm pads
     // and 100 µm of feed at each end - the fixture - and standards made with
     // them, each its own model: a thru (the feeds joined), lines 500 and 1500
     // µm longer, a reflect (each fixture open). The device, an 800 µm line
@@ -4231,8 +4233,8 @@ private slots:
             const double end = open ? 650 : 300 + inner;
             rf::Model m = *read;
             if (own) {
-                // (Its own shapes alone, no file: NF2 of the open items, a
-                //  standard so made refused - "names no layout".)
+                // (Its own shapes alone, no file: a standard so made was
+                //  refused - "names no layout".)
                 m.layout().props.insert(QStringLiteral("file"), QString());
                 if (m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes"))) == nullptr) return QString();
                 for (const QRectF& r : std::as_const(rects)) {
@@ -4363,7 +4365,8 @@ private slots:
         }
         // Its solution kept is of its standards too: the stamp the model's
         // and their files', so that one edited makes it to be solved again -
-        // an answer calibrated by them stood as current. A model with none is stamped as it was.
+        // an answer calibrated by them stood as current.
+        // A model with none is stamped as it was.
         const QString folder = QFileInfo(model).absolutePath();
         const QByteArray withStandards = rf::solveStampOf(doc->model(), folder);
         QVERIFY(withStandards != rf::solveStampOf(doc->model()));
@@ -4576,7 +4579,8 @@ private slots:
     // Drawn into a model whose layout names a file not yet there, its layer
     // map written with numbers - [[1, 0, "M1"]], as a tool may write it -:
     // the file is begun, the shape on the map's layer 1/0, by the stack's
-    // layer and by the file's layer/datatype alike ("a 'layer' is layer/datatype", and "1/0 is no layer of the
+    // layer and by the file's layer/datatype alike
+    // ("a 'layer' is layer/datatype", and "1/0 is no layer of the
     // stack", nothing drawn).
     void aShapeIsDrawnWhereTheMapsNumbersSay()
     {
@@ -4830,7 +4834,7 @@ private slots:
         const std::shared_ptr<const rf::FullWave> dense = doc->fullWave();
         QVERIFY2(dense != nullptr && dense->ok() && !dense->compressed, qPrintable(doc->solveProblem()));
         // (Said dense - the mesh's estimate held compressed not taken for
-        //  what was done, NF6.)
+        //  what was done.)
         QVERIFY2(says(dense->lines, "The system held dense") && !says(dense->lines, "The system held compressed"), qPrintable(dense->lines.join(" | ")));
         QVERIFY2(doc->mesh()->cost.said.contains(QStringLiteral("where they are held compressed")), qPrintable(doc->mesh()->cost.said));
         // Compressed, for one solve: the model left as it was.
@@ -5055,7 +5059,8 @@ private slots:
 
         // A port's metal and the way it faces reach the solve: facing +y, at
         // the strip's end, P1 is on no edge facing so, and is refused (it
-        // drove the strip's long side, 25 µm off, before a bug hunt); on a metal that is not there, nothing.
+        // drove the strip's long side, 25 µm off, until 18 November); on a
+        // metal that is not there, nothing.
         QVERIFY(doc->editNode(p1, [](rf::Node& n) {
             n.props.insert(QStringLiteral("facing"), QStringLiteral("+y"));
             n.props.insert(QStringLiteral("deembed"), QStringLiteral("0"));
@@ -5101,7 +5106,7 @@ private slots:
     // The study's "Add points where it changes": a sweep of 41 points over a
     // line a third of a wavelength long at its top, its ports calibrated by
     // strips of their feeds, solved at a few of them and read at the rest -
-    // the strips solved at every one (D3 of the open items: read from a fit
+    // the strips solved at every one (read from a fit
     // of their few, a calibration that changes strips missed by 4.5 to 12
     // times the tolerance) -, within the tolerance of the whole sweep solved; kept beside the model with which it solved; the
     // mesh said first; a sweep of 12 points or fewer solved whole.
@@ -5204,7 +5209,7 @@ private slots:
     // 8 cells across, full-wave at the top of its sweep and quasi-statically,
     // each value's reading and verdict said; the solution shown left as it
     // was; counted on the bar as it goes; gone with an edit of the model.
-    // The view's pen and rulers (V1-V5 of the open items): a stroke kept
+    // The view's pen and rulers: a stroke kept
     // beside the model and there when it is opened again; read with the
     // stack's names for the file's layers; a ruler kept when the layout is
     // read again, dropped when the corner it was snapped to is gone; what the
@@ -5226,7 +5231,7 @@ private slots:
         stroke.highlighter = true;
         view->addStroke(stroke);
         QVERIFY2(QFileInfo::exists(kept), "the strokes are kept beside the model");
-        // (Read with the stack's name for 1/0: V5.)
+        // (Read with the stack's name for 1/0.)
         const QByteArray read = QJsonDocument(view->readDrawing(false)).toJson(QJsonDocument::Compact);
         QVERIFY2(read.contains("M1 (1/0)"), read.constData());
         // A ruler from corner to corner; read again unchanged: kept, said.
@@ -5247,7 +5252,7 @@ private slots:
         QTRY_VERIFY(doc->rereadSaid().contains(QStringLiteral("changed")));
         QVERIFY(view->rulers().isEmpty());
         QVERIFY2(doc->rereadSaid().contains(QStringLiteral("0 ruler(s) kept; 1 dropped")), qPrintable(doc->rereadSaid()));
-        // Closed and opened again: the stroke there (V1).
+        // Closed and opened again: the stroke there.
         app->closeAllFiles();
         doc = open(file);
         QVERIFY(doc != nullptr && doc->waitForLayout(60000));
@@ -5621,7 +5626,7 @@ private slots:
         QCOMPARE(menuEntry->text(), QStringLiteral("Export Palace EM…"));
     }
 
-    // The Palace export's timing: opt in with
+    // The timing of the Palace export: opt in with
     // QUCS_RF25_PALACE_TIMING=1. test_rf25_palace's linesForPalace lines -
     // a 240 µm strip of 10 µm copper on 254 µm of alumina, 2 and 4 mm long -
     // solved full-wave through the tab's Solve, its mesh and study as a new
@@ -5844,7 +5849,7 @@ private slots:
                               QStringLiteral("stretch")));
         QVERIFY(doc->waitForPrepared(60000));
         // What it checks unasked: a quarter, a half, all and twice the
-        // model's 3 - one finer than its own (D1 of the open items).
+        // model's 3 - one finer than its own.
         QCOMPARE(doc->convergenceLevels(), (QList<int>{1, 2, 3, 6}));
         QCOMPARE(rf::defaultLevels(10), (QList<int>{3, 5, 10, 20}));
         QCOMPARE(rf::defaultLevels(2), (QList<int>{2, 4, 8}));
@@ -5894,7 +5899,7 @@ private slots:
         QVERIFY2(c->lines.first().startsWith(QStringLiteral("Mesh convergence over 3 mesh(es) of 2, 4 and 8 cells across the narrowest conductor, each the model's own refined as a whole - 0.667, 1.33 and 2.67 times as fine, its largest cells, cells per wavelength and cells at the gaps with it, at 5 GHz: of 3 value(s), ")),
                  qPrintable(c->lines.first()));
         QVERIFY2(c->lines.at(1).startsWith(QStringLiteral("Mesh 1: 2 across, ")), qPrintable(c->lines.at(1)));
-        // (Each mesh as the Mesh node would make it: D2.)
+        // (Each mesh as the Mesh node would make it.)
         QVERIFY2(c->lines.at(3).contains(QStringLiteral("As the Mesh node: Cells across a conductor 8, Cells per wavelength ")) && c->levels.at(2).perWavelength > 0
                      && c->levels.at(2).gapShare > 0 && c->levels.at(2).gapShare < 0.25,
                  qPrintable(c->lines.at(3)));
@@ -6179,7 +6184,7 @@ private slots:
         // (A millimetre of line at 1 to 5 GHz is short: a pi holds.)
         QVERIFY2(circuit->worst < 0.05, qPrintable(circuit->lines.join(" | ")));
         qWarning().noquote() << circuit->lines.join(QStringLiteral(" | "));
-        // Fitted to a window of its frequencies (NF7 of the open items): the
+        // Fitted to a window of its frequencies: the
         // one between 2 and 4 GHz alone; none in it, said; the node's From
         // and To read by its export.
         {

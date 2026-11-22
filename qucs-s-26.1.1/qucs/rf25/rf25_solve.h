@@ -78,7 +78,7 @@ struct SolveJob {
     /// What the processing could not read but solved without - a Cutout's
     /// region that is no region -: among the answer's warnings, where a
     /// region dropped this way solved more metal than meant with no sign in
-    /// the result (C1 of the open items).
+    /// the result.
     QStringList processWarnings;
     /// What the stack is taken as where it is not as given - a layer's
     /// permittivity in the plane averaged: said beside a quasi-static answer

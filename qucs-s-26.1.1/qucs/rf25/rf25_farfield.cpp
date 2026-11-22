@@ -375,8 +375,7 @@ AntennaFigures antennaFiguresOf(const FullWave& wave, const Stack& stack, int k,
     out.efficiency = taken > 0 ? r.power / taken : 0;
     // (Radiated past what the structure takes - a patch over vacuum 1.002 to
     //  1.005, its gain over its directivity, the solve's error in the two
-    //  powers' difference - a bug hunt's second hour: held
-    //  at one, the gains with it, and said.)
+    //  powers' difference: held at one, the gains with it, and said.)
     if (out.efficiency > 1) {
         out.notes << tr("It radiates %1 % more than it takes, which is the solve's error in the two: its efficiency is taken "
                         "as one, and its gains as its directivity's.")

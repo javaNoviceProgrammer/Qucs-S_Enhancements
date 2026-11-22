@@ -192,13 +192,14 @@ private slots:
         QVERIFY(said);
     }
 
-    // A line de-embedded to within a degree of phase. A line of 3 mm, 100 µm wide on 100 µm of 9.8, its
+    // A line of a known length de-embedded to within a degree of phase. A
+    // line of 3 mm, 100 µm wide on 100 µm of 9.8, its
     // ports' own discontinuity taken out by two strips of its feed (1 and
     // 2 mm, as the calibration chooses), its reference planes moved 1.5 mm
     // in from each end: a thru, S21 one and S11 nothing. Moved 0.5 mm in:
     // the 2 mm of line between, as the calibration's own line says it.
     // Strips whose lines differ by half a wavelength read an ill-conditioned
-    // line there, and it is said (P15 of the open items: a coplanar line's
+    // line there, and it is said (a coplanar line's
     // 1 and 2 mm strips half a wavelength apart near 89 GHz gave Zc 67 Ohm
     // for 77 and false loss, with no word): a microstrip's 1 and 2 mm on
     // 100 µm of 9.8, half a wavelength apart near 58 GHz - said there, and
@@ -220,7 +221,7 @@ private slots:
         QVERIFY2(two.ok(), qPrintable(two.problems.join(" | ")));
         QVERIFY2(two.warnings.join(' ').contains(QStringLiteral("half wavelengths at 58 GHz, and from 110 to 113 GHz:")), qPrintable(two.warnings.join(" | ")));
         // A lossless feed's line is taken lossless only where it cannot leak
-        // into a second surface wave of the stack (P13 of the open items: a
+        // into a second surface wave of the stack (a
         // coplanar line on 500 µm of alumina leaked 15-38 dB/m at 80-100 GHz,
         // which went into its ports' boxes, the line de-embedded gaining):
         // on 500 µm, from some 50 GHz, said; on 100 µm, to 250 GHz, not.
@@ -229,8 +230,8 @@ private slots:
         QVERIFY2(!high.lines.join(' ').contains(QStringLiteral("second surface wave")), qPrintable(high.lines.join(" | ")));
     }
 
-    // A calibration whose strips' solve does not converge (P14 of the open
-    // items, its retry tested at the review of 26ff2805): GMRES capped at
+    // A calibration whose strips' solve does not converge (its retry tested
+    // at the review of 26ff2805): GMRES capped at
     // one iteration, the strips past a dense bound that their cells twice
     // as long fall within - solved again with those, and said.
     void aCalibrationThatDidNotConvergeIsTriedAgain()
@@ -619,8 +620,8 @@ private slots:
     // An edge port that returns through a face at its own port wall - a
     // lower metal's return under its line, as a probe's tip lands - is
     // calibrated, its strips having that return along them and the same face
-    // terminal at both ends (P45 of the open items of 8 November, where the
-    // double delay was done by hand). A 10 µm line on M2 2 µm over a 50 µm
+    // terminal at both ends (the double delay was done by hand before). A
+    // 10 µm line on M2 2 µm over a 50 µm
     // return on M1, in air with no plane under the stack: the thru, its
     // planes moved to its middle, a thru.
     void aPortReturningThroughAFaceAtItsWallIsCalibrated()
@@ -1095,7 +1096,7 @@ private slots:
     }
 
     // Where one set of strips takes over from another the two are blended
-    // (D5 of the open items: a spiral's S21 stepped by 0.1 dB at 95-96 GHz
+    // (a spiral's S21 stepped by 0.1 dB at 95-96 GHz
     // where shorter strips took over).
     void stripsTakingOverAreBlended()
     {
@@ -1186,7 +1187,7 @@ private slots:
             const bool said = d.warnings.join(' ').contains(QStringLiteral("feed is as wide as its face and alone for"));
             QVERIFY2(said == (feed < 500), qPrintable(d.warnings.join(" | ")));
             // (Said by how short it is against the reach, not as "not to be
-            //  trusted at any frequency": N6 of the open items.)
+            //  trusted at any frequency".)
             if (said)
                 QVERIFY2(d.warnings.join(' ').contains(QStringLiteral("%1 % of the some 500 µm").arg(int(std::round(100 * d.deembedding.value(0).feedLength / 500))))
                              && !d.warnings.join(' ').contains(QStringLiteral("at any frequency")),

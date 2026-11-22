@@ -64,7 +64,7 @@ double conductorWidthOf(const QPolygonF& polygon);
 double breadthAcross(const QList<QPolygonF>& shapes, QPointF middle, QPointF across, double reach);
 /// How thick against its narrowest conductor (conductorWidthOf()) a metal is
 /// before its thickness is the inductance's: the full wave's said to read
-/// high at a low frequency, and the loop inductance's runs taken as bars
+/// high at a low frequency, and the loop inductance's runs taken as bars.
 /// Thinner, a strip's is within a
 /// per cent or so of a bar's.
 constexpr double kThickForInductance = 0.2;
@@ -321,7 +321,7 @@ struct Processed {
     LayoutReport report;
     QStringList problems;
     /// Those of problems that are the Cutout's: a region left out, which
-    /// the solve warns of (C1 of the open items).
+    /// the solve warns of.
     QStringList cutoutProblems;
     bool ok() const { return problems.isEmpty(); }
     /// How many conductors each layer has.

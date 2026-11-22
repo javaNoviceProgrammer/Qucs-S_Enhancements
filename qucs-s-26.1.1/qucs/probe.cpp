@@ -357,7 +357,7 @@ QString vectorOf(Schematic* sch, const Target& target, QString* error)
     QStringList currents;
     switch (letter.toLatin1()) {
     // (ngspice writes no bipolar's emitter current: it is -(ic + ib),
-    // computed - asked for, it failed every run, B12.)
+    // computed - asked for, it failed every run.)
     case 'q': currents = {"ic", "ib", "-", "is"}; break;
     case 'm': currents = {"id", "ig", "is", "ib"}; break;
     case 'j': case 'z': currents = {"id", "ig", "is"}; break;

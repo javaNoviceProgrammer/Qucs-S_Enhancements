@@ -922,7 +922,8 @@ private slots:
     // 1, metal beyond that, 2 µm of guide either side. The reference: the
     // same across a box of finite differences (h 0.01 and 0.005 µm,
     // extrapolated), every one of its modes kept - so no truncation, exact
-    // for that box - a scalar E_z, written apart from this code: the light out, the output section's supermodes'
+    // for that box - a scalar E_z, written apart from this code: the light
+    // out, the output section's supermodes'
     // power, 0.88043 (0.77602 at 6 µm), back 0.00303 (0.00291). The
     // expansion with 40 modes: 0.88091 and 0.77571, back 0.00306 and
     // 0.00294. (The 2D full-wave solver is no reference here: its ports

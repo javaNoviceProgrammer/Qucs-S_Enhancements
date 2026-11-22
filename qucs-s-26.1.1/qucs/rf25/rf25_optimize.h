@@ -62,7 +62,7 @@ struct SolutionValues {
     QList<fem::Dim> dims;               ///< by name
     QList<QVector<double>> at;          ///< by frequency, by name
     /// A value's unit where its dimension does not say it: alpha_dB's dB/m,
-    /// which as a dimension is 1/m (NF5 of the open items).
+    /// which as a dimension is 1/m.
     QHash<QString, QString> units;
     int index(const QString& name) const { return int(names.indexOf(name)); }
 };
@@ -81,7 +81,7 @@ struct Reading {
         Least,   ///< the least
         Most,    ///< the most
         /// Where the least or the most falls, Hz - a notch's frequency, a
-        /// peak's (NF1 of the open items) - read at the sweep's frequency.
+        /// peak's - read at the sweep's frequency.
         LeastAt,
         MostAt
     };
@@ -183,7 +183,7 @@ struct SweepResult {
     int parameters = 0;     ///< how many of the columns are parameters
     QList<SweepPoint> points;
     /// What a reader of its columns should know: the frequency a quantity
-    /// with no window was read at (NF5).
+    /// with no window was read at.
     QStringList notes;
     int solved = 0, failed = 0;
     bool stopped = false;

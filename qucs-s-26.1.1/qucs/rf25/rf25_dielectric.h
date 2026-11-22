@@ -2,8 +2,7 @@
  * rf25_dielectric.h - a dielectric of an RF 2.5D stack that ends: a layer
  *                     there only inside its shapes, something else beyond
  *                     them - the substrate at a chip's or a board's edge, a
- *                     trench, a dielectric under one part alone (F2 of the
- *                     open items of 8 November)
+ *                     trench, a dielectric under one part alone
  *
  * This file is part of Qucs-S.
  *

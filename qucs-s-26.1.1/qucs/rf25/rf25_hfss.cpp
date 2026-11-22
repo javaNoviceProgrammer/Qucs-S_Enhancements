@@ -1841,8 +1841,7 @@ SCompared compareWithTouchstone(const FullWave& solved, const QString& path, con
     if (out.interpolated > 0)
         out.notes << tr("%1 frequencies are read between the file's points, in magnitude and angle.").arg(out.interpolated);
     for (const QString& note : solved.warnings) out.notes << tr("The solve says: %1").arg(note);
-    // (A term the file lacks: left out and said, not compared as nought -
-    //  a bug hunt's second hour.)
+    // (A term the file lacks: left out and said, not compared as nought.)
     QStringList lacking;
     for (int i = 0; i < np; ++i)
         for (int j = 0; j < np; ++j)

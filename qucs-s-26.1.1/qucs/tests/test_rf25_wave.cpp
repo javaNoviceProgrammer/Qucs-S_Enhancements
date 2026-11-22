@@ -548,9 +548,9 @@ private slots:
         }
     }
 
-    // Djordjevic-Sarkar's wideband Debye model (a review's
-    // "features missing": a dielectric's permittivity and loss tangent the
-    // same at every frequency, which is not causal): its closed form is the
+    // Djordjevic-Sarkar's wideband Debye model (in its place a dielectric's
+    // permittivity and loss tangent were the same at every frequency, which
+    // is not causal): its closed form is the
     // even spread in log f of Debye poles, each causal, from 1 kHz to 1 THz;
     // it is what it is given at; its values are those an independent
     // computation gives (Python's cmath, FR-4's 4.3 and 0.02 at 1 GHz); and a

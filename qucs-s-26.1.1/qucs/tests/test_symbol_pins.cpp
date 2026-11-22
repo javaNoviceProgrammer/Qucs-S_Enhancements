@@ -326,9 +326,9 @@ private slots:
         QVERIFY2(messages.filter("generated name").isEmpty(), qPrintable(messages.join(" | ")));
         delete doc;
     }
-    // ---- ports whose names are not their own (bug hunt 2026-09-30) ---
+    // ---- ports whose names are not their own ---
 
-    // A9. A port named gnd lent the name to its net: inside, the pin was
+    // A port named gnd lent the name to its net: inside, the pin was
     // the global ground, whatever the parent wired to it. A port named as
     // another net's label in another case was one node with that net to
     // SPICE, which reads names without case. Neither name is lent now.
@@ -354,7 +354,7 @@ private slots:
         QVERIFY(!checked(dir.filePath("caseport.sch")).filter("another net is labelled P2").isEmpty());
     }
 
-    // A8. Two ports on one net (a pass-through), or a port on the
+    // Two ports on one net (a pass-through), or a port on the
     // subcircuit's own ground: the .SUBCKT line named the node twice, or
     // gnd, and ngspice tied one and left the other open. Each port gets a
     // node of its own, joined to its net by next to no resistance.
@@ -385,7 +385,7 @@ private slots:
                  qPrintable(netlist));
     }
 
-    // F1. Two ports of one number: the instance has a pin for each, the
+    // Two ports of one number: the instance has a pin for each, the
     // subcircuit's port types one for each number, and the netlister read
     // past them - a crash. Netlisted now, and the check calls it an error.
     void twoPortsOfOneNumber()

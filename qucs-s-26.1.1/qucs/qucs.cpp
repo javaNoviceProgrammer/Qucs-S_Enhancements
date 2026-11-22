@@ -3802,7 +3802,7 @@ bool QucsApp::closeAllFiles(int exceptTab)
   // event loop, below this call on the stack, and such a dialog is often a
   // local object of the call that opened it: freeing the document now frees
   // what that call owns, and the program is killed for freeing a pointer it
-  // never allocated (bug hunt 2026-10-23 A6). Such a document is freed once
+  // never allocated. Such a document is freed once
   // its own call has returned; the others as before.
   for (QucsDoc *doc : docs)
     if (doc != docToKeep) {
@@ -4504,7 +4504,8 @@ void QucsApp::reloadOneIfChanged(QucsDoc *doc, const QFileInfo &info)
   }
   // A solve, a build or a simulation of it is running: reading the file
   // again now would take the model or the schematic out from under the job,
-  // which then finishes against what was written over it. Left for when the job is over - the timer tries again.
+  // which then finishes against what was written over it.
+  // Left for when the job is over - the timer tries again.
   if (auto *control = findChild<QucsControl *>(); control != nullptr && control->busyWithAJob(doc)) {
     statusBar()->showMessage(tr("%1 was changed by another program; it is being computed, so it is loaded again when that ends.")
                                  .arg(name), 8000);
@@ -4516,11 +4517,12 @@ void QucsApp::reloadOneIfChanged(QucsDoc *doc, const QFileInfo &info)
   const quint64 editor = QucsDoc::editor();
   QucsDoc::setEditor(QucsDoc::kOnDisk);
   // A file half written, or damaged, makes the loader complain. A box here
-  // runs its own event loop inside the reload, and three things of a bug hunt followed from that: the window could quit under the frame
-  // that was loading (F1, a heap-use-after-free as it unwound), the watcher
+  // runs its own event loop inside the reload, and three things followed
+  // from that: the window could quit under the frame
+  // that was loading (a heap-use-after-free as it unwound), the watcher
   // could fire in that loop and load again - which defeats load()'s own
-  // "put back what it held", so the tab came out empty (A5) -, and a tool
-  // call whose own reload raised the box never returned (A6). What the
+  // "put back what it held", so the tab came out empty -, and a tool
+  // call whose own reload raised the box never returned. What the
   // loader says is taken here instead, and told in the status bar and to
   // the conversations. (The ZIP branch of reloadDocument() already did
   // this for a half-written archive.)
@@ -4540,7 +4542,7 @@ void QucsApp::reloadOneIfChanged(QucsDoc *doc, const QFileInfo &info)
                              5000);
     break;
   case Reloaded::Failed: {
-    // Said to the conversations too: a tool call used to see nothing of it
+    // Said to the conversations too: a tool call used to see nothing of it.
     const QString said = why.isEmpty() ? tr("it is damaged or half written") : why;
     statusBar()->showMessage(tr("%1 was changed by another program and could not be read (%2): the tab keeps what it had "
                                 "(a Save asks before writing over the file).").arg(name, said),

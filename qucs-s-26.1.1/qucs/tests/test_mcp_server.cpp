@@ -353,7 +353,7 @@ private slots:
 
     // A data display changed on disk and loaded again draws its data, as
     // it does when it is opened: its diagrams are new, and their traces
-    // were left with none until Reload Simulation Data ("Data display blank after its file is reloaded from disk").
+    // were left with none until Reload Simulation Data.
     // In front, behind another tab, and when the file no longer reads (what
     // it held is put back, its data with it).
     void aDataDisplayLoadedAgainDrawsItsData()
@@ -718,7 +718,7 @@ private slots:
         QVERIFY2(!parts.isEmpty() && parts.last().toString().startsWith("… ") && parts.last().toString().endsWith(" more"), qPrintable(cut));
         QVERIFY(structured(r).contains("trimmed"));   // (the structured form is of the text as cut)
 
-        // (The hunt after round 9, B1.) However small: JSON still, with its
+        // However small: JSON still, with its
         // 'trimmed' - cut as text, it no longer parsed.
         for (const int most : {200, 300, 600, 1000}) {
             r = callTool("get_schematic", {{"max_chars", most}});
@@ -731,7 +731,7 @@ private slots:
             if (most >= 300)
                 QVERIFY2(parsed.object().value("components").toArray().size() >= 2, qPrintable(QStringLiteral("%1: %2").arg(most).arg(small)));
         }
-        // (B2) An object of many keys - a netlist map's nodes - is cut too:
+        // An object of many keys - a netlist map's nodes - is cut too:
         // "…": "n more".
         const QString mapped = first(callTool("get_netlist", {{"map", true}}));
         QVERIFY(QJsonDocument::fromJson(mapped.toUtf8()).object().value("nodes").toObject().size() > 60);
@@ -739,7 +739,7 @@ private slots:
         const QJsonObject map = QJsonDocument::fromJson(first(r).toUtf8()).object();
         QVERIFY2(first(r).size() <= 1500 && map.contains("trimmed") && map.value("nodes").toObject().value(QStringLiteral("…")).toString().endsWith(" more"),
                  qPrintable(first(r)));
-        // (B3) A batch's answers, cut together; (B4) and a call's own
+        // A batch's answers, cut together; and a call's own
         // max_chars in it, its answer cut - refused, it failed the batch.
         const auto texts = [](const QJsonObject& result) {
             QStringList all;
@@ -1496,7 +1496,8 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(registry.job(byTool)->status, Status::Stopped, 30000);
         QVERIFY2(registry.job(byTool)->outcome.startsWith("Stopped by stop_simulation."), qPrintable(registry.job(byTool)->outcome));
 
-        // As a build of ngspice with a bar prints it (the fork's): several in one read, ending in \r. The dock's own bar too.
+        // As a build of ngspice with a bar prints it (the fork's):
+        // several in one read, ending in \r. The dock's own bar too.
         {
             const QString barred = write("barred-ngspice.sh", "#!/bin/sh\n"
                                                               "printf ' Reference value :  1.00000e+00  [======                  ]  26%%\\r"

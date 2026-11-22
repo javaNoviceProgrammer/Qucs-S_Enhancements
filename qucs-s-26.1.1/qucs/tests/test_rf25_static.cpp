@@ -459,9 +459,9 @@ private slots:
         }
     }
 
-    // The charge past the dense limit, solved compressed (the production-
-    // readiness review: past 8,000 cells the charge solve was
-    // refused). On one mesh, a coplanar line's, held compressed - its dense
+    // The charge past the dense limit, solved compressed (past 8,000 cells
+    // the charge solve was refused). On one mesh, a coplanar line's, held
+    // compressed - its dense
     // limit set to 200 cells - it is the dense solve's to 1e-4; past the
     // build's own 8,000, a coplanar sheet in air is its conformal map's
     // within 0.5 %; and a layer that ends, whose correction is between every
@@ -537,8 +537,8 @@ private slots:
         }
         // (Its LU's fill estimated before it is made, and the pairs halved
         //  past a bound on it as past the cap of pairs - the cap bounds what
-        //  the LU is given, not what it fills to (a near field under its cap whose LU
-        //  crashed the app). 326,302 entries on this mesh of 1,922 cells and
+        //  the LU is given, not what it fills to (a near field under its cap
+        //  whose LU crashed the app). 326,302 entries on this mesh of 1,922 cells and
         //  34,203 pairs, 155,140 within a side.)
         {
             const QRegularExpressionMatch at =
@@ -1124,21 +1124,21 @@ private slots:
     // 1954), Z0 = eta/4 K(k)/K(k'), k = sech(pi w / 2b), its eps_eff eps_r,
     // to 0.5 %, its lid in the stack's last dielectric's top or over a gap.
     // A sheet thick against how high it stands over its ground is warned
-    // of, with Wheeler's correction as the size of what it leaves out (P39
-    // of the open items: laminate copper 15 µm thick on 60 µm, 120 µm wide,
+    // of, with Wheeler's correction as the size of what it leaves out
+    // (laminate copper 15 µm thick on 60 µm, 120 µm wide,
     // read its C 7 % under a 3D solve's, and said nothing). 15 µm: 14.7 µm
     // wider, 12 %; 1 µm thin, and the 15 µm solved as its two faces: nothing.
-    // A capacitance matrix that is no Maxwell matrix is said (P27 of the open
-    // items: C12 positive, reported without a word): a mutual capacitance
+    // A capacitance matrix that is no Maxwell matrix is said
+    // (C12 positive, reported without a word): a mutual capacitance
     // above nought, and a row summing below it; a Maxwell one says nothing.
     // A MIM's plates, 40 nm apart, face each other cell for cell where they
-    // overlap, so that its C hardly hangs on the cells (P28 of the open
-    // items: 52 % low at cells of 5 µm, 125 times its gap, 25 % at 2.5 µm,
+    // overlap, so that its C hardly hangs on the cells
+    // (52 % low at cells of 5 µm, 125 times its gap, 25 % at 2.5 µm,
     // the bottom plate's cells under the top's misaligned): a 10 µm square
     // over an 11.2 µm one, 6.892 between, within 1 % at 5, 2.5, 1.25 and
     // 0.625 µm, and said. Cells some 250 times the gap warned of; 125 times
     // not. And an 80 µm one, which the charge solve's bound kept from fine
-    // cells (P29), at 5 µm.
+    // cells, at 5 µm.
     void aMimsPlatesFaceEachOtherCellForCell()
     {
         const rf::Stack st = mimStack();
@@ -1217,7 +1217,7 @@ private slots:
         // 26ff2805): a 10 µm plate over a 30 µm one, two over one bottom
         // plate, and a plate with its feed - each cut at the other's edges,
         // their C at 5 µm cells within 2 % of 0.625 µm's, where misaligned
-        // they read as low as P28's.
+        // they read low.
         rf::Conductor fed = on2(0, 0, 10, 10);
         fed.outline = QPolygonF({QPointF(0, 0), QPointF(10, 0), QPointF(10, 4), QPointF(30, 4), QPointF(30, 6), QPointF(10, 6), QPointF(10, 10), QPointF(0, 10)});
         const QList<QList<rf::Conductor>> layouts{{strip(-7.3, -8.1, 31, 29.3), on2(0, 0, 10, 10)},
@@ -1457,7 +1457,7 @@ private slots:
     // in the wide form alone, said "93 %" of a 4.3 µm line 204 µm up, which
     // is 9 % of its C, and five such warnings on an inductor that matches
     // its measurement). On a plane of symmetry, its strips as wide as the
-    // whole's (P36's half was warned of, its whole not); and not where its
+    // whole's (its half was warned of, its whole not); and not where its
     // walls beside a narrow gap were said, which wants the same.
     void aThickSheetOverItsGroundIsWarnedOf()
     {
@@ -1477,7 +1477,7 @@ private slots:
         };
         const QList<rf::Conductor> trace{strip(0, 0, 600, 120)};
         // (Laminate copper 15 µm thick on 60 µm: 6.9 %, where a 3D solve
-        //  read its C 7 % over the sheet's - P39 of the open items.)
+        //  read its C 7 % over the sheet's.)
         const QString thick = warned(trace, 15e-6, false);
         QVERIFY2(thick.contains(QStringLiteral("M1 is 15 µm thick as a sheet 60 µm over the ground"))
                      && thick.contains(QStringLiteral("gives its conductors 7 % more capacitance to the ground than as sheets (its narrowest 120 µm across)")),
@@ -1655,9 +1655,9 @@ private slots:
             }
         }
         // Lossy, its G: all of the field in the one dielectric, w C tan
-        // delta to the nudge's rounding (P32 of the open items: it read
+        // delta to the nudge's rounding (it read
         // -0.257 S/m against +7.1e-3).
-        // A sheet, and copper 5 µm thick under 195 µm (the open items' own).
+        // A sheet, and copper 5 µm thick under 195 µm.
         for (const double t : {5e-6, 0.0}) {
             rf::Stack lossy = stripline(epsr, b);
             for (rf::Layer& l : lossy.layers) {
@@ -2244,7 +2244,8 @@ private slots:
         QCOMPARE(rf::extract(rf::meshOf(gap, how, rf::Stack(), 0), gap, stack).names.size(), 2);
     }
 
-    // A GSSG with nothing under it: its two signals are coupled lines against its two grounds -
+    // A GSSG with nothing under it:
+    // its two signals are coupled lines against its two grounds -
     // the outermost of the four, there being no ground plane and none
     // marked - held at nought with infinity floating, as a reduction by
     // hand of the solve's partial capacitances: C of the signals
@@ -2404,7 +2405,7 @@ private slots:
             }
     }
 
-    // A review's test: a coplanar line - its signal 50 µm,
+    // A coplanar line - its signal 50 µm,
     // its gaps 6, its grounds 150 - on thin-film lithium niobate (Nelan et
     // al., Opt. Lett. 2022): 500 µm of Si, 4.7 µm of SiO2, 0.3 µm of LN at
     // εr 28, 0.5 µm of SiO2, nothing under it; a mesh of four
@@ -2416,8 +2417,9 @@ private slots:
     // mapping of a coplanar line with grounds of finite width - exact - and
     // on the stack, a spectral-domain solve of its cross-section (Galerkin,
     // Chebyshev functions with each edge's singularity on each strip; the
-    // stack's reflection in closed form; 165.22 pF/m, εeff 4.0791 - its script, the same 40.5047 pF/m in vacuum
-    // as the conformal mapping to a part in a million). The cells across a
+    // stack's reflection in closed form; 165.22 pF/m, εeff 4.0791 - the
+    // same 40.5047 pF/m in vacuum as the conformal mapping to a part in a
+    // million). The cells across a
     // gap of 6 µm between conductors of 50 and 150 µm were one of 3 µm on
     // one side and one of 9 on the other, and it came out 10 % under both;
     // graded down to a quarter of the gap it is a per cent from them.
@@ -2501,7 +2503,8 @@ private slots:
         QVERIFY2(std::abs(lp.c0 / conformal - 1) < 0.02, qPrintable(QStringLiteral("C0 %1 pF/m, the conformal mapping's %2").arg(lp.c0 * 1e12).arg(conformal * 1e12)));
         QVERIFY2(std::abs(lp.c / spectral - 1) < 0.02, qPrintable(QStringLiteral("C %1 pF/m, the spectral solve's 165.22").arg(lp.c * 1e12)));
         // (eps_eff +0.60 %, the images near a cell taken
-        //  over it - +0.48 % before, taken at its centre; eight cells across read +0.76 %, and +0.66 % before,
+        //  over it - +0.48 % before, taken at its centre;
+        //  eight cells across read +0.76 %, and +0.66 % before,
         //  so that much is the sheets' and the mesh's, not the images'. Held
         //  to a band about its own +0.60 %, so that a drift is caught.)
         QVERIFY2(lp.epsilonEff / spectralEps - 1 > 0.003 && lp.epsilonEff / spectralEps - 1 < 0.009,
@@ -2625,7 +2628,8 @@ private slots:
     }
     // A line's values per metre, summed over copies of its middle out to 100
     // times the stack's height a cell's length apart, are summed one by one
-    // only near: past 300 cells' sides, in groups by Simpson's rule. One by one, a 10 nm square over 200 µm took 36 s
+    // only near: past 300 cells' sides, in groups by Simpson's rule.
+    // One by one, a 10 nm square over 200 µm took 36 s
     // for its 36 cells, a nanometre's six minutes; three lines 0.2 µm wide a
     // third of their 9.9 s. The groups' values against every copy's: 4e-8
     // for the square, 5e-9 for the lines, and the same to the digit where
@@ -2672,7 +2676,8 @@ private slots:
     // which layer reflects the most: twenty films of 0.1 and 0.2 µm, eps_r
     // 28 and 3.9, over silicon grew coefficients past a double's range,
     // paths of one length summed with alternating signs, and the potential
-    // came out NaN - a capacitance of NaN said to be solved. Ten such films, or forty of 6 and 3.9, solve.
+    // came out NaN - a capacitance of NaN said to be solved.
+    // Ten such films, or forty of 6 and 3.9, solve.
     void aStackWhoseImagesGrowPastANumberIsRefused()
     {
         const auto films = [](int count, double high) {

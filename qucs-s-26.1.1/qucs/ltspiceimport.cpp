@@ -76,7 +76,7 @@ const QHash<QString, Symbol>& standard()
 }
 
 // How far a drawing's coordinates reach: as a schematic's model plane
-// (Schematic::ModelLimit, 2^23). Beyond, sums of them overflowed an int
+// (Schematic::ModelLimit, 2^23). Beyond, sums of them overflowed an int.
 constexpr qlonglong kFarthest = 1 << 23;
 
 // A coordinate: a whole number within kFarthest, else none.

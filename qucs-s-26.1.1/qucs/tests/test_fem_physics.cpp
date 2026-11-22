@@ -147,7 +147,8 @@ private slots:
 // the mesh's Customize, a polygon's Closed, a boolean's Keep - as true or
 // false at once; one not a constant fails, said. (Read for a solve alone,
 // it was false to the mesh and the geometry: "custom": "c" at c = 1 made
-// 717 triangles for 8746, its warning saying Customize was off. A number 1 was false, "True" refused: A8, N5.)
+// 717 triangles for 8746, its warning saying Customize was off.
+// A number 1 was false, "True" refused.)
 void TestFemPhysics::flagsOfTheParametersBuild()
 {
     auto model = [](const QString& custom, const QString& closed, const QString& c) {
@@ -521,7 +522,7 @@ void TestFemPhysics::aPartLeftFloating()
 // A sweep's points at once, each on its own thread, each compiling its
 // material's conductivity: a sum of 190 terms, compiled by recursion - on
 // std::thread's 512 kB of macOS a stack overflow under the sanitizers (a
-// frame of 5 kB a level); the fuzz of 21 October, E3. Its threads have a
+// frame of 5 kB a level). Its threads have a
 // main thread's 8 MB.
 void TestFemPhysics::aSweepsPointsAtOnceCompileDeepExpressions()
 {

@@ -3,8 +3,7 @@
  *                    rectangles, polygons, paths and vias on a layer of the
  *                    stack, written at once to the layout file the model
  *                    names (begun beside it where it names none) through
- *                    the layer map, each one step of Undo (F4 of the open
- *                    items of 8 November)
+ *                    the layer map, each one step of Undo
  *
  * This file is part of Qucs-S.
  *

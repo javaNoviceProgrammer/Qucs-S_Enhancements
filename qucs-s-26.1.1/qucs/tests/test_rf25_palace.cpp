@@ -553,7 +553,7 @@ private slots:
             QVERIFY2(e.portSaid.join(QLatin1Char(' ')).contains(QStringLiteral("down to M1")), qPrintable(e.portSaid.join(' ')));
         }
         // A via farm merged into its footprint, 40 µm square, a quarter of it
-        // metal (Conductor::share - P44 of the open items of 8 November):
+        // metal (Conductor::share):
         // written as its metal thinned in place, the 20 µm square about its
         // middle that the via above is (within a per cent), not as solid
         // metal over the footprint - and said.
@@ -685,7 +685,7 @@ private slots:
         QVERIFY(away.notes.join(QLatin1Char(' ')).contains(QStringLiteral("P2 is not written")));
         // One on the strip's end's corner, no facing given: not written, and
         // said as the solve says it - give it its facing; it was said as no
-        // edge facing its way (a bug hunt's second hour).
+        // edge facing its way.
         const QString corner = QStringLiteral(
             R"({"type": "rf_edge_port", "tag": "p1", "label": "P1", "properties": {"conductor": "M1", "x": "0", "y": "0", "facing": "-x"}},
                {"type": "rf_edge_port", "tag": "p2", "label": "P2", "properties": {"conductor": "M1", "x": "%1[um]", "y": "%2[um]"}})")

@@ -175,8 +175,7 @@ private slots:
     // required, in a file the configuration includes), a text conversion -
     // and gh's git: none runs, and the changes are counted as ever. The
     // user's own filter (the global configuration's, as git-lfs's is)
-    // still runs. Opening a downloaded project ran its programs (bug hunt
-    // 2026-09-26, B1).
+    // still runs. Opening a downloaded project ran its programs.
     void theRepositorysProgramsAreNotRun()
     {
 #ifdef Q_OS_WIN

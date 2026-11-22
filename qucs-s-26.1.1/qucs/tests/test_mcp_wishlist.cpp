@@ -1,14 +1,13 @@
 /*
- * test_mcp_wishlist.cpp - more MCP tools:
- * a value implausible for its unit refused (N1); an input read under
- * another name or left out said (N2); how a call would be treated before
- * it is made (N3); an axis' own notation (N4); a plot group's styling kept
- * when it is shown again (N5); a filled box its own paper, so that a
- * screen picture matches the window (N6); mesh convergence and reference
- * numbers in one call (N7, N8); 'ground' reusing a ground placed and left
- * (N9); a script's error saying what happened (N10); a singular argument
- * read as the list it names (N11); the PDF viewer's selection as data
- * (N12); a smaller picture (N13); what a screen picture shows (N14).
+ * test_mcp_wishlist.cpp - what Claude's MCP tools were missing: a value
+ * implausible for its unit refused; an input read under another name or
+ * left out said; how a call would be treated before it is made; an axis'
+ * own notation; a plot group's styling kept when it is shown again; a
+ * filled box its own paper, so that a screen picture matches the window;
+ * mesh convergence and reference numbers in one call; 'ground' reusing a
+ * ground placed and left; a script's error saying what happened; a
+ * singular argument read as the list it names; the PDF viewer's selection
+ * as data; a smaller picture; what a screen picture shows.
  *
  * This file is part of Qucs-S.
  *
@@ -244,7 +243,7 @@ private slots:
 
     void cleanup() { closeAll(); }
 
-    // N1. A number with no unit is read in SI. One far outside what the
+    // A number with no unit is read in SI. One far outside what the
     // unit expected is ever worth was taken and solved with: a dlinewidth
     // of "2e-10" (energy per field) is 1.2 GeV per V/m, and the gain of a
     // well with it took all the memory there was.
@@ -281,7 +280,7 @@ private slots:
         QVERIFY(evaluateConstant(QStringLiteral("1e16"), b, Dim::of(-3), nullptr).has_value());
     }
 
-    // N11. A singular where the tool takes a list of that name: read as
+    // A singular where the tool takes a list of that name: read as
     // that list, and said - 'delete' with 'name' was refused, "Meant
     // names?", while the tools that take one take 'name'.
     void aSingularIsReadAsTheListItNames()
@@ -347,7 +346,7 @@ private slots:
         QVERIFY2(text(no).contains(QStringLiteral("takes no nmae")), qPrintable(text(no)));
     }
 
-    // N2. An input read under another name is said: import_data turned
+    // An input read under another name is said: import_data turned
     // 'v-out' into 'v_out' without a word, so a column asked for by the
     // name the file has could not be found.
     void aRenamedInputIsSaid()
@@ -368,7 +367,7 @@ private slots:
         QVERIFY(!json(call("import_data", {{"file", "plain.csv"}})).contains("renamed"));
     }
 
-    // N3. How a call will be treated before it is made: the guards the
+    // How a call will be treated before it is made: the guards the
     // user chose, and what they name for those very arguments. The
     // settings file had to be read to learn the file guard was off.
     void theGuardsAreToldBeforeACallIsMade()
@@ -395,7 +394,7 @@ private slots:
         QVERIFY(!json(call("describe_tool", {{"name", "get_schematic"}})).value("guards").toObject().isEmpty());
     }
 
-    // N9. 'connect' to "ground" reused a ground already placed and left
+    // 'connect' to "ground" reused a ground already placed and left
     // connected to nothing, instead of adding a second one beside it.
     void groundReusesOneLeftUnwired()
     {
@@ -454,7 +453,7 @@ private slots:
         QCOMPARE(grounds(), 2);
     }
 
-    // N4. An axis writes its numbers in its own notation, where that is
+    // An axis writes its numbers in its own notation, where that is
     // not the diagram's: x in SI prefixes while y is decimal. Kept in the
     // file, and given back by null.
     void anAxisWritesItsNumbersItsOwnWay()
@@ -572,7 +571,7 @@ private slots:
         misc::setWidgetBackgroundColor(sch->viewport(), misc::paperColor());
     }
 
-    // N13. A picture as small as it is useful: its longer side 1500
+    // A picture as small as it is useful: its longer side 1500
     // pixels unless told otherwise, and 'max_width', 'scale', 'gray' and
     // 'format' smaller again. A Retina window's shot came back 2782 x
     // 2372, larger than it could be used.
@@ -625,7 +624,7 @@ private slots:
         }
     }
 
-    // N14. What a picture of a text tab shows, in the document's own
+    // What a picture of a text tab shows, in the document's own
     // measures: the lines in view, so that get_text can follow them. The
     // answer said only "as its window shows it".
     void aScreenPictureSaysWhatItShows()
@@ -640,7 +639,7 @@ private slots:
         QVERIFY2(text(shot).contains(QStringLiteral("of 401")) || text(shot).contains(QStringLiteral("of 400")), qPrintable(text(shot)));
     }
 
-    // N5. A plot group shown again keeps the diagram that is there, and an
+    // A plot group shown again keeps the diagram that is there, and an
     // axis label of the user's own words is not written over by the group's
     // - only one that is the same label in another unit. Its ranges,
     // colours, markers and paintings stay in any case.
@@ -696,7 +695,7 @@ private slots:
         QCOMPARE(d->Graphs.first()->Color.name(), QStringLiteral("#00aa44"));
     }
 
-    // N7 and N8. Mesh convergence in one call, and reference numbers in
+    // Mesh convergence in one call, and reference numbers in
     // one step: the VCSEL threshold, the laser currents and the a_box wall
     // error each needed a loop of its own, and every benchmark a script.
     void aMeshConvergesAndIsMeasured()
@@ -998,7 +997,8 @@ private slots:
         // A region that starts in the margin, which is where one drawn by
         // hand usually starts: the two points are moved onto the first and
         // last run it meets, since Qt reads between the characters nearest
-        // them and a corner in the margin is near none. Here the whole page is one margin
+        // them and a corner in the margin is near none. Here the whole page
+        // is one margin
         // wider than the text, and the text comes back all the same.
         const QJsonObject wide = json(must("read_pdf", {{"path", rich}, {"region", QJsonArray{0.0, 0.08, 1.0, 0.17}}}));
         const QString fromMargin = wide.value("pages").toArray().first().toObject().value("text").toString();
@@ -1209,12 +1209,12 @@ private slots:
         QVERIFY(writeFile(path("half.sch"), whole.left(whole.size() * 3 / 4)));
 
         // The call that finds it answers - it used to raise a modal box
-        // inside the reload and never return (A6).
+        // inside the reload and never return.
         const QJsonObject now = json(must("get_schematic", {}, 20000));
         QJsonArray names;
         for (const QJsonValue& c : now.value("components").toArray()) names.append(c.toObject().value("name"));
         // Both parts are still there: load() puts back what it held, which
-        // a reload re-entered through that box used to defeat (A5).
+        // a reload re-entered through that box used to defeat.
         QCOMPARE(names.size(), 2);
         QVERIFY2(names.contains(QJsonValue(QStringLiteral("R1"))) && names.contains(QJsonValue(QStringLiteral("C1"))),
                  qPrintable(QJsonDocument(names).toJson(QJsonDocument::Compact)));
@@ -1232,7 +1232,7 @@ private slots:
         QVERIFY2(told.contains(QStringLiteral("component")), qPrintable(told.right(400)));
     }
 
-    // A1: a singular is folded only into a field that is a plural of it.
+    // A singular is folded only into a field that is a plural of it.
     void onlyARealPluralIsReadFromItsSingular()
     {
         QVERIFY(!failed(must("new_document")));
@@ -1284,7 +1284,7 @@ private slots:
         QVERIFY(QucsControl::pluralOf(QStringLiteral("a")).isEmpty());
     }
 
-    // A2, A3: the guards are given the arguments as the tool will read
+    // The guards are given the arguments as the tool will read
     // them, so a singular cannot hide a file or a whole batch from them.
     void theGuardsSeeWhatTheToolWillRead()
     {
@@ -1324,7 +1324,7 @@ private slots:
                  "a trash_file inside a batch spelt 'call' is not treated as final");
     }
 
-    // A4: a script is asked about when it may do what cannot be undone -
+    // A script is asked about when it may do what cannot be undone -
     // whatever way it names the tool.
     void aScriptIsAskedAboutWhateverWayItNamesTheTool()
     {
@@ -1345,7 +1345,7 @@ private slots:
         QVERIFY(!asked(QStringLiteral("var n = 0; for (var i = 0; i < 3; i++) n += i; n")));
     }
 
-    // A8, A13: the two ways a file left the workspace unwatched.
+    // The two ways a file left the workspace unwatched.
     void everyWayAFileLeavesTheWorkspaceIsNamed()
     {
         QVERIFY(!failed(must("new_document")));
@@ -1368,7 +1368,7 @@ private slots:
         QVERIFY2(setting.contains(QStringLiteral("Outside the workspace")), qPrintable(setting));
     }
 
-    // A7: a model is not read again while a job of its own is running.
+    // A model is not read again while a job of its own is running.
     // The reload's guard counts a batch, a script, a tune and a preview;
     // a solve or a build is none of those, so the model was swapped under
     // the job and the run ended against the new one.
@@ -1376,7 +1376,7 @@ private slots:
     {
         // coax_rlgc has a parameter 'epsr' that coax has not, so a solve
         // that ends against the wrong model says so: that is exactly how
-        // the hunt found it.
+        // it was found.
         const QString from = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
         // Long enough to be met. Under the sanitizers that is the example's
         // own mesh and one frequency of its magnetic sweep, seconds of
@@ -1454,7 +1454,7 @@ private slots:
                  qPrintable(QJsonDocument(objects).toJson(QJsonDocument::Compact)));
     }
 
-    // B6, B7: the two tools that handed their numbers to a program and
+    // The two tools that handed their numbers to a program and
     // gave back whatever came of it.
     void theNumericToolsRefuseWhatCannotBe()
     {
@@ -1462,7 +1462,7 @@ private slots:
             const QJsonObject r = call(tool, args);
             return failed(r) ? text(r) : QString();
         };
-        // B6. A substrate of no height, no width, no permittivity or a
+        // A substrate of no height, no width, no permittivity or a
         // negative one: "nan" came back as a result to read.
         const QJsonObject line{{"type", "microstrip"}, {"do", "analyze"}, {"w", 1e-3}, {"h", 1e-3}, {"er", 4.3}, {"f", 1e9}};
         QVERIFY2(!failed(must("line_calc", line)), "an ordinary line still computes");
@@ -1482,7 +1482,7 @@ private slots:
         QVERIFY2(why(QStringLiteral("line_calc"), wild).contains(QStringLiteral("no number")),
                  qPrintable(why(QStringLiteral("line_calc"), wild)));
 
-        // B7. The conditions of a budget, which were not checked at all.
+        // The conditions of a budget, which were not checked at all.
         const QJsonArray oneStage{QJsonObject{{"gain", 20}, {"nf", 2}}};
         QVERIFY2(!failed(must("receiver_budget", {{"stages", oneStage}})), "an ordinary budget still computes");
         QVERIFY2(why(QStringLiteral("receiver_budget"), {{"stages", oneStage}, {"temperature", -500}})
@@ -1501,11 +1501,11 @@ private slots:
         QVERIFY2(stage.contains(QStringLiteral("'nf'")) && stage.contains(QStringLiteral("stage 1")), qPrintable(stage));
     }
 
-    // B1, B2, B3, B5, B8: what the tools said, or did not say, about an
+    // What the tools said, or did not say, about an
     // argument they took.
     void theToolsSayWhatTheyDidWithAnOddArgument()
     {
-        // B8. An empty action fired the first menu item (File > New),
+        // An empty action fired the first menu item (File > New),
         // because most actions have no object name and "" equals theirs.
         QVERIFY(!failed(must("new_document")));
         const int before = int(app->allDocuments().size());
@@ -1517,7 +1517,7 @@ private slots:
         // A name that is simply wrong is still refused as it was.
         QVERIFY(failed(call("trigger_action", {{"action", "nothing at all"}})));
 
-        // B2. A region that meets no text called the PDF scanned, on a page
+        // A region that meets no text called the PDF scanned, on a page
         // whose text the same call returns in full.
         const QString pdf = path("lined.pdf");
         QVERIFY(writeLinedPdf(pdf));
@@ -1528,7 +1528,7 @@ private slots:
         QVERIFY2(!none.value("note").toString().contains(QStringLiteral("scanned")), qPrintable(none.value("note").toString()));
         QVERIFY2(none.value("note").toString().contains(QStringLiteral("in the region")), qPrintable(none.value("note").toString()));
 
-        // B5. A count of nought was clamped in silence.
+        // A count of nought was clamped in silence.
         QVERIFY(!failed(must("open_document", {{"path", QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/thermo_optic_heater.gds")}})));
         QVERIFY2(text(call("find_shapes", {{"limit", 0}})).contains(QStringLiteral("'limit'")),
                  qPrintable(text(call("find_shapes", {{"limit", 0}}))));
@@ -1540,11 +1540,11 @@ private slots:
         QVERIFY2(text(call("tune", {{"knobs", QJsonArray{}}, {"max_runs", 0}})).contains(QStringLiteral("'max_runs'")),
                  qPrintable(text(call("tune", {{"knobs", QJsonArray{}}, {"max_runs", 0}}))));
 
-        // B1, B3: on a model of its own.
+        // On a model of its own.
         const QString from = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
         QVERIFY(writeFile(path("odd.qfem"), read(from + QStringLiteral("coax.qfem"))));
         QVERIFY(!failed(must("fem_model", {{"action", "open"}, {"path", "odd.qfem"}})));
-        // B3. A size that is no number, and one beyond any geometry.
+        // A size that is no number, and one beyond any geometry.
         QVERIFY2(text(call("fem_edit", {{"action", "add"}, {"parent", "geometry"}, {"type", "rectangle"},
                                         {"props", QJsonObject{{"size", QJsonArray{"1e308", "1e308"}}}}}))
                      .contains(QStringLiteral("beyond any geometry")),
@@ -1563,7 +1563,7 @@ private slots:
         QVERIFY2(text(call("fem_converge", {{"refine", QJsonArray{2}}, {"timeout", 0}})).contains(QStringLiteral("'timeout'")),
                  qPrintable(text(call("fem_converge", {{"refine", QJsonArray{2}}, {"timeout", 0}}))));
 
-        // B1. A reference named for something no value answers to was
+        // A reference named for something no value answers to was
         // measured against anyway, and counted as matched.
         QVERIFY(writeFile(path("ref.qfem"), read(from + QStringLiteral("coax.qfem"))));
         QVERIFY(!failed(must("fem_model", {{"action", "open"}, {"path", "ref.qfem"}})));
@@ -1583,7 +1583,7 @@ private slots:
         QCOMPARE(against(QJsonObject{{"Es.c11", 1e-10}}).value("values measured").toInt(), 0);
     }
 
-    // B4: a plot group shown again leaves its display alone.
+    // A plot group shown again leaves its display alone.
     void aPlotGroupShownAgainLeavesItsDisplayAlone()
     {
         const QString from = QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics/");
@@ -1598,7 +1598,7 @@ private slots:
 
         // Shown again, twice, with nothing changed: the file is not touched.
         // Its three lines moved out of "a label differs" when N5 was added,
-        // so setChanged() fired every time and showGraphs() saved it (B4).
+        // so setChanged() fired every time and showGraphs() saved it.
         for (int again = 0; again < 2; ++again) {
             QTest::qWait(1100);   // (a second apart, so a write would show)
             QVERIFY(!failed(must("fem_plot", {{"plot", "pg1d1"}}, 120000)));
@@ -1610,9 +1610,9 @@ private slots:
             if (!d->getDocName().isEmpty() && QFileInfo(d->getDocName()) == QFileInfo(display)) QVERIFY(!d->getDocChanged());
     }
 
-    // N10. A script stopped says what it was doing, and the time the user
+    // A script stopped says what it was doing, and the time the user
     // took to answer a card is not counted against its own timeout.
-    // N9. A place far out: 2147483647 was cut to the model plane's edge
+    // A place far out: 2147483647 was cut to the model plane's edge
     // and 1e300, which no int holds, was read as 0 - both without a word,
     // and probe's refusal then named 0, 0, a place nobody asked about.
     void everyPlaceOffTheSchematicIsRefused()
@@ -1646,12 +1646,12 @@ private slots:
         QVERIFY(failed(call(QStringLiteral("edit_component"), {{"name", "R1"}, {"x", 10.5}})));
     }
 
-    // N6, N7, N8: what a call asked for that the answer did not account
+    // What a call asked for that the answer did not account
     // for - a timeout as text, a hint wide of the mark, pages that are
     // not there.
     void whatACallAskedForIsAccountedFor()
     {
-        // N6. A timeout given as text is the number the tool reads
+        // A timeout given as text is the number the tool reads
         // (asNumbers converts it), so it is the number waited for too:
         // QJsonValue::toInt handed the default back for a string, and a
         // script's call was cut at 610 s while the solve ran on.
@@ -1664,7 +1664,7 @@ private slots:
         QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_solve"), QJsonObject{}), 600);
         QCOMPARE(QucsControl::waitsFor(QStringLiteral("fem_solve"), QJsonObject{{"timeout", "99999"}}), 7200);
 
-        // N7. A field of a letter or two is inside almost any word, so
+        // A field of a letter or two is inside almost any word, so
         // add_analysis {"type": ...} was answered "Meant y?".
         const QJsonObject hinted = call(QStringLiteral("add_analysis"), {{"type", "ac"}});
         QVERIFY2(failed(hinted), qPrintable(text(hinted)));
@@ -1673,7 +1673,7 @@ private slots:
         const QJsonObject typo = call(QStringLiteral("add_component"), {{"typ", "R"}, {"x", 0}, {"y", 0}});
         QVERIFY2(failed(typo) && text(typo).contains(QStringLiteral("Meant type?")), qPrintable(text(typo)));
 
-        // N8. read_pdf took [3, 4], "2-5" and 7 but refused "all", which
+        // Read_pdf took [3, 4], "2-5" and 7 but refused "all", which
         // read_pptx's 'slides' accepts; a range past the end was cut in
         // silence while a single page past it is refused.
         const QString file = path("one.pdf");
@@ -1695,7 +1695,7 @@ private slots:
         QVERIFY(!json(must("read_pdf", {{"path", file}})).contains("left out"));
     }
 
-    // N13. A dataset whose block says one count and holds another was read
+    // A dataset whose block says one count and holds another was read
     // down to what is there without the mismatch being mentioned.
     void aDatasetSaysWhenItsCountDoesNotMatch()
     {
@@ -1718,7 +1718,7 @@ private slots:
                  "a dataset that matches its headers was written up anyway");
     }
 
-    // N1, N2, N3: what a model's answers say of a level, a reference and a
+    // What a model's answers say of a level, a reference and a
     // value JSON has no number for.
     void theModelAnswersSayWhatEachNumberIs()
     {
@@ -1728,7 +1728,7 @@ private slots:
         QVERIFY(!failed(must("open_document", {{"path", "numbers.qfem"}})));
         QVERIFY(!failed(must("fem_solve", {{"timeout", 300}}, 330000)));
 
-        // N1. "a rule for boundarys": the plural made by adding an "s".
+        // "a rule for boundarys": the plural made by adding an "s".
         for (const auto& [over, plural] : {std::pair{"boundaries", "boundaries"}, {"points", "points"}, {"domains", "domains"}}) {
             const QJsonObject r = call(QStringLiteral("fem_evaluate"), {{"expression", "1"},
                                                                         {"over", QLatin1String(over)},
@@ -1738,7 +1738,7 @@ private slots:
             QVERIFY2(text(r).contains(QStringLiteral("a rule for %1 is").arg(QLatin1String(plural))), qPrintable(text(r)));
         }
 
-        // N2. A number sent as text was read as a file's name: "1e-10
+        // A number sent as text was read as a file's name: "1e-10
         // could not be read".
         const QJsonObject against = json(must("fem_evaluate", {{"expression", "es.C11"}, {"reference", "1e-10"}}));
         QCOMPARE(against.value("against the reference").toObject().value("values measured").toInt(), 1);
@@ -1749,7 +1749,7 @@ private slots:
         const QJsonObject wild = call(QStringLiteral("fem_evaluate"), {{"expression", "es.C11"}, {"reference", "inf"}});
         QVERIFY2(failed(wild) && text(wild).contains(QStringLiteral("no number")), qPrintable(text(wild)));
 
-        // N3. "SI": null beside "value": "inf" - a caller reading 'SI' saw
+        // "SI": null beside "value": "inf" - a caller reading 'SI' saw
         // nothing of the value's kind, JSON having no number for either.
         // (One point, built by append: QJsonArray{QJsonArray{0.0005, 0}} is
         // [0.0005, 0] to AppleClang 17 - a copy, [dcl.init.list]/3.2 - where
@@ -1825,7 +1825,7 @@ private slots:
         QVERIFY2(waited.value("seconds").toDouble() < 1.0, qPrintable(QJsonDocument(waited).toJson(QJsonDocument::Compact)));
     }
 
-    // N12. What the user selected, as data: a text tab's selected lines
+    // What the user selected, as data: a text tab's selected lines
     // (a PDF's text with its boxes in page points, where Qt's PDF module
     // is built in - test_pdf_viewer covers that side).
     void theSelectionIsGivenAsData()

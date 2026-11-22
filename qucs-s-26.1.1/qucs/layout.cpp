@@ -43,7 +43,7 @@ namespace {
 // How deep a drawing or a search goes down the hierarchy at most, whatever
 // it was asked: deeper cells drawn as frames, not looked into. (A file's
 // chain of 3000 cells, by recursion, overflowed even a main thread's
-// stack - the fuzz of 21 October, L1.)
+// stack.)
 constexpr int MaxLevels = 256;
 
 QString tr(const char* text)
@@ -396,7 +396,7 @@ void takeCell(const gdstk::Cell& from, Cell& cell, const QHash<const gdstk::Cell
 // The bounds of every cell, bottom up; a placement that makes a cell its
 // own ancestor is taken out (the file is wrong). (Down the hierarchy on a
 // stack of its own: a file's chain of cells thousands deep, by recursion,
-// could overflow a thread's - the fuzz of 21 October, L1.)
+// could overflow a thread's.)
 void finish(Layout& layout)
 {
     const int n = int(layout.cells.size());
