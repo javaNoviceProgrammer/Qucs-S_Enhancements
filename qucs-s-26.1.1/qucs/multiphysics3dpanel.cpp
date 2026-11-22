@@ -711,9 +711,10 @@ void Multiphysics3DPanel::showSettings()
         said = tr("%1 domains, %2 faces, %3 edges, %4 points; %5 levels in z").arg(t.domains.size()).arg(t.faces.size()).arg(t.edges.size()).arg(t.points.size()).arg(t.levels.size());
     } else if (n->type == QLatin1String("mesh") && a_doc->mesh() && !a_doc->meshStale()) {
         const Mesh3& mesh = *a_doc->mesh();
-        said = tr("%1 prisms, %2 nodes: the plan's %3 triangles through %4 layers; its smallest angle %5°, its worst stretch %6")
-                   .arg(QLocale().toString(qlonglong(mesh.prisms.size())), QLocale().toString(qlonglong(mesh.nodes.size())),
-                        QLocale().toString(qlonglong(mesh.plan ? mesh.plan->triangles.size() : 0)))
+        const QString plans = mesh.byBand() ? tr("%1 plan triangles in %2 bands,").arg(QLocale().toString(qlonglong(mesh.planTriangles()))).arg(mesh.bands.size())
+                                            : tr("the plan's %1 triangles").arg(QLocale().toString(qlonglong(mesh.planTriangles())));
+        said = tr("%1 prisms, %2 nodes: %3 through %4 layers; its smallest angle %5°, its worst stretch %6")
+                   .arg(QLocale().toString(qlonglong(mesh.prisms.size())), QLocale().toString(qlonglong(mesh.nodes.size())), plans)
                    .arg(mesh.heights.size() > 1 ? int(mesh.heights.size()) - 1 : 0)
                    .arg(mesh.minAngle, 0, 'f', 1)
                    .arg(mesh.maxStretch, 0, 'g', 3);

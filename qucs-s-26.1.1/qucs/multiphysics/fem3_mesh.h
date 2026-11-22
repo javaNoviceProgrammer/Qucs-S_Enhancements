@@ -31,6 +31,13 @@ namespace qucs_s::fem {
  * no prism uses are left out. Its boundary faces lie on the geometry's faces:
  * a floor's triangles, a wall's quadrilaterals, each counter-clockwise seen
  * from its face's front (that face's normal's side).
+ *
+ * By band (the mesh's Plan "band"): the heights in bands, each band's prisms
+ * of a plan of its own (Band) - coarse away from the fine objects' heights,
+ * the footprints of objects absent from it merged. Two bands meet on a
+ * height (an interface, in the air), each with its own nodes there; a
+ * prism's plan is its band's (planOf()), its node origin its band's plan
+ * node. One band: as before, its plan the mesh's.
  */
 struct Mesh3 {
     std::vector<Vec3> nodes;
@@ -39,14 +46,30 @@ struct Mesh3 {
     std::vector<int> levelHeight;                  ///< each level's index in heights
     std::vector<std::array<int, 6>> prisms;
     std::vector<int> domain;                       ///< each prism's
-    std::vector<int> prismTriangle;                ///< its plan triangle
+    std::vector<int> prismTriangle;                ///< its plan triangle (its band's plan's)
     std::vector<int> prismLayer;                   ///< its bottom's height
+    /// A band of heights and its plan: heights first..last (the last its
+    /// top, the next band's first), its nodes by height and plan node.
+    struct Band {
+        std::shared_ptr<const Mesh> plan;
+        int first = 0, last = 0;
+        std::vector<int> nodeAt;                   ///< [(height - first) * plan nodes + plan node]: the node, or -1
+        /// Its plan's merged plan domains: each one's representative.
+        std::vector<int> merged;
+    };
+    std::vector<Band> bands;                       ///< one at least (by band: more)
+    /// By interface (between band i and i + 1): the band whose degrees of
+    /// freedom there are constrained, the finer (a node, an edge or a
+    /// triangle the two bands share there is one, not constrained).
+    std::vector<int> interfaceFiner;
+    std::vector<int> prismBand;                    ///< each prism's
     struct Face {
         std::array<int, 4> nodes{{-1, -1, -1, -1}};
         bool quad = false;                         ///< a wall's: four nodes, else a floor's three
         int face = -1;                             ///< the geometry's face
         int plan = -1;                             ///< a floor's plan triangle; a wall's plan edge (Mesh::edges)
         int height = -1;                           ///< a floor's height; a wall's bottom's
+        int band = 0;                              ///< whose plan
     };
     std::vector<Face> faces;
     std::vector<int> pointNode;                    ///< each point of the geometry's node
@@ -67,9 +90,25 @@ struct Mesh3 {
     /// [height * the plan's nodes + plan node]: the node, or -1 (one no prism
     /// uses).
     std::vector<int> nodeAt;
+    /// Each node's band (where two meet, its own side's).
+    std::vector<int> nodeBand;
 
-    /// A node by plan node and height, or -1.
+    /// A node by plan node and height, or -1 (band 0's plan; by band, the
+    /// band's that holds the height, the lower at an interface).
     int node(int planNode, int height) const;
+    /// A node by band, its plan's node and height, or -1.
+    int node(int band, int planNode, int height) const;
+    /// Prism \a p's plan.
+    const Mesh& planOf(int p) const { return *bands[std::size_t(prismBand[std::size_t(p)])].plan; }
+    bool byBand() const { return bands.size() > 1; }
+    /// Its plans' triangles (by band, all the bands').
+    std::size_t planTriangles() const
+    {
+        if (!byBand()) return plan ? plan->triangles.size() : 0;
+        std::size_t n = 0;
+        for (const Band& b : bands) n += b.plan ? b.plan->triangles.size() : 0;
+        return n;
+    }
     void computeStatistics();
 };
 

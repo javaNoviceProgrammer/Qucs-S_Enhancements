@@ -101,50 +101,91 @@ void gauss01(int n, std::vector<double>& x, std::vector<double>& w)
 
 EdgeSpace3::EdgeSpace3(std::shared_ptr<const Mesh3> mesh, int order) : a_mesh(std::move(mesh)), a_order(order == 1 ? 1 : 2)
 {
-    a_nodes = std::make_shared<Space>(a_mesh->plan, a_order);
-    a_edges = std::make_shared<EdgeSpace>(a_mesh->plan, a_order);
+    // (By band: each band's plan's spaces, and its degrees of freedom its own
+    // - at an interface each band's apart, the finer's constrained.)
+    const int NB = std::max(1, int(a_mesh->bands.size()));
+    for (int b = 0; b < NB; ++b) {
+        const std::shared_ptr<const Mesh> plan = a_mesh->bands.empty() ? a_mesh->plan : a_mesh->bands[std::size_t(b)].plan;
+        a_nodesBy.push_back(std::make_shared<Space>(plan, a_order));
+        a_edgesBy.push_back(std::make_shared<EdgeSpace>(plan, a_order));
+    }
+    a_nodes = a_nodesBy.front();
+    a_edges = a_edgesBy.front();
     a_layers = std::max(0, int(a_mesh->heights.size()) - 1);
     a_levels = a_order == 1 ? a_layers + 1 : 2 * a_layers + 1;
-    const Mesh& plan = *a_mesh->plan;
+    a_across.resize(std::size_t(NB));
+    a_along.resize(std::size_t(NB));
+    a_middle.resize(std::size_t(NB));
     if (a_order == 2)
-        for (int t = 0; t < int(plan.triangles.size()); ++t) {
-            const int* nd = a_nodes->dofs(t);
-            for (int l = 0; l < 3; ++l) {
-                const int p = plan.triangles[std::size_t(t)][std::size_t(l)], q = plan.triangles[std::size_t(t)][std::size_t((l + 1) % 3)];
-                a_middle[(unsigned long long)edgeKey(p, q)] = nd[3 + l];
+        for (int b = 0; b < NB; ++b) {
+            const Mesh& plan = planMesh(b);
+            for (int t = 0; t < int(plan.triangles.size()); ++t) {
+                const int* nd = a_nodesBy[std::size_t(b)]->dofs(t);
+                for (int l = 0; l < 3; ++l) {
+                    const int p = plan.triangles[std::size_t(t)][std::size_t(l)], q = plan.triangles[std::size_t(t)][std::size_t((l + 1) % 3)];
+                    a_middle[std::size_t(b)][(unsigned long long)edgeKey(p, q)] = nd[3 + l];
+                }
             }
         }
-    const int pe = a_edges->perElement(), pn = a_nodes->perElement(), nk = a_order + 1, mc = a_order;
+    const int nk = a_order + 1, mc = a_order;
     const int per = perElement();
     a_dofs.assign(std::size_t(elements()) * std::size_t(per), -1);
     for (int e = 0; e < elements(); ++e) {
-        const int t = a_mesh->prismTriangle[std::size_t(e)], j = a_mesh->prismLayer[std::size_t(e)];
-        const int* ed = a_edges->dofs(t);
-        const int* nd = a_nodes->dofs(t);
+        const int b = bandOf(e), t = a_mesh->prismTriangle[std::size_t(e)], j = a_mesh->prismLayer[std::size_t(e)];
+        const EdgeSpace& edges = *a_edgesBy[std::size_t(b)];
+        const Space& nodes = *a_nodesBy[std::size_t(b)];
+        const int pe = edges.perElement(), pn = nodes.perElement();
+        const int* ed = edges.dofs(t);
+        const int* nd = nodes.dofs(t);
         int* out = &a_dofs[std::size_t(e) * std::size_t(per)];
+        auto& across = a_across[std::size_t(b)];
+        auto& along = a_along[std::size_t(b)];
         for (int k = 0; k < nk; ++k)
             for (int i = 0; i < pe; ++i) {
                 const long long key = (long long)ed[i] * a_levels + levelOf(j, k);
-                auto it = a_across.find(key);
-                if (it == a_across.end()) it = a_across.emplace(key, a_size++).first;
+                auto it = across.find(key);
+                if (it == across.end()) {
+                    it = across.emplace(key, a_size++).first;
+                    a_dofBand.push_back(b);
+                }
                 out[k * pe + i] = it->second;
             }
         for (int m = 0; m < mc; ++m)
             for (int n = 0; n < pn; ++n) {
                 const long long key = ((long long)nd[n] * a_layers + j) * 2 + m;
-                auto it = a_along.find(key);
-                if (it == a_along.end()) it = a_along.emplace(key, a_size++).first;
+                auto it = along.find(key);
+                if (it == along.end()) {
+                    it = along.emplace(key, a_size++).first;
+                    a_dofBand.push_back(b);
+                }
                 out[pe * nk + m * pn + n] = it->second;
             }
     }
 }
 
+int EdgeSpace3::bandOf(int e) const
+{
+    return a_mesh->prismBand.empty() ? 0 : a_mesh->prismBand[std::size_t(e)];
+}
+
+const Mesh& EdgeSpace3::planMesh(int band) const
+{
+    return a_mesh->bands.empty() ? *a_mesh->plan : *a_mesh->bands[std::size_t(band)].plan;
+}
+
+int EdgeSpace3::acrossDof(int band, int planEdgeDof, int level) const
+{
+    if (band < 0 || band >= int(a_across.size())) return -1;
+    auto it = a_across[std::size_t(band)].find((long long)planEdgeDof * a_levels + level);
+    return it == a_across[std::size_t(band)].end() ? -1 : it->second;
+}
+
 void EdgeSpace3::basis(int e, double xi, double eta, double zeta, Basis& b) const
 {
-    const int t = a_mesh->prismTriangle[std::size_t(e)], j = a_mesh->prismLayer[std::size_t(e)];
-    const AffineMap am = affineMap(*a_nodes, t);
+    const int band = bandOf(e), t = a_mesh->prismTriangle[std::size_t(e)], j = a_mesh->prismLayer[std::size_t(e)];
+    const AffineMap am = affineMap(*a_nodesBy[std::size_t(band)], t);
     EdgeSpace::Basis eb;
-    a_edges->basis(t, am, xi, eta, eb);
+    a_edgesBy[std::size_t(band)]->basis(t, am, xi, eta, eb);
     Shape sh;
     shapeAt(a_order, xi, eta, sh);
     const double z0 = z(j), h = z(j + 1) - z0;
@@ -181,32 +222,43 @@ void EdgeSpace3::basis(int e, double xi, double eta, double zeta, Basis& b) cons
 
 std::vector<int> EdgeSpace3::floorDofs(int t, int height) const
 {
+    return floorDofs(0, t, height);
+}
+
+std::vector<int> EdgeSpace3::floorDofs(int band, int t, int height) const
+{
     std::vector<int> out;
-    const int* ed = a_edges->dofs(t);
-    for (int i = 0; i < a_edges->perElement(); ++i) {
-        auto it = a_across.find((long long)ed[i] * a_levels + levelOf(height, 0));
-        if (it != a_across.end()) out.push_back(it->second);
+    const EdgeSpace& edges = *a_edgesBy[std::size_t(band)];
+    const int* ed = edges.dofs(t);
+    for (int i = 0; i < edges.perElement(); ++i) {
+        const int d = acrossDof(band, ed[i], levelOf(height, 0));
+        if (d >= 0) out.push_back(d);
     }
     return out;
 }
 
 std::vector<int> EdgeSpace3::wallDofs(int a, int b, int layer) const
 {
+    return wallDofs(0, a, b, layer);
+}
+
+std::vector<int> EdgeSpace3::wallDofs(int band, int a, int b, int layer) const
+{
     std::vector<int> out;
-    for (int g : a_edges->edgeDofs(a, b))
+    for (int g : a_edgesBy[std::size_t(band)]->edgeDofs(a, b))
         for (int k = 0; k <= a_order; ++k) {
-            auto it = a_across.find((long long)g * a_levels + levelOf(layer, k));
-            if (it != a_across.end()) out.push_back(it->second);
+            const int d = acrossDof(band, g, levelOf(layer, k));
+            if (d >= 0) out.push_back(d);
         }
     std::vector<int> nodes{a, b};
     if (a_order == 2) {
-        auto mid = a_middle.find((unsigned long long)edgeKey(a, b));
-        if (mid != a_middle.end()) nodes.push_back(mid->second);
+        auto mid = a_middle[std::size_t(band)].find((unsigned long long)edgeKey(a, b));
+        if (mid != a_middle[std::size_t(band)].end()) nodes.push_back(mid->second);
     }
     for (int n : nodes)
         for (int m = 0; m < a_order; ++m) {
-            auto it = a_along.find(((long long)n * a_layers + layer) * 2 + m);
-            if (it != a_along.end()) out.push_back(it->second);
+            auto it = a_along[std::size_t(band)].find(((long long)n * a_layers + layer) * 2 + m);
+            if (it != a_along[std::size_t(band)].end()) out.push_back(it->second);
         }
     return out;
 }

@@ -3285,6 +3285,11 @@ QList<NodeKind> makeKinds()
                                       tr("Coarse"), tr("Coarser"), tr("Extra coarse"), tr("Extremely coarse")};
     add({QStringLiteral("mesh"), tr("Mesh"), QString(), QStringLiteral("mesh"), Level::None,
          {choice(QStringLiteral("size"), tr("Element size"), presets, presetLabels, QStringLiteral("normal")),
+          inSpaces(choice(QStringLiteral("plan"), tr("Plan"), {QStringLiteral("one"), QStringLiteral("band")},
+                          {tr("One for every layer"), tr("By band of layers")}, QStringLiteral("one"),
+                          tr("By band: each band of layers its own plan, coarse away from the fine objects' heights - their "
+                             "footprints left out where they are not")),
+                   Spaces::ThreeD),
           flag(QStringLiteral("custom"), tr("Customize"), false),
           shownIf(expr(QStringLiteral("hmax"), tr("Maximum element size"), QStringLiteral("length"), QString(),
                        tr("Empty: the preset's")), QStringLiteral("custom=true")),

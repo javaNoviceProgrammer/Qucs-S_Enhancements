@@ -58,8 +58,20 @@ public:
     int perElement() const { return a_order == 1 ? 9 : 36; }
     int elements() const { return int(a_mesh->prisms.size()); }
     const int* dofs(int e) const { return &a_dofs[std::size_t(e) * std::size_t(perElement())]; }
+    /// The plan's spaces (by band: band 0's; with \a band, a band's).
     const EdgeSpace& planEdges() const { return *a_edges; }
     const Space& planNodes() const { return *a_nodes; }
+    const EdgeSpace& planEdges(int band) const { return *a_edgesBy[std::size_t(band)]; }
+    const Space& planNodes(int band) const { return *a_nodesBy[std::size_t(band)]; }
+    /// A degree of freedom's band, and a prism's.
+    int band(int dof) const { return a_dofBand[std::size_t(dof)]; }
+    int bandOf(int e) const;
+    /// The degree of freedom of band \a band's plan edge degree of freedom
+    /// \a planEdgeDof (E across z) at level \a level (order 1: a height;
+    /// order 2: twice a height, one more at a layer's middle), or -1.
+    int acrossDof(int band, int planEdgeDof, int level) const;
+    /// A height's level.
+    int levelOfHeight(int height) const { return levelOf(height, 0); }
 
     /// The functions of prism \a e at its reference point (ξ, η, ζ): their
     /// values and curls (m⁻¹, m⁻²), x y z, and the volume element there
@@ -77,21 +89,29 @@ public:
     /// from node \a a to \a b in layer \a layer. -1s (none) left out.
     std::vector<int> floorDofs(int t, int height) const;
     std::vector<int> wallDofs(int a, int b, int layer) const;
+    /// The same of band \a band's plan.
+    std::vector<int> floorDofs(int band, int t, int height) const;
+    std::vector<int> wallDofs(int band, int a, int b, int layer) const;
     /// The height's z (m).
     double z(int height) const { return a_mesh->heights[std::size_t(height)] * a_mesh->unitScale; }
 
 private:
     int levelOf(int height, int k) const { return a_order == 1 ? height + k : 2 * height + k; }
+    const Mesh& planMesh(int band) const;
     std::shared_ptr<const Mesh3> a_mesh;
     std::shared_ptr<const Space> a_nodes;
     std::shared_ptr<const EdgeSpace> a_edges;
+    std::vector<std::shared_ptr<const Space>> a_nodesBy;       // by band
+    std::vector<std::shared_ptr<const EdgeSpace>> a_edgesBy;   // by band
     int a_order = 1;
     int a_size = 0;
     int a_levels = 0, a_layers = 0;
     std::vector<int> a_dofs;
-    std::unordered_map<long long, int> a_across;   // plan edge dof * levels + level
-    std::unordered_map<long long, int> a_along;    // (plan node dof * layers + layer) * 2 + m
-    std::unordered_map<unsigned long long, int> a_middle;   // order 2: a plan edge's middle node dof, by its nodes
+    std::vector<int> a_dofBand;
+    // By band:
+    std::vector<std::unordered_map<long long, int>> a_across;   // plan edge dof * levels + level
+    std::vector<std::unordered_map<long long, int>> a_along;    // (plan node dof * layers + layer) * 2 + m
+    std::vector<std::unordered_map<unsigned long long, int>> a_middle;   // order 2: a plan edge's middle node dof, by its nodes
 };
 
 /// A port of a full-wave solve: a set of the geometry's faces in one vertical

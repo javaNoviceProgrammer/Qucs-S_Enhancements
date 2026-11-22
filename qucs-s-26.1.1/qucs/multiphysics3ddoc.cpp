@@ -1033,10 +1033,10 @@ void Multiphysics3DDoc::jobFinished()
                 a_mesh = job->meshBuild.mesh;
                 a_meshStale = false;
                 const Mesh3& m = *a_mesh;
-                say(tr("Mesh: %1 prisms, %2 nodes (the plan's %3 triangles through %4 layers); its smallest angle %5°, its worst "
-                       "stretch %6 (%7 ms)")
-                        .arg(QLocale().toString(qlonglong(m.prisms.size())), QLocale().toString(qlonglong(m.nodes.size())),
-                             QLocale().toString(qlonglong(m.plan ? m.plan->triangles.size() : 0)))
+                const QString plans = m.byBand() ? tr("%1 plan triangles in %2 bands,").arg(QLocale().toString(qlonglong(m.planTriangles()))).arg(m.bands.size())
+                                                 : tr("the plan's %1 triangles").arg(QLocale().toString(qlonglong(m.planTriangles())));
+                say(tr("Mesh: %1 prisms, %2 nodes (%3 through %4 layers); its smallest angle %5°, its worst stretch %6 (%7 ms)")
+                        .arg(QLocale().toString(qlonglong(m.prisms.size())), QLocale().toString(qlonglong(m.nodes.size())), plans)
                         .arg(m.heights.size() > 1 ? int(m.heights.size()) - 1 : 0)
                         .arg(m.minAngle, 0, 'f', 1)
                         .arg(m.maxStretch, 0, 'g', 3)

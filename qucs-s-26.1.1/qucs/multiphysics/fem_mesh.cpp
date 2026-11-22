@@ -1782,10 +1782,6 @@ MeshSizes meshSizes(const Model& model, const ParameterScope& parameters, const 
     return s;
 }
 
-namespace {
-
-/// Boundary edge \a e of \a m split at \a p (on it): each triangle by it in
-/// two, the edges that bound them told.
 void splitBoundaryEdge(Mesh& m, int e, QPointF p, double s)
 {
     const int np = int(m.nodes.size());
@@ -1833,8 +1829,6 @@ void splitBoundaryEdge(Mesh& m, int e, QPointF p, double s)
     }
     m.edges.push_back(second);
 }
-
-} // namespace
 
 void matchPeriodicSides(Mesh& m, const MeshSizes& sizes)
 {

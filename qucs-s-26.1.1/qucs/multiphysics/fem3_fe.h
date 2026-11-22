@@ -66,8 +66,14 @@ public:
 
     const Mesh3& mesh() const { return *a_mesh; }
     std::shared_ptr<const Mesh3> meshPtr() const { return a_mesh; }
-    /// The plan's space, of the same order.
+    /// The plan's space, of the same order (by band: band 0's; plan(b) a
+    /// band's).
     const Space& plan() const { return *a_plan; }
+    const Space& plan(int band) const { return *a_plans[std::size_t(band)]; }
+    /// A degree of freedom's band (two bands' same node at an interface: the
+    /// lower's), and a prism's.
+    int band(int dof) const { return a_dofBand[std::size_t(dof)]; }
+    int bandOf(int e) const;
     int order() const { return a_order; }
     int size() const { return a_size; }
     int perElement() const { return a_order == 1 ? 6 : 18; }
@@ -82,8 +88,11 @@ public:
     /// The z (m) of a level (as origin() gives it).
     double levelZ(int level) const;
     /// The degree of freedom of plan degree of freedom \a planDof at \a
-    /// level, or -1.
+    /// level, or -1 (by band: the band that holds the level's height, the
+    /// lower at an interface).
     int dofAt(int planDof, int level) const;
+    /// The same of band \a band's plan.
+    int dofAt(int band, int planDof, int level) const;
 
     /// The map of prism \a e at reference point (ξ, η, ζ): the point (m),
     /// the Jacobian's determinant, its inverse transposed (block diagonal:
@@ -123,22 +132,27 @@ public:
     /// The points of a rule of degree \a degree on boundary face \a f, each
     /// with a prism beside it - one of domain \a domain's where there is one.
     std::vector<FacePoint> facePoints(int f, int degree, int domain = -1) const;
-    /// The prism of plan triangle \a t at height \a j, or -1.
+    /// The prism of plan triangle \a t at height \a j, or -1 (band 0's;
+    /// with \a band, that band's plan's).
     int prismAt(int t, int j) const;
+    int prismAt(int band, int t, int j) const;
 
 private:
+    const Mesh& planMesh(int band) const;
     std::shared_ptr<const Mesh3> a_mesh;
     std::shared_ptr<const Space> a_plan;
+    std::vector<std::shared_ptr<const Space>> a_plans;   // by band
     int a_order = 1;
     int a_size = 0;
     std::vector<int> a_dofs;
     std::vector<std::pair<int, int>> a_origin;   // by dof: plan dof, level
-    std::vector<int> a_prismAt;                  // [t * heights + j]
-    std::unordered_map<long long, int> a_key;    // order 2: plan dof * levels + level
+    std::vector<int> a_dofBand;                  // by dof
+    std::vector<std::vector<int>> a_prismAt;     // by band: [t * heights + j]
+    std::vector<std::unordered_map<long long, int>> a_keys;   // order 2, by band: plan dof * levels + level
     int a_levels = 0;
-    // By plan edge (Mesh::edges): the triangles on it and their edge's
-    // local index (-1: none).
-    std::vector<std::array<std::pair<int, int>, 2>> a_edgeTriangles;
+    // By band, by plan edge (Mesh::edges): the triangles on it and their
+    // edge's local index (-1: none).
+    std::vector<std::vector<std::array<std::pair<int, int>, 2>>> a_edgeTriangles;
 };
 
 } // namespace qucs_s::fem
