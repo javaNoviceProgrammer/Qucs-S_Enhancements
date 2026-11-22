@@ -318,6 +318,8 @@ private:
     std::vector<char> a_steppingWireVaries;         // by coil: its σw reads t or a field (taken at each step)
     bool a_steppingMassless = false;                // K1 nought: nothing conducts
     bool a_inTime = false;                          // solved last in time
+    bool a_timeStart = false;                       // at a study in time's start (beginStepping), not yet stepped
+    std::vector<double> a_wireNow;                  // by coil: its wire's resistance at the last step (turns')
     /// [the solution, each port's] at ω, by a factorization of K0 + jω K1;
     /// and (\a moments 1, 2) their first and second derivatives in ω after
     /// them, each a solve of the same factors - x' = A⁻¹ (b' - j K1 x), x''
@@ -1170,6 +1172,10 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
     const EdgeSpace3& es = *f.edges;
     const Space3& ns = *f.space;
     const QString name = a_node->name();
+    // (Solved now: not at a study in time's start, nor in time but by a
+    // step's stepping, which says so at its end.)
+    a_inTime = false;
+    a_timeStart = false;
     // (A Frequency Domain step's: harmonic, eddy currents in its
     // conductors.)
     if (o.frequency > 0) return solveHarmonic(o, error);
@@ -1185,7 +1191,6 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
                     a_s.log << said;
                 }
             }
-    a_inTime = false;
     a_omega = 0;
     a_harmonic = false;
     f.terminals.clear();
@@ -2623,8 +2628,22 @@ void MagneticProblem3::beginStepping()
     Field3& f = field();
     a_stepping.reset();
     // (After a Frequency Domain step: its ω no more - the start's results
-    // at rest, not that step's.)
+    // at rest, not that step's. After a step in time: its start's results
+    // its own, not that step's last time's.)
     a_omega = 0;
+    a_inTime = false;
+    a_timeStart = true;
+    a_wireNow.clear();
+    // (A conducting field, not solved at rest at its start: its coils'
+    // sources built now, so a coil of turns' wire resistance at the start
+    // is its own - nought before, its current per ampere not known. Its
+    // first step builds them again; what fails says so there.)
+    bool unbuilt = false;
+    for (const Coil& c : a_coils) unbuilt = unbuilt || (!c.single && c.wireSigma.isValid() && c.perAmp == 0);
+    if (unbuilt) {
+        QString ignored;
+        (void)buildSources(&ignored);
+    }
     if (!f.edges || !f.space) return;
     const std::size_t nE = std::size_t(f.edges->size()), nN = std::size_t(f.space->size()), nc = a_coils.size();
     std::vector<double> v(nE + 2 * nN + nc, 0.0);
@@ -2910,7 +2929,10 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
         } else {
             I = evalAt(coil.current, Vec3{});
             const bool cached = c < int(a_steppingWire.size()) && !a_steppingWireVaries[std::size_t(c)];
-            U = turns[std::size_t(c)] + (cached ? a_steppingWire[std::size_t(c)] : wireResistance(c)) * I;
+            const double R = cached ? a_steppingWire[std::size_t(c)] : wireResistance(c);
+            U = turns[std::size_t(c)] + R * I;
+            a_wireNow.resize(a_coils.size(), 0.0);
+            a_wireNow[std::size_t(c)] = R;
         }
         a_I[std::size_t(c)] = I;
         a_U[std::size_t(c)] = U;
@@ -3368,7 +3390,7 @@ void MagneticProblem3::setGlobals()
         // current's density found, uneven, its voltage V_<coil> what it
         // has -: NaN, said, not left out, which would show an earlier time's
         // - a snapshot's globals are its own laid over the last ones.)
-        if (a_inTime && c.single) {
+        if ((a_inTime || a_timeStart) && c.single) {
             const double nan = std::numeric_limits<double>::quiet_NaN();
             s.setGlobal(p + QStringLiteral("Phi_") + c.name, nan, weber, tr("coil %1's flux linkage: none in time (a single conductor's current found, uneven)").arg(c.name));
             s.setGlobal(p + QStringLiteral("L_") + c.name, nan, henry, tr("coil %1's inductance: none in time (a single conductor's current found, uneven)").arg(c.name));
@@ -3403,6 +3425,10 @@ void MagneticProblem3::setGlobals()
             const QString n = a_coils[std::size_t(c)].name;
             s.setGlobal(p + QStringLiteral("I_") + n, a_I[std::size_t(c)].real(), Dim::current(), tr("coil %1's current now").arg(n));
             s.setGlobal(p + QStringLiteral("V_") + n, a_U[std::size_t(c)].real(), Dim::voltage(), tr("coil %1's voltage now (its EMF and its conductor's drop)").arg(n));
+            // (A coil of turns' wire: its resistance now - its σw's at this
+            // time, the one in V_<coil>.)
+            if (!a_coils[std::size_t(c)].single && a_coils[std::size_t(c)].wireSigma.isValid() && c < int(a_wireNow.size()))
+                s.setGlobal(p + QStringLiteral("R_") + n, a_wireNow[std::size_t(c)], Dim::resistance(), tr("coil %1's wire resistance now").arg(n));
         }
         double P = 0;
         for (int e = 0; e < es.elements(); ++e) {

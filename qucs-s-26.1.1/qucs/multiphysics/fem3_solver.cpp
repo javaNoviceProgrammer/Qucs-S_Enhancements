@@ -563,6 +563,17 @@ void Solution3::setGlobal(const QString& name, double value, const Dim& dim, con
     a_globalScope->setConstant(name, value, dim);
 }
 
+void Solution3::blankGlobals(const QStringList& prefixes, const QStringList& names)
+{
+    for (auto& [name, g] : a_globals) {
+        bool hit = names.contains(name);
+        for (const QString& p : prefixes) hit = hit || name.startsWith(p);
+        if (!hit) continue;
+        g.value = std::numeric_limits<double>::quiet_NaN();
+        a_globalScope->setConstant(name, g.value, g.dim);
+    }
+}
+
 std::optional<double> Solution3::global(const QString& name) const
 {
     auto it = a_globals.find(name);
@@ -595,6 +606,7 @@ Solution3::Snapshot Solution3::snapshotNow() const
 void Solution3::addSnapshot()
 {
     a_snapshots.push_back(snapshotNow());
+    for (const auto& [name, g] : a_snapshots.back().globals) a_snapshotNames.insert(name);
     a_selected = int(a_snapshots.size()) - 1;
 }
 
@@ -602,6 +614,7 @@ void Solution3::replaceLastSnapshot()
 {
     if (a_snapshots.empty()) return;
     a_snapshots.back() = snapshotNow();
+    for (const auto& [name, g] : a_snapshots.back().globals) a_snapshotNames.insert(name);
     a_selected = int(a_snapshots.size()) - 1;
 }
 
@@ -620,6 +633,16 @@ void Solution3::select(int i)
     for (const auto& [name, g] : s.globals) {
         a_globals[name] = g;
         a_globalScope->setConstant(name, g.value, g.dim);
+    }
+    // (A global another snapshot has and this one not - a conducting
+    // field's losses at a study in time's start, set from its first step -:
+    // NaN, not what the snapshot selected before said.)
+    for (const QString& name : a_snapshotNames) {
+        if (s.globals.count(name)) continue;
+        const auto it = a_globals.find(name);
+        if (it == a_globals.end()) continue;
+        it->second.value = std::numeric_limits<double>::quiet_NaN();
+        a_globalScope->setConstant(name, it->second.value, it->second.dim);
     }
     a_time = s.time;
     a_frequency = s.frequency;
@@ -642,8 +665,15 @@ std::vector<double> Solution3::globalSeries(const QString& text, Dim* dim, QStri
     std::vector<double> out;
     const std::size_t n = std::max<std::size_t>(a_snapshots.size(), 1);
     for (std::size_t i = 0; i < n; ++i) {
-        if (!a_snapshots.empty())
-            for (const auto& [name, g] : a_snapshots[i].globals) a_globalScope->setConstant(name, g.value, g.dim);
+        if (!a_snapshots.empty()) {
+            const std::map<QString, Global>& here = a_snapshots[i].globals;
+            for (const auto& [name, g] : here) a_globalScope->setConstant(name, g.value, g.dim);
+            // (One this snapshot lacks: NaN, as select() makes it.)
+            for (const QString& name : a_snapshotNames)
+                if (!here.count(name))
+                    if (const auto it = a_globals.find(name); it != a_globals.end())
+                        a_globalScope->setConstant(name, std::numeric_limits<double>::quiet_NaN(), it->second.dim);
+        }
         const Expression e = Expression::compile(text, *a_globalScope);
         if (!e.isValid() || !e.isConstant()) {
             if (why) *why = e.isValid() ? tr("%1 varies over the model: a global, or an integral as one").arg(text) : e.error();
@@ -1933,6 +1963,14 @@ bool transientStep3(Problems3& problems, Solution3& s, const Node& node, const d
             s.fields()[std::size_t(i)].solved = true;
         }
     for (int i : stepped) problems[std::size_t(i)]->beginStepping();
+    // (Its physics' globals NaN first, and the frequency domain's freq: what
+    // a step before set and this one does not - a coil's impedance, a
+    // frequency domain's time-averaged losses - kept into each snapshot in
+    // time otherwise. What it sets at its start and at each step replaces
+    // them.)
+    QStringList mine;
+    for (int i : subset) mine << s.fields()[std::size_t(i)].tag + QLatin1Char('.');
+    s.blankGlobals(mine, {QStringLiteral("freq")});
     setSolvedGlobals(problems, subset);
     s.addSnapshot();
     s.timeDependent = true;
@@ -2248,6 +2286,10 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
     }
     for (auto& p : problems) p->initialize();
     int steps = 0;
+    // (The last snapshots a Time Dependent step's - a Stationary step's then
+    // its last output time again, at rest -, not a Frequency Domain's or an
+    // Eigenfrequency's.)
+    bool afterTime = false;
     // (A Parametric Sweep is the run's, not a step: runStudy3.)
     const int stepCount = int(std::count_if(study->children.begin(), study->children.end(),
                                             [](const Node& n) { return n.enabled && n.type != QLatin1String("sweep"); }));
@@ -2269,6 +2311,7 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
                 out.log = s->log;
                 return out;
             }
+            afterTime = false;
             ++steps;
             continue;
         }
@@ -2342,13 +2385,22 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
                 out.log = s->log;
                 return out;
             }
-            // (After a step in time: its last output time the fields at rest.)
+            // (After a step in time: its last output time the fields at rest.
+            // After a Frequency Domain or an Eigenfrequency step: a snapshot
+            // of its own, at no frequency - that step's last kept, not made
+            // this one's under its frequency.)
             if (s->snapshotCount() > 0) {
                 for (int i : subset) s->fields()[std::size_t(i)].solved = true;
+                s->setFrequency(0);
+                QStringList mine;
+                for (int i : subset) mine << s->fields()[std::size_t(i)].tag + QLatin1Char('.');
+                s->blankGlobals(mine, {QStringLiteral("freq")});
                 setSolvedGlobals(problems, subset);
-                s->replaceLastSnapshot();
+                if (afterTime) s->replaceLastSnapshot();
+                else s->addSnapshot();
             }
         }
+        afterTime = inTime || (afterTime && !small && !modal);
         for (int i : subset) s->fields()[std::size_t(i)].solved = true;
         // (What a step kept for its own next solves - a step in time's
         // magnetic factors - let go at its end: not held through the next
