@@ -171,10 +171,20 @@ public:
     /// time (in time it is refused), its coils' voltage R I alone, said.
     bool hasMass() const override
     {
+        if (conductsAnywhere()) return true;
+        return !a_coils.empty() && !a_nonlinear;
+    }
+    /// Nothing conducting the field has no state of its own: a step's start
+    /// its solution at rest then (a current not nought at the start not
+    /// switched on at the first step: a constant 0.2 A's coil said R I + L
+    /// I/h there, 14.1 mV for R I's 4.2).
+    bool solvedAtRestFirst() const override { return !conductsAnywhere(); }
+    bool conductsAnywhere() const
+    {
         for (std::size_t d = 0; d < a_sigma.size(); ++d)
             if (conducts(int(d))) return true;
         for (const Coil& c : a_coils)
-            if (c.single || !a_nonlinear) return true;
+            if (c.single) return true;
         return false;
     }
     void beginStepping() override;
@@ -250,6 +260,8 @@ private:
     bool a_steppingVaries = true;                   // one of them reads t: assembled at each step
     std::vector<Eigen::VectorXd> a_steppingVolt;    // by coil fed a voltage: its part of b at 1 V (empty: none)
     std::vector<Eigen::VectorXd> a_steppingTurns;   // by coil of turns: its part of b at 1 A (empty: none)
+    std::vector<double> a_steppingWire;             // by coil: its wire's resistance (turns')
+    bool a_steppingMassless = false;                // K1 nought: nothing conducts
     bool a_inTime = false;                          // solved last in time
     /// [the solution, each port's] at ω, by a factorization of K0 + jω K1;
     /// and (\a moments 1, 2) their first and second derivatives in ω after
@@ -287,7 +299,11 @@ private:
     /// coil's N I0 / I_ec times the currents physics' J (\a only: that coil
     /// alone at 1 A, nothing else).
     bool buildSources(QString* error);
-    std::vector<std::array<Expression, 3>> sourcesOf(int only) const;
+    std::vector<std::array<Expression, 3>> sourcesOf(int only, bool turns = true) const;
+    /// sourcesOf(-1) without the coils of turns (a step's: theirs apart -
+    /// their term reads their currents physics' J, a field, which varies to
+    /// Solution3::varies()).
+    std::vector<std::array<Expression, 3>> sourcesWithoutTurns() const { return sourcesOf(-1, false); }
     /// Newton's system at A (\a a, by edge dof): its matrix (the tangent,
     /// and the gauge's rows and columns scaled), and the residual.
     void assemble(const Equations& q, const std::vector<double>& a, const std::vector<std::array<Expression, 3>>& J, bool magnets,
@@ -693,7 +709,7 @@ double MagneticProblem3::evalAt(const Expression& e, const Vec3& x) const
 
 // --------------------------------------------------------------- Sources
 
-std::vector<std::array<Expression, 3>> MagneticProblem3::sourcesOf(int only) const
+std::vector<std::array<Expression, 3>> MagneticProblem3::sourcesOf(int only, bool turns) const
 {
     const std::size_t D = a_s.topology().domains.size();
     std::vector<std::array<Expression, 3>> out(D);
@@ -707,13 +723,21 @@ std::vector<std::array<Expression, 3>> MagneticProblem3::sourcesOf(int only) con
                 for (const auto& j : a_external[d]) terms << QStringLiteral("(") + j[std::size_t(c)].text() + QLatin1Char(')');
             for (int k = 0; k < int(a_coils.size()); ++k) {
                 const Coil& coil = a_coils[std::size_t(k)];
-                if (!coil.on[d] || (only >= 0 && only != k)) continue;
+                if (!coil.on[d] || (only >= 0 && only != k) || (!turns && !coil.single)) continue;
                 // (In the frequency domain a single conductor's current is
                 // found, not given.)
                 if (a_harmonic && coil.single) continue;
-                // (A coil alone at 1 A: N / I_ec times its J.)
-                const double scale = only >= 0 ? coil.perAmp : coil.scale;
-                terms << QStringLiteral("%1*%2.J%3").arg(scale, 0, 'g', 17).arg(coil.ec, QString::fromLatin1(axes[c]));
+                // (A coil alone at 1 A: N / I_ec times its J. A coil of turns'
+                // current its own expression, read where and when it is
+                // read - a results' snapshot in time its own t: a number, as
+                // a single conductor's at rest, is one time's, the
+                // coefficients not kept by snapshot.)
+                if (only < 0 && !coil.single && coil.current.isValid())
+                    terms << QStringLiteral("%1*((%2)/1[A])*%3.J%4").arg(coil.perAmp, 0, 'g', 17).arg(coil.current.text(), coil.ec, QString::fromLatin1(axes[c]));
+                else {
+                    const double scale = only >= 0 ? coil.perAmp : coil.scale;
+                    terms << QStringLiteral("%1*%2.J%3").arg(scale, 0, 'g', 17).arg(coil.ec, QString::fromLatin1(axes[c]));
+                }
             }
             if (!terms.isEmpty()) out[d][std::size_t(c)] = Expression::compile(terms.join(QLatin1String(" + ")), a_s.pointScope());
         }
@@ -1087,7 +1111,7 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
     // conductors.)
     if (o.frequency > 0) return solveHarmonic(o, error);
     if (o.mass > 0 && o.history && hasMass()) return solveTransient(o, error);
-    if (o.inTime)
+    if (o.inTime && !hasMass())
         for (const Coil& c : a_coils)
             if (!c.single) {
                 const QString said = tr("%1: a B-H curve's field in time is solved at rest at each time - coil %2's voltage its wire's R I alone, "
@@ -2213,8 +2237,11 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
         // reads t - each step's assembly over every element the most of a
         // step's work otherwise; a coil's current fed is added at each.)
         a_steppingR = Eigen::VectorXd();
+        // (A coil of turns' term reads its currents physics' J, a field -
+        // varying, to Solution3::varies() - but its part is a_steppingTurns',
+        // that J fixed through the stepping: left out.)
         a_steppingVaries = false;
-        for (const auto& j : sourcesOf(-1))
+        for (const auto& j : sourcesWithoutTurns())
             for (const Expression& e : j) a_steppingVaries = a_steppingVaries || (e.isValid() && a_s.varies(e));
         for (const auto& face : a_sheets)
             for (const auto& j : face)
@@ -2245,6 +2272,13 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
         // times its current at each step - its current of t, not the one
         // its sources were built with.)
         a_steppingTurns.assign(a_coils.size(), Eigen::VectorXd());
+        a_steppingWire.assign(a_coils.size(), 0.0);
+        for (int c = 0; c < nc; ++c) a_steppingWire[std::size_t(c)] = wireResistance(c);
+        // (Nothing conducting K1 is nought: K0's factors kept whatever the
+        // step - before, factorized again at each change of c0, 75 times in
+        // an adaptive run of 55 steps.)
+        a_steppingMassless = true;
+        for (int k = 0; k < a_stepping->K1.nonZeros() && a_steppingMassless; ++k) a_steppingMassless = a_stepping->K1.valuePtr()[k] == cd(0);
         const std::vector<cd> noneV(nN, cd(0));
         for (int c = 0; c < nc; ++c) {
             if (a_coils[std::size_t(c)].single) continue;
@@ -2272,13 +2306,7 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
     if (a_steppingVaries || a_steppingR.size() != hs.n) {
         o.tell(tr("%1: assembling at t = %2").arg(name, formatQuantity(a_s.time(), Dim::of(0, 0, 1))));
         // (The coils of turns left out: theirs added below.)
-        std::vector<double> scales;
-        for (Coil& c : a_coils) {
-            scales.push_back(c.scale);
-            if (!c.single) c.scale = 0;
-        }
-        const std::vector<std::array<Expression, 3>> J = sourcesOf(-1);
-        for (std::size_t c = 0; c < a_coils.size(); ++c) a_coils[c].scale = scales[c];
+        const std::vector<std::array<Expression, 3>> J = sourcesWithoutTurns();
         const std::vector<cd> noneV(nN, cd(0));
         Eigen::SparseMatrix<cd> unused;
         Eigen::VectorXcd r0;
@@ -2302,7 +2330,7 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
     const Eigen::SparseMatrix<double> K1 = hs.K1.real();
     b += K1 * hx;
     // K0 + c0 K1, factorized again where c0 changed.
-    if (!a_steppingLu || std::abs(a_steppingMass - c0) > 1e-12 * c0) {
+    if (!a_steppingLu || (!a_steppingMassless && std::abs(a_steppingMass - c0) > 1e-12 * c0)) {
         o.tell(tr("%1: factorizing, %2 unknowns").arg(name).arg(hs.n));
         const Eigen::SparseMatrix<double> M = Eigen::SparseMatrix<double>(hs.K0.real()) + c0 * K1;
         a_steppingLu = std::make_unique<SparseRealLdlt>();
@@ -2442,7 +2470,7 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
                     }
         } else {
             I = evalAt(coil.current, Vec3{});
-            U = turns[std::size_t(c)] + wireResistance(c) * I;
+            U = turns[std::size_t(c)] + (c < int(a_steppingWire.size()) ? a_steppingWire[std::size_t(c)] : 0.0) * I;
         }
         a_I[std::size_t(c)] = I;
         a_U[std::size_t(c)] = U;
@@ -2860,7 +2888,22 @@ void MagneticProblem3::setGlobals()
             MagneticState st;
             if (!magneticStateAt(ev, a_fi, st)) continue;
             if (std::isfinite(st.energy)) a_energy += w * st.energy;
+            // (In time a single conductor's force ∫ J × B, J its eddy
+            // currents' σE and its sources' - its sources found, not given:
+            // sourcesOf() has none of it.)
+            MagneticState sj;
+            bool currents = false;
             for (int c = 0; c < int(a_coils.size()); ++c) {
+                Coil& single = a_coils[std::size_t(c)];
+                if (!a_inTime || !single.single || !single.on[std::size_t(d)]) continue;
+                if (!currents && !magneticStateAt(ev, a_fi, sj, true)) break;
+                currents = true;
+                single.force[0] += w * (sj.J[1] * sj.B[2] - sj.J[2] * sj.B[1]);
+                single.force[1] += w * (sj.J[2] * sj.B[0] - sj.J[0] * sj.B[2]);
+                single.force[2] += w * (sj.J[0] * sj.B[1] - sj.J[1] * sj.B[0]);
+            }
+            for (int c = 0; c < int(a_coils.size()); ++c) {
+                if (a_inTime && a_coils[std::size_t(c)].single) continue;
                 const auto& ju = unit[std::size_t(c)][std::size_t(d)];
                 if (!ju[0].isValid() && !ju[1].isValid() && !ju[2].isValid()) continue;
                 double jv[3];
@@ -2881,8 +2924,18 @@ void MagneticProblem3::setGlobals()
     for (const Coil& c : a_coils) {
         const double i0 = evalAt(c.current, Vec3{});
         s.setGlobal(p + QStringLiteral("I_") + c.name, i0, Dim::current(), tr("coil %1's current").arg(c.name));
-        s.setGlobal(p + QStringLiteral("Phi_") + c.name, c.flux, weber, tr("coil %1's flux linkage").arg(c.name));
-        if (i0 != 0) s.setGlobal(p + QStringLiteral("L_") + c.name, c.flux / i0, henry, tr("coil %1's inductance: its flux linkage over its current").arg(c.name));
+        // (In time a single conductor's flux linkage is not one - its
+        // current's density found, uneven, its voltage V_<coil> what it
+        // has -: NaN, said, not left out, which would show an earlier time's
+        // - a snapshot's globals are its own laid over the last ones.)
+        if (a_inTime && c.single) {
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            s.setGlobal(p + QStringLiteral("Phi_") + c.name, nan, weber, tr("coil %1's flux linkage: none in time (a single conductor's current found, uneven)").arg(c.name));
+            s.setGlobal(p + QStringLiteral("L_") + c.name, nan, henry, tr("coil %1's inductance: none in time (a single conductor's current found, uneven)").arg(c.name));
+        } else {
+            s.setGlobal(p + QStringLiteral("Phi_") + c.name, c.flux, weber, tr("coil %1's flux linkage").arg(c.name));
+            if (i0 != 0) s.setGlobal(p + QStringLiteral("L_") + c.name, c.flux / i0, henry, tr("coil %1's inductance: its flux linkage over its current").arg(c.name));
+        }
         static const char* const axes[3] = {"x", "y", "z"};
         for (int k = 0; k < 3; ++k)
             s.setGlobal(p + QStringLiteral("F") + QString::fromLatin1(axes[k]) + QLatin1Char('_') + c.name, c.force[k], force,

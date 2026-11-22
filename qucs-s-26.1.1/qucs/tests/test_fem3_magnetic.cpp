@@ -1181,6 +1181,15 @@ private slots:
         const double early = global(sst.s(), QStringLiteral("mf.V_1"));
         sst.s().select(2);
         const double late = global(sst.s(), QStringLiteral("mf.V_1"));
+        // Its force ∫ J × B in time (J its eddy currents' σE: before, nought),
+        // past its transient the DC one - twice the time average at 10 Hz of
+        // 1 A's amplitude -; no flux linkage of a single conductor in time:
+        // NaN, said (before, nought).
+        const double fz = global(sst.s(), QStringLiteral("mf.Fz_1")), fzRest = 2 * global(rest.s(), QStringLiteral("mf.Fz_1"));
+        QVERIFY2(std::abs(fz - fzRest) < 2e-3 * std::abs(fzRest) && fzRest != 0,
+                 qPrintable(QStringLiteral("Fz at 50 µs %1 N, twice the 10 Hz average %2 N").arg(fz).arg(fzRest)));
+        QVERIFY(std::isnan(global(sst.s(), QStringLiteral("mf.Phi_1"))) && std::isnan(global(sst.s(), QStringLiteral("mf.L_1"))));
+        info(QStringLiteral("a single conductor's force in time: %1 N at 50 µs, twice the 10 Hz average %2 N").arg(fz).arg(fzRest));
         const QString said2 = QStringLiteral("a step of 1 A: %1 V at 2 µs, %2 V at 50 µs against its DC resistance's %3 V").arg(early).arg(late).arg(R);
         QVERIFY2(std::abs(late - R) < 1e-3 * R && early > 1.2 * late, qPrintable(said2));
         info(said2);
@@ -1232,6 +1241,8 @@ private slots:
         // (And B beside it: its field, not its rate alone.)
         const cd B(valueAt(h.s(), QStringLiteral("mf.By"), 0.6, 0, 0.5), valueAt(h.s(), QStringLiteral("mf.By_im"), 0.6, 0, 0.5));
         QVERIFY2(std::abs(B) > 0, "B beside the bar");
+        // (Its current density in the bar, real, and its inductance.)
+        const double Jh = valueAt(h.s(), QStringLiteral("mf.Jz"), 0, 0, 0.5), L = V.imag() / (w * I);
         Model mt = coilOfTurns(false);
         for (Node& c : mt.find(QStringLiteral("mf"))->children)
             if (c.type == QLatin1String("magnetic/coil")) c.props.insert(QStringLiteral("I0"), QStringLiteral("0.2[A]*cos(2*pi*20[kHz]*t)"));
@@ -1260,9 +1271,22 @@ private slots:
             said += QStringLiteral("t %1 µs: V %2 mV against %3, By %4 mT against %5 (I %6 A); ")
                         .arg(time * 1e6).arg(got * 1e3).arg(want * 1e3).arg(by * 1e3).arg(byWant * 1e3).arg(current);
             QVERIFY2(std::abs(got - want) < (slowBuild() ? 1.5e-2 : 5e-3) * std::abs(V) && std::abs(by - byWant) < 1e-6 * std::abs(B), qPrintable(said));
+            // Its current density now, N I(t) / I_ec times its currents
+            // physics' J (before: its current at the first step throughout).
+            const double jz = valueAt(t.s(), QStringLiteral("mf.Jz"), 0, 0, 0.5), jzWant = Jh * current / I;
+            QVERIFY2(std::abs(jz - jzWant) < 1e-9 * std::abs(Jh), qPrintable(QStringLiteral("t %1 µs: Jz %2 against %3").arg(time * 1e6).arg(jz).arg(jzWant)));
             QVERIFY(std::abs(current - I * std::cos(w * time)) < 1e-12);
         }
         info(said);
+        // Its start its solution at rest (its current not switched on at the
+        // first step): Φ = L I0 at t0; K0 factorized once (nothing conducts:
+        // K1 nought, whatever the step).
+        t.s().select(0);
+        const double phi0 = global(t.s(), QStringLiteral("mf.Phi_1"));
+        QVERIFY2(std::abs(phi0 - L * I) < 1e-6 * L * I, qPrintable(QStringLiteral("Φ at t0 %1 Wb, L I0 %2").arg(phi0).arg(L * I)));
+        const int factorized = int(t.s().log.filter(QStringLiteral("factorized for a step")).size());
+        QVERIFY2(factorized == 1, qPrintable(t.s().log.filter(QStringLiteral("factorized")).join(QLatin1Char('\n'))));
+        QVERIFY2(!t.r.warnings.join(QLatin1Char('\n')).contains(QStringLiteral("dΦ/dt not in it")), qPrintable(t.r.warnings.join(QLatin1Char('\n'))));
         // A B-H curve in the air: at rest at each time, said.
         Model mb = coilOfTurns(false);
         addFeature(mb, QStringLiteral("mf"), QStringLiteral("magnetic/ampere"), QJsonObject{{QStringLiteral("objects"), QJsonArray{QStringLiteral("air")}}, {QStringLiteral("except"), objects(QStringLiteral("bar"))}},
