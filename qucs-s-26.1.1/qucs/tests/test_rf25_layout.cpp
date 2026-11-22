@@ -18,6 +18,7 @@
 #include <gdstk/gdstk.hpp>
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_mesh.h"
+#include "rf25/rf25_inductance.h"
 
 namespace rf = qucs_s::rf25;
 
@@ -918,16 +919,21 @@ private slots:
     // had cells under a nanometre wide, which the snap to a nanometre left
     // with no width: 300 sides "could not be told apart", and the loop and
     // the full wave found the disc in pieces, an open circuit. circleOf()'s side counts, odd at these radii
-    // (703 and 497), put no corner where the feed meets the curve. Each in
-    // fewer than 12,000 cells, where its slivers made some 37,000, and the
-    // ring fed at 90 degrees, meshed at 5 µm, in fewer than 25,000, where it
-    // was 31,000 (P59).
+    // (703 and 497), put no corner where the feed meets the curve.
+    //
+    // Each in 3,300 to 7,600 cells, and the ring fed at 90 degrees meshed at
+    // 5 µm in 4,200 (P59). Its slivers meshed by their own depth made some
+    // 37,000; then its bands, each graded at every side and each a grid from
+    // its own end, every one with all their lines, 20,000 to 39,000. And the loop's R at direct current, fed at 90
+    // degrees, in squares of the metal within half a per cent of a
+    // finite-difference solve of each sheet: the circle's 7.4084, the ring's
+    // 8.2696 (7.4077 and 8.2521 here).
     void aCurveJoinedByAFeedIsMeshedWhole()
     {
         for (const bool ring : {false, true})
             for (const double degrees : {0.0, 30.0, 45.0, 90.0, -90.0}) {
-                // (-90: the ring fed at 90 degrees as the review meshed it, no
-                //  cells across and 5 µm cells at most.)
+                // (-90: the ring fed at 90 degrees meshed with no cells across
+                //  and 5 µm cells at most.)
                 const bool coarse = degrees < 0;
                 if (coarse && !ring) continue;
                 rf::Model m = stacked();
@@ -987,9 +993,67 @@ private slots:
                 QVERIFY2(pieces.size() == 1, qPrintable(QStringLiteral("%1: %2 pieces").arg(what).arg(pieces.size())));
                 // (And not meshed as finely as its slivers would have it: a
                 //  part of the cap meshed by its own depth, its lines taken by
-                //  its neighbours - P59 of the same review.)
-                QVERIFY2(mesh.cells.size() < (coarse ? 25000 : 12000), qPrintable(QStringLiteral("%1: %2 cells").arg(what).arg(mesh.cells.size())));
+                //  its neighbours - P59.)
+                // (Each within a tenth of its own count, either way: past it a
+                //  band sized across its slanted sides, the lattice from the
+                //  largest cell, the bands each a grid of their own; under it
+                //  a curve's edges not graded.)
+                const QMap<QString, int> counts{{"a circle fed at 0 degrees", 3328},  {"a circle fed at 30 degrees", 6945},
+                                                {"a circle fed at 45 degrees", 6708}, {"a circle fed at 90 degrees", 5301},
+                                                {"a ring fed at 0 degrees", 4875},    {"a ring fed at 30 degrees", 7593},
+                                                {"a ring fed at 45 degrees", 7264},   {"a ring fed at 90 degrees", 5352},
+                                                {"a ring fed at -90 degrees", 4201}};
+                const double ratio = double(mesh.cells.size()) / counts.value(what);
+                QVERIFY2(ratio > 0.9 && ratio < 1.1, qPrintable(QStringLiteral("%1: %2 cells, against %3").arg(what).arg(mesh.cells.size()).arg(counts.value(what))));
+                if (degrees == 90.0) {
+                    const rf::Stack stack = m.solveStack();
+                    const rf::Layer* metal = stack.named(QStringLiteral("M1"));
+                    QVERIFY(metal != nullptr);
+                    const double square = 1 / (metal->sigma * metal->thickness);
+                    const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, 150 * along, -150 * along);
+                    QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+                    const double squares = loop.rDc / square, expected = ring ? 8.2696 : 7.4084;
+                    QVERIFY2(std::abs(squares / expected - 1) < 0.005,
+                             qPrintable(QStringLiteral("%1: %2 squares against %3").arg(what).arg(squares).arg(expected)));
+                }
             }
+    }
+
+    // A curve's lattice lines (rf::latticeLines()) all within their piece,
+    // its two ends first and last, rising, the lattice's own a quarter of its
+    // step clear of the ends: on pieces shorter than the step - a disc's cap
+    // band 0.3 µm long, graded at both ends - the point of the half step
+    // nearest the outermost space's middle was past the piece, a line at 50
+    // for a piece from 49 to 49.3 (the review of 621f4a9c: 46 of 522 short
+    // pieces near x = 49 to 51). And on longer ones, the lattice's points
+    // inside, a graded end halved where the half step has a point in it.
+    void aCurveLatticeStaysInItsPiece()
+    {
+        QCOMPARE(rf::latticeLines(49.0, 0.3, 0, 5, 5, true, true, 0.3, 0.3), (QList<double>{49.0, 49.3}));
+        int checked = 0;
+        for (const double base : {5.0, 6.25})
+            for (const double length : {0.3, 0.7, 1.3, 2.9, 4.9, 12.0})
+                for (int k = 0; k <= 40; ++k)
+                    for (const double finest : {0.0, 0.3}) {
+                        const double from = 48 + 0.1 * k, to = from + length;
+                        const QList<double> lines = rf::latticeLines(from, length, 0, base, 5, true, true, finest, finest);
+                        const QString what = QStringLiteral("%1 to %2, base %3, finest %4: %5").arg(from).arg(to).arg(base).arg(finest).arg(
+                            [&lines] {
+                                QStringList l;
+                                for (const double x : lines) l << QString::number(x, 'g', 8);
+                                return l.join(' ');
+                            }());
+                        QVERIFY2(lines.size() >= 2 && lines.first() == from && std::abs(lines.last() - to) < 1e-12, qPrintable(what));
+                        for (int i = 1; i < lines.size(); ++i) QVERIFY2(lines.at(i) > lines.at(i - 1), qPrintable(what));
+                        ++checked;
+                    }
+        QCOMPARE(checked, 2 * 6 * 41 * 2);
+        // (From 1 to 24 on a lattice of 5, graded: 5, 10, 15 and 20 inside,
+        //  each end's space halved on 2.5 - 2.5 and 22.5. From 3 to 23 its
+        //  ends are left: 2.5's points nearest their middles are on 5, and a
+        //  hair from 23.)
+        QCOMPARE(rf::latticeLines(1, 23, 0, 5, 5, true, true), (QList<double>{1, 2.5, 5, 10, 15, 20, 22.5, 24}));
+        QCOMPARE(rf::latticeLines(3, 20, 0, 5, 5, true, true), (QList<double>{3, 5, 10, 15, 20, 23}));
     }
 
     // A circle and a ring of the model's own, by their centre and radii, each
