@@ -1287,6 +1287,44 @@ private slots:
         const int factorized = int(t.s().log.filter(QStringLiteral("factorized for a step")).size());
         QVERIFY2(factorized == 1, qPrintable(t.s().log.filter(QStringLiteral("factorized")).join(QLatin1Char('\n'))));
         QVERIFY2(!t.r.warnings.join(QLatin1Char('\n')).contains(QStringLiteral("dΦ/dt not in it")), qPrintable(t.r.warnings.join(QLatin1Char('\n'))));
+        // A Time Dependent step after a Frequency Domain step, the wire's σw
+        // of t (6e7 S/m / (1 + t/10 µs)), a constant 0.2 A: its start at rest
+        // all the same, not the frequency domain's field (before: from
+        // nought, 14.1 mV at 1 µs; the frequency domain's ω kept in its
+        // snapshots), its voltage R(t) I at each step (before: R at the
+        // first step's throughout).
+        Model mf = coilOfTurns(false);
+        for (Node& c : mf.find(QStringLiteral("mf"))->children)
+            if (c.type == QLatin1String("magnetic/coil")) c.props.insert(QStringLiteral("sigmaw"), QStringLiteral("6e7[S/m]/(1 + t/(10[us]))"));
+        for (Node& st : mf.root.children)
+            if (st.type == QLatin1String("study")) {
+                st.children.clear();
+                Node fr = mf.make(QStringLiteral("frequency"));
+                fr.props.insert(QStringLiteral("frequencies"), QStringLiteral("20[kHz]"));
+                st.children.push_back(fr);
+                Node tr = mf.make(QStringLiteral("transient"));
+                tr.props.insert(QStringLiteral("times"), QStringLiteral("0, 1[us], 10[us], 20[us]"));
+                tr.props.insert(QStringLiteral("stepping"), QStringLiteral("fixed"));
+                tr.props.insert(QStringLiteral("dt"), QStringLiteral("1[us]"));
+                st.children.push_back(tr);
+            }
+        const Solved ft = solve(mf);
+        QVERIFY2(ft.error.isEmpty(), qPrintable(why(ft)));
+        QCOMPARE(ft.s().snapshotCount(), 5);
+        const double R0 = V.real() / I;
+        ft.s().select(1);
+        const double phiStart = global(ft.s(), QStringLiteral("mf.Phi_1"));
+        QVERIFY2(ft.s().frequency() == 0 && std::abs(phiStart - L * I) < 1e-6 * L * I,
+                 qPrintable(QStringLiteral("t0 after the frequency domain: f %1 Hz, Φ %2 Wb against L I0 %3").arg(ft.s().frequency()).arg(phiStart).arg(L * I)));
+        QString saidR;
+        for (int k = 2; k <= 4; ++k) {
+            ft.s().select(k);
+            const double time = k == 2 ? 1e-6 : k == 3 ? 10e-6 : 20e-6;
+            const double v = global(ft.s(), QStringLiteral("mf.V_1")), want = R0 * (1 + time / 10e-6) * I;
+            saidR += QStringLiteral("t %1 µs: V %2 mV against R(t) I %3; ").arg(time * 1e6).arg(v * 1e3).arg(want * 1e3);
+            QVERIFY2(ft.s().frequency() == 0 && std::abs(v - want) < 1e-6 * want, qPrintable(saidR));
+        }
+        info(saidR);
         // A B-H curve in the air: at rest at each time, said.
         Model mb = coilOfTurns(false);
         addFeature(mb, QStringLiteral("mf"), QStringLiteral("magnetic/ampere"), QJsonObject{{QStringLiteral("objects"), QJsonArray{QStringLiteral("air")}}, {QStringLiteral("except"), objects(QStringLiteral("bar"))}},

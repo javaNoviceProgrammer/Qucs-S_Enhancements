@@ -1913,13 +1913,19 @@ bool transientStep3(Problems3& problems, Solution3& s, const Node& node, const d
     const double hmin = 1e-12 * range;
     auto atRest = [&base](int) { return base; };
     // The start: the fields as they are; what is at rest solved with them.
+    const bool afterHarmonic = s.frequency() > 0;
+    s.setFrequency(0);
     s.setTime(t0);
     if (!quasi.empty() && !solveTogether(problems, quasi, atRest, s, node.name(), error)) return false;
     for (int i : quasi) s.fields()[std::size_t(i)].solved = true;
-    // (A field that starts from its solution at rest - a semiconductor's -,
-    // not yet solved: solved so at its first time.)
+    // (A field that starts from its solution at rest - a semiconductor's, a
+    // magnetic field nothing conducts -, not yet solved, or solved by a
+    // Frequency Domain (or eigenfrequency) step before - its values that
+    // step's, not at rest -: solved so at its first time. The study's
+    // frequency nought from the start: its snapshots in time are no
+    // frequency's.)
     for (int i : stepped)
-        if (problems[std::size_t(i)]->solvedAtRestFirst() && !s.fields()[std::size_t(i)].solved) {
+        if (problems[std::size_t(i)]->solvedAtRestFirst() && (!s.fields()[std::size_t(i)].solved || afterHarmonic)) {
             detail3::Options3 o = atRest(i);
             o.mass = 0;
             o.history = nullptr;
