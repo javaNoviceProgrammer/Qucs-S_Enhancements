@@ -78,60 +78,80 @@ long long levelKey(int planDof, int level, int levels)
 Space3::Space3(std::shared_ptr<const Mesh3> mesh, int order) : a_mesh(std::move(mesh)), a_order(order == 2 ? 2 : 1)
 {
     const Mesh3& m = *a_mesh;
-    a_plan = std::make_shared<Space>(m.plan, a_order);
     const int H = int(m.heights.size());
-    const int nt = int(m.plan->triangles.size());
-    a_prismAt.assign(std::size_t(nt) * std::size_t(std::max(H, 1)), -1);
-    for (int e = 0; e < int(m.prisms.size()); ++e)
-        a_prismAt[std::size_t(m.prismTriangle[std::size_t(e)]) * std::size_t(H) + std::size_t(m.prismLayer[std::size_t(e)])] = e;
-    // The triangles beside each plan edge a wall may stand on.
-    {
-        const Mesh& pm = *m.plan;
+    // (Its bands' plans - one: the mesh's.)
+    const int NB = std::max(1, int(m.bands.size()));
+    for (int b = 0; b < NB; ++b) a_plans.push_back(std::make_shared<Space>(m.bands.empty() ? m.plan : m.bands[std::size_t(b)].plan, a_order));
+    a_plan = a_plans.front();
+    a_prismAt.resize(std::size_t(NB));
+    a_edgeTriangles.resize(std::size_t(NB));
+    for (int b = 0; b < NB; ++b) {
+        const Mesh& pm = planMesh(b);
+        const int nt = int(pm.triangles.size());
+        a_prismAt[std::size_t(b)].assign(std::size_t(nt) * std::size_t(std::max(H, 1)), -1);
+        // The triangles beside each plan edge a wall may stand on.
         std::unordered_map<long long, int> edgeOf;
-        auto key = [](int a, int b) { return (long long)std::min(a, b) * 2147483648LL + std::max(a, b); };
+        auto key = [](int a, int c) { return (long long)std::min(a, c) * 2147483648LL + std::max(a, c); };
         for (int ei = 0; ei < int(pm.edges.size()); ++ei) edgeOf.emplace(key(pm.edges[std::size_t(ei)].a, pm.edges[std::size_t(ei)].b), ei);
-        a_edgeTriangles.assign(pm.edges.size(), {{{-1, -1}, {-1, -1}}});
-        for (int t = 0; t < nt; ++t)
+        auto& beside = a_edgeTriangles[std::size_t(b)];
+        beside.assign(pm.edges.size(), {{{-1, -1}, {-1, -1}}});
+        for (int tr = 0; tr < nt; ++tr)
             for (int k = 0; k < 3; ++k) {
-                const auto& v = pm.triangles[std::size_t(t)];
+                const auto& v = pm.triangles[std::size_t(tr)];
                 auto it = edgeOf.find(key(v[std::size_t(k)], v[std::size_t((k + 1) % 3)]));
                 if (it == edgeOf.end()) continue;
-                auto& beside = a_edgeTriangles[std::size_t(it->second)];
-                (beside[0].first < 0 ? beside[0] : beside[1]) = {t, k};
+                auto& two = beside[std::size_t(it->second)];
+                (two[0].first < 0 ? two[0] : two[1]) = {tr, k};
             }
     }
+    for (int e = 0; e < int(m.prisms.size()); ++e)
+        a_prismAt[std::size_t(bandOf(e))][std::size_t(m.prismTriangle[std::size_t(e)]) * std::size_t(H) + std::size_t(m.prismLayer[std::size_t(e)])] = e;
     const int per = perElement();
     a_dofs.resize(m.prisms.size() * std::size_t(per));
     if (a_order == 1) {
-        // The mesh's nodes, as they are.
+        // The mesh's nodes, as they are (by band: two bands' same node at an
+        // interface one).
         a_size = int(m.nodes.size());
         a_origin = m.nodeOrigin;
+        a_dofBand = m.nodeBand.empty() ? std::vector<int>(m.nodes.size(), 0) : m.nodeBand;
         for (std::size_t e = 0; e < m.prisms.size(); ++e)
             for (int k = 0; k < 6; ++k) a_dofs[e * 6 + std::size_t(k)] = m.prisms[e][std::size_t(k)];
         return;
     }
     // Order 2: the plan's degrees of freedom at the heights (even levels) and
-    // the layers' middles (odd), the nodes first as they are numbered.
+    // the layers' middles (odd), the nodes first as they are numbered; by
+    // band, each band's own (at an interface, the nodes the two bands
+    // share one; the rest each band's).
     const int levels = 2 * H - 1;
     a_levels = levels;
-    a_key.reserve(m.nodes.size() * 8);
+    a_keys.resize(std::size_t(NB));
     for (int i = 0; i < int(m.nodes.size()); ++i) {
         const auto [pn, j] = m.nodeOrigin[std::size_t(i)];
-        a_key.emplace(levelKey(pn, 2 * j, levels), i);
+        const int b = m.nodeBand.empty() ? 0 : m.nodeBand[std::size_t(i)];
+        a_keys[std::size_t(b)].emplace(levelKey(pn, 2 * j, levels), i);
         a_origin.emplace_back(pn, 2 * j);
+        a_dofBand.push_back(b);
     }
     int next = int(m.nodes.size());
     for (std::size_t e = 0; e < m.prisms.size(); ++e) {
-        const int t = m.prismTriangle[e], j = m.prismLayer[e];
-        const int* d2 = a_plan->dofs(t);
+        const int b = bandOf(int(e)), tr = m.prismTriangle[e], j = m.prismLayer[e];
+        const int* d2 = a_plans[std::size_t(b)]->dofs(tr);
+        auto& keys = a_keys[std::size_t(b)];
         for (int lz = 0; lz < 3; ++lz)
             for (int a = 0; a < 6; ++a) {
                 const int level = 2 * j + lz;
                 const long long key = levelKey(d2[a], level, levels);
-                auto it = a_key.find(key);
-                if (it == a_key.end()) {
-                    it = a_key.emplace(key, next++).first;
-                    a_origin.emplace_back(d2[a], level);
+                auto it = keys.find(key);
+                if (it == keys.end()) {
+                    // (A corner at a height: the mesh's node there - at an
+                    // interface perhaps the band below's.)
+                    if (a < 3 && lz != 1) {
+                        it = keys.emplace(key, m.prisms[e][std::size_t(a + (lz == 2 ? 3 : 0))]).first;
+                    } else {
+                        it = keys.emplace(key, next++).first;
+                        a_origin.emplace_back(d2[a], level);
+                        a_dofBand.push_back(b);
+                    }
                 }
                 a_dofs[e * 18 + std::size_t(a + 6 * lz)] = it->second;
             }
@@ -150,22 +170,39 @@ double Space3::levelZ(int level) const
 Vec3 Space3::point(int dof) const
 {
     const auto [pd, level] = a_origin[std::size_t(dof)];
-    const QPointF p = a_plan->point(pd);
+    const QPointF p = a_plans[std::size_t(a_dofBand[std::size_t(dof)])]->point(pd);
     return Vec3{p.x(), p.y(), levelZ(level)};
+}
+
+int Space3::bandOf(int e) const
+{
+    return a_mesh->prismBand.empty() ? 0 : a_mesh->prismBand[std::size_t(e)];
+}
+
+const Mesh& Space3::planMesh(int band) const
+{
+    return a_mesh->bands.empty() ? *a_mesh->plan : *a_mesh->bands[std::size_t(band)].plan;
 }
 
 int Space3::prismAt(int t, int j) const
 {
+    return prismAt(0, t, j);
+}
+
+int Space3::prismAt(int band, int t, int j) const
+{
     const int H = int(a_mesh->heights.size());
-    if (t < 0 || j < 0 || j >= H || std::size_t(t) * std::size_t(H) + std::size_t(j) >= a_prismAt.size()) return -1;
-    return a_prismAt[std::size_t(t) * std::size_t(H) + std::size_t(j)];
+    if (band < 0 || band >= int(a_prismAt.size())) return -1;
+    const std::vector<int>& at = a_prismAt[std::size_t(band)];
+    if (t < 0 || j < 0 || j >= H || std::size_t(t) * std::size_t(H) + std::size_t(j) >= at.size()) return -1;
+    return at[std::size_t(t) * std::size_t(H) + std::size_t(j)];
 }
 
 Space3::Map Space3::map(int e, double xi, double eta, double zeta) const
 {
     const Mesh3& m = *a_mesh;
     const int t = m.prismTriangle[std::size_t(e)], j = m.prismLayer[std::size_t(e)];
-    const Space::Map p = a_plan->map(t, xi, eta);
+    const Space::Map p = a_plans[std::size_t(bandOf(e))]->map(t, xi, eta);
     const double z0 = m.heights[std::size_t(j)] * m.unitScale, z1 = m.heights[std::size_t(j) + 1] * m.unitScale;
     Map out;
     out.x = Vec3{p.x.x(), p.x.y(), z0 + zeta * (z1 - z0)};
@@ -178,9 +215,20 @@ Space3::Map Space3::map(int e, double xi, double eta, double zeta) const
 
 int Space3::dofAt(int planDof, int level) const
 {
-    if (a_order == 1) return a_mesh->node(planDof, level);
-    auto it = a_key.find(levelKey(planDof, level, a_levels));
-    return it == a_key.end() ? -1 : it->second;
+    if (!a_mesh->byBand()) return dofAt(0, planDof, level);
+    // (The band that holds the level's height - at an interface the lower.)
+    const int height = a_order == 1 ? level : level / 2;
+    for (int b = 0; b < int(a_mesh->bands.size()); ++b)
+        if (height >= a_mesh->bands[std::size_t(b)].first && height <= a_mesh->bands[std::size_t(b)].last) return dofAt(b, planDof, level);
+    return -1;
+}
+
+int Space3::dofAt(int band, int planDof, int level) const
+{
+    if (a_order == 1) return a_mesh->node(band, planDof, level);
+    if (band < 0 || band >= int(a_keys.size())) return -1;
+    auto it = a_keys[std::size_t(band)].find(levelKey(planDof, level, a_levels));
+    return it == a_keys[std::size_t(band)].end() ? -1 : it->second;
 }
 
 std::vector<int> Space3::faceDofs(int f) const
@@ -188,16 +236,17 @@ std::vector<int> Space3::faceDofs(int f) const
     const Mesh3::Face& face = a_mesh->faces[std::size_t(f)];
     std::vector<int> out;
     const int step = a_order == 2 ? 2 : 1;   // levels a height
+    const Space& plan = *a_plans[std::size_t(face.band)];
     if (!face.quad) {
         const int per = a_order == 2 ? 6 : 3;
-        const int* d2 = a_plan->dofs(face.plan);
-        for (int a = 0; a < per; ++a) out.push_back(dofAt(d2[a], step * face.height));
+        const int* d2 = plan.dofs(face.plan);
+        for (int a = 0; a < per; ++a) out.push_back(dofAt(face.band, d2[a], step * face.height));
         return out;
     }
-    const std::array<int, 3> d2 = a_plan->edgeDofs(face.plan);
+    const std::array<int, 3> d2 = plan.edgeDofs(face.plan);
     const int np = a_order == 2 ? 3 : 2, nl = a_order == 2 ? 3 : 2;
     for (int lz = 0; lz < nl; ++lz)
-        for (int p = 0; p < np; ++p) out.push_back(dofAt(d2[std::size_t(p)], step * face.height + lz));
+        for (int p = 0; p < np; ++p) out.push_back(dofAt(face.band, d2[std::size_t(p)], step * face.height + lz));
     return out;
 }
 
@@ -211,12 +260,13 @@ std::vector<Space3::FacePoint> Space3::facePoints(int f, int degree, int domain)
         if (a >= 0 && (b < 0 || m.domain[std::size_t(a)] == domain)) return 0;
         return b >= 0 ? 1 : -1;
     };
+    const Space& plan = *a_plans[std::size_t(face.band)];
     if (!face.quad) {
         const double z = m.heights[std::size_t(face.height)] * m.unitScale;
-        const int above = prismAt(face.plan, face.height), below = prismAt(face.plan, face.height - 1);
+        const int above = prismAt(face.band, face.plan, face.height), below = prismAt(face.band, face.plan, face.height - 1);
         const int side = pick(above, below);
         for (const auto& q : triangleRule(degree).points) {
-            const Space::Map p = a_plan->map(face.plan, q[0], q[1]);
+            const Space::Map p = plan.map(face.plan, q[0], q[1]);
             Shape s;
             shapeAt(a_order, q[0], q[1], s);
             FacePoint fp;
@@ -232,13 +282,14 @@ std::vector<Space3::FacePoint> Space3::facePoints(int f, int degree, int domain)
         return out;
     }
     // A wall: the triangles beside its edge, and where the edge runs in each.
-    const auto& beside = a_edgeTriangles[std::size_t(face.plan)];
-    const int pa = beside[0].first >= 0 ? prismAt(beside[0].first, face.height) : -1;
-    const int pb = beside[1].first >= 0 ? prismAt(beside[1].first, face.height) : -1;
+    const auto& beside = a_edgeTriangles[std::size_t(face.band)][std::size_t(face.plan)];
+    const int pa = beside[0].first >= 0 ? prismAt(face.band, beside[0].first, face.height) : -1;
+    const int pb = beside[1].first >= 0 ? prismAt(face.band, beside[1].first, face.height) : -1;
     const int side = pick(pa, pb);
     const int tri = side == 0 ? beside[0].first : side == 1 ? beside[1].first : -1;
     const int k = side == 0 ? beside[0].second : side == 1 ? beside[1].second : 0;
-    const bool forward = tri >= 0 && m.plan->triangles[std::size_t(tri)][std::size_t(k)] == m.plan->edges[std::size_t(face.plan)].a;
+    const Mesh& pm = planMesh(face.band);
+    const bool forward = tri >= 0 && pm.triangles[std::size_t(tri)][std::size_t(k)] == pm.edges[std::size_t(face.plan)].a;
     static const double corner[3][2] = {{0, 0}, {1, 0}, {0, 1}};
     const double z0 = m.heights[std::size_t(face.height)] * m.unitScale, z1 = m.heights[std::size_t(face.height) + 1] * m.unitScale;
     const int n = std::clamp(degree / 2 + 1, 2, 3);
@@ -246,7 +297,7 @@ std::vector<Space3::FacePoint> Space3::facePoints(int f, int degree, int domain)
         for (const auto& qz : lineRule(n)) {
             const double s = qs[0], zeta = qz[0];
             double jacobian = 0;
-            const QPointF p = a_plan->edgePoint(face.plan, s, &jacobian);
+            const QPointF p = plan.edgePoint(face.plan, s, &jacobian);
             double ls[3], lz[3];
             int np = 2;
             if (a_order == 2) {

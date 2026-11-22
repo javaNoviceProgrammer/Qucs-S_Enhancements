@@ -107,6 +107,7 @@ qucs_add_fem_test(test_fem3_geometry)
 qucs_add_fem_test(test_fem3_mesh)
 qucs_add_fem_test(test_fem3_cad)
 qucs_add_fem_test(test_fem3_fe)
+qucs_add_fem_test(test_fem3_bands)
 qucs_add_fem_test(test_fem3_solve)
 # test_fem3_solid as two ctest entries, each its own 900 s: QUCS_TEST_PART 1
 # its functions before largeDeformation, 2 it and those after (large
