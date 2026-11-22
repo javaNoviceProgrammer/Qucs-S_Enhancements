@@ -385,7 +385,7 @@ private slots:
         QVERIFY(QucsApp::isMultiphysics3DFile(QStringLiteral("a/b.qfem3d")) && QucsApp::isMultiphysics3DFile(QStringLiteral("B.QFEM3D")));
         QVERIFY(!QucsApp::isMultiphysics3DFile(QStringLiteral("a.qfem")) && !QucsApp::isMultiphysicsFile(QStringLiteral("a.qfem3d")));
         QCOMPARE(panel()->pages()->currentWidget(), panel()->pages()->widget(0));
-        QCOMPARE(panel()->exampleList()->count(), 6);
+        QCOMPARE(panel()->exampleList()->count(), 7);
     }
 
     /// A new 3D model: a tab, the tree a 3D model's - its study, its results'
