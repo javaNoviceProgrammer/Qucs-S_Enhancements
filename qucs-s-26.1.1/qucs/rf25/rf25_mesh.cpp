@@ -184,18 +184,11 @@ bool isCurved(const QPolygonF& outline)
     return false;
 }
 
-/*!
- * gridLines() of a piece of a curve: its lines from \a from to \a from +
- * \a length on a lattice common to the curve's pieces - \a origin + k h,
- * h \a base halved until it is \a step or less -, each a quarter of h or
- * more from the piece's ends, so that a piece's lines are its neighbours'
- * where they overlap, the finer's a lattice with the coarser's in it. A
- * graded end's outermost space halved on the lattice of h / 2 (and again,
- * while wider than the finest asked there, on h / 4 and down), its middle as
- * that lattice has it.
- */
+} // namespace
+
+// (rf25_mesh.h. A finer piece's lattice holds a coarser's: h is base halved.)
 QList<double> latticeLines(double from, double length, double origin, double base, double step, bool gradeLow, bool gradeHigh,
-                           double finestLow = 0, double finestHigh = 0)
+                           double finestLow, double finestHigh)
 {
     const double to = from + length;
     double h = base > 0 ? base : length;
@@ -224,10 +217,18 @@ QList<double> latticeLines(double from, double length, double origin, double bas
                 if (low ? (x > from && x < nearest) : (x < to && x > nearest)) nearest = x;
             const double space = std::abs(nearest - end), middle = 0.5 * (end + nearest);
             if (!(space > 0)) break;
-            // (Its middle as the lattice of \a w has it, a quarter of w
-            //  clear of either line.)
+            // (Its middle as the lattice of \a w has it, inside the space a
+            //  quarter of w clear of either line. Not checked to be inside,
+            //  on a piece shorter than the lattice's step - a disc's cap band
+            //  0.3 µm long - the point nearest its middle was past the piece,
+            //  a line at 50 for one from 49 to 49.3.)
+            // (Where no point of it fits, the end is left as it is: taken
+            //  from ever finer lattices instead, points that no two bands
+            //  share put a disc fed at 0 degrees back up from 3,328 cells to
+            //  4,197.)
             const double v = origin + std::round((middle - origin) / w) * w;
-            if (std::abs(v - end) > 0.25 * w && std::abs(nearest - v) > 0.25 * w) at << v;
+            if (!(v > std::min(end, nearest) + 0.25 * w && v < std::max(end, nearest) - 0.25 * w)) break;
+            at << v;
             if (!(finest > 0 && space / 2 > finest)) break;
         }
     };
@@ -240,6 +241,8 @@ QList<double> latticeLines(double from, double length, double origin, double bas
     if (out.size() < 2) out = {from, to};
     return out;
 }
+
+namespace {
 
 /// \a outline cut into rectangles, where every side of it runs along x or
 /// y: slabs between its corners' heights - across y, or across x, whichever

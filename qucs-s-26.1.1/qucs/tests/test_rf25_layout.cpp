@@ -1019,6 +1019,43 @@ private slots:
             }
     }
 
+    // A curve's lattice lines (rf::latticeLines()) all within their piece,
+    // its two ends first and last, rising, the lattice's own a quarter of its
+    // step clear of the ends: on pieces shorter than the step - a disc's cap
+    // band 0.3 µm long, graded at both ends - the point of the half step
+    // nearest the outermost space's middle was past the piece, a line at 50
+    // for a piece from 49 to 49.3 (the review of 621f4a9c: 46 of 522 short
+    // pieces near x = 49 to 51). And on longer ones, the lattice's points
+    // inside, a graded end halved where the half step has a point in it.
+    void aCurveLatticeStaysInItsPiece()
+    {
+        QCOMPARE(rf::latticeLines(49.0, 0.3, 0, 5, 5, true, true, 0.3, 0.3), (QList<double>{49.0, 49.3}));
+        int checked = 0;
+        for (const double base : {5.0, 6.25})
+            for (const double length : {0.3, 0.7, 1.3, 2.9, 4.9, 12.0})
+                for (int k = 0; k <= 40; ++k)
+                    for (const double finest : {0.0, 0.3}) {
+                        const double from = 48 + 0.1 * k, to = from + length;
+                        const QList<double> lines = rf::latticeLines(from, length, 0, base, 5, true, true, finest, finest);
+                        const QString what = QStringLiteral("%1 to %2, base %3, finest %4: %5").arg(from).arg(to).arg(base).arg(finest).arg(
+                            [&lines] {
+                                QStringList l;
+                                for (const double x : lines) l << QString::number(x, 'g', 8);
+                                return l.join(' ');
+                            }());
+                        QVERIFY2(lines.size() >= 2 && lines.first() == from && std::abs(lines.last() - to) < 1e-12, qPrintable(what));
+                        for (int i = 1; i < lines.size(); ++i) QVERIFY2(lines.at(i) > lines.at(i - 1), qPrintable(what));
+                        ++checked;
+                    }
+        QCOMPARE(checked, 2 * 6 * 41 * 2);
+        // (From 1 to 24 on a lattice of 5, graded: 5, 10, 15 and 20 inside,
+        //  each end's space halved on 2.5 - 2.5 and 22.5. From 3 to 23 its
+        //  ends are left: 2.5's points nearest their middles are on 5, and a
+        //  hair from 23.)
+        QCOMPARE(rf::latticeLines(1, 23, 0, 5, 5, true, true), (QList<double>{1, 2.5, 5, 10, 15, 20, 22.5, 24}));
+        QCOMPARE(rf::latticeLines(3, 20, 0, 5, 5, true, true), (QList<double>{3, 5, 10, 15, 20, 23}));
+    }
+
     // A circle and a ring of the model's own, by their centre and radii, each
     // an expression of the parameters: a circle's corners on it, its sides
     // within a nanometre, its area the circle's; a ring the keyhole a file

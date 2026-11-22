@@ -145,6 +145,19 @@ MeshSettings meshSettingsOf(const Node& node, const QList<fem::Model::Parameter>
 /// \a factor times finer (a convergence check's meshes).
 MeshSettings refinedBy(const MeshSettings& how, double factor);
 
+/*!
+ * The lines a piece of a curve is cut at along its band, from \a from to
+ * \a from + \a length (meshOf()): on a lattice common to the curve's pieces -
+ * \a origin + k h, h \a base halved until it is \a step or less -, each a
+ * quarter of h or more from the piece's ends, so that a piece's lines are its
+ * neighbours' where they overlap. A graded end's outermost space halved on
+ * the lattice of h / 2 (and again, while wider than \a finestLow or \a
+ * finestHigh there, on h / 4 and down). Every line within the piece, its two
+ * ends first and last.
+ */
+QList<double> latticeLines(double from, double length, double origin, double base, double step, bool gradeLow, bool gradeHigh,
+                           double finestLow = 0, double finestHigh = 0);
+
 /// How many cells the charge solve of a static extraction will set up a
 /// dense matrix of: 8000 is half a gigabyte a matrix and some thirty
 /// seconds a solve on a desktop of 2026.
