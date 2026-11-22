@@ -261,6 +261,7 @@ private:
     std::vector<Eigen::VectorXd> a_steppingVolt;    // by coil fed a voltage: its part of b at 1 V (empty: none)
     std::vector<Eigen::VectorXd> a_steppingTurns;   // by coil of turns: its part of b at 1 A (empty: none)
     std::vector<double> a_steppingWire;             // by coil: its wire's resistance (turns')
+    std::vector<char> a_steppingWireVaries;         // by coil: its σw reads t or a field (taken at each step)
     bool a_steppingMassless = false;                // K1 nought: nothing conducts
     bool a_inTime = false;                          // solved last in time
     /// [the solution, each port's] at ω, by a factorization of K0 + jω K1;
@@ -2193,6 +2194,9 @@ void MagneticProblem3::beginStepping()
     // and each coil's nought; Ȧ and V nought.
     Field3& f = field();
     a_stepping.reset();
+    // (After a Frequency Domain step: its ω no more - the start's results
+    // at rest, not that step's.)
+    a_omega = 0;
     if (!f.edges || !f.space) return;
     const std::size_t nE = std::size_t(f.edges->size()), nN = std::size_t(f.space->size()), nc = a_coils.size();
     std::vector<double> v(nE + 2 * nN + nc, 0.0);
@@ -2272,8 +2276,15 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
         // times its current at each step - its current of t, not the one
         // its sources were built with.)
         a_steppingTurns.assign(a_coils.size(), Eigen::VectorXd());
+        // (The wire's resistance taken once a stepping where its σw is
+        // constant; one of t or of a field - a temperature - at each step.)
         a_steppingWire.assign(a_coils.size(), 0.0);
-        for (int c = 0; c < nc; ++c) a_steppingWire[std::size_t(c)] = wireResistance(c);
+        a_steppingWireVaries.assign(a_coils.size(), 0);
+        for (int c = 0; c < nc; ++c) {
+            const Expression& sw = a_coils[std::size_t(c)].wireSigma;
+            a_steppingWireVaries[std::size_t(c)] = sw.isValid() && a_s.varies(sw);
+            a_steppingWire[std::size_t(c)] = wireResistance(c);
+        }
         // (Nothing conducting K1 is nought: K0's factors kept whatever the
         // step - before, factorized again at each change of c0, 75 times in
         // an adaptive run of 55 steps.)
@@ -2470,7 +2481,8 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
                     }
         } else {
             I = evalAt(coil.current, Vec3{});
-            U = turns[std::size_t(c)] + (c < int(a_steppingWire.size()) ? a_steppingWire[std::size_t(c)] : 0.0) * I;
+            const bool cached = c < int(a_steppingWire.size()) && !a_steppingWireVaries[std::size_t(c)];
+            U = turns[std::size_t(c)] + (cached ? a_steppingWire[std::size_t(c)] : wireResistance(c)) * I;
         }
         a_I[std::size_t(c)] = I;
         a_U[std::size_t(c)] = U;
