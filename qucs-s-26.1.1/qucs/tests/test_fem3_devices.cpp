@@ -759,6 +759,46 @@ private slots:
         }
         if (!slowBuild()) QVERIFY2(std::abs(fsr[1] - fsr[2]) < 0.02 * fsr[2], qPrintable(QStringLiteral("%1, %2").arg(fsr[1]).arg(fsr[2])));
     }
+    // The coaxial loops example (examples/multiphysics3d/coaxial_loops.qfem3d):
+    // 1 A round the first, the flux the second links - the mean of its A_φ
+    // over its section, round it - against Neumann's formula for two coaxial
+    // circles, M = µ0 √(ab) [(2/k - k) K(k) - (2/k) E(k)] (its elliptic
+    // integrals by the arithmetic-geometric mean), within 1 %: the sections'
+    // 0.1 %, the box's walls and the mesh the rest. A Release build's.
+    void coaxialLoops()
+    {
+        if (slowBuild()) QSKIP("a Release build's");
+        QFile f(QStringLiteral(QUCS_EXAMPLES_DIR "/multiphysics3d/coaxial_loops.qfem3d"));
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QString why;
+        const std::optional<Model> m = Model::fromJson(f.readAll(), &why);
+        QVERIFY2(m, qPrintable(why));
+        // (Its mesh first: an example's size held, not solved past it.)
+        const std::shared_ptr<ParameterScope> ps = evaluateParameters(*m);
+        const GeometryBuild3 g = buildGeometry3(*m, *ps);
+        QVERIFY2(g.ok(), qPrintable(g.errors.value(g.failedAt)));
+        const Mesh3Build mb = buildMesh3(*m, *ps, g.topology);
+        QVERIFY2(mb.mesh, qPrintable(mb.error));
+        const QString size = QStringLiteral("%1 prisms (%2 triangles, %3 heights)")
+                                 .arg(mb.mesh->prisms.size())
+                                 .arg(mb.mesh->plan->triangles.size())
+                                 .arg(mb.mesh->heights.size());
+        qInfo("two coaxial loops: %s", qPrintable(size));
+        QVERIFY2(mb.mesh->prisms.size() < 150000, qPrintable(size));
+        const StudyResult3 r = solveStudy3(*m, ps, mb.mesh);
+        QVERIFY2(r.error.isEmpty(), qPrintable(r.error));
+        const double a = 10e-3, d = 10e-3, I = 1;
+        // (Neumann: M = µ0 √(ab) [(2/k - k) K(k) - (2/k) E(k)], a = b.)
+        const double k = std::sqrt(4 * a * a / (4 * a * a + d * d));
+        double K = 0, E = 0;
+        elliptic(k, &K, &E);
+        const double neumann = 4e-7 * M_PI * a * ((2 / k - k) * K - 2 / k * E);
+        const double M = domainMean(*r.solution, QStringLiteral("loop2"), QStringLiteral("(x*mf.Ay - y*mf.Ax)/sqrt(x^2 + y^2)")) * 2 * M_PI * a / I;
+        const QString said = QStringLiteral("two coaxial loops: M %1 nH, Neumann's %2 nH (%3)").arg(M * 1e9).arg(neumann * 1e9).arg(size);
+        qInfo("%s", qPrintable(said));
+        QVERIFY2(std::abs(M - neumann) < 1e-2 * neumann, qPrintable(said));
+    }
+
 
     // The device examples (examples/multiphysics3d) solved as they are, each
     // beside its formula: the ring heater's tuning the paper's (as
