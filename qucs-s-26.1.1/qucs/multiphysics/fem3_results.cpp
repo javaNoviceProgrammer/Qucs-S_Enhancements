@@ -108,13 +108,15 @@ std::vector<SliceTriangle> slice(const Solution3& s, const Expression& e, int ax
         const double zeta = (at - h[std::size_t(j)]) / (h[std::size_t(j) + 1] - h[std::size_t(j)]);
         for (int p = 0; p < int(m.prisms.size()); ++p) {
             if (m.prismLayer[std::size_t(p)] != j) continue;
-            const std::array<int, 3>& tri = m.plan->triangles[std::size_t(m.prismTriangle[std::size_t(p)])];
+            // (By band: its band's plan.)
+            const Mesh& plan = m.bands.empty() ? *m.plan : m.planOf(p);
+            const std::array<int, 3>& tri = plan.triangles[std::size_t(m.prismTriangle[std::size_t(p)])];
             SliceTriangle t;
             t.domain = m.domain[std::size_t(p)];
             t.prism = p;
             const double ref[3][2] = {{0, 0}, {1, 0}, {0, 1}};
             for (int k = 0; k < 3; ++k) {
-                const QPointF q = m.plan->nodes[std::size_t(tri[std::size_t(k)])];
+                const QPointF q = plan.nodes[std::size_t(tri[std::size_t(k)])];
                 t.p[std::size_t(k)] = Vec3{q.x(), q.y(), at};
                 t.value[std::size_t(k)] = value(p, ref[k][0], ref[k][1], zeta);
                 t.ref[std::size_t(k)] = {ref[k][0], ref[k][1], zeta};
@@ -126,11 +128,12 @@ std::vector<SliceTriangle> slice(const Solution3& s, const Expression& e, int ax
     // Across x or y: each prism's triangle cut by the line, the cut swept
     // between its heights.
     for (int p = 0; p < int(m.prisms.size()); ++p) {
-        const std::array<int, 3>& tri = m.plan->triangles[std::size_t(m.prismTriangle[std::size_t(p)])];
+        const Mesh& plan = m.bands.empty() ? *m.plan : m.planOf(p);
+        const std::array<int, 3>& tri = plan.triangles[std::size_t(m.prismTriangle[std::size_t(p)])];
         double c[3];
         QPointF v[3];
         for (int k = 0; k < 3; ++k) {
-            v[k] = m.plan->nodes[std::size_t(tri[std::size_t(k)])];
+            v[k] = plan.nodes[std::size_t(tri[std::size_t(k)])];
             c[k] = axis == 0 ? v[k].x() : v[k].y();
         }
         if (at < std::min({c[0], c[1], c[2]}) || at > std::max({c[0], c[1], c[2]})) continue;

@@ -15,6 +15,7 @@
  * (at your option) any later version.
  */
 #include "fem3_bands.h"
+#include "fem3_solver.h"
 #include "fem_edge.h"
 
 #include <QJsonDocument>
@@ -64,6 +65,70 @@ std::shared_ptr<const Mesh3> bandedMesh(double x1, double y1, double x2, double 
     const GeometryBuild3 g = buildGeometry3(m, *ps);
     if (!g.ok()) return nullptr;
     return buildMesh3(m, *ps, g.topology).mesh;
+}
+
+QJsonObject ofSide(const QString& object, const QString& side)
+{
+    return QJsonObject{{QStringLiteral("of"), QJsonArray{object}}, {QStringLiteral("side"), side}};
+}
+
+/// Two blocks in a box of air as bandedMesh() has them, as a model (its
+/// Plan by band, or one plan for every layer).
+Model blocksModel(bool byBand)
+{
+    Model m = Model::blank3d();
+    m.mesh().props.insert(QStringLiteral("custom"), true);
+    m.mesh().props.insert(QStringLiteral("hmax"), QStringLiteral("2"));
+    if (byBand) m.mesh().props.insert(QStringLiteral("plan"), QStringLiteral("band"));
+    addBox(m, QStringLiteral("air"), -5, -5, 0, 10, 10, 20);
+    addBox(m, QStringLiteral("low"), -4, -1, 2, 1, 1, 1);
+    addBox(m, QStringLiteral("high"), 2, 1, 16, 1, 1, 1);
+    Node size = m.make(QStringLiteral("mesh/size"));
+    size.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("only"), QJsonArray{QStringLiteral("low"), QStringLiteral("high")}}});
+    size.props.insert(QStringLiteral("hmax"), QStringLiteral("0.2"));
+    m.add(m.mesh().tag, size);
+    return m;
+}
+
+/// A physics of \a order on every domain, its domain feature's \a key the
+/// user's \a value.
+QString addPhysics(Model& m, const QString& type, int order, const QString& feature, const QString& key, const QString& value)
+{
+    Node p = m.make(type);
+    p.props.insert(QStringLiteral("order"), QString::number(order));
+    const QString tag = p.tag;
+    m.add(m.component().tag, p);
+    for (Node& c : m.find(tag)->children)
+        if (c.type == feature) {
+            c.props.insert(QStringLiteral("source"), QStringLiteral("user"));
+            c.props.insert(key, value);
+        }
+    return tag;
+}
+
+void addFeature(Model& m, const QString& physics, const QString& type, const QJsonObject& selection, const QJsonObject& props = {})
+{
+    Node f = m.make(type);
+    f.props.insert(QStringLiteral("selection"), selection);
+    for (auto it = props.begin(); it != props.end(); ++it) f.props.insert(it.key(), it.value());
+    m.add(physics, f);
+}
+
+struct Solved3 {
+    std::shared_ptr<const Mesh3> mesh;
+    StudyResult3 r;
+};
+Solved3 solveModel(const Model& m)
+{
+    Solved3 out;
+    const std::shared_ptr<ParameterScope> ps = evaluateParameters(m);
+    const GeometryBuild3 g = buildGeometry3(m, *ps);
+    if (!g.ok()) return out;
+    const Mesh3Build mb = buildMesh3(m, *ps, g.topology);
+    out.mesh = mb.mesh;
+    if (mb.mesh) out.r = solveStudy3(m, ps, mb.mesh);
+    else out.r.error = mb.error;
+    return out;
 }
 
 /// Each interface's height and its two bands (finer, coarser).
@@ -364,6 +429,116 @@ private slots:
         }
     }
 
+    /// The patch test through the constraints: electrostatics in air held at
+    /// 0 V on the box's wall at x = -5 and at 1 V on its wall at x = 5 - V =
+    /// (x + 5)/10, which each band's space holds - solved by band to
+    /// rounding at every degree of freedom (the constrained ones too) and at
+    /// points at random, orders 1 and 2.
+    void aLinearPotentialByBand()
+    {
+        for (int order : {1, 2}) {
+            Model m = blocksModel(true);
+            const QString es = addPhysics(m, QStringLiteral("electrostatics"), order, QStringLiteral("electrostatics/charge"), QStringLiteral("epsilonr"),
+                                          QStringLiteral("1"));
+            addFeature(m, es, QStringLiteral("electrostatics/ground"), ofSide(QStringLiteral("air"), QStringLiteral("left")));
+            addFeature(m, es, QStringLiteral("electrostatics/potential"), ofSide(QStringLiteral("air"), QStringLiteral("right")));
+            // (The direct solver: to rounding, not an iterative one's 1e-9.)
+            for (Node& st : m.root.children)
+                if (st.type == QLatin1String("study"))
+                    for (Node& step : st.children) step.props.insert(QStringLiteral("solver"), QStringLiteral("direct"));
+            const Solved3 sv = solveModel(m);
+            QVERIFY2(sv.r.error.isEmpty(), qPrintable(sv.r.error));
+            QVERIFY(sv.mesh && sv.mesh->byBand());
+            const Solution3& s = *sv.r.solution;
+            const Field3& f = s.fields().front();
+            double worst = 0;
+            for (int dof = 0; dof < f.space->size(); ++dof) {
+                const double x = f.space->point(dof).x * 1e3;
+                worst = std::max(worst, std::abs(f.values[std::size_t(dof)] - (x + 5) / 10));
+            }
+            QVERIFY2(worst < 1e-9, qPrintable(QStringLiteral("order %1: V off (x + 5)/10 by %2 at a degree of freedom").arg(order).arg(worst)));
+            PointEvaluator3 ev(s);
+            const Expression V = Expression::compile(QStringLiteral("es.V"), s.pointScope());
+            std::mt19937 rng(3);
+            std::uniform_real_distribution<double> xy(-4.9, 4.9), z(0.1, 19.9);
+            for (int k = 0; k < 200; ++k) {
+                const Vec3 p{xy(rng) * 1e-3, xy(rng) * 1e-3, z(rng) * 1e-3};
+                QVERIFY(ev.at(p));
+                const double v = ev.eval(V);
+                QVERIFY2(std::abs(v - (p.x * 1e3 + 5) / 10) < 1e-9, qPrintable(QStringLiteral("order %1: V %2 at x %3 mm").arg(order).arg(v).arg(p.x * 1e3)));
+            }
+        }
+    }
+
+    /// A heater, a block of 1 mm³ making 1 W, near the floor of a box held
+    /// at 20 °C there (k 150 W/(m K)): its rise above 20 °C by band within 2
+    /// % of one plan's, at the heater and near the top.
+    void aHeaterByBand()
+    {
+        double rise[2][2] = {{0, 0}, {0, 0}};
+        for (int banded = 0; banded < 2; ++banded) {
+            Model m = blocksModel(banded == 1);
+            const QString ht = addPhysics(m, QStringLiteral("heat"), 2, QStringLiteral("heat/solid"), QStringLiteral("k"), QStringLiteral("150"));
+            addFeature(m, ht, QStringLiteral("heat/source"), QJsonObject{{QStringLiteral("only"), QJsonArray{QStringLiteral("low")}}},
+                       QJsonObject{{QStringLiteral("Q0"), QStringLiteral("1e9[W/m^3]")}});
+            addFeature(m, ht, QStringLiteral("heat/temperature"), ofSide(QStringLiteral("air"), QStringLiteral("bottom")),
+                       QJsonObject{{QStringLiteral("T0"), QStringLiteral("293.15[K]")}});
+            const Solved3 sv = solveModel(m);
+            QVERIFY2(sv.r.error.isEmpty(), qPrintable(sv.r.error));
+            QCOMPARE(sv.mesh->byBand(), banded == 1);
+            const Solution3& s = *sv.r.solution;
+            PointEvaluator3 ev(s);
+            const Expression T = Expression::compile(QStringLiteral("ht.T"), s.pointScope());
+            QVERIFY(ev.at(Vec3{-3.5e-3, -0.5e-3, 2.5e-3}));
+            rise[banded][0] = ev.eval(T) - 293.15;
+            QVERIFY(ev.at(Vec3{0, 0, 18e-3}));
+            rise[banded][1] = ev.eval(T) - 293.15;
+        }
+        const QString said = QStringLiteral("a heater's rise: %1 and %2 K by band, %3 and %4 K on one plan").arg(rise[1][0]).arg(rise[1][1]).arg(rise[0][0]).arg(rise[0][1]);
+        qInfo("%s", qPrintable(said));
+        for (int k = 0; k < 2; ++k) QVERIFY2(rise[0][k] > 0 && std::abs(rise[1][k] - rise[0][k]) < 2e-2 * rise[0][k], qPrintable(said));
+    }
+
+    /// A conductor through every band - a bar 1 × 1 mm the box's height,
+    /// σ 1e6 S/m, held at 1 V at its top and grounded at its floor: a uniform
+    /// current through the interfaces (its triangles the same in every band),
+    /// its resistance L/(σA) = 20 mΩ to 1e-9.
+    void aConductorThroughBands()
+    {
+        Model m = blocksModel(true);
+        addBox(m, QStringLiteral("bar"), -0.5, -0.5, 0, 1, 1, 20);
+        Node ec = m.make(QStringLiteral("currents"));
+        ec.props.insert(QStringLiteral("order"), QStringLiteral("2"));
+        ec.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("only"), QJsonArray{QStringLiteral("bar")}}});
+        const QString tag = ec.tag;
+        m.add(m.component().tag, ec);
+        for (Node& c : m.find(tag)->children)
+            if (c.type == QLatin1String("currents/conservation")) {
+                c.props.insert(QStringLiteral("source"), QStringLiteral("user"));
+                c.props.insert(QStringLiteral("sigma"), QStringLiteral("1e6[S/m]"));
+            }
+        addFeature(m, tag, QStringLiteral("currents/terminal"), ofSide(QStringLiteral("bar"), QStringLiteral("top")), QJsonObject{{QStringLiteral("name"), QStringLiteral("1")}});
+        addFeature(m, tag, QStringLiteral("currents/ground"), ofSide(QStringLiteral("bar"), QStringLiteral("bottom")));
+        for (Node& st : m.root.children)
+            if (st.type == QLatin1String("study"))
+                for (Node& step : st.children) step.props.insert(QStringLiteral("solver"), QStringLiteral("direct"));
+        const Solved3 sv = solveModel(m);
+        QVERIFY2(sv.r.error.isEmpty(), qPrintable(sv.r.error));
+        QVERIFY(sv.mesh && sv.mesh->byBand());
+        const double R = sv.r.solution->global(QStringLiteral("ec.R")).value_or(std::nan(""));
+        QVERIFY2(std::abs(R - 0.02) < 1e-9 * 0.02 * 1e3, qPrintable(QStringLiteral("R %1 Ohm against 0.02").arg(R, 0, 'g', 12)));
+    }
+
+    /// A physics not joined by band yet (Magnetic Fields): refused, said.
+    void othersRefusedByBand()
+    {
+        Model m = blocksModel(true);
+        Node p = m.make(QStringLiteral("magnetic"));
+        m.add(m.component().tag, p);
+        const Solved3 sv = solveModel(m);
+        QVERIFY2(sv.r.error.contains(QStringLiteral("not solved on a mesh by band")), qPrintable(sv.r.error));
+    }
+
     /// The reduction: as many columns as degrees of freedom not constrained;
     /// no master constrained; a constrained one's row its constraint's.
     void reduction()
@@ -387,6 +562,14 @@ private slots:
                 QVERIFY2(mesh->interfaceFiner[std::size_t(std::min(fine, coarse))] == fine, "the coarser side constrained");
             }
         }
+        // (Chained - a master constrained itself -: refused, said, not its
+        // weight dropped.)
+        Constraints3 chained;
+        chained.dofs = {1, 2};
+        chained.rows = {{{2, 1.0}}, {{3, 1.0}}};
+        QString why;
+        QVERIFY(reductionMatrix(5, chained, &reduced, &why).size() == 0);
+        QVERIFY2(why.contains(QStringLiteral("chain")), qPrintable(why));
     }
 };
 
