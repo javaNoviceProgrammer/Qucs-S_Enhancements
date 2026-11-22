@@ -1855,9 +1855,12 @@ bool eigenStep3(Problems3& problems, Solution3& s, const Node& node, const detai
     return true;
 }
 
-bool transientStep3(Problems3& problems, Solution3& s, const Node& node, const detail3::Options3& base, const std::vector<int>& subset,
+bool transientStep3(Problems3& problems, Solution3& s, const Node& node, const detail3::Options3& given, const std::vector<int>& subset,
                     const std::function<bool(double, const QString&)>& tell, QStringList* warnings, QString* error)
 {
+    detail3::Options3 timed = given;
+    timed.inTime = true;
+    const detail3::Options3& base = timed;
     Dim dim;
     QString why;
     const std::optional<std::vector<double>> listed = valueList(node.text(QStringLiteral("times")), s.parameters().scope, &dim, &why);

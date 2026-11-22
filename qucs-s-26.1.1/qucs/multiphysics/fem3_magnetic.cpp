@@ -165,13 +165,16 @@ public:
     }
     /// In time where it conducts: eddy currents σ (∂A/∂t + ∇V) - its
     /// domains' σ, or a single conductor's coil (its currents physics' σ,
-    /// read as its conductors are built).
+    /// read as its conductors are built); and where a coil of turns is,
+    /// nothing conducting, stepped too - its voltage R I + dΦ/dt of Ȧ (K0
+    /// alone, factorized once). A B-H curve's not: solved at rest at each
+    /// time (in time it is refused), its coils' voltage R I alone, said.
     bool hasMass() const override
     {
         for (std::size_t d = 0; d < a_sigma.size(); ++d)
             if (conducts(int(d))) return true;
         for (const Coil& c : a_coils)
-            if (c.single) return true;
+            if (c.single || !a_nonlinear) return true;
         return false;
     }
     void beginStepping() override;
@@ -246,6 +249,7 @@ private:
     Eigen::VectorXd a_steppingR;                    // its sources' part of b, where none reads t
     bool a_steppingVaries = true;                   // one of them reads t: assembled at each step
     std::vector<Eigen::VectorXd> a_steppingVolt;    // by coil fed a voltage: its part of b at 1 V (empty: none)
+    std::vector<Eigen::VectorXd> a_steppingTurns;   // by coil of turns: its part of b at 1 A (empty: none)
     bool a_inTime = false;                          // solved last in time
     /// [the solution, each port's] at ω, by a factorization of K0 + jω K1;
     /// and (\a moments 1, 2) their first and second derivatives in ω after
@@ -1083,6 +1087,17 @@ bool MagneticProblem3::solve(const Options3& o, QString* error)
     // conductors.)
     if (o.frequency > 0) return solveHarmonic(o, error);
     if (o.mass > 0 && o.history && hasMass()) return solveTransient(o, error);
+    if (o.inTime)
+        for (const Coil& c : a_coils)
+            if (!c.single) {
+                const QString said = tr("%1: a B-H curve's field in time is solved at rest at each time - coil %2's voltage its wire's R I alone, "
+                                        "dΦ/dt not in it (a relative permeability given, the field is stepped and its voltage has it)")
+                                         .arg(name, c.name);
+                if (!a_s.warnings.contains(said)) {
+                    a_s.warnings << said;
+                    a_s.log << said;
+                }
+            }
     a_inTime = false;
     a_omega = 0;
     a_harmonic = false;
@@ -2226,6 +2241,18 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
             assembleHarmonic(a_stepping->q, hc, 2, zero, unitV, J0, false, false, unusedM, rv, a_stepping->gaugeScale);
             a_steppingVolt[std::size_t(c)] = rv.real();
         }
+        // (A coil of turns: its current density at 1 A's part of b, taken
+        // times its current at each step - its current of t, not the one
+        // its sources were built with.)
+        a_steppingTurns.assign(a_coils.size(), Eigen::VectorXd());
+        const std::vector<cd> noneV(nN, cd(0));
+        for (int c = 0; c < nc; ++c) {
+            if (a_coils[std::size_t(c)].single) continue;
+            Eigen::SparseMatrix<cd> unusedM;
+            Eigen::VectorXcd rj;
+            assembleHarmonic(a_stepping->q, hc, 1, zero, noneV, a_stepping->unit[std::size_t(c)], false, false, unusedM, rj, a_stepping->gaugeScale);
+            a_steppingTurns[std::size_t(c)] = rj.real();
+        }
     }
     Harmonic& hs = *a_stepping;
     Conductors& h = hs.h;
@@ -2244,7 +2271,14 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
     }
     if (a_steppingVaries || a_steppingR.size() != hs.n) {
         o.tell(tr("%1: assembling at t = %2").arg(name, formatQuantity(a_s.time(), Dim::of(0, 0, 1))));
+        // (The coils of turns left out: theirs added below.)
+        std::vector<double> scales;
+        for (Coil& c : a_coils) {
+            scales.push_back(c.scale);
+            if (!c.single) c.scale = 0;
+        }
         const std::vector<std::array<Expression, 3>> J = sourcesOf(-1);
+        for (std::size_t c = 0; c < a_coils.size(); ++c) a_coils[c].scale = scales[c];
         const std::vector<cd> noneV(nN, cd(0));
         Eigen::SparseMatrix<cd> unused;
         Eigen::VectorXcd r0;
@@ -2254,6 +2288,8 @@ bool MagneticProblem3::solveTransient(const Options3& o, QString* error)
     Eigen::VectorXd b = a_steppingR;
     for (int c = 0; c < nc && c < int(a_steppingVolt.size()); ++c)
         if (a_steppingVolt[std::size_t(c)].size() == hs.n) b += evalAt(a_coils[std::size_t(c)].voltage, Vec3{}) * a_steppingVolt[std::size_t(c)];
+    for (int c = 0; c < nc && c < int(a_steppingTurns.size()); ++c)
+        if (a_steppingTurns[std::size_t(c)].size() == hs.n) b += evalAt(a_coils[std::size_t(c)].current, Vec3{}) * a_steppingTurns[std::size_t(c)];
     for (int c = 0; c < nc; ++c)
         if (h.eqU[std::size_t(c)] >= 0 && a_coils[std::size_t(c)].role == Coil::Current) b(oV + h.eqU[std::size_t(c)]) += evalAt(a_coils[std::size_t(c)].current, Vec3{});
     Eigen::VectorXd hx = Eigen::VectorXd::Zero(hs.n);
@@ -3109,7 +3145,11 @@ bool magneticStateAt(PointEvaluator3& ev, int f, MagneticState& out, bool curren
         const std::array<Expression, 9>& c = coef.c[std::size_t(d)];
         for (int k = 0; k < 9; ++k) mur[k] = c[std::size_t(k)].isValid() ? ev.eval(c[std::size_t(k)]) : 0;
         // (A B-H curve's element: its effective µr at its nearest
-        // quadrature point.)
+        // quadrature point, and H, the energy and the losses of B there too,
+        // as the solve's bisection took them - B itself the point's own: read
+        // there, B̂ round an iron ring was 0.15 % off where the point's is
+        // 0.04 %.)
+        double Bq[3] = {out.B[0], out.B[1], out.B[2]}, Bqi[3] = {out.Bi[0], out.Bi[1], out.Bi[2]};
         if (d < int(coef.curves.size()) && coef.curves[std::size_t(d)] && field.internalStride > 0
             && field.internal.size() == s.mesh().prisms.size() * std::size_t(field.internalStride)) {
             const PrismRule& rule = es.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
@@ -3127,6 +3167,18 @@ bool magneticStateAt(PointEvaluator3& ev, int f, MagneticState& out, bool curren
             if (mu > 0) {
                 for (double& v : mur) v = 0;
                 mur[0] = mur[4] = mur[8] = mu;
+                const auto& p = rule.points[std::size_t(best)];
+                EdgeSpace3::Basis bq;
+                es.basis(ev.prism(), p[0], p[1], p[2], bq);
+                for (int k = 0; k < 3; ++k) Bq[k] = Bqi[k] = 0;
+                for (int i = 0; i < bq.count; ++i) {
+                    if (ed[i] < 0) continue;
+                    const double re = field.values[std::size_t(ed[i])], im = field.values[nE + nN + std::size_t(ed[i])];
+                    for (int k = 0; k < 3; ++k) {
+                        Bq[k] += bq.c[i][k] * re;
+                        Bqi[k] += bq.c[i][k] * im;
+                    }
+                }
             }
         }
         double murIm = 0;
@@ -3139,12 +3191,12 @@ bool magneticStateAt(PointEvaluator3& ev, int f, MagneticState& out, bool curren
         out.energy = out.qm = 0;
         for (int i = 0; i < 3; ++i) {
             cd H = 0;
-            for (int j = 0; j < 3; ++j) H += nu[3 * i + j] * cd(out.B[j], out.Bi[j]);
+            for (int j = 0; j < 3; ++j) H += nu[3 * i + j] * cd(Bq[j], Bqi[j]);
             out.H[i] = H.real();
             out.Hi[i] = H.imag();
             // (¼ Re(B·H*), ½ Re(jω B·H*).)
-            out.energy += 0.25 * (out.B[i] * out.H[i] + out.Bi[i] * out.Hi[i]);
-            out.qm += 0.5 * omega * (out.B[i] * out.Hi[i] - out.Bi[i] * out.H[i]);
+            out.energy += 0.25 * (Bq[i] * out.H[i] + Bqi[i] * out.Hi[i]);
+            out.qm += 0.5 * omega * (Bq[i] * out.Hi[i] - Bqi[i] * out.H[i]);
         }
         out.mur = (mur[0] + mur[4] + mur[8]) / 3;
         // In a conductor: E = -jωA - ∇V, J = σE.
