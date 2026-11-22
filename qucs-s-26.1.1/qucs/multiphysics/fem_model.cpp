@@ -1369,7 +1369,10 @@ QList<NodeKind> makeKinds()
          tr("The magnetic vector potential A out of the plane (round the axis): ∇×(µ⁻¹ ∇×A) = J, with B-H curves at rest "
             "and eddy currents (jωσA) in the frequency domain. Coils give an inductance or impedance matrix. In 3D, A on edge "
             "elements, ∇·A = 0 held by a nodal multiplier; its coils' currents a currents physics'; in the frequency domain "
-            "eddy currents too, an electric potential V on its conductors' nodes, its coils' impedance matrix.")});
+            "eddy currents too, an electric potential V on its conductors' nodes, its coils' impedance matrix. Every layer of "
+            "the 3D mesh has the plan's triangles: a wire's fine ones go through all the air above and below it - keep the "
+            "air's box small, let its layers grow away from the wire (Distribution in z), or solve iteratively (the step's "
+            "Solver).")});
     add({QStringLiteral("magnetic/ampere"), tr("Ampère's Law"), QStringLiteral("mf"), QStringLiteral("domainfeature"), Level::Domain,
          {selectionProp(),
           choice(QStringLiteral("constitutive"), tr("Magnetization model"), {QStringLiteral("mur"), QStringLiteral("bh")},

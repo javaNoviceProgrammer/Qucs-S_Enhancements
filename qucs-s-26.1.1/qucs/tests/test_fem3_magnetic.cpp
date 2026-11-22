@@ -1121,6 +1121,23 @@ private slots:
             QVERIFY2(magnitude > 0 && std::abs(v[1][0] - v[0][0]) < 1e-6 * magnitude && std::abs(v[1][1] - v[0][1]) < 1e-6 * magnitude, qPrintable(said));
             info(said);
         }
+        // An active core, µr 100 - j(-1000) (Re ν + Im ν below nought): the
+        // iterative solve not set up, and the direct solver named.
+        Model m = coilOfTurns(false);
+        addFeature(m, QStringLiteral("mf"), QStringLiteral("magnetic/ampere"),
+                   QJsonObject{{QStringLiteral("objects"), QJsonArray{QStringLiteral("air")}}, {QStringLiteral("except"), objects(QStringLiteral("bar"))}},
+                   {{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("mur"), QStringLiteral("100")}, {QStringLiteral("murIm"), QStringLiteral("-1000")}});
+        for (Node& st : m.root.children)
+            if (st.type == QLatin1String("study")) {
+                for (Node& step : st.children) step.enabled = false;
+                Node fr = m.make(QStringLiteral("frequency"));
+                fr.props.insert(QStringLiteral("frequencies"), QStringLiteral("20[kHz]"));
+                fr.props.insert(QStringLiteral("sweep"), false);
+                fr.props.insert(QStringLiteral("solver"), QStringLiteral("iterative"));
+                st.children.push_back(fr);
+            }
+        const Solved active = solve(m);
+        QVERIFY2(active.error.contains(QStringLiteral("could not be set up")) && active.error.contains(QStringLiteral("the direct solver")), qPrintable(active.error));
     }
 
 

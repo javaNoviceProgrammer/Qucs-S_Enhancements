@@ -2340,7 +2340,11 @@ bool MagneticProblem3::solveIteratively(const Options3& o, const Harmonic& hs, d
     bool made = cycle.compute(PS, std::move(spaces), order, 4, &why);
     if (made) made = (pp = nodal(q.eqP, nP)(PP, &why)) != nullptr;
     if (!made) {
-        *error = tr("%1: the iterative solve could not be set up (%2)").arg(name, why);
+        // (Its matrix not positive: a core of µr'' below nought - a gain, in
+        // µr' - j µr'' -, Re ν + Im ν below nought; the direct solve takes it.)
+        *error = tr("%1: the iterative solve could not be set up (%2; a core's µr'' below 0, a gain in µr' - j µr'', is one cause) - "
+                    "the direct solver (the step's Solver) solves it")
+                     .arg(name, why);
         return false;
     }
     // The rows and columns scaled by the preconditioner's diagonal: each
