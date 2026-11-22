@@ -15,6 +15,7 @@
 #include "fem3_mesh.h"
 
 #include <QJsonDocument>
+#include <QElapsedTimer>
 #include <QtTest>
 
 #include <algorithm>
@@ -359,6 +360,15 @@ private slots:
         qInfo("%s", qPrintable(said + QLatin1Char(')')));
         QVERIFY2(mesh.bands.size() >= 3, qPrintable(said));
         QVERIFY2(mesh.prisms.size() < 0.7 * one.mesh.mesh->prisms.size(), qPrintable(said));
+        // Its plans as good as one plan's: each band's smallest angle 20° or
+        // more, its worst stretch near one plan's (the union of every band's
+        // nodes on a wall made 0.004°, the stretch 267 for 32).
+        QString quality = QStringLiteral("smallest angles:");
+        for (const Mesh3::Band& b : mesh.bands) quality += QStringLiteral(" %1°").arg(b.plan->minAngle, 0, 'f', 1);
+        quality += QStringLiteral("; worst stretch %1 against one plan's %2").arg(mesh.maxStretch).arg(one.mesh.mesh->maxStretch);
+        qInfo("%s", qPrintable(quality));
+        for (const Mesh3::Band& b : mesh.bands) QVERIFY2(b.plan->minAngle >= 20, qPrintable(quality));
+        QVERIFY2(mesh.maxStretch <= 1.5 * one.mesh.mesh->maxStretch, qPrintable(quality));
         // The band at mid-height: coarse, its blocks' footprints merged.
         const Mesh3::Band* middle = nullptr;
         for (const Mesh3::Band& b : mesh.bands)
@@ -411,6 +421,29 @@ private slots:
             const int k = banded.topology->slabAt((mesh.heights[std::size_t(mesh.prismLayer[p])] + mesh.heights[std::size_t(mesh.prismLayer[p]) + 1]) / 2);
             QCOMPARE(banded.topology->cell(pd, k), mesh.domain[p]);
         }
+    }
+
+    /// By band, slabs of one layer stacked - eight full-width 1 mm slabs,
+    /// a fine block above them: an interface moved off the levels one way
+    /// only (before, two levels in a row bounced it for ever, the mesh never
+    /// made).
+    void stackedSlabsByBand()
+    {
+        Model m = model3d(4);
+        m.mesh().props.insert(QStringLiteral("plan"), QStringLiteral("band"));
+        addBox(m, QStringLiteral("air"), -10, -10, 0, 20, 20, 40);
+        for (int i = 0; i < 8; ++i) addBox(m, QStringLiteral("slab%1").arg(i), -10, -10, 20 + i, 20, 20, 1);
+        addBox(m, QStringLiteral("block"), -1, -1, 36, 2, 2, 1);
+        Node size = m.make(QStringLiteral("mesh/size"));
+        size.props.insert(QStringLiteral("selection"), QJsonObject{{QStringLiteral("only"), QJsonArray{QStringLiteral("block")}}});
+        size.props.insert(QStringLiteral("hmax"), QStringLiteral("0.25"));
+        m.add(m.mesh().tag, size);
+        QElapsedTimer clock;
+        clock.start();
+        const Built b = meshOf(m);
+        QVERIFY2(b.mesh.mesh, qPrintable(b.mesh.error));
+        QVERIFY2(clock.elapsed() < 30000, qPrintable(QStringLiteral("%1 ms").arg(clock.elapsed())));
+        checkMesh(*b.mesh.mesh);
     }
 
     /// A cylinder over a box: curved walls swept; a hole where a box is cut.

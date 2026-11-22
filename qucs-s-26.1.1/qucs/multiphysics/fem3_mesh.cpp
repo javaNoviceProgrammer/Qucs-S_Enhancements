@@ -257,12 +257,15 @@ std::vector<BandPlan> bandPlans(const Topology3& t, const MeshSizes& s, const st
         if (runs.empty() || !sameSteps(runs.back().first, j)) runs.emplace_back(j, j + 1);
         else runs.back().second = j + 1;
     }
-    // Off the levels: the finer of the two takes the layer.
+    // Off the levels: the finer of the two takes the layer - which, decided
+    // once, from the two runs as they were (asked again after a step, the
+    // layer just moved said the other, and two levels in a row bounced it
+    // for ever).
     for (std::size_t r = 1; r < runs.size();) {
         int& j = runs[r].first;
         bool merged = false;
+        const bool lowerFiner = fineness[std::size_t(runs[r - 1].first)] >= fineness[std::size_t(runs[r].first)];
         while (isLevel[std::size_t(j)]) {
-            const bool lowerFiner = fineness[std::size_t(runs[r - 1].first)] >= fineness[std::size_t(runs[r].first)];
             if (lowerFiner) ++j;
             else --j;
             runs[r - 1].second = j;
@@ -403,40 +406,49 @@ std::vector<BandPlan> bandPlans(const Topology3& t, const MeshSizes& s, const st
     return out;
 }
 
-/// Each boundary in two or more bands' plans made one polyline in all: the
-/// nodes any of them has on it put in the others' (their boundary edges
-/// split there).
-void matchBandBoundaries(std::vector<std::shared_ptr<Mesh>>& plans, int B, double scale)
+/// Each boundary \a fixed names - held by two bands or more, meshed with one
+/// count in each - made one polyline in all: the nodes any of them has on it
+/// put in the others' (their boundary edges split there). With one count
+/// the only nodes apart are the plan mesher's splits, each an edge's middle,
+/// so no two nodes come near (a union of each band's own discretization -
+/// a straight wall's ten - left nodes 0.0002 mm apart, triangles of 0.004°).
+void matchBandBoundaries(std::vector<std::shared_ptr<Mesh>>& plans, const std::vector<char>& fixed)
 {
-    const double tol = 1e-9 * scale;
-    const auto close = [tol](QPointF a, QPointF b) { return std::abs(a.x() - b.x()) <= tol && std::abs(a.y() - b.y()) <= tol; };
+    const int B = int(fixed.size());
     for (int b = 0; b < B; ++b) {
-        for (int pass = 0; pass < 8; ++pass) {
+        if (!fixed[std::size_t(b)]) continue;
+        for (int pass = 0; pass < 16; ++pass) {
+            // Each plan's edges on it, and its nodes there.
+            std::vector<std::vector<int>> edgesOn(plans.size());
             std::vector<QPointF> all;
-            std::vector<int> holders;
-            for (int m = 0; m < int(plans.size()); ++m) {
-                bool holds = false;
-                for (const Mesh::Edge& e : plans[std::size_t(m)]->edges) {
-                    if (e.boundary != b) continue;
-                    holds = true;
-                    for (int n : {e.a, e.b}) {
-                        const QPointF q = plans[std::size_t(m)]->nodes[std::size_t(n)];
-                        if (std::none_of(all.begin(), all.end(), [&](QPointF x) { return close(x, q); })) all.push_back(q);
-                    }
+            double shortest = Infinity;
+            for (std::size_t m = 0; m < plans.size(); ++m)
+                for (int e = 0; e < int(plans[m]->edges.size()); ++e) {
+                    const Mesh::Edge& ed = plans[m]->edges[std::size_t(e)];
+                    if (ed.boundary != b) continue;
+                    edgesOn[m].push_back(e);
+                    const QPointF a = plans[m]->nodes[std::size_t(ed.a)], c = plans[m]->nodes[std::size_t(ed.b)];
+                    shortest = std::min(shortest, std::hypot(c.x() - a.x(), c.y() - a.y()));
+                    all.push_back(a);
+                    all.push_back(c);
                 }
-                if (holds) holders.push_back(m);
-            }
-            if (holders.size() < 2) break;
+            // (The same node: within a thousandth of its shortest edge.)
+            const double tol = 1e-3 * shortest;
+            const auto close = [tol](QPointF a, QPointF c) { return std::abs(a.x() - c.x()) <= tol && std::abs(a.y() - c.y()) <= tol; };
+            std::sort(all.begin(), all.end(), [](QPointF a, QPointF c) { return a.x() < c.x() || (a.x() == c.x() && a.y() < c.y()); });
+            std::vector<QPointF> unique;
+            for (const QPointF q : all)
+                if (std::none_of(unique.begin(), unique.end(), [&](QPointF x) { return close(x, q); })) unique.push_back(q);
             bool split = false;
-            for (int m : holders) {
-                Mesh& pl = *plans[std::size_t(m)];
-                for (const QPointF q : all) {
+            for (std::size_t m = 0; m < plans.size(); ++m) {
+                if (edgesOn[m].empty()) continue;
+                Mesh& pl = *plans[m];
+                for (const QPointF q : unique) {
                     int best = -1;
                     double bestDist = Infinity, bestS = 0;
                     bool there = false;
-                    for (int e = 0; e < int(pl.edges.size()) && !there; ++e) {
+                    for (int e : edgesOn[m]) {
                         const Mesh::Edge& ed = pl.edges[std::size_t(e)];
-                        if (ed.boundary != b) continue;
                         const QPointF a = pl.nodes[std::size_t(ed.a)], c = pl.nodes[std::size_t(ed.b)];
                         if (close(a, q) || close(c, q)) {
                             there = true;
@@ -446,7 +458,7 @@ void matchBandBoundaries(std::vector<std::shared_ptr<Mesh>>& plans, int B, doubl
                         const double l2 = d.x() * d.x() + d.y() * d.y();
                         if (!(l2 > 0)) continue;
                         const double u = ((q.x() - a.x()) * d.x() + (q.y() - a.y()) * d.y()) / l2;
-                        if (u <= 1e-9 || u >= 1 - 1e-9) continue;
+                        if (u <= 0.05 || u >= 0.95) continue;
                         // (An arc's node off the chord by its sagitta: the
                         // nearest edge whose span it is in.)
                         const double dist = std::hypot(a.x() + u * d.x() - q.x(), a.y() + u * d.y() - q.y());
@@ -458,6 +470,7 @@ void matchBandBoundaries(std::vector<std::shared_ptr<Mesh>>& plans, int B, doubl
                     }
                     if (there || best < 0) continue;
                     splitBoundaryEdge(pl, best, q, bestS);
+                    edgesOn[m].push_back(int(pl.edges.size()) - 1);
                     split = true;
                 }
             }
@@ -702,18 +715,19 @@ Mesh3Build buildMesh3Within(const Model& model, const ParameterScope& parameters
         plans[0].sizes = s;
     }
     const int NB = int(plans.size());
-    std::vector<std::shared_ptr<Mesh>> planMeshes;
-    for (int b = 0; b < NB; ++b) {
+    std::vector<std::shared_ptr<Mesh>> planMeshes(static_cast<std::size_t>(NB));
+    // A band's plan meshed (a merged plan's boundaries and points renumbered
+    // by the plan's own numbers).
+    const auto meshBand = [&](int b) {
         auto planProgress = [&progress, b, NB](double fraction, const QString& what) {
             return !progress || progress(0.8 * (b + fraction) / NB, NB > 1 ? tr("Band %1's plan: %2").arg(b + 1).arg(what) : tr("The plan: %1").arg(what));
         };
         const MeshBuild pm = buildMesh(plans[std::size_t(b)].topology, plans[std::size_t(b)].sizes, planProgress);
         if (!pm.mesh) {
             out.error = pm.error.isEmpty() ? tr("the plan's mesh failed") : tr("the plan: %1").arg(pm.error);
-            return out;
+            return false;
         }
         out.warnings << pm.warnings;
-        // (A merged plan's boundaries and points by the plan's own numbers.)
         const BandPlan& bp = plans[std::size_t(b)];
         if (!bp.boundaryOf.empty()) {
             for (Mesh::Edge& e : pm.mesh->edges)
@@ -723,17 +737,17 @@ Mesh3Build buildMesh3Within(const Model& model, const ParameterScope& parameters
             pm.mesh->pointNode = nodes;
             pm.mesh->topology = t.plan;
         }
-        planMeshes.push_back(pm.mesh);
-    }
-    // A boundary in two bands' plans made the same polyline in both - each
-    // given the other's nodes on it -, so that a domain's wall is one
-    // surface through the bands.
-    if (NB > 1) matchBandBoundaries(planMeshes, B, std::max(1.0, t.bounds.diagonal()));
+        planMeshes[std::size_t(b)] = pm.mesh;
+        return true;
+    };
+    for (int b = 0; b < NB; ++b)
+        if (!meshBand(b)) return out;
     // A plan domain whole in consecutive bands - none merged into it: a
-    // conductor, a source or a wall through an interface - the same
-    // triangles in all of them, the finest's: there the interface's
-    // degrees of freedom are one, not one side's interpolated from the
-    // other's (inside a conductor that error is not small).
+    // conductor, a source or a wall through an interface - gets the same
+    // triangles in all of them, the finest's: there the interface's degrees
+    // of freedom are one, not one side's interpolated from the other's
+    // (inside a conductor that error is not small).
+    std::vector<std::array<int, 3>> wholeRuns;   // (plan domain, first band, past its last)
     if (NB > 1) {
         const auto whole = [&plans](int b, int pd) {
             const std::vector<int>& m = plans[std::size_t(b)].merged;
@@ -747,15 +761,64 @@ Mesh3Build buildMesh3Within(const Model& model, const ParameterScope& parameters
             for (int b0 = 0; b0 < NB;) {
                 int b1 = b0;
                 while (b1 < NB && whole(b1, pd)) ++b1;
-                if (b1 - b0 >= 2) {
-                    int master = b0;
-                    for (int b = b0; b < b1; ++b)
-                        if (plans[std::size_t(b)].sizes.domainMax[std::size_t(pd)] < plans[std::size_t(master)].sizes.domainMax[std::size_t(pd)]) master = b;
-                    for (int b = b0; b < b1; ++b)
-                        if (b != master) adoptDomain(*planMeshes[std::size_t(b)], *planMeshes[std::size_t(master)], pd);
-                }
+                if (b1 - b0 >= 2) wholeRuns.push_back({pd, b0, b1});
                 b0 = std::max(b1, b0 + 1);
             }
+    }
+    // The boundaries whose polylines must be one in every band that holds
+    // them: a curve's (else the two bands' domains differ by slivers), and
+    // a whole domain's rim (its triangles copied). Each gets one count of
+    // elements in every band - the most any band gave it -, the bands that
+    // hold them meshed again so, then their splits matched. A straight wall
+    // of no whole domain is left: its polylines bound the same domain, and
+    // where they differ on an interface the constraints join them as they do
+    // the rest.
+    if (NB > 1) {
+        std::vector<char> rim(std::size_t(B), 0), fixed(std::size_t(B), 0);
+        for (const auto& [pd, b0, b1] : wholeRuns)
+            for (int b = 0; b < B; ++b)
+                if (plan.boundaries[std::size_t(b)].up == pd || plan.boundaries[std::size_t(b)].down == pd) rim[std::size_t(b)] = 1;
+        std::vector<int> count(std::size_t(B), 0), holders(std::size_t(B), 0);
+        for (int b = 0; b < NB; ++b) {
+            std::vector<int> here(std::size_t(B), 0);
+            for (const Mesh::Edge& e : planMeshes[std::size_t(b)]->edges)
+                if (e.boundary >= 0) ++here[std::size_t(e.boundary)];
+            for (int x = 0; x < B; ++x)
+                if (here[std::size_t(x)] > 0) {
+                    ++holders[std::size_t(x)];
+                    count[std::size_t(x)] = std::max(count[std::size_t(x)], here[std::size_t(x)]);
+                }
+        }
+        bool any = false;
+        for (int x = 0; x < B; ++x) {
+            const Topology::Boundary& bd = plan.boundaries[std::size_t(x)];
+            const bool curved = bd.curve >= 0 && plan.curves[std::size_t(bd.curve)].kind != Curve::Line;
+            fixed[std::size_t(x)] = holders[std::size_t(x)] >= 2 && (curved || rim[std::size_t(x)]);
+            any = any || fixed[std::size_t(x)];
+        }
+        if (any) {
+            for (int b = 0; b < NB; ++b) {
+                BandPlan& bp = plans[std::size_t(b)];
+                bool touches = false;
+                const int nb = bp.boundaryOf.empty() ? B : int(bp.boundaryOf.size());
+                if (int(bp.sizes.boundaryCount.size()) < nb) bp.sizes.boundaryCount.resize(std::size_t(nb), 0);
+                for (int local = 0; local < nb; ++local) {
+                    const int x = bp.boundaryOf.empty() ? local : bp.boundaryOf[std::size_t(local)];
+                    if (!fixed[std::size_t(x)]) continue;
+                    bp.sizes.boundaryCount[std::size_t(local)] = count[std::size_t(x)];
+                    touches = true;
+                }
+                if (touches && !meshBand(b)) return out;
+            }
+            matchBandBoundaries(planMeshes, fixed);
+        }
+        for (const auto& [pd, b0, b1] : wholeRuns) {
+            int master = b0;
+            for (int b = b0; b < b1; ++b)
+                if (plans[std::size_t(b)].sizes.domainMax[std::size_t(pd)] < plans[std::size_t(master)].sizes.domainMax[std::size_t(pd)]) master = b;
+            for (int b = b0; b < b1; ++b)
+                if (b != master) adoptDomain(*planMeshes[std::size_t(b)], *planMeshes[std::size_t(master)], pd);
+        }
     }
     for (int b = 0; b + 1 < NB; ++b) mesh->interfaceFiner.push_back(plans[std::size_t(b)].finerThanNext ? b : b + 1);
     if (progress && !progress(0.8, tr("Sweeping the prisms"))) {

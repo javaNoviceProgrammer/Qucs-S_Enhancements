@@ -3935,7 +3935,7 @@ void QucsControl::fem3Build(Multiphysics3DDoc* doc, const QJsonObject& args, con
         }
         QJsonObject o{{QStringLiteral("prisms"), int(m->prisms.size())},
                       {QStringLiteral("nodes"), int(m->nodes.size())},
-                      {QStringLiteral("plan triangles"), int(m->plan ? m->plan->triangles.size() : 0)},
+                      {QStringLiteral("plan triangles"), int(m->planTriangles())},
                       {QStringLiteral("layers"), m->heights.size() > 1 ? int(m->heights.size()) - 1 : 0},
                       {QStringLiteral("smallest angle"), QStringLiteral("%1°").arg(m->minAngle, 0, 'f', 1)},
                       {QStringLiteral("worst stretch"), formatNumber(m->maxStretch, 3)},
