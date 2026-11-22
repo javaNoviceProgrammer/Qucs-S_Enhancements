@@ -423,14 +423,16 @@ Export3 fieldExport3(const Solutions3& set, const Node& node)
 /// A magnetic field's coils' impedance matrix at each frequency of a
 /// Frequency Domain step (its coil sweep's: mf.R_<i>_<j> + jω mf.L_<i>_<j>),
 /// its ports the coils fed a current, a Touchstone 1.1 file in ohms as they
-/// are (# Hz Z RI R 1); empty, and why. Its rows the snapshots of a
-/// frequency (\a rows), its ports the last one's - a Stationary or a Time
-/// Dependent step after it neither.
+/// are (# Hz Z RI R 1); empty, and why. Its rows the Frequency Domain
+/// steps' snapshots whose matrix was swept (\a rows), by increasing
+/// frequency, a frequency solved twice its later; its ports the last
+/// one's - a Stationary, a Time Dependent or an Eigenfrequency step's
+/// snapshots none of them.
 QString coilTouchstone(const Solution3& s, const Field3& f, const QStringList& comments, int* ports, std::vector<int>* rows, QString* error)
 {
     rows->clear();
     for (int k = 0; k < s.snapshotCount(); ++k)
-        if (s.snapshotFrequency(k) > 0) rows->push_back(k);
+        if (s.snapshotFrequencyDomain(k) && s.snapshotFrequency(k) > 0) rows->push_back(k);
     const std::vector<Field3::Terminal>* terminals = rows->empty() ? nullptr : s.snapshotTerminals(rows->back(), s.fieldIndex(f.tag));
     QStringList names;
     for (const Field3::Terminal& t : terminals ? *terminals : f.terminals)
@@ -454,6 +456,25 @@ QString coilTouchstone(const Solution3& s, const Field3& f, const QStringList& c
                 return {};
             }
         }
+    // (A row whose matrix is NaN - a step not swept - left out; by
+    // increasing frequency, as Touchstone has them, one a frequency: the
+    // later's.)
+    std::vector<int> kept;
+    for (const int k : *rows) {
+        bool swept = true;
+        for (int a = 0; a < n * n && swept; ++a) swept = std::isfinite(R[std::size_t(a)][std::size_t(k)]) && std::isfinite(L[std::size_t(a)][std::size_t(k)]);
+        if (swept) kept.push_back(k);
+    }
+    std::stable_sort(kept.begin(), kept.end(), [&s](int a, int b) { return s.snapshotFrequency(a) < s.snapshotFrequency(b); });
+    rows->clear();
+    for (const int k : kept) {
+        if (!rows->empty() && s.snapshotFrequency(rows->back()) == s.snapshotFrequency(k)) rows->back() = std::max(rows->back(), k);
+        else rows->push_back(k);
+    }
+    if (rows->empty()) {
+        *error = tr("%1: its impedance matrix was not swept at any frequency (the step's Coil sweep)").arg(f.tag);
+        return {};
+    }
     const auto number = [](double v) { return QString::number(v, 'e', 9); };
     QString text;
     for (const QString& c : comments) text += QStringLiteral("! ") + c + QLatin1Char('\n');

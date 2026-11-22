@@ -28,6 +28,7 @@
 
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <QElapsedTimer>
 #include <QtTest>
 
 #include <algorithm>
@@ -1066,6 +1067,62 @@ private slots:
         }
     }
 
+    // The iterative solve (a Frequency Domain step's Solver iterative) of a
+    // coil of turns in a core - its air but the bar of µr 1000 or 4000, of a
+    // B-H curve, or lossy, µr 10 - j1000 - at 20 kHz, against the direct
+    // solve: V_1 and V_1_im to 1e-6 of |V|. (Restarted every 60, µr 1000
+    // crept to 1e-9 after 2478 iterations, µr 4000 and the curve stalled at
+    // 0.011; with γ of µr' alone and Re K0, the lossy core at 0.9.) A Release
+    // build's: a sanitized one solves test_fem3_eddy's coax iteratively.
+    void anIterativeSolveInACore()
+    {
+        if (slowBuild()) QSKIP("a Release build's");
+        const QJsonArray bh{QJsonArray{0.0, 0.0}, QJsonArray{0.5, 100.0}, QJsonArray{1.0, 300.0}, QJsonArray{2.0, 100000.0}};
+        struct Core {
+            QString name;
+            QJsonObject props;
+        };
+        const std::vector<Core> cores = {
+            {QStringLiteral("µr 1000"), {{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("mur"), QStringLiteral("1000")}}},
+            {QStringLiteral("µr 4000"), {{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("mur"), QStringLiteral("4000")}}},
+            {QStringLiteral("a B-H curve"), {{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("constitutive"), QStringLiteral("bh")}, {QStringLiteral("BH"), bh}}},
+            {QStringLiteral("µr 10 - j1000"),
+             {{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("mur"), QStringLiteral("10")}, {QStringLiteral("murIm"), QStringLiteral("1000")}}},
+        };
+        for (const Core& c : cores) {
+            double v[2][2] = {{0, 0}, {0, 0}};
+            QString said;
+            for (int k = 0; k < 2; ++k) {
+                Model m = coilOfTurns(false);
+                addFeature(m, QStringLiteral("mf"), QStringLiteral("magnetic/ampere"),
+                           QJsonObject{{QStringLiteral("objects"), QJsonArray{QStringLiteral("air")}}, {QStringLiteral("except"), objects(QStringLiteral("bar"))}}, c.props);
+                for (Node& st : m.root.children)
+                    if (st.type == QLatin1String("study")) {
+                        for (Node& step : st.children) step.enabled = false;
+                        Node fr = m.make(QStringLiteral("frequency"));
+                        fr.props.insert(QStringLiteral("frequencies"), QStringLiteral("20[kHz]"));
+                        fr.props.insert(QStringLiteral("sweep"), false);
+                        fr.props.insert(QStringLiteral("solver"), k == 0 ? QStringLiteral("direct") : QStringLiteral("iterative"));
+                        st.children.push_back(fr);
+                    }
+                QElapsedTimer clock;
+                clock.start();
+                const Solved sv = solve(m);
+                QVERIFY2(sv.error.isEmpty(), qPrintable(c.name + QStringLiteral(": ") + why(sv)));
+                v[k][0] = global(sv.s(), QStringLiteral("mf.V_1"));
+                v[k][1] = global(sv.s(), QStringLiteral("mf.V_1_im"));
+                said += QStringLiteral("%1 %2 s; ").arg(k == 0 ? QStringLiteral("direct") : QStringLiteral("iterative")).arg(clock.elapsed() / 1000.0);
+                if (k == 1)
+                    for (const QString& line : sv.s().log)
+                        if (line.contains(QStringLiteral("GMRES"))) said += line.mid(line.indexOf(QStringLiteral("set up"))) + QStringLiteral("; ");
+            }
+            const double magnitude = std::hypot(v[0][0], v[0][1]);
+            said = QStringLiteral("%1: V %2 %3 V iterative, %4 %5 direct; ").arg(c.name).arg(v[1][0]).arg(v[1][1]).arg(v[0][0]).arg(v[0][1]) + said;
+            QVERIFY2(magnitude > 0 && std::abs(v[1][0] - v[0][0]) < 1e-6 * magnitude && std::abs(v[1][1] - v[0][1]) < 1e-6 * magnitude, qPrintable(said));
+            info(said);
+        }
+    }
+
 
     // Magnetic fields in time (a Time Dependent step: eddy currents σ (∂A/∂t
     // + ∇V), the frequency domain's matrices stepped by BDF). The shorted
@@ -1505,6 +1562,32 @@ private slots:
             QVERIFY2(std::abs(got - want) < 2e-2 * want && std::abs(hgot - H) < 5e-2 * H, qPrintable(said));
         }
         info(said);
+        // At four frequencies, the fast sweep asked (its default): none for a
+        // B-H curve, each frequency solved, said - before, no solution and no
+        // error. Nothing conducting, each frequency's B̂ the same.
+        if (slowBuild()) return;
+        for (Node& st : m.root.children)
+            if (st.type == QLatin1String("study"))
+                for (Node& step : st.children)
+                    if (step.type == QLatin1String("frequency")) {
+                        step.props.insert(QStringLiteral("frequencies"), QStringLiteral("50[Hz], 60[Hz], 70[Hz], 80[Hz]"));
+                        step.props.insert(QStringLiteral("tolerance"), QStringLiteral("1e-2"));
+                    }
+        // (The estimate's solves: each frequency's, no fast sweep for it.)
+        for (const Node& c : m.root.children)
+            if (c.type == QLatin1String("study")) QCOMPARE(magneticSolves(c, m.find(mf), evaluateParameters(m)->scope), 4);
+        const Solved four = solve(m);
+        QVERIFY2(four.error.isEmpty(), qPrintable(why(four)));
+        QVERIFY2(four.r.solution, "a solution (before: none, and no error)");
+        QCOMPARE(four.s().snapshotCount(), 4);
+        const QString log = four.s().log.join(QLatin1Char('\n'));
+        QVERIFY2(log.contains(QStringLiteral("not by the fast sweep")), qPrintable(log));
+        four.s().select(0);
+        const double b0 = valueAt(four.s(), QStringLiteral("mf.normB"), 0.9 * std::cos(0.4), 0.9 * std::sin(0.4), 0.15);
+        four.s().select(3);
+        const double b3 = valueAt(four.s(), QStringLiteral("mf.normB"), 0.9 * std::cos(0.4), 0.9 * std::sin(0.4), 0.15);
+        QVERIFY2(b0 > 0 && std::abs(b3 - b0) < 1e-6 * b0 && four.s().snapshotFrequency(3) == 80,
+                 qPrintable(QStringLiteral("B̂ %1 T at 50 Hz, %2 at 80 Hz").arg(b0).arg(b3)));
     }
 
     // What is refused: a coil whose currents physics is not there; Magnetic

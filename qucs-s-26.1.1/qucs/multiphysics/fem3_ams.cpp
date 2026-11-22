@@ -158,7 +158,7 @@ IterativeReport gmres(const ComplexOperator& a, const ComplexOperator& m, const 
         H.setZero();
         int j = 0;
         for (; j < mr && rep.iterations < maxIterations; ++j) {
-            if (cancelled && rep.iterations % 10 == 0 && rep.iterations > 0 && cancelled()) {
+            if (cancelled && rep.iterations > 0 && cancelled()) {
                 rep.cancelled = true;
                 break;
             }

@@ -110,8 +110,9 @@ public:
     int selected() const { return a_selected; }
     /// The fields and globals of snapshot \a i (out of range: the last).
     void select(int i);
-    /// The fields and globals as they are now, kept as a snapshot at time().
-    void addSnapshot();
+    /// The fields and globals as they are now, kept as a snapshot at time()
+    /// (\a frequencyDomain: a Frequency Domain step's, at frequency()).
+    void addSnapshot(bool frequencyDomain = false);
     /// The last snapshot made again of the fields as they are now (a step at
     /// rest after one in time).
     void replaceLastSnapshot();
@@ -133,6 +134,9 @@ public:
     /// signal about the solution at rest), each of its frequency (Hz).
     bool smallSignal = false;
     double snapshotFrequency(int i) const { return a_snapshots[std::size_t(i)].frequency; }
+    /// Snapshot \a i a Frequency Domain step's (not an Eigenfrequency
+    /// step's mode, nor a Wavelength Domain step's).
+    bool snapshotFrequencyDomain(int i) const { return a_snapshots[std::size_t(i)].frequencyDomain; }
     /// Field \a field's terminals in snapshot \a i (null: none kept).
     const std::vector<Field3::Terminal>* snapshotTerminals(int i, int field) const
     {
@@ -259,6 +263,7 @@ private:
     struct Snapshot {
         double time = 0;
         double frequency = 0;
+        bool frequencyDomain = false;                             // a Frequency Domain step's
         std::vector<std::vector<double>> values;                  // by field
         std::vector<std::vector<Field3::Terminal>> terminals;     // by field
         std::vector<std::vector<std::vector<double>>> matrices;   // by field

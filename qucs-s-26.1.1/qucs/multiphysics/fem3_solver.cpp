@@ -603,9 +603,10 @@ Solution3::Snapshot Solution3::snapshotNow() const
     return s;
 }
 
-void Solution3::addSnapshot()
+void Solution3::addSnapshot(bool frequencyDomain)
 {
     a_snapshots.push_back(snapshotNow());
+    a_snapshots.back().frequencyDomain = frequencyDomain;
     for (const auto& [name, g] : a_snapshots.back().globals) a_snapshotNames.insert(name);
     a_selected = int(a_snapshots.size()) - 1;
 }
@@ -1694,6 +1695,14 @@ bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const d
             if (v[std::size_t(i)]) varying.push_back(i);
     }
     s.smallSignal = true;
+    // (Its physics' globals NaN first, and freq, as a step in time's start
+    // does: what a step before set and this one does not - a coil sweep's
+    // impedance matrix, this step not swept - not kept as its own.)
+    {
+        QStringList mine;
+        for (int i : subset) mine << s.fields()[std::size_t(i)].tag + QLatin1Char('.');
+        s.blankGlobals(mine, {QStringLiteral("freq")});
+    }
     const Dim hertz = Dim::of(0, 0, -1);
     // Frequency n: its magnetic fields solved (\a solve) - at the first,
     // the rest of its physics too -, or (the fast sweep's) set already and
@@ -1742,7 +1751,7 @@ bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const d
                 }
         }
         s.setGlobal(QStringLiteral("freq"), f, hertz, tr("frequency"));
-        s.addSnapshot();
+        s.addSnapshot(true);
         return true;
     };
     // The fast sweep (its "fastsweep", fast by default): more than three
@@ -1792,8 +1801,16 @@ bool frequencyStep3(Problems3& problems, Solution3& s, const Node& node, const d
         double tolerance = 1e-4;
         if (const std::optional<double> t = evaluateConstant(node.text(QStringLiteral("sweeptolerance")), s.parameters().scope, Dim()); t && *t > 0)
             tolerance = *t;
-        if (!problems[std::size_t(fast)]->sweepFrequencies(o, *listed, tolerance, [&](int k) { return atFrequency(std::size_t(k), false, fast); }, error))
-            return false;
+        // (False and no why: it has no fast sweep - a B-H curve's field, its
+        // matrix of its own amplitude -, each frequency solved instead.
+        // Before, the step ended there, no solution and no error.)
+        const int before = s.snapshotCount();
+        if (!problems[std::size_t(fast)]->sweepFrequencies(o, *listed, tolerance, [&](int k) { return atFrequency(std::size_t(k), false, fast); }, error)) {
+            if (!error->isEmpty() || s.snapshotCount() != before) return false;
+            s.log << tr("%1: each frequency solved exactly, not by the fast sweep - %2 has none").arg(node.name(), problems[std::size_t(fast)]->node()->name());
+            for (std::size_t n = 0; n < listed->size(); ++n)
+                if (!atFrequency(n, true, -1)) return false;
+        }
     } else
         for (std::size_t n = 0; n < listed->size(); ++n)
             if (!atFrequency(n, true, -1)) return false;
