@@ -1189,6 +1189,10 @@ private slots:
         QVERIFY2(std::abs(fz - fzRest) < 2e-3 * std::abs(fzRest) && fzRest != 0,
                  qPrintable(QStringLiteral("Fz at 50 µs %1 N, twice the 10 Hz average %2 N").arg(fz).arg(fzRest)));
         QVERIFY(std::isnan(global(sst.s(), QStringLiteral("mf.Phi_1"))) && std::isnan(global(sst.s(), QStringLiteral("mf.L_1"))));
+        // (At its start too - before, nought there and NaN after.)
+        sst.s().select(0);
+        QVERIFY(std::isnan(global(sst.s(), QStringLiteral("mf.Phi_1"))) && std::isnan(global(sst.s(), QStringLiteral("mf.L_1"))));
+        sst.s().select(2);
         info(QStringLiteral("a single conductor's force in time: %1 N at 50 µs, twice the 10 Hz average %2 N").arg(fz).arg(fzRest));
         const QString said2 = QStringLiteral("a step of 1 A: %1 V at 2 µs, %2 V at 50 µs against its DC resistance's %3 V").arg(early).arg(late).arg(R);
         QVERIFY2(std::abs(late - R) < 1e-3 * R && early > 1.2 * late, qPrintable(said2));
@@ -1321,8 +1325,9 @@ private slots:
             ft.s().select(k);
             const double time = k == 2 ? 1e-6 : k == 3 ? 10e-6 : 20e-6;
             const double v = global(ft.s(), QStringLiteral("mf.V_1")), want = R0 * (1 + time / 10e-6) * I;
-            saidR += QStringLiteral("t %1 µs: V %2 mV against R(t) I %3; ").arg(time * 1e6).arg(v * 1e3).arg(want * 1e3);
-            QVERIFY2(ft.s().frequency() == 0 && std::abs(v - want) < 1e-6 * want, qPrintable(saidR));
+            const double r = global(ft.s(), QStringLiteral("mf.R_1"));
+            saidR += QStringLiteral("t %1 µs: V %2 mV against R(t) I %3, R_1 %4 Ω; ").arg(time * 1e6).arg(v * 1e3).arg(want * 1e3).arg(r);
+            QVERIFY2(ft.s().frequency() == 0 && std::abs(v - want) < 1e-6 * want && std::abs(r * I - want) < 1e-6 * want, qPrintable(saidR));
         }
         info(saidR);
         // A B-H curve in the air: at rest at each time, said.
@@ -1340,6 +1345,102 @@ private slots:
         const Solved b = solve(mb);
         QVERIFY2(b.error.isEmpty(), qPrintable(why(b)));
         QVERIFY2(b.r.warnings.join(QLatin1Char('\n')).contains(QStringLiteral("dΦ/dt not in it")), qPrintable(b.r.warnings.join(QLatin1Char('\n'))));
+    }
+
+    // The globals of a study in time, each snapshot's its own.
+    // - After a Frequency Domain step: what only that step sets (a coil's
+    //   impedance, its voltage's imaginary part) NaN in each snapshot in time,
+    //   not kept from it (before: mf.Z_1 0.0218 Ω at every time).
+    // - A coil of turns in a field that conducts (a copper plate beside the
+    //   bar), switched on at t0: its wire resistance R0 at the start, and
+    //   R_1 at each time (before: nought throughout, its sources not yet
+    //   built at the start, and R_1 not set in time), its voltage R0 I0 at
+    //   t0. After a Frequency Domain step the same: V_1 at t0 R0 I0, not
+    //   the frequency domain's Re V.
+    // - Its losses mf.P, set from the first step: NaN at t0 when read after
+    //   the last time (before: the last time's), in a series too.
+    // - A Stationary step after a Frequency Domain step: a snapshot of its
+    //   own at no frequency, the frequency domain's kept (before: put in its
+    //   place under its 20 kHz).
+    void globalsInTime()
+    {
+        const double I = 0.2;
+        auto study = [](Model& m, const QStringList& steps) {
+            for (Node& st : m.root.children)
+                if (st.type == QLatin1String("study")) {
+                    st.children.clear();
+                    for (const QString& type : steps) {
+                        Node n = m.make(type);
+                        if (type == QLatin1String("frequency")) n.props.insert(QStringLiteral("frequencies"), QStringLiteral("20[kHz]"));
+                        if (type == QLatin1String("transient")) {
+                            n.props.insert(QStringLiteral("times"), QStringLiteral("0, 1[us], 2[us]"));
+                            n.props.insert(QStringLiteral("stepping"), QStringLiteral("fixed"));
+                            n.props.insert(QStringLiteral("dt"), QStringLiteral("1[us]"));
+                        }
+                        st.children.push_back(n);
+                    }
+                }
+        };
+        // (The wire's DC resistance: N² / (σw fill A / l) of its 10 turns.)
+        const double R0 = 100 / (6e7 * 0.5 * 0.4e-3 * 0.4e-3 / 1e-3);
+        // A coil in air: a Frequency Domain step, then a Stationary one,
+        // then a Time Dependent one.
+        Model ma = coilOfTurns(false);
+        study(ma, {QStringLiteral("frequency"), QStringLiteral("stationary"), QStringLiteral("transient")});
+        const Solved a = solve(ma);
+        QVERIFY2(a.error.isEmpty(), qPrintable(why(a)));
+        QCOMPARE(a.s().snapshotCount(), 5);
+        a.s().select(0);
+        const double vim = global(a.s(), QStringLiteral("mf.V_1_im")), z = global(a.s(), QStringLiteral("mf.Z_1"));
+        QVERIFY2(a.s().snapshotFrequency(0) == 2e4 && vim > 0 && z > 0, qPrintable(QStringLiteral("the frequency domain's: f %1 Hz, V_1_im %2 V").arg(a.s().snapshotFrequency(0)).arg(vim)));
+        a.s().select(1);
+        const double w = global(a.s(), QStringLiteral("mf.W")), phi = global(a.s(), QStringLiteral("mf.Phi_1"));
+        QVERIFY2(a.s().frequency() == 0 && std::abs(w - 0.5 * phi * I) < 1e-6 * w && std::isnan(global(a.s(), QStringLiteral("mf.Z_1"))),
+                 qPrintable(QStringLiteral("the Stationary step's: f %1 Hz, W %2 J, Φ I/2 %3 J, Z_1 %4").arg(a.s().frequency()).arg(w).arg(0.5 * phi * I).arg(global(a.s(), QStringLiteral("mf.Z_1")))));
+        for (int k = 2; k < 5; ++k) {
+            a.s().select(k);
+            const QString at = QStringLiteral("snapshot %1 (t %2 s): Z_1 %3, Q_1 %4, V_1_im %5, freq %6")
+                                   .arg(k).arg(a.s().time()).arg(global(a.s(), QStringLiteral("mf.Z_1"))).arg(global(a.s(), QStringLiteral("mf.Q_1")))
+                                   .arg(global(a.s(), QStringLiteral("mf.V_1_im"))).arg(global(a.s(), QStringLiteral("freq")));
+            QVERIFY2(a.s().frequency() == 0 && std::isnan(global(a.s(), QStringLiteral("mf.Z_1"))) && std::isnan(global(a.s(), QStringLiteral("mf.Q_1")))
+                         && std::isnan(global(a.s(), QStringLiteral("mf.V_1_im"))) && !(global(a.s(), QStringLiteral("freq")) > 0),
+                     qPrintable(at));
+        }
+        // A copper plate beside the bar: its field stepped from nought.
+        for (bool afterHarmonic : {false, true}) {
+            Model mp = coilOfTurns(false);
+            addBox(mp, QStringLiteral("plate"), 0.6, -0.2, 0, 0.4, 0.4, 1);
+            zDivisions(mp, QStringLiteral("plate"), 1);
+            addFeature(mp, QStringLiteral("mf"), QStringLiteral("magnetic/ampere"), objects(QStringLiteral("plate")),
+                       {{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("mur"), QStringLiteral("1")}, {QStringLiteral("sigma"), QStringLiteral("5.8e7[S/m]")}});
+            study(mp, afterHarmonic ? QStringList{QStringLiteral("frequency"), QStringLiteral("transient")} : QStringList{QStringLiteral("transient")});
+            const Solved p = solve(mp);
+            QVERIFY2(p.error.isEmpty(), qPrintable(why(p)));
+            const int first = afterHarmonic ? 1 : 0;
+            QCOMPARE(p.s().snapshotCount(), first + 3);
+            QString said = afterHarmonic ? QStringLiteral("a plate, after a frequency domain's step: ") : QStringLiteral("a plate: ");
+            for (int k = first; k < first + 3; ++k) {
+                p.s().select(k);
+                const double r = global(p.s(), QStringLiteral("mf.R_1")), v = global(p.s(), QStringLiteral("mf.V_1"));
+                said += QStringLiteral("t %1 µs R_1 %2 Ω V_1 %3 mV; ").arg(p.s().time() * 1e6).arg(r).arg(v * 1e3);
+                QVERIFY2(std::abs(r - R0) < 1e-9 * R0, qPrintable(said + QStringLiteral(" (R0 %1 Ω)").arg(R0)));
+                if (k == first) QVERIFY2(std::abs(v - R0 * I) < 1e-9 * R0 * I, qPrintable(said));
+            }
+            info(said);
+            // (Its t0 read after its last time: no losses yet, not the last's.)
+            p.s().select(first + 2);
+            const double last = global(p.s(), QStringLiteral("mf.P"));
+            p.s().select(first);
+            const double atStart = global(p.s(), QStringLiteral("mf.P"));
+            QVERIFY2(last > 0 && std::isnan(atStart), qPrintable(QStringLiteral("P %1 W at 2 µs, %2 at t0").arg(last).arg(atStart)));
+            // (Its series read with the last time selected: its t0 not that
+            // one's.)
+            p.s().select(first + 2);
+            Dim dim;
+            QString whyNot;
+            const std::vector<double> series = p.s().globalSeries(QStringLiteral("mf.P"), &dim, &whyNot);
+            QVERIFY2(int(series.size()) == first + 3 && std::isnan(series[std::size_t(first)]) && series.back() == last, qPrintable(whyNot));
+        }
     }
 
     // The iron ring in the frequency domain (50 Hz, nothing conducting): its

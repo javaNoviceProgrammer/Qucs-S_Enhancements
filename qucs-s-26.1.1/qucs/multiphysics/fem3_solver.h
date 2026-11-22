@@ -27,6 +27,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <vector>
 
 namespace qucs_s::fem {
@@ -161,6 +162,10 @@ public:
     QList<Variable> variables() const;
     QList<Variable> globals() const;
     void setGlobal(const QString& name, double value, const Dim& dim, const QString& description = {});
+    /// The globals whose names begin with one of \a prefixes, or are one of
+    /// \a names, made NaN - kept, said, but none of what is solved now (a
+    /// step in time's start: what a step before it set and it does not).
+    void blankGlobals(const QStringList& prefixes, const QStringList& names = {});
     std::optional<double> global(const QString& name) const;
     /// A global as it is shown, in its unit.
     QString globalText(const QString& name, int digits = 4) const;
@@ -256,6 +261,9 @@ private:
     };
     Snapshot snapshotNow() const;
     std::vector<Snapshot> a_snapshots;
+    /// The globals' names any snapshot has: one a snapshot lacks is NaN
+    /// there (not the one selected before's).
+    std::set<QString> a_snapshotNames;
     int a_selected = -1;
 };
 
