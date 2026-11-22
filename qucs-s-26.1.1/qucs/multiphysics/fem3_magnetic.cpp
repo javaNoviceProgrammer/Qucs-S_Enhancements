@@ -24,6 +24,7 @@
  */
 #include "fem3_problem.h"
 
+#include "fem3_ams.h"
 #include "fem_edge.h"
 #include "fem_problem.h"
 #include "fem_tensor.h"
@@ -86,6 +87,48 @@ void nodalGradients(const PrismShape& s, const AffineMap& am, double h, double g
         g[k][1] = s.dxi[k] * am.grad[1][1] + s.deta[k] * am.grad[2][1];
         g[k][2] = s.dzeta[k] / h;
     }
+}
+
+/// A prolongation by node (\a vn: rows each node's value, columns the
+/// coarse nodes') by equation (\a eq by node: its equation, < 0 none): each
+/// equation's row its first node's, its columns the coarse nodes' equations,
+/// numbered anew in turn - several nodes one equation (a terminal's), their
+/// columns summed.
+Eigen::SparseMatrix<double> byEquation(const Eigen::SparseMatrix<double>& vn, const std::vector<int>& eq, int n)
+{
+    std::vector<int> first(std::size_t(n), -1), column(std::size_t(n), -1);
+    for (int k = 0; k < int(eq.size()); ++k)
+        if (eq[std::size_t(k)] >= 0 && first[std::size_t(eq[std::size_t(k)])] < 0) first[std::size_t(eq[std::size_t(k)])] = k;
+    int nc = 0;
+    std::vector<Eigen::Triplet<double>> t;
+    for (int c = 0; c < vn.outerSize(); ++c) {
+        if (c >= int(eq.size()) || eq[std::size_t(c)] < 0) continue;
+        for (Eigen::SparseMatrix<double>::InnerIterator it(vn, c); it; ++it) {
+            const int r = int(it.row());
+            if (r >= int(eq.size()) || eq[std::size_t(r)] < 0 || first[std::size_t(eq[std::size_t(r)])] != r) continue;
+            int& col = column[std::size_t(eq[std::size_t(c)])];
+            if (col < 0) col = nc++;
+            t.emplace_back(eq[std::size_t(r)], col, it.value());
+        }
+    }
+    Eigen::SparseMatrix<double> m(n, nc);
+    m.setFromTriplets(t.begin(), t.end());
+    return m;
+}
+
+/// \a m's columns (by node) by equation (\a eq by node, < 0 none): the
+/// columns of nodes of one equation summed (a terminal's: the gradient of
+/// its nodes' functions' sum).
+Eigen::SparseMatrix<double> columnsByEquation(const Eigen::SparseMatrix<double>& m, const std::vector<int>& eq, int n)
+{
+    std::vector<Eigen::Triplet<double>> t;
+    for (int c = 0; c < m.outerSize(); ++c) {
+        if (c >= int(eq.size()) || eq[std::size_t(c)] < 0) continue;
+        for (Eigen::SparseMatrix<double>::InnerIterator it(m, c); it; ++it) t.emplace_back(int(it.row()), eq[std::size_t(c)], it.value());
+    }
+    Eigen::SparseMatrix<double> out(m.rows(), n);
+    out.setFromTriplets(t.begin(), t.end());
+    return out;
 }
 
 /// ν (A m / (V s)): the inverse of µ0 µr, a 3 x 3 tensor (row by row).
@@ -246,6 +289,17 @@ private:
         Eigen::MatrixXcd P;         // by port: its right-hand side (none: not swept)
         int oV = 0, n = 0;
         double assembled = 0;       // s
+        /// The iterative solve's, made at its first: A's edge mass M, the
+        /// nodes' gradients and the gauge's free vertices' vector fields Π
+        /// in A's free edges, each prism's σ (0 where it does not conduct),
+        /// the mass' weight γ - none of ω.
+        struct Spaces {
+            Eigen::SparseMatrix<double> M, Gn, Pi;   // Gn: the gradients by node (A's free edges' rows)
+            Eigen::SparseMatrix<double> Vn;   // order 2: by node, its linear nodes' fields (columns its vertices')
+            std::vector<double> sigma;
+            double gamma = 0;
+        };
+        mutable std::shared_ptr<Spaces> spaces;
     };
     bool prepareHarmonic(const Options3& o, Harmonic& hs, QString* error);
     /// A Time Dependent step's step: K0 X + K1 Ẋ = b(t), the frequency
@@ -269,6 +323,14 @@ private:
     /// them, each a solve of the same factors - x' = A⁻¹ (b' - j K1 x), x''
     /// = -2 A⁻¹ j K1 x'.
     bool solveExactly(const Options3& o, const Harmonic& hs, double omega, Eigen::MatrixXcd& X, QString* error, int moments = 0);
+    /// The same by GMRES (fem3_ams; Options3::solver iterative), its
+    /// preconditioner real: an auxiliary space cycle of Re K0 + ω K1 + γ M on
+    /// A and the conductors' potential together, and multigrid on the gauge's
+    /// multiplier's Schur complement - memory some 1.3 kB an unknown for the
+    /// direct solve's factors' 8 kB, its time 10 to 25 times theirs from
+    /// 40,000 to 330,000 unknowns.
+    bool solveIteratively(const Options3& o, const Harmonic& hs, double omega, Eigen::MatrixXcd& X, QString* error, int moments);
+    void buildSpaces(const Harmonic& hs) const;
     /// The field, the coils' results and the impedance matrix of solutions
     /// \a X ([the solution, each port's]) at ω.
     void finishHarmonic(const Options3& o, const Harmonic& hs, double omega, const Eigen::MatrixXcd& X);
@@ -1947,8 +2009,374 @@ bool MagneticProblem3::prepareHarmonic(const Options3& o, Harmonic& hs, QString*
     return true;
 }
 
+void MagneticProblem3::buildSpaces(const Harmonic& hs) const
+{
+    auto sp = std::make_shared<Harmonic::Spaces>();
+    const Field3& f = a_s.fields()[std::size_t(a_fi)];
+    const EdgeSpace3& es = *f.edges;
+    const Space3& ns = *f.space;
+    const Mesh3& mesh = a_s.mesh();
+    const Equations& q = hs.q;
+    const PrismRule& rule = prismRule(4, 3);
+    const int nb = es.perElement(), npn = ns.perElement();
+    using T = Eigen::Triplet<double>;
+    std::vector<T> tm, tg, tp, cg, cp;
+    tm.reserve(std::size_t(es.elements()) * std::size_t(nb * nb));
+    PointEvaluator3 ev(a_s);
+    // (Π of the vertices' linear fields alone - in the edge space of
+    // either order, so that each element's projection is the field's own:
+    // order 2's quadratic nodal fields are not, their elements' projections
+    // differing, and the cycle took some eight times the iterations.)
+    static const int vertices2[6] = {0, 1, 2, 12, 13, 14};
+    const int* vertexOf = ns.order() == 2 ? vertices2 : nullptr;
+    std::vector<int> vertexColumn(std::size_t(ns.size()), -1);
+    int nVertices = 0;
+    Eigen::MatrixXd Me(nb, nb), Rg(nb, npn), Rp(nb, 3 * 6), Mn(npn, npn), Rn(npn, 6);
+    std::vector<T> tv, cv;
+    sp->sigma.assign(mesh.prisms.size(), 0.0);
+    double volume = 0;
+    for (int e = 0; e < es.elements(); ++e) {
+        const int d = mesh.domain[std::size_t(e)];
+        if (d < 0 || !f.domains[std::size_t(d)]) continue;
+        Me.setZero();
+        Rg.setZero();
+        Rp.setZero();
+        Mn.setZero();
+        Rn.setZero();
+        const int* ed = es.dofs(e);
+        const int* nd = ns.dofs(e);
+        const int t = mesh.prismTriangle[std::size_t(e)], layer = mesh.prismLayer[std::size_t(e)];
+        const AffineMap am = affineMap(es.planNodes(), t);
+        const double hz = es.z(layer + 1) - es.z(layer);
+        for (const auto& qp : rule.points) {
+            EdgeSpace3::Basis b;
+            es.basis(e, qp[0], qp[1], qp[2], b);
+            const double w = qp[3] * b.det;
+            volume += w;
+            PrismShape s, s1;
+            prismShapeAt(ns.order(), qp[0], qp[1], qp[2], s);
+            prismShapeAt(1, qp[0], qp[1], qp[2], s1);
+            double g[18][3];
+            nodalGradients(s, am, hz, g);
+            for (int i = 0; i < nb; ++i) {
+                for (int j = 0; j < nb; ++j) Me(i, j) += w * (b.v[i][0] * b.v[j][0] + b.v[i][1] * b.v[j][1] + b.v[i][2] * b.v[j][2]);
+                for (int k = 0; k < npn; ++k) Rg(i, k) += w * (b.v[i][0] * g[k][0] + b.v[i][1] * g[k][1] + b.v[i][2] * g[k][2]);
+                for (int k = 0; k < 6; ++k)
+                    for (int c = 0; c < 3; ++c) Rp(i, 3 * k + c) += w * b.v[i][c] * s1.n[k];
+            }
+            if (vertexOf)
+                for (int k = 0; k < npn; ++k) {
+                    for (int l = 0; l < npn; ++l) Mn(k, l) += w * s.n[k] * s.n[l];
+                    for (int m = 0; m < 6; ++m) Rn(k, m) += w * s.n[k] * s1.n[m];
+                }
+        }
+        // The element's own: a gradient (a nodal field) as its edge
+        // functions, by its mass - exact for a gradient, which they hold; an
+        // edge shared, the elements' mean.
+        const Eigen::LDLT<Eigen::MatrixXd> ldlt(Me);
+        const Eigen::MatrixXd Cg = ldlt.solve(Rg), Cp = ldlt.solve(Rp);
+        const double small = 1e-10 * std::max(Cg.cwiseAbs().maxCoeff(), Cp.cwiseAbs().maxCoeff());
+        // (Order 2: the linear nodes' fields in its own, each node's value -
+        // exact, they are in it.)
+        if (vertexOf) {
+            const Eigen::MatrixXd Cn = Mn.ldlt().solve(Rn);
+            for (int k = 0; k < npn; ++k)
+                for (int m = 0; m < 6; ++m)
+                    if (std::abs(Cn(k, m)) > 1e-10 && nd[k] >= 0 && nd[vertexOf[m]] >= 0) {
+                        tv.emplace_back(nd[k], nd[vertexOf[m]], Cn(k, m));
+                        cv.emplace_back(nd[k], nd[vertexOf[m]], 1.0);
+                    }
+        }
+        for (int i = 0; i < nb; ++i) {
+            const int ei = ed[i] >= 0 ? q.eqA[std::size_t(ed[i])] : -1;
+            if (ei < 0) continue;
+            for (int j = 0; j < nb; ++j) {
+                const int ej = ed[j] >= 0 ? q.eqA[std::size_t(ed[j])] : -1;
+                if (ej >= 0) tm.emplace_back(ei, ej, Me(i, j));
+            }
+            for (int k = 0; k < npn; ++k)
+                if (nd[k] >= 0 && std::abs(Cg(i, k)) > small) {
+                    tg.emplace_back(ei, nd[k], Cg(i, k));
+                    cg.emplace_back(ei, nd[k], 1.0);
+                }
+            for (int k = 0; k < 6; ++k) {
+                const int node = nd[vertexOf ? vertexOf[k] : k];
+                if (node < 0 || q.eqP[std::size_t(node)] < 0) continue;
+                int& col = vertexColumn[std::size_t(node)];
+                if (col < 0) col = nVertices++;
+                for (int c = 0; c < 3; ++c)
+                    if (std::abs(Cp(i, 3 * k + c)) > small) {
+                        tp.emplace_back(ei, 3 * col + c, Cp(i, 3 * k + c));
+                        cp.emplace_back(ei, 3 * col + c, 1.0);
+                    }
+            }
+        }
+        if (hs.h.conducting[std::size_t(d)]) {
+            EdgeSpace3::Basis b;
+            es.basis(e, 1.0 / 3, 1.0 / 3, 0.5, b);
+            ev.at(e, 1.0 / 3, 1.0 / 3, 0.5, b.x);
+            const std::array<Expression, 9>& sg = a_sigma[std::size_t(d)];
+            double tr3 = 0;
+            for (int k : {0, 4, 8})
+                if (sg[std::size_t(k)].isValid()) {
+                    const double v = ev.eval(sg[std::size_t(k)]);
+                    if (std::isfinite(v)) tr3 += std::abs(v) / 3;
+                }
+            sp->sigma[std::size_t(e)] = tr3;
+        }
+    }
+    const auto mean = [](int rows, int cols, const std::vector<T>& v, const std::vector<T>& count) {
+        Eigen::SparseMatrix<double> m(rows, cols), c(rows, cols);
+        m.setFromTriplets(v.begin(), v.end());
+        c.setFromTriplets(count.begin(), count.end());
+        m.makeCompressed();
+        c.makeCompressed();
+        for (Eigen::Index k = 0; k < m.nonZeros(); ++k) m.valuePtr()[k] /= c.valuePtr()[k];
+        return m;
+    };
+    sp->M.resize(q.nA, q.nA);
+    sp->M.setFromTriplets(tm.begin(), tm.end());
+    sp->Gn = mean(q.nA, ns.size(), tg, cg);
+    sp->Pi = mean(q.nA, 3 * nVertices, tp, cp);
+    if (vertexOf) sp->Vn = mean(ns.size(), ns.size(), tv, cv);
+    // γ: the mass beside the curl-curl, about its least eigenvalue (ν0 π² /
+    // L², L the model's size): 10 ν0 / L². Its choice is free - the
+    // multiplier's Schur complement taken as its own (Greif and Schötzau,
+    // Numer. Linear Algebra Appl. 14 (2007) 281: the gradients' block BᵀL⁻¹B,
+    // M on them) - but GMRES minds it: on a coax at 10 kHz (each block solved
+    // exactly) 225 iterations at 1e-6 ν0 / L², 100 at 1e-2, 40 to 46 from 10
+    // to 100, 100 at 1000; at 1 MHz (the cycles) 157 at 3, 164 at 10, 219 at
+    // 100.
+    const double size = std::cbrt(std::max(volume, 1e-300));
+    sp->gamma = 10 / (Mu0 * size * size);
+    hs.spaces = sp;
+}
+
+bool MagneticProblem3::solveIteratively(const Options3& o, const Harmonic& hs, double omega, Eigen::MatrixXcd& X, QString* error, int moments)
+{
+    const QString name = a_node->name();
+    const QString at = tr(" at %1").arg(formatQuantity(omega / (2 * M_PI), Dim::of(0, 0, -1)));
+    const cd jw(0, omega);
+    QElapsedTimer clock;
+    clock.start();
+    o.tell(tr("%1: setting the iterative solve up, %2 unknowns").arg(name).arg(hs.n));
+    if (!hs.spaces) buildSpaces(hs);
+    const Harmonic::Spaces& sp = *hs.spaces;
+    const Field3& f = a_s.fields()[std::size_t(a_fi)];
+    const EdgeSpace3& es = *f.edges;
+    const Space3& ns = *f.space;
+    const Mesh3& mesh = a_s.mesh();
+    const Equations& q = hs.q;
+    const int nA = q.nA, nP = q.nP, nV = hs.n - hs.oV;
+    // The preconditioner, real, its matrix |K0 + jω K1|'s: Re K0 + ω K1 on A
+    // and the conductors' potential together, γ M added to A's - positive
+    // definite (A = -∇φ, ψ = φ in a conductor, nought in K0 + ω K1, costs γ
+    // φᵀLφ) -; and the gauge's multiplier's Schur complement, B P⁻¹ Bᵀ,
+    // its gradients' block γ M everywhere (in a conductor their ω σ M taken
+    // back by ψ): s² L / γ, s the gauge's scale (Greif and Schötzau, Numer.
+    // Linear Algebra Appl. 14 (2007) 281). Their blocks apart - A's, ψ's -
+    // the conductors' A and ψ together are singular where ω σ is all: at 1
+    // MHz GMRES did not converge even with each block solved exactly.
+    const int nS = nA + nV;
+    using T = Eigen::Triplet<double>;
+    Eigen::SparseMatrix<double> PS(nS, nS);
+    {
+        const Eigen::SparseMatrix<double> R = Eigen::SparseMatrix<double>(hs.K0.real()) + omega * Eigen::SparseMatrix<double>(hs.K1.real());
+        const auto index = [&](int k) { return k < nA ? k : k >= hs.oV ? nA + (k - hs.oV) : -1; };
+        std::vector<T> t;
+        t.reserve(std::size_t(R.nonZeros() + sp.M.nonZeros()));
+        for (int c = 0; c < R.outerSize(); ++c) {
+            const int jc = index(c);
+            if (jc < 0) continue;
+            for (Eigen::SparseMatrix<double>::InnerIterator it(R, c); it; ++it) {
+                const int ir = index(int(it.row()));
+                if (ir >= 0) t.emplace_back(ir, jc, it.value());
+            }
+        }
+        for (int c = 0; c < sp.M.outerSize(); ++c)
+            for (Eigen::SparseMatrix<double>::InnerIterator it(sp.M, c); it; ++it) t.emplace_back(int(it.row()), c, sp.gamma * it.value());
+        PS.setFromTriplets(t.begin(), t.end());
+    }
+    Eigen::SparseMatrix<double> PP(nP, nP);
+    {
+        std::vector<T> tl;
+        const PrismRule& rule = es.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
+        const int npn = ns.perElement();
+        std::vector<double> Le(std::size_t(npn * npn));
+        const double weight = hs.gaugeScale * hs.gaugeScale / sp.gamma;
+        for (int e = 0; e < es.elements(); ++e) {
+            const int d = mesh.domain[std::size_t(e)];
+            if (d < 0 || !f.domains[std::size_t(d)]) continue;
+            std::fill(Le.begin(), Le.end(), 0.0);
+            const int* nd = ns.dofs(e);
+            const int t = mesh.prismTriangle[std::size_t(e)], layer = mesh.prismLayer[std::size_t(e)];
+            const AffineMap am = affineMap(es.planNodes(), t);
+            const double hz = es.z(layer + 1) - es.z(layer);
+            for (const auto& qp : rule.points) {
+                EdgeSpace3::Basis b;
+                es.basis(e, qp[0], qp[1], qp[2], b);
+                const double w = qp[3] * b.det * weight;
+                PrismShape s;
+                prismShapeAt(ns.order(), qp[0], qp[1], qp[2], s);
+                double g[18][3];
+                nodalGradients(s, am, hz, g);
+                for (int k = 0; k < npn; ++k)
+                    for (int l = 0; l < npn; ++l) Le[std::size_t(k * npn + l)] += w * (g[k][0] * g[l][0] + g[k][1] * g[l][1] + g[k][2] * g[l][2]);
+            }
+            for (int k = 0; k < npn; ++k) {
+                const int pk = nd[k] >= 0 ? q.eqP[std::size_t(nd[k])] : -1;
+                if (pk < 0) continue;
+                for (int l = 0; l < npn; ++l) {
+                    const int pl = nd[l] >= 0 ? q.eqP[std::size_t(nd[l])] : -1;
+                    if (pl >= 0) tl.emplace_back(pk, pl, Le[std::size_t(k * npn + l)]);
+                }
+            }
+        }
+        PP.setFromTriplets(tl.begin(), tl.end());
+    }
+    // The nodal spaces' cycles: multigrid; of order 2 a two-level
+    // p-multigrid, its linear nodes' multigrid below Gauss-Seidel.
+    const auto nodal = [&](const std::vector<int>& eq, int n) -> CycleMaker {
+        if (ns.order() == 1) return multigrid();
+        const Eigen::SparseMatrix<double> V = byEquation(sp.Vn, eq, n);
+        return [V](const Eigen::SparseMatrix<double>& a, QString* e) -> std::unique_ptr<Cycle> {
+            auto c = std::make_unique<AuxiliaryCycle>();
+            // (Eight sweeps: Gauss-Seidel on order 2's nodes is a weak
+            // smoother - the multiplier's block 20 iterations of conjugate
+            // gradients at two, 13 at four, 9 at eight; GMRES 140, 80, 52.)
+            if (!c->compute(a, {{V, multigrid()}}, {0}, 8, e)) return nullptr;
+            return c;
+        };
+    };
+    // A and ψ's cycle: Gauss-Seidel on both; the gradients G of the gauge's
+    // nodes in A (AMS's), the vertices' vector fields Π in A (AMS's), ψ
+    // alone, and A = -∇φ with ψ = φ (Gc: the conductors' nodes' gradients) -
+    // what K0 + ω K1 does not see, γ's alone.
+    const auto rowsOf = [nS](const Eigen::SparseMatrix<double>& top, const Eigen::SparseMatrix<double>* bottom, int cols) {
+        std::vector<T> t;
+        for (int c = 0; c < top.outerSize(); ++c)
+            for (Eigen::SparseMatrix<double>::InnerIterator it(top, c); it; ++it) t.emplace_back(int(it.row()), c, it.value());
+        if (bottom)
+            for (int c = 0; c < bottom->outerSize(); ++c)
+                for (Eigen::SparseMatrix<double>::InnerIterator it(*bottom, c); it; ++it) t.emplace_back(int(top.rows() + it.row()), c, it.value());
+        Eigen::SparseMatrix<double> m(nS, cols);
+        m.setFromTriplets(t.begin(), t.end());
+        return m;
+    };
+    const Eigen::SparseMatrix<double> G = columnsByEquation(sp.Gn, q.eqP, nP);
+    std::vector<AuxiliaryCycle::Space> spaces;
+    spaces.push_back({rowsOf(G, nullptr, nP), nodal(q.eqP, nP)});
+    spaces.push_back({rowsOf(sp.Pi, nullptr, int(sp.Pi.cols())), multigrid(3)});
+    std::vector<int> order{0, 1, 0};
+    if (nV > 0) {
+        Eigen::SparseMatrix<double> I(nV, nV);
+        I.setIdentity();
+        const Eigen::SparseMatrix<double> Gc = -columnsByEquation(sp.Gn, hs.h.eqV, nV);
+        const Eigen::SparseMatrix<double> zero(nA, nV);
+        spaces.push_back({rowsOf(zero, &I, nV), nodal(hs.h.eqV, nV)});
+        spaces.push_back({rowsOf(Gc, &I, nV), nodal(hs.h.eqV, nV)});
+        order = {0, 1, 2, 3, 2, 1, 0};
+    }
+    AuxiliaryCycle cycle;
+    QString why;
+    std::unique_ptr<Cycle> pp;
+    // (Four sweeps on the edges: GMRES 140 iterations at two, 111 at four
+    // on a coax at 10 Hz, 411 and 347 at 1 MHz.)
+    bool made = cycle.compute(PS, std::move(spaces), order, 4, &why);
+    if (made) made = (pp = nodal(q.eqP, nP)(PP, &why)) != nullptr;
+    if (!made) {
+        *error = tr("%1: the iterative solve could not be set up (%2)").arg(name, why);
+        return false;
+    }
+    // The rows and columns scaled by the preconditioner's diagonal: each
+    // block's residual weighed alike.
+    Eigen::VectorXd D(hs.n);
+    const Eigen::VectorXd dS = PS.diagonal();
+    D.segment(0, nA) = dS.head(nA).cwiseSqrt().cwiseInverse();
+    D.segment(nA, nP) = PP.diagonal().cwiseSqrt().cwiseInverse();
+    if (nV > 0) D.segment(hs.oV, nV) = dS.tail(nV).cwiseAbs().cwiseSqrt().cwiseInverse();
+    for (Eigen::Index k = 0; k < D.size(); ++k)
+        if (!std::isfinite(D(k))) D(k) = 1;
+    const double setUp = clock.elapsed() / 1000.0;
+    // (K0 x + jω K1 x: K0 + jω K1 not made, its copy as large as the
+    // preconditioner.)
+    const auto op = [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) {
+        const Eigen::VectorXcd u = D.cwiseProduct(x);
+        y = D.cwiseProduct(hs.K0 * u + jw * (hs.K1 * u));
+    };
+    const auto pre = [&](const Eigen::VectorXcd& x, Eigen::VectorXcd& y) {
+        // (Real: the real and imaginary parts each, the scaling undone.)
+        const Eigen::VectorXcd u = D.cwiseInverse().cwiseProduct(x);
+        y.resize(x.size());
+        Eigen::VectorXd vs(nS), out;
+        for (int c = 0; c < 2; ++c) {
+            const Eigen::VectorXd v = c == 0 ? Eigen::VectorXd(u.real()) : Eigen::VectorXd(u.imag());
+            Eigen::VectorXd z(v.size());
+            vs.head(nA) = v.head(nA);
+            if (nV > 0) vs.tail(nV) = v.segment(hs.oV, nV);
+            cycle.apply(vs, out);
+            z.head(nA) = out.head(nA);
+            if (nV > 0) z.segment(hs.oV, nV) = out.tail(nV);
+            pp->apply(v.segment(nA, nP), out);
+            z.segment(nA, nP) = out;
+            if (c == 0) y.real() = z;
+            else y.imag() = z;
+        }
+        y = D.cwiseInverse().cwiseProduct(y);
+    };
+    const double tolerance = std::min(o.tolerance > 0 ? o.tolerance : 1e-9, 1e-9);
+    const int cols = 1 + int(hs.P.cols());
+    X.resize(hs.n, cols * (1 + std::clamp(moments, 0, 2)));
+    int iterations = 0, worstIterations = 0;
+    double worst = 0;
+    bool ok = true;
+    const auto solve = [&](const Eigen::VectorXcd& b) {
+        Eigen::VectorXcd xs = Eigen::VectorXcd::Zero(hs.n);
+        const IterativeReport r = gmres(op, pre, D.cwiseProduct(b), xs, tolerance, 2000);
+        iterations += r.iterations;
+        worstIterations = std::max(worstIterations, r.iterations);
+        worst = std::max(worst, r.residual);
+        ok = ok && r.converged;
+        return Eigen::VectorXcd(D.cwiseProduct(xs));
+    };
+    const cd j1(0, 1);
+    for (int j = 0; j < cols; ++j) {
+        const Eigen::VectorXcd b = j == 0 ? Eigen::VectorXcd(hs.bc + jw * hs.bj) : Eigen::VectorXcd(hs.P.col(j - 1));
+        X.col(j) = solve(b);
+        if (moments >= 1) {
+            Eigen::VectorXcd d = -j1 * (hs.K1 * X.col(j));
+            if (j == 0) d += j1 * hs.bj;
+            X.col(cols + j) = solve(d);
+        }
+        if (moments >= 2) X.col(2 * cols + j) = solve(Eigen::VectorXcd(-2.0 * j1 * (hs.K1 * X.col(cols + j))));
+    }
+    a_s.log << tr("%1%2: %3 unknowns (%4 of A on edge elements of order %5, %6 of the gauge's multiplier, %7 of the conductors' potential), "
+                  "GMRES with the auxiliary space preconditioner: set up in %8 s (%9 MB), %10 iterations (at most %11 a solve) in %12 s, "
+                  "relative residual %13")
+                   .arg(name, at)
+                   .arg(hs.n)
+                   .arg(nA)
+                   .arg(es.order())
+                   .arg(nP)
+                   .arg(nV)
+                   .arg(setUp, 0, 'f', 2)
+                   .arg((cycle.bytes() + pp->bytes()) / 1048576.0, 0, 'f', 1)
+                   .arg(iterations)
+                   .arg(worstIterations)
+                   .arg(clock.elapsed() / 1000.0 - setUp, 0, 'f', 2)
+                   .arg(worst, 0, 'g', 2);
+    if (!ok || !X.allFinite()) {
+        *error = tr("%1: the iterative solve did not converge%2 (a relative residual of %3) - the direct solver (the step's Solver) solves it")
+                     .arg(name, at)
+                     .arg(worst, 0, 'g', 3);
+        return false;
+    }
+    return true;
+}
+
 bool MagneticProblem3::solveExactly(const Options3& o, const Harmonic& hs, double omega, Eigen::MatrixXcd& X, QString* error, int moments)
 {
+    if (o.solver == QLatin1String("iterative")) return solveIteratively(o, hs, omega, X, error, moments);
     const QString name = a_node->name();
     const QString at = tr(" at %1").arg(formatQuantity(omega / (2 * M_PI), Dim::of(0, 0, -1)));
     const cd jw(0, omega);

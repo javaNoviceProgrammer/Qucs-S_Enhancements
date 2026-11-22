@@ -26,6 +26,7 @@
 
 #include <QCoreApplication>
 
+#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <optional>
@@ -280,6 +281,80 @@ bool AmgSolver::solve(const Eigen::VectorXd& b, Eigen::VectorXd& x, IterativeRep
     if (!r.converged && error)
         *error = tr("the iterative solve did not converge: a relative residual of %1 after %2 iterations").arg(r.residual, 0, 'g', 3).arg(r.iterations);
     return r.converged;
+}
+
+// ------------------------------------------------------------------ AmgCycle
+
+namespace {
+using Cycle = amgcl::amg<Backend, amgcl::coarsening::smoothed_aggregation, amgcl::relaxation::gauss_seidel>;
+} // namespace
+
+struct AmgCycle::Impl {
+    int blockSize = 1;
+    int n = 0;
+    std::unique_ptr<Cycle> cycle;
+    Eigen::VectorXd diagonal;   // (none set up: Jacobi's)
+};
+
+AmgCycle::AmgCycle() : a_impl(std::make_unique<Impl>()) {}
+AmgCycle::~AmgCycle() = default;
+
+void AmgCycle::setBlockSize(int size)
+{
+    a_impl->blockSize = std::max(1, size);
+}
+
+bool AmgCycle::compute(const Eigen::SparseMatrix<double>& a, QString* error)
+{
+    Impl& d = *a_impl;
+    d.cycle.reset();
+    d.n = int(a.rows());
+    d.diagonal = a.diagonal();
+    if (d.n == 0) return true;
+    Eigen::SparseMatrix<double> m = a;
+    m.makeCompressed();
+    const ptrdiff_t n = m.rows();
+    auto ptr = amgcl::make_iterator_range(m.outerIndexPtr(), m.outerIndexPtr() + n + 1);
+    auto col = amgcl::make_iterator_range(m.innerIndexPtr(), m.innerIndexPtr() + m.nonZeros());
+    auto val = amgcl::make_iterator_range(m.valuePtr(), m.valuePtr() + m.nonZeros());
+    try {
+        Cycle::params prm;
+        if (d.blockSize > 1 && n % d.blockSize == 0) prm.coarsening.aggr.block_size = d.blockSize;
+        d.cycle = std::make_unique<Cycle>(std::make_tuple(n, ptr, col, val), prm);
+    } catch (const std::exception& e) {
+        d.cycle.reset();
+        if (error) *error = tr("algebraic multigrid could not be set up: %1").arg(QString::fromLocal8Bit(e.what()));
+        return false;
+    }
+    return true;
+}
+
+void AmgCycle::apply(const Eigen::VectorXd& r, Eigen::VectorXd& x) const
+{
+    const Impl& d = *a_impl;
+    x = Eigen::VectorXd::Zero(d.n);
+    // (Scaled to a norm of one and back: AMGCL takes a vector under the
+    // machine's epsilon for nought; the cycle is linear.)
+    const double norm = r.norm();
+    if (d.n == 0 || !(norm > 0) || !std::isfinite(norm)) return;
+    if (!d.cycle) {
+        for (int i = 0; i < d.n; ++i) x(i) = d.diagonal(i) != 0 ? r(i) / d.diagonal(i) : 0.0;
+        return;
+    }
+    std::vector<double> rhs(std::size_t(d.n)), sol(std::size_t(d.n), 0.0);
+    for (int i = 0; i < d.n; ++i) rhs[std::size_t(i)] = r(i) / norm;
+    d.cycle->apply(rhs, sol);
+    for (int i = 0; i < d.n; ++i) x(i) = sol[std::size_t(i)] * norm;
+}
+
+std::size_t AmgCycle::bytes() const
+{
+    return a_impl->cycle ? a_impl->cycle->bytes() : 0;
+}
+
+int AmgCycle::size() const
+{
+    return a_impl->n;
 }
 
 } // namespace qucs_s::fem

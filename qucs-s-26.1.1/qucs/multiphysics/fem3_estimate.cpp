@@ -134,7 +134,7 @@ void solidHarmonic(Estimate3& e, int frequencies)
     e.iterativeSeconds = e.directSeconds;
 }
 
-Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order, int frequencies)
+Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order, int frequencies, const QString& solver)
 {
     Estimate3 e;
     e.order = order;
@@ -171,9 +171,21 @@ Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order, int fr
         e.directSeconds = frequencies * (1.1 * time * factor + 3 * assemblySeconds(entries));
         e.directBytes = 2 * bytes * magneticFactorBytes(n, perRow, layers);
     }
-    // (No iterative solve of it: the same.)
+    // (At rest no iterative solve of it: the same.)
     e.iterativeBytes = e.directBytes;
     e.iterativeSeconds = e.directSeconds;
+    if (frequencies > 0) {
+        // The iterative solve (MagneticProblem3::solveIteratively): K0 and
+        // K1, complex (a value and an index a nonzero), the preconditioner's
+        // real matrix of A and ψ, its cycles (1.35 kB an unknown, measured),
+        // GMRES's 61 complex vectors; some 100 iterations a solve (51 to 164
+        // on a coax from 10 Hz to 1 MHz), each 3.3 µs an unknown, two solves
+        // a frequency - the field's and a coil's sweep.
+        const double nnz = double(e.nonzeros);
+        e.iterativeBytes = 2 * 20 * nnz + 12 * nnz + n * (1350 + 61 * 16 + 200);
+        e.iterativeSeconds = frequencies * (3 * assemblySeconds(entries) + 2 * 100 * 3.3e-6 * n);
+        if (solver == QLatin1String("iterative")) e.method = QStringLiteral("iterative");
+    }
     return e;
 }
 
@@ -296,7 +308,7 @@ std::vector<Estimate3> estimate3(const Model& model, std::shared_ptr<const Mesh3
             spaces[order] = std::make_shared<Space3>(mesh, order);
             nonzeros[order] = patternNonzeros(*spaces[order]);
         }
-        Estimate3 e = p->type == QLatin1String("magnetic") ? estimateMagnetic3(mesh, order, frequencies)
+        Estimate3 e = p->type == QLatin1String("magnetic") ? estimateMagnetic3(mesh, order, frequencies, solver)
                                                            : estimateOn(*spaces[order], nonzeros[order], solver, componentsOf(p->type));
         if (p->type == QLatin1String("solid")) solidHarmonic(e, frequencies);
         e.physics = p->tag;

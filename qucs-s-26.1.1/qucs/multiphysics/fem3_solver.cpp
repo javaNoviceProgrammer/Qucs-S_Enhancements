@@ -2193,7 +2193,7 @@ StudyResult3 solveStudy3(const Model& model, std::shared_ptr<ParameterScope> par
         for (const Field3& f : s->fields()) {
             const int order = f.space->order();
             if (f.edges) {
-                Estimate3 e = estimateMagnetic3(mesh, order, harmonicFrequencies(*study, s->parameters().scope));
+                Estimate3 e = estimateMagnetic3(mesh, order, harmonicFrequencies(*study, s->parameters().scope), solver);
                 e.physics = f.tag;
                 if (const Node* p = s->model().find(f.tag)) e.name = p->name();
                 s->log << tr("Estimated: %1").arg(estimateText(e));

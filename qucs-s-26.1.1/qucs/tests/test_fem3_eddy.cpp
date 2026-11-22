@@ -10,7 +10,8 @@
  *                      eddy currents against the 2D axisymmetric solver's,
  *                      the losses the coils' I²R, a core's µr'' losses, a
  *                      heat physics of the eddy currents' losses, the
- *                      skin depth's warning, the coils' Touchstone file
+ *                      skin depth's warning, the coils' Touchstone file,
+ *                      the iterative solve against the direct one
  *
  * This file is part of Qucs-S.
  *
@@ -1018,6 +1019,85 @@ private slots:
         const QString log = cycle.s().log.join(QLatin1Char('\n'));
         QVERIFY2(log.contains(QStringLiteral("not by the fast sweep")) && !log.contains(QStringLiteral("fast sweep, ")), qPrintable(log));
         QCOMPARE(cycle.s().snapshotCount(), 4);
+    }
+
+    // The iterative solve (the step's Solver iterative): GMRES with the
+    // auxiliary space preconditioner, against the direct solve - the shorted
+    // coax's impedance from 10 Hz to 1 MHz (its core 6.6 skin depths at 1
+    // MHz; at 1 MHz the preconditioner's blocks apart did not converge), the
+    // two bars' impedance matrix (a coil held at a voltage too, a column of
+    // its own), each to 1e-6 of its largest entry. (A sanitized build: the
+    // coax at 0.4 mm and 10 kHz alone.)
+    void anIterativeSolve()
+    {
+        const auto setSolver = [](Model& m, const QString& solver) {
+            for (Node& c : m.root.children)
+                for (Node& st : c.children)
+                    if (st.type == QLatin1String("frequency")) st.props.insert(QStringLiteral("solver"), solver);
+        };
+        // Each solver's globals at each frequency: the direct's and the
+        // iterative's.
+        const auto both = [&](Model& m, const QStringList& globals, QList<double>* direct, QList<double>* iterative, QString* log) {
+            for (const QString& solver : {QStringLiteral("direct"), QStringLiteral("iterative")}) {
+                setSolver(m, solver);
+                QElapsedTimer t;
+                t.start();
+                const Solved sv = solve(m);
+                QVERIFY2(sv.error.isEmpty(), qPrintable(why(sv)));
+                info(QStringLiteral("%1: %2 s").arg(solver).arg(t.elapsed() / 1000.0));
+                if (solver == QLatin1String("iterative")) {
+                    *log = sv.s().log.join(QLatin1Char('\n'));
+                    // (Its estimate the iterative solve's.)
+                    bool estimated = false;
+                    for (const Estimate3& e : sv.r.estimates)
+                        if (e.physics == QLatin1String("mf")) estimated = e.method == QLatin1String("iterative") && e.iterativeBytes > 0;
+                    QVERIFY2(estimated, "the magnetic field's estimate the iterative solve's");
+                }
+                for (int k = 0; k < sv.s().snapshotCount(); ++k) {
+                    sv.s().select(k);
+                    for (const QString& g : globals) (solver == QLatin1String("direct") ? direct : iterative)->append(global(sv.s(), g));
+                }
+            }
+        };
+        const auto agree = [](const QString& what, const QList<double>& d, const QList<double>& it, int perFrequency) {
+            QVERIFY(d.size() == it.size() && !d.isEmpty());
+            for (int k0 = 0; k0 < d.size(); k0 += perFrequency) {
+                double largest = 0;
+                for (int k = k0; k < k0 + perFrequency; ++k) largest = std::max(largest, std::abs(d[k]));
+                for (int k = k0; k < k0 + perFrequency; ++k)
+                    QVERIFY2(std::abs(it[k] - d[k]) < 1e-6 * largest,
+                             qPrintable(QStringLiteral("%1, value %2: %3 iterative, %4 direct").arg(what).arg(k).arg(it[k], 0, 'g', 12).arg(d[k], 0, 'g', 12)));
+            }
+        };
+        {
+            QString et, mf;
+            Model m = shortedCoax(slowBuild() ? 0.4 : 0.25, slowBuild() ? 1 : 2, &et, &mf);
+            frequencyStep(m, slowBuild() ? QStringLiteral("1e4") : QStringLiteral("10, 1e4, 1e6"), false);
+            QList<double> d, it;
+            QString log;
+            both(m, {QStringLiteral("mf.V_1"), QStringLiteral("mf.V_1_im")}, &d, &it, &log);
+            if (QTest::currentTestFailed()) return;
+            for (const QString& line : log.split(QLatin1Char('\n')))
+                if (line.contains(QStringLiteral("GMRES"))) info(line);
+            QVERIFY2(log.contains(QStringLiteral("GMRES with the auxiliary space preconditioner")), qPrintable(log));
+            agree(QStringLiteral("coax"), d, it, 2);
+        }
+        if (slowBuild()) return;
+        {
+            QString et, mf;
+            Model m = twoBars(&et, &mf);
+            coilOf(m, mf, QStringLiteral("2"))->props.insert(QStringLiteral("role"), QStringLiteral("voltage"));
+            coilOf(m, mf, QStringLiteral("2"))->props.insert(QStringLiteral("V0"), QStringLiteral("1[mV]"));
+            frequencyStep(m, QStringLiteral("100[kHz]"));
+            QList<double> d, it;
+            QString log;
+            both(m, {QStringLiteral("mf.R11"), QStringLiteral("mf.L11"), QStringLiteral("mf.I_2"), QStringLiteral("mf.I_2_im")}, &d, &it, &log);
+            if (QTest::currentTestFailed()) return;
+            for (const QString& line : log.split(QLatin1Char('\n')))
+                if (line.contains(QStringLiteral("GMRES"))) info(line);
+            agree(QStringLiteral("bars"), {d[0], d[1]}, {it[0], it[1]}, 1);
+            agree(QStringLiteral("bars"), {d[2], d[3]}, {it[2], it[3]}, 2);
+        }
     }
 };
 
