@@ -1406,8 +1406,11 @@ private slots:
                          && std::isnan(global(a.s(), QStringLiteral("mf.V_1_im"))) && !(global(a.s(), QStringLiteral("freq")) > 0),
                      qPrintable(at));
         }
-        // A copper plate beside the bar: its field stepped from nought.
+        // A copper plate beside the bar: its field stepped from nought (a
+        // sanitized build alone, not after a frequency domain's step too:
+        // its entry within its 900 s).
         for (bool afterHarmonic : {false, true}) {
+            if (afterHarmonic && slowBuild()) break;
             Model mp = coilOfTurns(false);
             addBox(mp, QStringLiteral("plate"), 0.6, -0.2, 0, 0.4, 0.4, 1);
             zDivisions(mp, QStringLiteral("plate"), 1);

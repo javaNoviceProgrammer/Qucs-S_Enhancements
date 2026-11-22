@@ -1088,7 +1088,23 @@ private slots:
             Model m = twoBars(&et, &mf);
             coilOf(m, mf, QStringLiteral("2"))->props.insert(QStringLiteral("role"), QStringLiteral("voltage"));
             coilOf(m, mf, QStringLiteral("2"))->props.insert(QStringLiteral("V0"), QStringLiteral("1[mV]"));
+            // (Its solves, the estimate's: the field's and coil 1's - the one
+            // fed a current - at each frequency; a fast sweep's three
+            // frequencies solved exactly, three times each.)
+            const auto solvesOf = [&](const QString& frequencies, const QString& fast) {
+                frequencyStep(m, frequencies, true, fast);
+                for (const Node& c : m.root.children)
+                    if (c.type == QLatin1String("study")) return magneticSolves(c, m.find(mf), evaluateParameters(m)->scope);
+                return -1;
+            };
+            QCOMPARE(solvesOf(QStringLiteral("1[kHz], 10[kHz]"), QStringLiteral("exact")), 4);
+            QCOMPARE(solvesOf(QStringLiteral("1[kHz], 2[kHz], 3[kHz], 4[kHz], 5[kHz], 6[kHz]"), QStringLiteral("fast")), 18);
             frequencyStep(m, QStringLiteral("100[kHz]"));
+            // (A tolerance double precision does not reach, 1e-30: taken as
+            // 1e-12 - before, 2000 iterations and an error.)
+            for (Node& c : m.root.children)
+                for (Node& st : c.children)
+                    if (st.type == QLatin1String("frequency")) st.props.insert(QStringLiteral("tolerance"), QStringLiteral("1e-30"));
             QList<double> d, it;
             QString log;
             both(m, {QStringLiteral("mf.R11"), QStringLiteral("mf.L11"), QStringLiteral("mf.I_2"), QStringLiteral("mf.I_2_im")}, &d, &it, &log);
@@ -1097,6 +1113,29 @@ private slots:
                 if (line.contains(QStringLiteral("GMRES"))) info(line);
             agree(QStringLiteral("bars"), {d[0], d[1]}, {it[0], it[1]}, 1);
             agree(QStringLiteral("bars"), {d[2], d[3]}, {it[2], it[3]}, 2);
+        }
+        // The air about the bars of µr 1000 (γ each element's own ν's:
+        // before, of ν0, GMRES stopped at a residual of 0.84); and the bars in
+        // a held field of 0.5 T along x (its part solved apart: before, the
+        // tolerance spent on it, the coil's V 1.7e-5 off).
+        for (const bool core : {true, false}) {
+            QString et, mf;
+            Model m = twoBars(&et, &mf);
+            if (core)
+                addFeature(m, mf, QStringLiteral("magnetic/ampere"),
+                           QJsonObject{{QStringLiteral("objects"), QJsonArray{QStringLiteral("air")}},
+                                       {QStringLiteral("except"), QJsonObject{{QStringLiteral("objects"), QJsonArray{QStringLiteral("bar"), QStringLiteral("bar2")}}}}},
+                           {{QStringLiteral("source"), QStringLiteral("user")}, {QStringLiteral("mur"), QStringLiteral("1000")}});
+            else
+                addFeature(m, mf, QStringLiteral("magnetic/potential"), rule(R"({"exterior": true})"), {{QStringLiteral("A0z"), QStringLiteral("0.5[T]*y")}});
+            frequencyStep(m, QStringLiteral("100[kHz]"), false);
+            QList<double> d, it;
+            QString log;
+            both(m, {QStringLiteral("mf.V_1"), QStringLiteral("mf.V_1_im")}, &d, &it, &log);
+            if (QTest::currentTestFailed()) return;
+            for (const QString& line : log.split(QLatin1Char('\n')))
+                if (line.contains(QStringLiteral("GMRES"))) info((core ? QStringLiteral("µr 1000: ") : QStringLiteral("held field: ")) + line);
+            agree(core ? QStringLiteral("bars in µr 1000") : QStringLiteral("bars in a held field"), d, it, 2);
         }
     }
 };

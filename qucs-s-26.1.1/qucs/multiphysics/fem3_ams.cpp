@@ -125,7 +125,7 @@ std::size_t AuxiliaryCycle::bytes() const
 }
 
 IterativeReport gmres(const ComplexOperator& a, const ComplexOperator& m, const Eigen::VectorXcd& b, Eigen::VectorXcd& x, double tolerance,
-                      int maxIterations, int restart)
+                      int maxIterations, int restart, const std::function<bool()>& cancelled)
 {
     using cd = std::complex<double>;
     IterativeReport rep;
@@ -151,13 +151,17 @@ IterativeReport gmres(const ComplexOperator& a, const ComplexOperator& m, const 
     };
     double beta = residual();
     rep.residual = beta / bn;
-    while (rep.residual > tolerance && rep.iterations < maxIterations) {
+    while (rep.residual > tolerance && rep.iterations < maxIterations && !rep.cancelled) {
         V.col(0) = r / beta;
         g.setZero();
         g(0) = beta;
         H.setZero();
         int j = 0;
         for (; j < mr && rep.iterations < maxIterations; ++j) {
+            if (cancelled && rep.iterations % 10 == 0 && rep.iterations > 0 && cancelled()) {
+                rep.cancelled = true;
+                break;
+            }
             ++rep.iterations;
             m(V.col(j), z);
             a(z, w);
@@ -195,6 +199,7 @@ IterativeReport gmres(const ComplexOperator& a, const ComplexOperator& m, const 
             }
         }
         // x += M (V y), H y = g on the rows solved.
+        if (j == 0) break;
         const Eigen::VectorXcd y = H.topLeftCorner(j, j).triangularView<Eigen::Upper>().solve(g.head(j));
         m(V.leftCols(j) * y, z);
         x += z;

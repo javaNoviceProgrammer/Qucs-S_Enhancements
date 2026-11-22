@@ -29,6 +29,7 @@ struct IterativeReport {
     double residual = 0;      ///< relative: |b - A x| / |b|
     bool converged = false;
     bool fallback = false;    ///< multigrid did not converge: the incomplete Cholesky's
+    bool cancelled = false;   ///< stopped by its caller (GMRES's check)
 };
 
 /*!
