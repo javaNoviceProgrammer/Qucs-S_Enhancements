@@ -124,6 +124,30 @@ int harmonicFrequencies(const Node& study, const Scope& scope)
     return n;
 }
 
+int magneticSolves(const Node& study, const Node* physics, const Scope& scope)
+{
+    int ports = 0;
+    if (physics)
+        for (const Node& c : physics->children) {
+            if (!c.enabled || c.type != QLatin1String("magnetic/coil")) continue;
+            const QString role = c.text(QStringLiteral("role"));
+            const bool single = c.text(QStringLiteral("conductor")) != QLatin1String("multi");
+            if (!single || role.isEmpty() || role == QLatin1String("current")) ++ports;
+        }
+    int n = 0;
+    for (const Node& step : study.children) {
+        if (!step.enabled || step.type != QLatin1String("frequency")) continue;
+        const std::optional<std::vector<double>> listed = valueList(step.text(QStringLiteral("frequencies")), scope);
+        if (!listed) continue;
+        int frequencies = 0;
+        for (double f : *listed) frequencies += f > 0 ? 1 : 0;
+        const int columns = 1 + (step.flag(QStringLiteral("sweep")) ? ports : 0);
+        const bool fast = frequencies > 3 && step.text(QStringLiteral("fastsweep")) != QLatin1String("exact");
+        n += fast ? 3 * 3 * columns : frequencies * columns;
+    }
+    return n;
+}
+
 void solidHarmonic(Estimate3& e, int frequencies)
 {
     if (frequencies <= 0) return;
@@ -134,7 +158,7 @@ void solidHarmonic(Estimate3& e, int frequencies)
     e.iterativeSeconds = e.directSeconds;
 }
 
-Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order, int frequencies, const QString& solver)
+Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order, int frequencies, const QString& solver, int solves)
 {
     Estimate3 e;
     e.order = order;
@@ -179,11 +203,11 @@ Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order, int fr
         // K1, complex (a value and an index a nonzero), the preconditioner's
         // real matrix of A and ψ, its cycles (1.35 kB an unknown, measured),
         // GMRES's 61 complex vectors; some 100 iterations a solve (51 to 164
-        // on a coax from 10 Hz to 1 MHz), each 3.3 µs an unknown, two solves
-        // a frequency - the field's and a coil's sweep.
+        // on a coax from 10 Hz to 1 MHz), each 3.3 µs an unknown, \a solves
+        // of them (magneticSolves(); not given, two a frequency).
         const double nnz = double(e.nonzeros);
         e.iterativeBytes = 2 * 20 * nnz + 12 * nnz + n * (1350 + 61 * 16 + 200);
-        e.iterativeSeconds = frequencies * (3 * assemblySeconds(entries) + 2 * 100 * 3.3e-6 * n);
+        e.iterativeSeconds = frequencies * 3 * assemblySeconds(entries) + double(solves > 0 ? solves : 2 * frequencies) * 100 * 3.3e-6 * n;
         if (solver == QLatin1String("iterative")) e.method = QStringLiteral("iterative");
     }
     return e;

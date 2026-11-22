@@ -285,19 +285,18 @@ private:
         std::vector<std::vector<std::array<Expression, 3>>> unit;   // by coil: turns' J at 1 A
         Eigen::SparseMatrix<cd> K0, K1;
         Eigen::VectorXcd bc, bj;
+        Eigen::VectorXcd bcHeld;    // bc's part of the held A alone (an iterative solve's, a field held; else empty)
         std::vector<int> ports;     // the coils fed a current
         Eigen::MatrixXcd P;         // by port: its right-hand side (none: not swept)
         int oV = 0, n = 0;
         double assembled = 0;       // s
-        /// The iterative solve's, made at its first: A's edge mass M, the
-        /// nodes' gradients and the gauge's free vertices' vector fields Π
-        /// in A's free edges, each prism's σ (0 where it does not conduct),
-        /// the mass' weight γ - none of ω.
+        /// The iterative solve's, made at its first: A's edge mass M, each
+        /// element's weighted by its γ, the nodes' gradients and the gauge's
+        /// free vertices' vector fields Π in A's free edges - none of ω.
         struct Spaces {
-            Eigen::SparseMatrix<double> M, Gn, Pi;   // Gn: the gradients by node (A's free edges' rows)
+            Eigen::SparseMatrix<double> M, Gn, Pi;   // M: Σ γe Me; Gn: the gradients by node (A's free edges' rows)
             Eigen::SparseMatrix<double> Vn;   // order 2: by node, its linear nodes' fields (columns its vertices')
-            std::vector<double> sigma;
-            double gamma = 0;
+            std::vector<double> gamma;        // by prism: its γ, νe / L² (0: not of this field)
         };
         mutable std::shared_ptr<Spaces> spaces;
     };
@@ -327,8 +326,13 @@ private:
     bool solveExactly(const Options3& o, const Harmonic& hs, double omega, Eigen::MatrixXcd& X, QString* error, int moments = 0);
     /// The same by GMRES (fem3_ams; Options3::solver iterative), its
     /// preconditioner real: an auxiliary space cycle of Re K0 + ω K1 + γ M on
-    /// A and the conductors' potential together, and multigrid on the gauge's
-    /// multiplier's Schur complement - memory some 1.3 kB an unknown for the
+    /// A and the conductors' potential together (γ each element's, of its
+    /// own ν), and multigrid on the gauge's multiplier's Schur complement -
+    /// its tolerance 1e-9 of the right-hand side's, at least 1e-12; a held
+    /// field's part solved apart, against the sources' - a fast sweep's
+    /// moments by it its floor, its reduced basis' residual some 1e-5 (8e-7
+    /// with direct moments), a tighter sweep tolerance more frequencies
+    /// solved exactly - memory some 1.3 kB an unknown for the
     /// direct solve's factors' 8 kB, its time 10 to 25 times theirs from
     /// 40,000 to 330,000 unknowns.
     bool solveIteratively(const Options3& o, const Harmonic& hs, double omega, Eigen::MatrixXcd& X, QString* error, int moments);
@@ -1991,6 +1995,13 @@ bool MagneticProblem3::prepareHarmonic(const Options3& o, Harmonic& hs, QString*
     for (int c = 0; c < nc; ++c)
         if (h.eqU[std::size_t(c)] >= 0 && a_coils[std::size_t(c)].role == Coil::Current) hs.bc(hs.oV + h.eqU[std::size_t(c)]) += evalAt(a_coils[std::size_t(c)].current, Vec3{});
     hs.bj = rA;
+    // (An iterative solve: a held field's part of bc apart - its own solve,
+    // its own tolerance.)
+    hs.bcHeld.resize(0);
+    if (o.solver == QLatin1String("iterative") && std::any_of(hs.held.begin(), hs.held.end(), [](double v) { return v != 0; })) {
+        const std::vector<std::array<Expression, 3>> noSources(J.size());
+        assembleHarmonic(q, h, 1, hs.held, noneV, noSources, false, false, unused, hs.bcHeld, hs.gaugeScale);
+    }
     // Each port's right-hand side, 1 A in it (ω's none): a conductor's on
     // its terminal's equation, turns' their current density.
     hs.ports.clear();
@@ -2028,17 +2039,22 @@ void MagneticProblem3::buildSpaces(const Harmonic& hs) const
     std::vector<T> tm, tg, tp, cg, cp;
     tm.reserve(std::size_t(es.elements()) * std::size_t(nb * nb));
     PointEvaluator3 ev(a_s);
-    // (Π of the vertices' linear fields alone - in the edge space of
-    // either order, so that each element's projection is the field's own:
-    // order 2's quadratic nodal fields are not, their elements' projections
-    // differing, and the cycle took some eight times the iterations.)
+    // (Π of the vertices' linear fields alone - in the edge space of order
+    // 2, so that each element's projection is the field's own: order 2's
+    // quadratic nodal fields are not, their elements' projections differing,
+    // and the cycle took some eight times the iterations. Order 1's 9 edge
+    // functions do not hold the 18 linear fields either: each element's
+    // projection its best by its mass, an edge shared the elements' mean -
+    // 12 to 40 iterations on the coax all the same.)
     static const int vertices2[6] = {0, 1, 2, 12, 13, 14};
     const int* vertexOf = ns.order() == 2 ? vertices2 : nullptr;
     std::vector<int> vertexColumn(std::size_t(ns.size()), -1);
     int nVertices = 0;
     Eigen::MatrixXd Me(nb, nb), Rg(nb, npn), Rp(nb, 3 * 6), Mn(npn, npn), Rn(npn, 6);
     std::vector<T> tv, cv;
-    sp->sigma.assign(mesh.prisms.size(), 0.0);
+    const Solution3::Coefficients& coef = a_s.coefficients()[std::size_t(a_fi)];
+    const std::size_t nqe = a_muEff.empty() || mesh.prisms.empty() ? 0 : a_muEff.size() / mesh.prisms.size();
+    sp->gamma.assign(mesh.prisms.size(), 0.0);
     double volume = 0;
     for (int e = 0; e < es.elements(); ++e) {
         const int d = mesh.domain[std::size_t(e)];
@@ -2053,6 +2069,37 @@ void MagneticProblem3::buildSpaces(const Harmonic& hs) const
         const int t = mesh.prismTriangle[std::size_t(e)], layer = mesh.prismLayer[std::size_t(e)];
         const AffineMap am = affineMap(es.planNodes(), t);
         const double hz = es.z(layer + 1) - es.z(layer);
+        // Its reluctivity ν, as K0 has it (the mean of its diagonal; a B-H
+        // curve's effective µr in the frequency domain, its first slope
+        // else; an expression's at its middle): γ of it - γ M of ν0 beside
+        // a core's curl-curl of ν0/1000 outweighed it a thousandfold, GMRES
+        // stopping at a residual of 0.84 after 2000 iterations.
+        double nuE = 0;
+        {
+            const std::array<Expression, 9>& mur = coef.c[std::size_t(d)];
+            const BHCurve* curve = d < int(coef.curves.size()) ? coef.curves[std::size_t(d)].get() : nullptr;
+            if (curve && nqe > 0 && a_muEff.size() == mesh.prisms.size() * nqe && a_muEff[std::size_t(e) * nqe] > 0) {
+                for (std::size_t k = 0; k < nqe; ++k) nuE += 1 / (Mu0 * a_muEff[std::size_t(e) * nqe + k]) / double(nqe);
+            } else if (curve) {
+                nuE = curve->nu(0);
+            } else {
+                bool constant = true;
+                for (const Expression& x : mur) constant = constant && (!x.isValid() || x.isConstant());
+                if (!constant) {
+                    EdgeSpace3::Basis b;
+                    es.basis(e, 1.0 / 3, 1.0 / 3, 0.5, b);
+                    ev.at(e, 1.0 / 3, 1.0 / 3, 0.5, b.x);
+                }
+                double m9[9], nu9[9];
+                for (int k = 0; k < 9; ++k)
+                    m9[k] = mur[std::size_t(k)].isValid() ? (constant ? mur[std::size_t(k)].constant() : ev.eval(mur[std::size_t(k)])) : 0;
+                if (reluctivity(m9, nu9)) nuE = (nu9[0] + nu9[4] + nu9[8]) / 3;
+            }
+            if (!(std::isfinite(nuE) && nuE > 0)) nuE = 1 / Mu0;
+        }
+        // (Relative to ν0 here; times ν0 / L² once L is known.)
+        const double relative = nuE * Mu0;
+        sp->gamma[std::size_t(e)] = relative;
         for (const auto& qp : rule.points) {
             EdgeSpace3::Basis b;
             es.basis(e, qp[0], qp[1], qp[2], b);
@@ -2097,7 +2144,7 @@ void MagneticProblem3::buildSpaces(const Harmonic& hs) const
             if (ei < 0) continue;
             for (int j = 0; j < nb; ++j) {
                 const int ej = ed[j] >= 0 ? q.eqA[std::size_t(ed[j])] : -1;
-                if (ej >= 0) tm.emplace_back(ei, ej, Me(i, j));
+                if (ej >= 0) tm.emplace_back(ei, ej, relative * Me(i, j));
             }
             for (int k = 0; k < npn; ++k)
                 if (nd[k] >= 0 && std::abs(Cg(i, k)) > small) {
@@ -2116,19 +2163,6 @@ void MagneticProblem3::buildSpaces(const Harmonic& hs) const
                     }
             }
         }
-        if (hs.h.conducting[std::size_t(d)]) {
-            EdgeSpace3::Basis b;
-            es.basis(e, 1.0 / 3, 1.0 / 3, 0.5, b);
-            ev.at(e, 1.0 / 3, 1.0 / 3, 0.5, b.x);
-            const std::array<Expression, 9>& sg = a_sigma[std::size_t(d)];
-            double tr3 = 0;
-            for (int k : {0, 4, 8})
-                if (sg[std::size_t(k)].isValid()) {
-                    const double v = ev.eval(sg[std::size_t(k)]);
-                    if (std::isfinite(v)) tr3 += std::abs(v) / 3;
-                }
-            sp->sigma[std::size_t(e)] = tr3;
-        }
     }
     const auto mean = [](int rows, int cols, const std::vector<T>& v, const std::vector<T>& count) {
         Eigen::SparseMatrix<double> m(rows, cols), c(rows, cols);
@@ -2144,8 +2178,11 @@ void MagneticProblem3::buildSpaces(const Harmonic& hs) const
     sp->Gn = mean(q.nA, ns.size(), tg, cg);
     sp->Pi = mean(q.nA, 3 * nVertices, tp, cp);
     if (vertexOf) sp->Vn = mean(ns.size(), ns.size(), tv, cv);
-    // γ: the mass beside the curl-curl, about its least eigenvalue (ν0 π² /
-    // L², L the model's size): 10 ν0 / L². Its choice is free - the
+    // γ: the mass beside the curl-curl, about its least eigenvalue (ν π² /
+    // L², L the model's size): ν / L², each element's of its own ν. Two
+    // bars in air of µr 1000 at 100 kHz: 1053 iterations at 10 ν / L², 582
+    // at 1, 494 at 0.1; the coax as at 10 (46, 68 and 153 at 10 Hz, 10 kHz
+    // and 1 MHz). Its choice is free - the
     // multiplier's Schur complement taken as its own (Greif and Schötzau,
     // Numer. Linear Algebra Appl. 14 (2007) 281: the gradients' block BᵀL⁻¹B,
     // M on them) - but GMRES minds it: on a coax at 10 kHz (each block solved
@@ -2153,7 +2190,9 @@ void MagneticProblem3::buildSpaces(const Harmonic& hs) const
     // to 100, 100 at 1000; at 1 MHz (the cycles) 157 at 3, 164 at 10, 219 at
     // 100.
     const double size = std::cbrt(std::max(volume, 1e-300));
-    sp->gamma = 10 / (Mu0 * size * size);
+    const double gamma0 = 1 / (Mu0 * size * size);
+    sp->M *= gamma0;
+    for (double& g : sp->gamma) g *= gamma0;
     hs.spaces = sp;
 }
 
@@ -2174,11 +2213,11 @@ bool MagneticProblem3::solveIteratively(const Options3& o, const Harmonic& hs, d
     const Equations& q = hs.q;
     const int nA = q.nA, nP = q.nP, nV = hs.n - hs.oV;
     // The preconditioner, real, its matrix |K0 + jω K1|'s: Re K0 + ω K1 on A
-    // and the conductors' potential together, γ M added to A's - positive
-    // definite (A = -∇φ, ψ = φ in a conductor, nought in K0 + ω K1, costs γ
-    // φᵀLφ) -; and the gauge's multiplier's Schur complement, B P⁻¹ Bᵀ,
+    // and the conductors' potential together, Σ γe Me added to A's - positive
+    // definite (A = -∇φ, ψ = φ in a conductor, nought in K0 + ω K1, costs
+    // ∫ γ |∇φ|²) -; and the gauge's multiplier's Schur complement, B P⁻¹ Bᵀ,
     // its gradients' block γ M everywhere (in a conductor their ω σ M taken
-    // back by ψ): s² L / γ, s the gauge's scale (Greif and Schötzau, Numer.
+    // back by ψ): s² ∫ ∇p·∇q / γe, s the gauge's scale (Greif and Schötzau, Numer.
     // Linear Algebra Appl. 14 (2007) 281). Their blocks apart - A's, ψ's -
     // the conductors' A and ψ together are singular where ω σ is all: at 1
     // MHz GMRES did not converge even with each block solved exactly.
@@ -2199,7 +2238,7 @@ bool MagneticProblem3::solveIteratively(const Options3& o, const Harmonic& hs, d
             }
         }
         for (int c = 0; c < sp.M.outerSize(); ++c)
-            for (Eigen::SparseMatrix<double>::InnerIterator it(sp.M, c); it; ++it) t.emplace_back(int(it.row()), c, sp.gamma * it.value());
+            for (Eigen::SparseMatrix<double>::InnerIterator it(sp.M, c); it; ++it) t.emplace_back(int(it.row()), c, it.value());
         PS.setFromTriplets(t.begin(), t.end());
     }
     Eigen::SparseMatrix<double> PP(nP, nP);
@@ -2208,10 +2247,11 @@ bool MagneticProblem3::solveIteratively(const Options3& o, const Harmonic& hs, d
         const PrismRule& rule = es.order() == 1 ? prismRule(2, 2) : prismRule(4, 3);
         const int npn = ns.perElement();
         std::vector<double> Le(std::size_t(npn * npn));
-        const double weight = hs.gaugeScale * hs.gaugeScale / sp.gamma;
         for (int e = 0; e < es.elements(); ++e) {
             const int d = mesh.domain[std::size_t(e)];
-            if (d < 0 || !f.domains[std::size_t(d)]) continue;
+            if (d < 0 || !f.domains[std::size_t(d)] || !(sp.gamma[std::size_t(e)] > 0)) continue;
+            // (s² / γe: each element's own γ's.)
+            const double weight = hs.gaugeScale * hs.gaugeScale / sp.gamma[std::size_t(e)];
             std::fill(Le.begin(), Le.end(), 0.0);
             const int* nd = ns.dofs(e);
             const int t = mesh.prismTriangle[std::size_t(e)], layer = mesh.prismLayer[std::size_t(e)];
@@ -2302,6 +2342,10 @@ bool MagneticProblem3::solveIteratively(const Options3& o, const Harmonic& hs, d
     if (nV > 0) D.segment(hs.oV, nV) = dS.tail(nV).cwiseAbs().cwiseSqrt().cwiseInverse();
     for (Eigen::Index k = 0; k < D.size(); ++k)
         if (!std::isfinite(D(k))) D(k) = 1;
+    // (Their matrices let go: each cycle keeps its own copy - PS beside the
+    // cycle's through the solves before, the peak its size more.)
+    PS = Eigen::SparseMatrix<double>();
+    PP = Eigen::SparseMatrix<double>();
     const double setUp = clock.elapsed() / 1000.0;
     // (K0 x + jω K1 x: K0 + jω K1 not made, its copy as large as the
     // preconditioner.)
@@ -2329,31 +2373,60 @@ bool MagneticProblem3::solveIteratively(const Options3& o, const Harmonic& hs, d
         }
         y = D.cwiseInverse().cwiseProduct(y);
     };
-    const double tolerance = std::min(o.tolerance > 0 ? o.tolerance : 1e-9, 1e-9);
+    // (Its tolerance 1e-9 of the right-hand side's, or the step's below it -
+    // not under 1e-12, which double precision does not reach: 2000
+    // iterations to 1.9e-15 asked 1e-30.)
+    const double tolerance = std::clamp(o.tolerance > 0 ? o.tolerance : 1e-9, 1e-12, 1e-9);
     const int cols = 1 + int(hs.P.cols());
     X.resize(hs.n, cols * (1 + std::clamp(moments, 0, 2)));
     int iterations = 0, worstIterations = 0;
     double worst = 0;
-    bool ok = true;
-    const auto solve = [&](const Eigen::VectorXcd& b) {
+    bool ok = true, cancelled = false;
+    const auto solve = [&](const Eigen::VectorXcd& b, double tol) {
         Eigen::VectorXcd xs = Eigen::VectorXcd::Zero(hs.n);
-        const IterativeReport r = gmres(op, pre, D.cwiseProduct(b), xs, tolerance, 2000);
+        if (cancelled) return xs;
+        const IterativeReport r = gmres(op, pre, D.cwiseProduct(b), xs, tol, 2000, 60, o.cancelled);
         iterations += r.iterations;
         worstIterations = std::max(worstIterations, r.iterations);
         worst = std::max(worst, r.residual);
         ok = ok && r.converged;
+        cancelled = cancelled || r.cancelled;
         return Eigen::VectorXcd(D.cwiseProduct(xs));
     };
+    // (A column and its moments in ω: x, x' = A⁻¹ (j bj - j K1 x), x'' =
+    // -2 A⁻¹ j K1 x'.)
     const cd j1(0, 1);
-    for (int j = 0; j < cols; ++j) {
-        const Eigen::VectorXcd b = j == 0 ? Eigen::VectorXcd(hs.bc + jw * hs.bj) : Eigen::VectorXcd(hs.P.col(j - 1));
-        X.col(j) = solve(b);
+    const auto column = [&](const Eigen::VectorXcd& b, const Eigen::VectorXcd* bj, double tol, Eigen::VectorXcd out[3]) {
+        out[0] = solve(b, tol);
         if (moments >= 1) {
-            Eigen::VectorXcd d = -j1 * (hs.K1 * X.col(j));
-            if (j == 0) d += j1 * hs.bj;
-            X.col(cols + j) = solve(d);
+            Eigen::VectorXcd d = -j1 * (hs.K1 * out[0]);
+            if (bj) d += j1 * *bj;
+            out[1] = solve(d, tol);
         }
-        if (moments >= 2) X.col(2 * cols + j) = solve(Eigen::VectorXcd(-2.0 * j1 * (hs.K1 * X.col(cols + j))));
+        if (moments >= 2) out[2] = solve(Eigen::VectorXcd(-2.0 * j1 * (hs.K1 * out[1])), tol);
+    };
+    for (int j = 0; j < cols; ++j) {
+        Eigen::VectorXcd out[3];
+        if (j == 0 && hs.bcHeld.size() == hs.n) {
+            // (A held field - a background's A0 -: its part solved apart, its
+            // error measured against the sources' right-hand side, not its
+            // own - at 1e-9 of its own, the coil's response beside a field of
+            // 0.5 T was 1.7e-5 off -, 1e-12 of its own at least.)
+            const Eigen::VectorXcd bh = hs.bcHeld + jw * hs.bj, bs = hs.bc - hs.bcHeld;
+            const double nh = D.cwiseProduct(bh).norm(), nsrc = D.cwiseProduct(bs).norm();
+            const double heldTolerance = nh > 0 && nsrc > 0 ? std::clamp(tolerance * nsrc / nh, 1e-12, tolerance) : tolerance;
+            Eigen::VectorXcd held[3];
+            column(bh, &hs.bj, heldTolerance, held);
+            column(bs, nullptr, tolerance, out);
+            for (int k = 0; k <= std::clamp(moments, 0, 2); ++k) out[k] += held[k];
+        } else {
+            column(j == 0 ? Eigen::VectorXcd(hs.bc + jw * hs.bj) : Eigen::VectorXcd(hs.P.col(j - 1)), j == 0 ? &hs.bj : nullptr, tolerance, out);
+        }
+        for (int k = 0; k <= std::clamp(moments, 0, 2); ++k) X.col(k * cols + j) = out[k];
+    }
+    if (cancelled) {
+        *error = tr("cancelled");
+        return false;
     }
     a_s.log << tr("%1%2: %3 unknowns (%4 of A on edge elements of order %5, %6 of the gauge's multiplier, %7 of the conductors' potential), "
                   "GMRES with the auxiliary space preconditioner: set up in %8 s (%9 MB), %10 iterations (at most %11 a solve) in %12 s, "
