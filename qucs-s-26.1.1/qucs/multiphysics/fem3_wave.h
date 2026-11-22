@@ -223,8 +223,9 @@ Estimate3 estimateWave3(std::shared_ptr<const Mesh3> mesh, int order);
 /// of the two (magneticFactorSeconds(), magneticFactorBytes()) - a linear
 /// model's; a B-H curve's one at each Newton's step (fem3_estimate.cpp). Of
 /// a Frequency Domain step's \a frequencies (more than 0, none at rest), a
-/// complex symmetric LDLT at each (magneticComplexFactor()).
-Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order, int frequencies = 0);
+/// complex symmetric LDLT at each (magneticComplexFactor()); \a solver
+/// iterative, GMRES at each (its method then iterative).
+Estimate3 estimateMagnetic3(std::shared_ptr<const Mesh3> mesh, int order, int frequencies = 0, const QString& solver = QString());
 
 /// What a time-domain solve of \a order on \a mesh will hold and take: a
 /// real Cholesky's factors (half a frequency domain's), its PMLs' states;

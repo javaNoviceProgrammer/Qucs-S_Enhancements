@@ -3353,7 +3353,7 @@ QList<NodeKind> makeKinds()
         physics.defaultValue = QJsonArray();
         physics.tooltip = tr("None chosen: all of them");
         const P solver = choice(QStringLiteral("solver"), tr("Linear solver"), {QStringLiteral("auto"), QStringLiteral("direct"), QStringLiteral("iterative")},
-                                {tr("Automatic"), tr("Direct (sparse Cholesky, LU)"), tr("Iterative (conjugate gradients)")}, QStringLiteral("auto"));
+                                {tr("Automatic"), tr("Direct (sparse Cholesky, LU)"), tr("Iterative (conjugate gradients; eddy currents GMRES)")}, QStringLiteral("auto"));
         const P nonlinear = choice(QStringLiteral("nonlinear"), tr("Nonlinear method"),
                                    {QStringLiteral("auto"), QStringLiteral("newton"), QStringLiteral("picard")},
                                    {tr("Automatic (Newton within a physics, in turn between them)"), tr("Newton"),

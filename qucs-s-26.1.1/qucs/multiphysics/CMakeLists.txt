@@ -28,6 +28,7 @@ set(FEM_SRCS
   fem3_scalar.cpp
   fem3_solid.cpp
   fem3_magnetic.cpp
+  fem3_ams.cpp
   fem3_semiconductor.cpp
   fem3_results.cpp
   fem3_cad.cpp

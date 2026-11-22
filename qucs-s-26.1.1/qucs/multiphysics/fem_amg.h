@@ -79,6 +79,36 @@ private:
     std::unique_ptr<Impl> a_impl;
 };
 
+/*!
+ * One V-cycle of AMGCL's smoothed aggregation, symmetric Gauss-Seidel its
+ * smoother: a symmetric positive definite matrix's approximate inverse, for
+ * a preconditioner made of several (the auxiliary spaces' of an edge
+ * element system, fem3_ams). Linear in what it is applied to.
+ */
+class AmgCycle
+{
+public:
+    AmgCycle();
+    ~AmgCycle();
+    AmgCycle(const AmgCycle&) = delete;
+    AmgCycle& operator=(const AmgCycle&) = delete;
+
+    /// Rows in blocks of \a size - a node's three components - aggregated
+    /// together, each component's constant kept. Before compute().
+    void setBlockSize(int size);
+    /// Sets symmetric matrix \a a up; false and why when it cannot.
+    bool compute(const Eigen::SparseMatrix<double>& a, QString* error);
+    /// \a x = one cycle applied to \a r, from nought.
+    void apply(const Eigen::VectorXd& r, Eigen::VectorXd& x) const;
+    /// The memory its hierarchy takes (bytes).
+    std::size_t bytes() const;
+    int size() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> a_impl;
+};
+
 } // namespace qucs_s::fem
 
 #endif // QUCS_FEM_AMG_H
