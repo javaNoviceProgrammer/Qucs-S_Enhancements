@@ -765,16 +765,28 @@ QLineF wholeSideOf(const QList<Conductor>& conductors, const QLineF& edge, const
         const int n = int(c.outline.size());
         for (int i = 0; i < n; ++i) {
             if (c.outline.at(i) != edge.p1() || c.outline.at((i + 1) % n) != edge.p2()) continue;
+            // On through every edge of the outline that goes on along the
+            // line from where the side has reached, either way - the edges
+            // beside it, and past a keyhole's slit: a hole's slit joining
+            // the outline at a side splits that side in two edges, out along
+            // the slit and back between them. Taken as the edges beside it
+            // alone, a port on the left side of a plane with a round opening
+            // drove half that side, the slit at y = -0.3 µm, and the plane's
+            // R read 1.24 squares for 1.02.
             QPointF from = edge.p1(), to = edge.p2();
-            for (int k = 1; k < n; ++k) {
-                const QPointF p0 = c.outline.at(((i - k) % n + n) % n), p1 = c.outline.at(((i - k + 1) % n + n) % n);
-                if (!onLine(p0, p1)) break;
-                from = p0;
-            }
-            for (int k = 1; k < n; ++k) {
-                const QPointF p0 = c.outline.at((i + k) % n), p1 = c.outline.at((i + k + 1) % n);
-                if (!onLine(p0, p1)) break;
-                to = p1;
+            for (bool grew = true; grew;) {
+                grew = false;
+                for (int k = 0; k < n; ++k) {
+                    const QPointF p0 = c.outline.at(k), p1 = c.outline.at((k + 1) % n);
+                    if (p0 == to && onLine(p0, p1)) {
+                        to = p1;
+                        grew = true;
+                    }
+                    if (p1 == from && onLine(p0, p1)) {
+                        from = p0;
+                        grew = true;
+                    }
+                }
             }
             return QLineF(from, to);
         }

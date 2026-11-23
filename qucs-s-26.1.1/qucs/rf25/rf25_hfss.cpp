@@ -1142,6 +1142,13 @@ HfssExport hfssExportOf(const Model& model, const QList<Conductor>& given, const
             QLineF face;
             QPointF outward;
             QString onLayer;
+            // (Taken onto the edge it was drawn on, as the solve takes it: a
+            //  port on a circle's edge was "not written", on no conductor.)
+            {
+                double moved = 0;
+                at = ontoNearestEdge(outlines, at, metal, options.portReach, &moved);
+                if (moved > 0) out.notes << tr("%1 is %2 µm off the processed outline it was drawn on: written on it.").arg(own).arg(moved, 0, 'g', 2);
+            }
             // (On the edge, as the solve has it: portPlace(). The nearest
             //  edge however far was written.)
             const PortPlace place = portPlace(outlines, at, metal, way);
@@ -1785,6 +1792,17 @@ SCompared compareWithTouchstone(const FullWave& solved, const QString& path, con
         out.problem = tr("%1 holds no frequency.").arg(QFileInfo(path).fileName());
         return out;
     }
+    // (Its frequencies rising, as a Touchstone file's are: out of order, its
+    //  points were read between the wrong ones, and nothing said.)
+    for (int k = 1; k < frequency.size(); ++k)
+        if (!(frequency.at(k) > frequency.at(k - 1))) {
+            out.problem = tr("%1's frequencies do not rise: %2 Hz after %3 Hz, at its point %4.")
+                              .arg(QFileInfo(path).fileName())
+                              .arg(frequency.at(k))
+                              .arg(frequency.at(k - 1))
+                              .arg(k + 1);
+            return out;
+        }
     out.ports = np;
     QString saidReference;
     const QList<double> fileReferences = referencesIn(path, ports, &saidReference);
@@ -1807,6 +1825,7 @@ SCompared compareWithTouchstone(const FullWave& solved, const QString& path, con
         return std::polar(std::abs(a) + t * (std::abs(b) - std::abs(a)), std::arg(a) + t * turn);
     };
     constexpr double kSame = 1e-9;
+    int unreadable = 0;
     for (int k = 0; k < solved.frequencies.size(); ++k) {
         const double f = solved.frequencies.at(k);
         if (f < frequency.first() * (1 - kSame) || f > frequency.last() * (1 + kSame)) continue;
@@ -1818,23 +1837,37 @@ SCompared compareWithTouchstone(const FullWave& solved, const QString& path, con
             ++out.interpolated;
         }
         QList<QList<Complex>> theirs;
+        bool finite = true;
         for (int i = 0; i < np; ++i) {
             QList<Complex> row;
             for (int j = 0; j < np; ++j) {
                 const QString key = QStringLiteral("%1,%2").arg(map.at(i)).arg(map.at(j));
                 const dataset::Variable* v = values.value(key, nullptr);
-                row << (v != nullptr ? valueAt(v, below, t) : Complex(0, 0));
+                const Complex value = v != nullptr ? valueAt(v, below, t) : Complex(0, 0);
+                finite = finite && std::isfinite(value.real()) && std::isfinite(value.imag());
+                row << value;
             }
             theirs << row;
+        }
+        // (A value of the file's that is no finite number - "nan", "inf" -:
+        //  that frequency left out and said, not compared as a nan dB.)
+        if (!finite) {
+            ++unreadable;
+            continue;
         }
         out.frequencies << f;
         out.theirs << theirs;
         out.ours << scatteringOf(solved.z.at(k), references);
     }
     if (out.frequencies.isEmpty()) {
-        out.problem = tr("The file's frequencies (%1 to %2 Hz) and the solve's do not meet.").arg(frequency.first()).arg(frequency.last());
+        out.problem = unreadable > 0 ? tr("%1 holds values that are no finite number at every frequency of the solve's it reaches.")
+                                           .arg(QFileInfo(path).fileName())
+                                     : tr("The file's frequencies (%1 to %2 Hz) and the solve's do not meet.").arg(frequency.first()).arg(frequency.last());
         return out;
     }
+    if (unreadable > 0)
+        out.notes << tr("%1 of the solve's frequencies are read from values of the file's that are no finite number: left out.")
+                         .arg(unreadable);
     if (out.frequencies.size() < solved.frequencies.size())
         out.notes << tr("%1 of the solve's %2 frequencies lie outside the file's: left out.")
                          .arg(solved.frequencies.size() - out.frequencies.size()).arg(solved.frequencies.size());

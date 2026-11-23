@@ -20,6 +20,8 @@
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_inductance.h"
 #include "rf25/rf25_solve.h"
+#include "rf25/rf25_hfss.h"
+#include "rf25/rf25_fullwave.h"
 
 namespace rf = qucs_s::rf25;
 
@@ -1504,6 +1506,148 @@ private slots:
         //  clear of those there. Added however near, a feed at 13.3 to 33.3 µm
         //  drew a row 70 nm high, one at 3 µm 13 nm.)
         QVERIFY2(thinnest >= 0.2, qPrintable(QStringLiteral("a cell inside the disc %1 µm across").arg(thinnest)));
+    }
+
+    // A plane 1 mm square with a round opening of 50 µm radius at its middle,
+    // the opening taken out by the Cutout - processing writes it as a keyhole,
+    // its slit joining the plane's left side at y = -0.3 µm -, driven by a
+    // loop from its left side to its right: R within 0.3 % of Maxwell's
+    // (1 + f) / (1 - f) squares for a sheet with a small hole of area share f,
+    // 1.0158, at 10 and at 30 cells across. Taken as the edges beside its
+    // own alone, a port's face was half that left side - the slit's two
+    // edges between its two halves -, and R read 1.24 squares.
+    void aPortsFaceIsTheWholeSidePastAKeyholesSlit()
+    {
+        rf::Model m = shaped({boxOn("M1", -500, -500, 500, 500)});
+        region(m, "circle", {{"x", QStringLiteral("0")}, {"y", QStringLiteral("0")}, {"radius", QStringLiteral("50[um]")}, {"action", QStringLiteral("remove")}});
+        const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+        QCOMPARE(int(processed.conductors.size()), 1);
+        const rf::Stack stack = m.solveStack();
+        const rf::Layer* metal = stack.named(QStringLiteral("M1"));
+        QVERIFY(metal != nullptr);
+        const double square = 1 / (metal->sigma * metal->thickness), f = M_PI * 50 * 50 / 1e6;
+        for (const int across : {10, 30}) {
+            rf::MeshSettings how;
+            how.cellsAcross = across;
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, how, stack, 1e9);
+            const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, QPointF(-500, 100), QPointF(500, 100));
+            QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+            QVERIFY2(std::abs(loop.rDc / square / ((1 + f) / (1 - f)) - 1) < 0.003,
+                     qPrintable(QStringLiteral("%1 across: %2 squares against %3").arg(across).arg(loop.rDc / square).arg((1 + f) / (1 - f))));
+        }
+        // (The side itself: from corner to corner past the slit.)
+        QLineF edge;
+        QVERIFY(rf::faceEdge(processed.conductors, QPointF(-500, 100), QStringLiteral("M1"), QPointF(), &edge));
+        const QLineF side = rf::wholeSideOf(processed.conductors, edge, QStringLiteral("M1"));
+        QVERIFY2(std::abs(side.length() - 1000) < 1e-6, qPrintable(QStringLiteral("a side %1 µm long").arg(side.length())));
+    }
+
+    // A disc of 30 µm radius inside a ring from 34 to 60 µm, 3 µm of metal: the
+    // narrowest gap on its layer is between them, some 3.9 µm - as a sheet,
+    // said to read low; Automatic, solved as its two faces. Their pieces'
+    // boxes overlap, the disc's inside the ring's, and no gap was found: the
+    // sheet not said to read low (its C 26 % under its two faces'), and
+    // Automatic took it as one.
+    void aGapInsideARingIsFound()
+    {
+        rf::Model m = shaped({QJsonObject{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "60[um]"}, {"inner_radius", "34[um]"}},
+                              QJsonObject{{"layer", "M1"}, {"shape", "circle"}, {"x", "0"}, {"y", "0"}, {"radius", "30[um]"}}});
+        for (rf::Node& n : m.stackNode().children)
+            if (n.label == QLatin1String("M1")) {
+                n.props.insert(QStringLiteral("thickness"), QStringLiteral("3[um]"));
+                n.props.insert(QStringLiteral("model"), QStringLiteral("sheet"));
+            }
+        const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+        QCOMPARE(int(processed.conductors.size()), 2);
+        const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), m.solveStack(), 1e9);
+        const double gap = mesh.gapByLayer.value(QStringLiteral("M1"), 0);
+        QVERIFY2(gap > 3.5 && gap < 4.1, qPrintable(QStringLiteral("%1 µm").arg(gap)));
+        QVERIFY2(mesh.warnings.join(' ').contains(QStringLiteral("beside gaps as narrow as")), qPrintable(mesh.warnings.join(" | ")));
+        rf::Stack automatic = m.solveStack();
+        for (rf::Layer& l : automatic.layers)
+            if (l.name == QLatin1String("M1")) {
+                l.twoSheets = false;
+                l.automatic = true;
+            }
+        QVERIFY(rf::thickened(automatic, processed.conductors, mesh).any);
+    }
+
+    // An edge port drawn on a disc's edge, at (100, 0) on a disc of 100 µm:
+    // written by the HFSS export onto the outline as processed - its curve
+    // simplified, up to 0.1 µm inside the circle drawn - as the solve takes
+    // it, and said. It was "not written", on no conductor.
+    void anExportedPortOnACurvesEdgeIsWritten()
+    {
+        rf::Model m = shaped({QJsonObject{{"layer", "M1"}, {"shape", "circle"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"}}});
+        rf::Node* ports = nullptr;
+        for (rf::Node& n : m.root.children)
+            if (n.type == QStringLiteral("rf_ports")) ports = &n;
+        QVERIFY(ports != nullptr);
+        ports->children.clear();
+        for (const auto& [name, x] : {std::make_pair("P1", "100[um]"), std::make_pair("P2", "-100[um]")}) {
+            rf::Node p = m.make(QStringLiteral("rf_edge_port"));
+            p.label = QLatin1String(name);
+            p.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+            p.props.insert(QStringLiteral("x"), QLatin1String(x));
+            p.props.insert(QStringLiteral("y"), QStringLiteral("0"));
+            ports->children.push_back(p);
+        }
+        const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+        QVERIFY(processed.report.simplifiedMost > 0);
+        rf::HfssOptions how;
+        how.portReach = processed.report.simplifiedMost + 0.002;
+        const rf::HfssExport written = rf::hfssExportOf(m, processed.conductors, how);
+        QVERIFY2(written.ports == 2 && written.notes.join(' ').contains(QStringLiteral("written on it")), qPrintable((written.problems + written.notes).join(" | ")));
+        const rf::HfssExport unreached = rf::hfssExportOf(m, processed.conductors, rf::HfssOptions());
+        QVERIFY2(unreached.ports < 2, qPrintable(unreached.notes.join(" | ")));
+    }
+
+    // A Touchstone file compared with a solve: its frequencies out of order
+    // refused, said where - read between the wrong points, nothing said -;
+    // a point whose values are no finite number ("nan", "inf") left out and
+    // said, not compared as a nan dB.
+    void aTouchstoneFilesBadPointsAreSaid()
+    {
+        rf::FullWave solved;
+        solved.portNames = {QStringLiteral("P1"), QStringLiteral("P2")};
+        for (int k = 0; k < 5; ++k) {
+            solved.frequencies << 1e9 * (1 + k);
+            solved.z << QList<QList<rf::Complex>>{{rf::Complex(50, 1), rf::Complex(10, 0)}, {rf::Complex(10, 0), rf::Complex(50, 1)}};
+        }
+        solved.references = {50, 50};
+        QTemporaryDir dir;
+        const auto write = [&dir](const QString& name, const QStringList& points) {
+            const QString path = dir.filePath(name);
+            QFile f(path);
+            f.open(QIODevice::WriteOnly);
+            f.write(("# GHz S RI R 50\n" + points.join('\n') + '\n').toUtf8());
+            return path;
+        };
+        QStringList points;
+        for (int k = 1; k <= 5; ++k) points << QStringLiteral("%1 0.1 0.01 0.9 -0.1 0.9 -0.1 0.1 0.01").arg(k);
+        QVERIFY2(rf::compareWithTouchstone(solved, write(QStringLiteral("good.s2p"), points)).problem.isEmpty(), "a good file refused");
+        // (A one-port file's out of order: a two-port's past a lower frequency
+        //  is its noise data, as the format has it, and read so.)
+        {
+            rf::FullWave one;
+            one.portNames = {QStringLiteral("P1")};
+            for (int k = 0; k < 5; ++k) {
+                one.frequencies << 1e9 * (1 + k);
+                one.z << QList<QList<rf::Complex>>{{rf::Complex(50, 1)}};
+            }
+            one.references = {50};
+            const rf::SCompared out = rf::compareWithTouchstone(
+                one, write(QStringLiteral("unsorted.s1p"), {QStringLiteral("1 0.1 0.01"), QStringLiteral("3 0.1 0.01"), QStringLiteral("2 0.1 0.01"),
+                                                            QStringLiteral("4 0.1 0.01"), QStringLiteral("5 0.1 0.01")}));
+            QVERIFY2(out.problem.contains(QStringLiteral("do not rise")), qPrintable(out.problem));
+        }
+        QStringList nan = points;
+        nan[2] = QStringLiteral("3 0.1 0.01 nan -0.1 nan -0.1 0.1 0.01");
+        const rf::SCompared some = rf::compareWithTouchstone(solved, write(QStringLiteral("nan.s2p"), nan));
+        QVERIFY2(some.problem.isEmpty() && some.notes.join(' ').contains(QStringLiteral("no finite number")), qPrintable(some.problem + " | " + some.notes.join(" | ")));
+        for (const auto& at : some.theirs)
+            for (const auto& row : at)
+                for (const rf::Complex& v : row) QVERIFY(std::isfinite(v.real()) && std::isfinite(v.imag()));
     }
 
     // A curve's lattice lines (rf::latticeLines()) all within their piece,

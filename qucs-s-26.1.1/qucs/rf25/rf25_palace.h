@@ -51,6 +51,11 @@ struct PalaceOptions {
     /// The elements along the metals' edges and the ports (chosen: a quarter
     /// of the narrowest conductor, as twice its area over its perimeter says).
     double edges = 0;
+    /// µm: an edge port on no edge and inside no shape taken onto the nearest
+    /// edge within this, as the solve takes it (setUpSolve()): the processing
+    /// moves a curve's outline up to its tolerance inside the curve drawn.
+    /// Nought: none (the tab gives the processing's largest move).
+    double portReach = 0;
     /// Each metal as a sheet at its bottom, as RF 2.5D solves a sheet - its
     /// thickness in its loss alone (Palace's conductivity boundary of that
     /// thickness) -, rather than cut out of the mesh as thick as it is.
