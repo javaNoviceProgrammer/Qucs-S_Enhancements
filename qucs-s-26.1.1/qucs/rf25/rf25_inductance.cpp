@@ -1191,31 +1191,6 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     out.runs = runsOf(mesh, conductors, stack, micrometre, &ends, true, &clashes, &offMetal);
     if (offMetal > 0)
         out.lines << tr("%1 via cell(s) drawn off the pads of their two metals join nothing.").arg(offMetal);
-    // (Each run in the plane of a metal thick against its narrowest conductor
-    // a bar, its metal's thickness through: its current even across its
-    // cross-section, as at the low frequency this is solved for -
-    // Filament::bar. Its metal "Solved as" its two faces or a sheet is the
-    // full wave's, whose field of the thickness its faces and surface
-    // impedance hold.
-    //
-    // A metal thinner than that, a strip, as before: within a per cent or so
-    // of the bar on its own conductors, and its finest cells - a spiral's
-    // are a tenth of its thickness wide at its corners - made bars beside
-    // bars so alike that the near field's LU no longer preconditioned, and
-    // GMRES took 2,034 iterations where it had taken 22: test_rf25_inductance
-    // eight times as slow, its spirals' metal 0.9 µm on traces 10 and 15 µm
-    // wide - the review of 54357932.)
-    QHash<QString, double> narrowest;
-    for (const Conductor& c : conductors) {
-        const double width = conductorWidthOf(c.outline) * micrometre;
-        if (width > 0 && (!narrowest.contains(c.layer) || width < narrowest.value(c.layer))) narrowest.insert(c.layer, width);
-    }
-    QSet<double> thick;
-    for (auto it = narrowest.constBegin(); it != narrowest.constEnd(); ++it)
-        if (const Layer* metal = stack.named(it.key()); metal != nullptr && metal->thickness >= kThickForInductance * it.value())
-            thick.insert(heightOf(stack, it.key()));
-    for (Filament& f : out.runs)
-        if (f.z0 == f.z1 && !(f.rise > 0) && f.thickness > 0 && thick.contains(f.z0)) f.bar = f.thickness;
     // (Cells too thin to tell their edges apart: a run lost at each, and the
     //  path broken where a column of them crossed it - a spiral's loop
     //  "solved" at 0.015 Ohm of its 8.7.)
@@ -1438,6 +1413,77 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         }
     }
     if (clashes > 0) out.lines << clashSaid.trimmed();
+
+    // (Each run in the plane of a metal thick against its narrowest conductor
+    // a bar, its metal's thickness through: its current even across its
+    // cross-section, as at the low frequency this is solved for -
+    // Filament::bar. Its metal "Solved as" its two faces or a sheet is the
+    // full wave's, whose field of the thickness its faces and surface
+    // impedance hold.
+    //
+    // A metal thinner than that, a strip, as before: within a per cent or so
+    // of the bar on its own conductors, and its finest cells - a spiral's
+    // are a tenth of its thickness wide at its corners - made bars beside
+    // bars so alike that the near field's LU no longer preconditioned, and
+    // GMRES took 2,034 iterations where it had taken 22: test_rf25_inductance
+    // eight times as slow, its spirals' metal 0.9 µm on traces 10 and 15 µm
+    // wide - the review of 54357932.
+    //
+    // Its narrowest conductor of those the loop's current runs on: the
+    // conductors holding a cell of it, found here, once the cells joined to
+    // neither end are left out. Of every conductor of the layer, a
+    // triangle 5 µm tall drawn anywhere on it, joined to nothing, made each
+    // of a strip's runs a bar, and the strip's loop read 1.3 % low.)
+    {
+        QHash<QString, QList<int>> ofLayer;
+        for (int c = 0; c < conductors.size(); ++c) ofLayer[conductors.at(c).layer] << c;
+        QHash<int, int> conductorOf;
+        const auto holding = [&](int cell) {
+            if (const auto it = conductorOf.constFind(cell); it != conductorOf.constEnd()) return it.value();
+            int found = -1;
+            const MeshCell& at = mesh.cells.at(cell);
+            for (const int c : ofLayer.value(at.layer))
+                if (conductors.at(c).outline.boundingRect().contains(at.centre)
+                    && conductors.at(c).outline.containsPoint(at.centre, Qt::OddEvenFill)) {
+                    found = c;
+                    break;
+                }
+            conductorOf.insert(cell, found);
+            return found;
+        };
+        QSet<int> carrying;
+        QSet<QString> seen;
+        for (const QPair<int, int>& e : std::as_const(ends))
+            for (const int cell : {e.first, e.second}) {
+                if (cell < 0 || cell >= mesh.cells.size()) continue;
+                seen.insert(mesh.cells.at(cell).layer);
+                if (const int c = holding(cell); c >= 0) carrying.insert(c);
+            }
+        QHash<QString, double> narrowest;
+        for (int c = 0; c < conductors.size(); ++c) {
+            const Conductor& conductor = conductors.at(c);
+            // (A layer of the loop none of whose conductors held a cell's
+            //  middle - no cell's middle inside its outline - by all of them,
+            //  as before.)
+            bool any = false;
+            for (const int k : ofLayer.value(conductor.layer)) any = any || carrying.contains(k);
+            if (any && !carrying.contains(c)) continue;
+            if (!seen.contains(conductor.layer)) continue;
+            const double width = conductorWidthOf(conductor.outline) * micrometre;
+            if (width > 0 && (!narrowest.contains(conductor.layer) || width < narrowest.value(conductor.layer)))
+                narrowest.insert(conductor.layer, width);
+        }
+        QSet<double> thick;
+        for (auto it = narrowest.constBegin(); it != narrowest.constEnd(); ++it)
+            if (const Layer* metal = stack.named(it.key()); metal != nullptr && metal->thickness >= kThickForInductance * it.value())
+                thick.insert(heightOf(stack, it.key()));
+        // (Not the stubs to the ports: strips, as they were made.)
+        for (int b = 0; b < out.runs.size(); ++b) {
+            Filament& f = out.runs[b];
+            const bool stub = ends.at(b).first == portIn || ends.at(b).second == portOut;
+            if (!stub && f.z0 == f.z1 && !(f.rise > 0) && f.thickness > 0 && thick.contains(f.z0)) f.bar = f.thickness;
+        }
+    }
 
     const int nb = out.branches, nn = out.nodes;
     // Of every current that obeys Kirchhoff's law and carries the
