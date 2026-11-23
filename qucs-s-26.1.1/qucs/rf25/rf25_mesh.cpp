@@ -817,6 +817,38 @@ double outlineDistance(const QPolygonF& a, const QPolygonF& b)
 /// 4648 cell(s) from 0.000548 to 14.9 µm", and the loop shorted). The lower
 /// of a cluster, and an end over any, is a choice both pieces make alike
 /// whatever they held, so that rounds of sharing settle.
+RowClip::RowClip(const QPolygonF& outline, double lo, double hi) : m_outline(&outline)
+{
+    const int n = int(outline.size());
+    QSet<QPair<QPair<qint64, qint64>, QPair<qint64, qint64>>> edges;
+    const auto keyOf = [](QPointF p) { return qMakePair(qint64(std::llround(p.x() * 1e9)), qint64(std::llround(p.y() * 1e9))); };
+    for (int k = 0; k < n; ++k) {
+        const QPointF& a = outline.at(k);
+        const QPointF& b = outline.at((k + 1) % n);
+        if (std::max(a.y(), b.y()) < lo || std::min(a.y(), b.y()) > hi) continue;
+        // (An edge that reaches the band, from its start: its end is the
+        //  next edge's start, or where a stretch outside begins - the side
+        //  across to the next edge that reaches.)
+        if (m_band.isEmpty() || m_band.last() != a) m_band << a;
+        m_band << b;
+        if (a == b) continue;
+        const auto forth = qMakePair(keyOf(a), keyOf(b)), back = qMakePair(keyOf(b), keyOf(a));
+        if (edges.contains(back)) m_slits << QRectF(a, b).normalized();
+        edges.insert(forth);
+    }
+    while (m_band.size() > 1 && m_band.last() == m_band.first()) m_band.removeLast();
+    if (m_band.size() < 3) m_band.clear();
+}
+
+QList<QPolygonF> RowClip::clip(const QRectF& square) const
+{
+    if (m_outline == nullptr || m_band.isEmpty()) return {};
+    for (const QRectF& slit : m_slits)
+        if (slit.left() <= square.right() && slit.right() >= square.left() && slit.top() <= square.bottom() && slit.bottom() >= square.top())
+            return clipTo({*m_outline}, QPolygonF(square));
+    return clipTo({m_band}, QPolygonF(square));
+}
+
 bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi, double tol, bool ends, double merge)
 {
     // A line of \a sorted within the tolerance of \a x: found by halving,
@@ -2508,12 +2540,26 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             //  40,000 squares for 1,462 cells, a ring of 900 µm 10 µm wide
             //  146 s at 10 across.)
             QList<QList<std::pair<double, double>>> spans;
+            // (And each square of a region clipped against its row's outline,
+            //  RowClip: in the row, the outline's own edges, and each
+            //  square's cells the same to the corner. Clipped against the
+            //  whole outline, each square a boolean of every corner of it, a
+            //  ring of 900 µm radius 10 µm wide meshed in 3.4 s, 0.23 s now; a
+            //  ring of 100 µm 1 µm wide in 5.0 s, 0.24 s now. A row clipped to
+            //  the outline instead made corners of its own where it crossed
+            //  the row's lines, on the boolean's grid: cells a nanometre off,
+            //  and slivers lost.)
+            QList<RowClip> rowClip;
             if (piece.region) {
                 spans.resize(ys.size());
+                rowClip.resize(ys.size());
                 const double margin = 1e-6 * std::max(1.0, std::max(piece.box.width(), piece.box.height()));
                 for (int j = 0; j + 1 < ys.size(); ++j) {
+                    rowClip[j] = RowClip(piece.outline, ys.at(j) - margin, ys.at(j + 1) + margin);
+                    const QPolygonF& own = rowClip.at(j).band();
+                    if (own.isEmpty()) continue;
                     const QRectF row(QPointF(xs.first() - margin, ys.at(j) - margin), QPointF(xs.last() + margin, ys.at(j + 1) + margin));
-                    for (const QPolygonF& part : clipTo({piece.outline}, QPolygonF(row))) {
+                    for (const QPolygonF& part : clipTo({own}, QPolygonF(row))) {
                         const QRectF b = part.boundingRect();
                         spans[j].append({b.left() - margin, b.right() + margin});
                     }
@@ -2529,8 +2575,8 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     const QRectF square(QPointF(xs.at(i), ys.at(j)), QPointF(xs.at(i + 1), ys.at(j + 1)));
                     const double full = square.width() * square.height();
                     const QList<QPolygonF> cut = piece.rectangle ? QList<QPolygonF>{QPolygonF(square)}
-                                                                 : clipTo({piece.outline.isEmpty() ? conductor.outline : piece.outline},
-                                                                          QPolygonF(square));
+                                                 : piece.region  ? rowClip.at(j).clip(square)
+                                                                 : clipTo({piece.outline.isEmpty() ? conductor.outline : piece.outline}, QPolygonF(square));
                     for (const QPolygonF& part : cut) {
                         const double a = piece.rectangle ? full : areaOf(part);
                         if (a <= 0) continue;
