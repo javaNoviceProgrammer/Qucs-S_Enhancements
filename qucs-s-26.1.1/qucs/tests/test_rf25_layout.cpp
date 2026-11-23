@@ -1049,12 +1049,12 @@ private slots:
     // circleOf()'s side counts, odd at these radii
     // (703 and 497), put no corner where the feed meets the curve.
     //
-    // Each in 1,250 to 7,600 cells, and the ring fed at 90 degrees meshed at
+    // Each in 1,140 to 7,600 cells, and the ring fed at 90 degrees meshed at
     // 5 µm in 1,355. Its slivers meshed by their own depth made some 37,000;
     // then its bands, each graded at every side and each a grid from its own
     // end, every one with all their lines, 20,000 to 39,000; then its bands on
     // one lattice, 3,300 to 7,600. Fed at 0 or 90 degrees, a curve's parts are
-    // now one region (1,250 to 2,300); fed at 30 or 45, its feeds' slanted
+    // now one region (1,140 to 2,270); fed at 30 or 45, its feeds' slanted
     // sides straight edges of the outline, they keep their bands. And the
     // loop's R at direct current, fed at 90 degrees, in squares of the metal
     // within half a per cent of a finite-difference solve of each sheet: the
@@ -1129,10 +1129,10 @@ private slots:
                 //  band sized across its slanted sides, the lattice from the
                 //  largest cell, the bands each a grid of their own; under it
                 //  a curve's edges not graded.)
-                const QMap<QString, int> counts{{"a circle fed at 0 degrees", 1251},  {"a circle fed at 30 degrees", 6945},
-                                                {"a circle fed at 45 degrees", 6708}, {"a circle fed at 90 degrees", 1250},
+                const QMap<QString, int> counts{{"a circle fed at 0 degrees", 1145},  {"a circle fed at 30 degrees", 6945},
+                                                {"a circle fed at 45 degrees", 6708}, {"a circle fed at 90 degrees", 1144},
                                                 {"a ring fed at 0 degrees", 2222},    {"a ring fed at 30 degrees", 7592},
-                                                {"a ring fed at 45 degrees", 7264},   {"a ring fed at 90 degrees", 2295},
+                                                {"a ring fed at 45 degrees", 7264},   {"a ring fed at 90 degrees", 2265},
                                                 {"a ring fed at -90 degrees", 1355}};
                 const double ratio = double(mesh.cells.size()) / counts.value(what);
                 QVERIFY2(ratio > 0.9 && ratio < 1.1, qPrintable(QStringLiteral("%1: %2 cells, against %3").arg(what).arg(mesh.cells.size()).arg(counts.value(what))));
@@ -1462,6 +1462,48 @@ private slots:
             QVERIFY2(std::abs(loop.rDc / square / 8.2697 - 1) < 0.003,
                      qPrintable(QStringLiteral("%1 across: %2 squares against 8.2697").arg(across).arg(loop.rDc / square)));
         }
+    }
+
+    // A disc of 50 µm fed by two strips 20 µm wide, the strips slid across
+    // it: every mesh one piece, no side held by three cells or twice by one.
+    // A region's clip whose line ran a few nanometres from a curve's corner
+    // left an edge cell's outline out along a line and straight back, its two
+    // edges one middle with each other and with the cell beside: 23 of 1,501
+    // placements so, where the bands had none (the review of 048ec228; x0 of
+    // 3.4256, 3.5453, 3.6783, 4.1172 and 4.1305 among them). Every tenth of
+    // the review's sweep, from 3 to 23 µm in steps of 13.3 nm, and those.
+    void aFedDiscMeshesWithoutClashesWhereverItsFeedsAre()
+    {
+        QList<double> placements{3.4256, 3.5453, 3.6783, 4.1172, 4.1305, 13.3};
+        for (int k = 0; k <= 1500; k += 10) placements << 3.0 + 0.0133 * k;
+        double thinnest = 1e300;
+        for (const double x0 : std::as_const(placements)) {
+            const rf::Model m = shaped({QJsonObject{{"layer", "M1"}, {"shape", "circle"}, {"x", "0"}, {"y", "0"}, {"radius", "50[um]"}},
+                                        boxOn("M1", x0, 30, x0 + 20, 120), boxOn("M1", -x0 - 20, -120, -x0, -30)});
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            QCOMPARE(int(processed.conductors.size()), 1);
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), m.solveStack(), 1e9);
+            QVERIFY(!mesh.cells.isEmpty());
+            const auto [clashes, pieces] = clashesAndPieces(mesh);
+            QVERIFY2(clashes == 0 && pieces == 1, qPrintable(QStringLiteral("x0 %1: %2 clashes, %3 pieces").arg(x0).arg(clashes).arg(pieces)));
+            // (Where the disc is one region: placed so that a feed's side runs
+            //  into the curve at a slant, it keeps its bands.)
+            if (mesh.lines.join(' ').contains(QStringLiteral("meshed as one region")))
+            for (const rf::MeshCell& cell : mesh.cells) {
+                // (The cells inside the disc, half a micron clear of its curve:
+                //  a cell its cap cuts may be as thin as the cap.)
+                bool inside = true;
+                for (const QPointF& p : cell.outline) inside = inside && std::hypot(p.x(), p.y()) < 49.5;
+                const QRectF box = cell.outline.boundingRect();
+                if (inside) thinnest = std::min(thinnest, std::min(box.width(), box.height()));
+            }
+        }
+        // (And no row or column of thin cells across the region where a
+        //  feed sits off its lattice: the feed's own lines in, the region's
+        //  lines out of their way, its graded lines a quarter of their step
+        //  clear of those there. Added however near, a feed at 13.3 to 33.3 µm
+        //  drew a row 70 nm high, one at 3 µm 13 nm.)
+        QVERIFY2(thinnest >= 0.2, qPrintable(QStringLiteral("a cell inside the disc %1 µm across").arg(thinnest)));
     }
 
     // A curve's lattice lines (rf::latticeLines()) all within their piece,

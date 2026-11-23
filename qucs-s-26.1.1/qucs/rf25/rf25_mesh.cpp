@@ -979,6 +979,34 @@ void conform(QList<MeshCell>& cells, QList<int>& conductor)
             for (const QPointF& p : std::as_const(c.outline))
                 if (o.isEmpty() || p != o.last()) o << p;
             while (o.size() > 1 && o.first() == o.last()) o.removeLast();
+            // (And a corner the outline turns straight back at - out along a
+            //  line a few nanometres and back -, taken out with the repeat it
+            //  leaves: its two edges had one middle with each other and with
+            //  the cell beside them, a side held by three. A region's clip,
+            //  its line a few nanometres from a curve's corner, left 23 of
+            //  1,501 placements of a fed disc's feeds so - the review of
+            //  048ec228.)
+            for (bool again = true; again && o.size() >= 3;) {
+                again = false;
+                for (int k = 0; k < o.size() && o.size() >= 3; ++k) {
+                    const int n = int(o.size());
+                    const QPointF a = o.at((k + n - 1) % n), b = o.at(k), q = o.at((k + 1) % n);
+                    const QPointF u = b - a, v = q - b;
+                    const double lu = std::hypot(u.x(), u.y()), lv = std::hypot(v.x(), v.y());
+                    if (!(lu > 0) || !(lv > 0)) continue;
+                    const double cross = u.x() * v.y() - u.y() * v.x(), dot = u.x() * v.x() + u.y() * v.y();
+                    if (dot < 0 && std::abs(cross) <= 1e-6 * lu * lv) {
+                        o.removeAt(k);
+                        // (Its two neighbours, now side by side, one where they meet.)
+                        for (int i = 0; i < o.size() && o.size() > 1;) {
+                            if (o.at(i) == o.at((i + 1) % o.size())) o.removeAt(i);
+                            else ++i;
+                        }
+                        again = true;
+                        break;
+                    }
+                }
+            }
             // (Its mean thickness, its area over its longer side, under a
             //  nanometre: on one line, the shoelace's rounding leaves it an
             //  area of 1e-14 µm² and not nought. And under a nanometre, not
@@ -2268,24 +2296,47 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                         const double fine = std::min(size, perFeature > 0 ? narrow / perFeature : size) / 2;
                         QList<double>& lines = axis == 0 ? piece.xs : piece.ys;
                         const double lo = axis == 0 ? bounds.left() : bounds.top(), hi = axis == 0 ? bounds.right() : bounds.bottom();
+                        // (The strip's own line in, the region's lines within a
+                        //  quarter of its finest step of it out of its way; then
+                        //  each graded line a quarter of its own step clear of
+                        //  those there, as latticeLines() keeps its graded ends.
+                        //  Added however near, a feed off the lattice drew a
+                        //  column of cells 14 nm wide across a ring - the review
+                        //  of 048ec228.)
+                        const auto place = [&lines](double v, double clear, bool own) {
+                            if (own)
+                                lines.erase(std::remove_if(lines.begin(), lines.end(), [&](double x) { return std::abs(x - v) < clear && x != v; }),
+                                            lines.end());
+                            else
+                                for (const double x : std::as_const(lines))
+                                    if (std::abs(x - v) < clear) return;
+                            if (!lines.contains(v)) lines.insert(std::lower_bound(lines.begin(), lines.end(), v), v);
+                        };
+                        std::sort(lines.begin(), lines.end());
+                        if (at > lo && at < hi) place(at, 0.25 * fine, true);
                         for (double w = base / 2; w >= fine * 0.99; w /= 2)
                             for (const double v : {at - w, at + w})
-                                if (v > lo + 0.25 * w && v < hi - 0.25 * w) lines << v;
-                        if (at > lo && at < hi) lines << at;
-                        std::sort(lines.begin(), lines.end());
-                        lines.erase(std::unique(lines.begin(), lines.end(), [](double a, double b) { return std::abs(a - b) < 1e-9; }), lines.end());
+                                if (v > lo + 0.25 * w && v < hi - 0.25 * w) place(v, 0.25 * w, false);
                         // (And along it, toward the rectangle's two ends: the
                         //  current spreads from its corners.)
                         QList<double>& across = axis == 0 ? piece.ys : piece.xs;
                         const double alo = axis == 0 ? bounds.top() : bounds.left(), ahi = axis == 0 ? bounds.bottom() : bounds.right();
+                        const auto placeAcross = [&across](double v, double clear, bool own) {
+                            if (own)
+                                across.erase(std::remove_if(across.begin(), across.end(), [&](double x) { return std::abs(x - v) < clear && x != v; }),
+                                             across.end());
+                            else
+                                for (const double x : std::as_const(across))
+                                    if (std::abs(x - v) < clear) return;
+                            if (!across.contains(v)) across.insert(std::lower_bound(across.begin(), across.end(), v), v);
+                        };
+                        std::sort(across.begin(), across.end());
                         for (const double end : axis == 0 ? std::array{b.top(), b.bottom()} : std::array{b.left(), b.right()}) {
+                            if (end > alo && end < ahi) placeAcross(end, 0.25 * fine, true);
                             for (double w = base / 2; w >= fine * 0.99; w /= 2)
                                 for (const double v : {end - w, end + w})
-                                    if (v > alo + 0.25 * w && v < ahi - 0.25 * w) across << v;
-                            if (end > alo && end < ahi) across << end;
+                                    if (v > alo + 0.25 * w && v < ahi - 0.25 * w) placeAcross(v, 0.25 * w, false);
                         }
-                        std::sort(across.begin(), across.end());
-                        across.erase(std::unique(across.begin(), across.end(), [](double a, double b) { return std::abs(a - b) < 1e-9; }), across.end());
                     }
                 }
             }
