@@ -3,8 +3,8 @@
 # headless smoke tests over the shipped examples (scripts/ci/smoke-test.sh),
 # on Linux; plus Release builds on macOS (with the unit tests) and Windows
 # (MSYS2), so a platform break shows on the push that made it and not on
-# release day (WS2.1 of ENHANCEMENT_PROPOSAL.md). Release packaging for Linux
-# and Windows lives in release.yml; the macOS DMGs are built locally.
+# release day (WS2.1 of ENHANCEMENT_PROPOSAL.md). Release packaging for the six
+# platforms lives in release.yml.
 name: CI
 
 on:

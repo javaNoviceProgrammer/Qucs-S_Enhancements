@@ -33,8 +33,8 @@ self-contained bundle you can run anywhere (and a `.dmg`):
 scripts/package-macos.sh build bin/macos/apple-silicon
 ```
 
-The release DMGs are made with this script too, locally: the Release
-workflow builds no macOS bundle. The bundle also carries
+The Release workflow makes the release DMGs with this script too, from Qt's
+own build (below), on GitHub's macOS runners. The bundle also carries
 Qt's offscreen platform plugin, so its binary works headless too — the smoke
 suites run against it unchanged. If Homebrew upgrades Qt underneath an
 existing build directory, rebuild from scratch: the new headers carry old
@@ -46,7 +46,9 @@ Homebrew builds Qt, and every library it brings, for the macOS it runs on,
 so a bundle made with Homebrew's Qt needs that macOS or newer. A bundle for
 older macOS takes Qt's own build instead — from the Qt installer, or
 aqtinstall — and names the oldest macOS it runs on. The release DMGs are
-built this way:
+built this way, by the `macos` job of
+[release.yml](.github/workflows/release.yml): Apple silicon on `macos-15`,
+Intel on `macos-15-intel`. Locally:
 
 ```bash
 python3 -m venv ~/aqt && ~/aqt/bin/pip install aqtinstall

@@ -3,7 +3,7 @@
 | Workflow | Trigger | What it does |
 |---|---|---|
 | [CI](.github/workflows/ci.yml) | every push / PR | Linux Debug build with ASan + UBSan, the unit tests, the `load`, `simulate` and `hostile` smoke suites, then 150 fuzzed schematics/datasets and 150 fuzzed simulator outputs; a macOS Release build with the unit tests; a Windows (MSYS2 ucrt64) Release build. Logs, renders and any fuzz findings are uploaded as a workflow artifact (kept 14 days). |
-| [Release](.github/workflows/release.yml) | manual (*Actions → Release → Run workflow*) or a `v*` tag | Builds the Linux and Windows bundles on GitHub's runners and publishes them, with checksums, as a GitHub Release. The macOS DMGs are built locally. |
+| [Release](.github/workflows/release.yml) | manual (*Actions → Release → Run workflow*) or a `v*` tag | Builds the bundles of the six platforms - Linux, Windows and macOS, each on Intel and on ARM - on GitHub's runners and publishes them, with checksums, as a GitHub Release. |
 
 The `hostile` suite is the regression guard for the dataset-loader crashes
 fixed in WS1.1; it is blocking.

@@ -1,10 +1,12 @@
-# Builds redistributable bundles of the enhanced Qucs-S for Linux and Windows
-# and publishes them as a GitHub Release. Adapted from upstream's deploy.yml
-# with the source rooted at $SRC_DIR and one Qt version for every artifact.
+# Builds redistributable bundles of the enhanced Qucs-S for the six platforms -
+# Linux, Windows and macOS, each on Intel and on ARM - and publishes them as a
+# GitHub Release. Adapted from upstream's deploy.yml with the source rooted at
+# $SRC_DIR and one Qt version for every artifact.
 #
-# No macOS bundle is built here: the repository is private, where a macOS
-# runner's minutes count many times a Linux one's, so the DMGs are built
-# locally with scripts/package-macos.sh (BUILD.md, "macOS, with Qt's own build").
+# The macOS DMGs are Qt's own build packed by scripts/package-macos.sh, as
+# BUILD.md's "macOS, with Qt's own build" makes them locally: Apple silicon on
+# macos-15, Intel on macos-15-intel (GitHub's last Intel image), each for
+# macOS 13 and newer.
 #
 # Triggers
 #   * workflow_dispatch  – pick the platforms you want; publishes to the rolling
@@ -13,9 +15,8 @@
 #                          named after the tag.
 #
 # The bundles are release assets only: nothing built here is ever committed
-# to the repository (bin/ is git-ignored). Every run spends the account's
-# Actions minutes; every platform is on by default and can be deselected per
-# run (dispatch inputs). Set the repository variable BUILD_ARM=false to leave
+# to the repository (bin/ is git-ignored). Every platform is on by default and
+# can be deselected per run (dispatch inputs). Set the repository variable BUILD_ARM=false to leave
 # the ARM builds out of tag builds.
 #
 # Fetch the results into bin/ with:  scripts/fetch-binaries.sh [tag]
@@ -38,6 +39,14 @@ on:
         default: true
       windows_arm:
         description: 'Windows arm64 .zip + installer'
+        type: boolean
+        default: true
+      macos_apple_silicon:
+        description: 'macOS Apple silicon .dmg'
+        type: boolean
+        default: true
+      macos_intel:
+        description: 'macOS Intel .dmg'
         type: boolean
         default: true
       publish:
@@ -72,6 +81,8 @@ jobs:
       windows_intel: ${{ steps.p.outputs.windows_intel }}
       linux_arm:     ${{ steps.p.outputs.linux_arm }}
       windows_arm:   ${{ steps.p.outputs.windows_arm }}
+      macos_apple_silicon: ${{ steps.p.outputs.macos_apple_silicon }}
+      macos_intel:         ${{ steps.p.outputs.macos_intel }}
       publish:       ${{ steps.p.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
@@ -100,9 +111,11 @@ jobs:
             echo "windows_intel=${{ inputs.windows_intel }}" >> "$GITHUB_OUTPUT"
             echo "linux_arm=${{ inputs.linux_arm }}"         >> "$GITHUB_OUTPUT"
             echo "windows_arm=${{ inputs.windows_arm }}"     >> "$GITHUB_OUTPUT"
+            echo "macos_apple_silicon=${{ inputs.macos_apple_silicon }}" >> "$GITHUB_OUTPUT"
+            echo "macos_intel=${{ inputs.macos_intel }}"     >> "$GITHUB_OUTPUT"
             echo "publish=${{ inputs.publish }}"             >> "$GITHUB_OUTPUT"
           else
-            for k in linux_intel windows_intel publish; do
+            for k in linux_intel windows_intel macos_apple_silicon macos_intel publish; do
               echo "$k=true" >> "$GITHUB_OUTPUT"
             done
             echo "linux_arm=${{ vars.BUILD_ARM != 'false' }}"   >> "$GITHUB_OUTPUT"
@@ -339,9 +352,104 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  macos:
+    name: macOS ${{ matrix.label }}
+    needs: setup
+    if: needs.setup.outputs.macos_apple_silicon == 'true' || needs.setup.outputs.macos_intel == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: apple-silicon
+            os: macos-15
+            enabled: ${{ needs.setup.outputs.macos_apple_silicon == 'true' }}
+            arch: arm64
+          - label: intel
+            # GitHub's last Intel image.
+            os: macos-15-intel
+            enabled: ${{ needs.setup.outputs.macos_intel == 'true' }}
+            arch: x86_64
+    steps:
+      - name: Skip (platform not selected)
+        if: ${{ !matrix.enabled }}
+        run: echo "macos/${{ matrix.label }} not selected" && exit 0
+
+      - uses: actions/checkout@v4
+        if: ${{ matrix.enabled }}
+
+      # Qt's own build, not Homebrew's: Homebrew builds Qt, and every library
+      # it brings, for the macOS it runs on; Qt's runs on macOS 13 and newer.
+      - name: Install Qt ${{ env.QT_VERSION }}
+        if: ${{ matrix.enabled }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: qtcharts qtpdf
+          cache: true
+
+      - name: Install build tools
+        if: ${{ matrix.enabled }}
+        run: |
+          brew install ninja gperf dos2unix bison flex
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix flex)/bin"  >> "$GITHUB_PATH"
+
+      - name: Configure
+        if: ${{ matrix.enabled }}
+        run: |
+          cmake -S "$SRC_DIR" -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} \
+            -DQUCS_BUILD_TESTS=OFF \
+            -DCI_VERSION="${{ needs.setup.outputs.version }}" \
+            -DGIT="${GITHUB_SHA::7}"
+
+      - name: Build
+        if: ${{ matrix.enabled }}
+        run: cmake --build build --parallel
+
+      # The bundle and its .dmg: the script starts every program from the
+      # bundle and fails on anything that still points outside it. Then the
+      # architecture, and no Mach-O file of the bundle asking for a macOS
+      # after 13.0.
+      - name: Create DMG
+        if: ${{ matrix.enabled }}
+        run: |
+          name="${{ needs.setup.outputs.base }}-macos-${{ matrix.label }}"
+          bash scripts/package-macos.sh build out "$name"
+          app="out/$name.app"
+          archs="$(lipo -archs "$app/Contents/MacOS/qucs-s")"
+          echo "qucs-s: $archs, $(vtool -show-build "$app/Contents/MacOS/qucs-s" | awk '$1 == "minos" {print "minos " $2; exit}')"
+          [ "$archs" = "${{ matrix.arch }}" ] || { echo "not ${{ matrix.arch }}"; exit 1; }
+          over=0
+          while IFS= read -r f; do
+            v="$(vtool -show-build "$f" 2>/dev/null | awk '$1 == "minos" {print $2; exit}')"
+            [ -n "$v" ] || continue
+            if [ "$(printf '%s\n13.0\n' "$v" | sort -V | tail -n 1)" != "13.0" ]; then
+              echo "  needs macOS $v: ${f#$app/}"; over=$((over + 1))
+            fi
+          done < <(find "$app" -type f \( -perm -u+x -o -name '*.dylib' \))
+          [ "$over" = 0 ] || { echo "$over Mach-O files need a macOS after 13.0"; exit 1; }
+          mv "out/$name.dmg" .
+          ls -la ./*.dmg
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ matrix.enabled }}
+        with:
+          name: macos-${{ matrix.label }}
+          path: ${{ needs.setup.outputs.base }}-macos-${{ matrix.label }}.dmg
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   publish:
     name: Publish GitHub release
-    needs: [setup, linux, windows]
+    needs: [setup, linux, windows, macos]
     # Run when every platform job succeeded or was not selected. A job that
     # timed out is "cancelled", not "failure": the 26.1.3 release went out
     # without its Windows arm files that way.
@@ -350,6 +458,7 @@ jobs:
       && needs.setup.outputs.publish == 'true'
       && contains(fromJSON('["success", "skipped"]'), needs.linux.result)
       && contains(fromJSON('["success", "skipped"]'), needs.windows.result)
+      && contains(fromJSON('["success", "skipped"]'), needs.macos.result)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
