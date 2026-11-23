@@ -1673,19 +1673,25 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     QList<QPolygonF> parts;
                     int cuts = -1;
                     // (A rectangle of the curve's own joins it too, unless it is
-                    //  a strip of its own - a feed: a long side of it on the
-                    //  outline, no metal beyond it. Kept apart, the rectangle a
-                    //  ring was cut into beside its keyhole's slit, 1.75 µm deep,
-                    //  met the region on lines of its own, and the ring's R at
-                    //  20 across read 0.85 % over its value at 10 and at 40.)
+                    //  a strip of its own - a feed: both its long sides on the
+                    //  outline, no metal beyond either. Kept apart, the
+                    //  rectangle a ring was cut into beside its keyhole's slit,
+                    //  1.75 µm deep, met the region on lines of its own, and the
+                    //  ring's R at 20 across read 0.85 % over its value at 10
+                    //  and at 40. And a strip by one side alone, the piece of a
+                    //  feed over a gap between a gear's teeth - 5.3 µm of the
+                    //  feed's bottom on the outline, its top the feed's - was
+                    //  meshed as a strip 5.3 µm wide, its fine lines through the
+                    //  feed and the gear: a gear turned 4 degrees, fed by two
+                    //  strips 20 µm wide, 6,939 cells where square it is 2,728.)
                     const auto ownStrip = [&outline](const QRectF& b) {
                         const bool wide = b.width() >= b.height();
                         const double e = 1e-6 * std::max(b.width(), b.height());
                         const QList<QPointF> beyond = wide ? QList<QPointF>{QPointF(b.center().x(), b.top() - e), QPointF(b.center().x(), b.bottom() + e)}
                                                            : QList<QPointF>{QPointF(b.left() - e, b.center().y()), QPointF(b.right() + e, b.center().y())};
                         for (const QPointF& p : beyond)
-                            if (!outline.containsPoint(p, Qt::OddEvenFill)) return true;
-                        return false;
+                            if (outline.containsPoint(p, Qt::OddEvenFill)) return false;
+                        return true;
                     };
                     QList<qsizetype> joined;
                     for (qsizetype k = first; k < pieces.size(); ++k)
