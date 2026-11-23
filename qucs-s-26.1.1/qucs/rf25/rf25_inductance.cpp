@@ -36,6 +36,7 @@
 #include <limits>
 #include <memory>
 #include <queue>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -597,13 +598,17 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
     // which puts no flux through anything in the plane. (The full-wave
     // solve makes its vias its own way, and asks for none of these: each
     // is a search of every cell, a large mesh's vias a large part of it.)
-    const CellBins bins(mesh);
+    // (The bins made at the first via cell: none without vias - the full
+    //  wave's call, which asks for none.)
+    std::optional<CellBins> binned;
     for (int v = 0; vias && v < mesh.cells.size(); ++v) {
         const MeshCell& cell = mesh.cells.at(v);
         const Layer* via = stack.named(cell.layer);
         if (via == nullptr || via->kind != Layer::Via) continue;
         const double za = heightOf(stack, via->from), zb = heightOf(stack, via->to);
         if (!(za >= 0) || !(zb >= 0) || za == zb) continue;
+        if (!binned) binned.emplace(mesh);
+        const CellBins& bins = *binned;
         // The cell of each metal under it, as the full wave lands a via
         // (viaRunsOf()): the one holding its centre, else the nearest whose
         // box, grown by half the via cell's diagonal, does; none where it is

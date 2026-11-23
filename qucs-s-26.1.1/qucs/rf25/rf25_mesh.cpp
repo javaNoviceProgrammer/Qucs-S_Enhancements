@@ -342,6 +342,9 @@ struct Slab {
     /// Where its outline was cut: 0 at x levels (slabs across x), 1 at y
     /// levels.
     int cuts = -1;
+    /// A side of it lies on a curve: an edge of the outline with a curve's
+    /// corner - turning under 20 degrees - at both its ends.
+    bool onCurve = false;
 };
 
 /*!
@@ -519,9 +522,23 @@ QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved =
         };
         QList<Slab> done;
         QList<Span> open;
-        const auto finish = [&done, &whole, acrossY, tol](const Span& sp) {
+        const auto straightEdge = [&points, m](int e) {
+            if (e < 0) return false;
+            const auto gentle = [&points, m](int i) {
+                const QPointF a = points.at(i) - points.at((i + m - 1) % m), b = points.at((i + 1) % m) - points.at(i);
+                const double la = std::hypot(a.x(), a.y()), lb = std::hypot(b.x(), b.y());
+                return la > 0 && lb > 0 && (a.x() * b.x() + a.y() * b.y()) / (la * lb) >= std::cos(20 * M_PI / 180);
+            };
+            return !gentle(e) && !gentle((e + 1) % m);
+        };
+        const auto finish = [&done, &whole, &straightEdge, acrossY, tol](const Span& sp) {
             Slab slab;
             slab.cuts = acrossY ? 1 : 0;
+            // (Its slanted sides alone: a side straight across the slab - a
+            //  feed's own side, where a curve meets it - is no slanted
+            //  straight edge.)
+            const bool slant0 = std::abs(sp.u0[0] - sp.u0[1]) > tol, slant1 = std::abs(sp.u1[0] - sp.u1[1]) > tol;
+            slab.onCurve = !(slant0 && straightEdge(sp.e0)) && !(slant1 && straightEdge(sp.e1));
             const auto at = [acrossY](double u, double c) { return acrossY ? QPointF(u, c) : QPointF(c, u); };
             slab.outline = QPolygonF({at(sp.u0[0], sp.c0), at(sp.u1[0], sp.c0), at(sp.u1[1], sp.c1), at(sp.u0[1], sp.c1)});
             slab.box = slab.outline.boundingRect();
@@ -1445,9 +1462,15 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         /// are its edge. (A hexagon's parts, asking for 5.7 and 6.2 µm,
         /// were cut at 3.1 on it.)
         bool curve = false;
+        /// A curve's parts joined (region): where it meets a rectangle of its
+        /// conductor, each an axis (0: a line of constant x, 1: of y), the
+        /// line's place, and the rectangle (pieces' index).
+        bool region = false;
+        bool onCurve = false;   // (Slab::onCurve)
+        QList<std::tuple<int, double, int>> junctions;
     };
     QList<Piece> pieces;
-    int cutInto = 0, cutFrom = 0, slantedFrom = 0, slantedRectangles = 0, slantedParts = 0, snappedShapes = 0;
+    int cutInto = 0, cutFrom = 0, slantedFrom = 0, slantedRectangles = 0, slantedParts = 0, snappedShapes = 0, curvedRegions = 0;
     double snappedMost = 0;
     // A strip (Conductor::spine) is no piece: it is cut along its centreline,
     // in cells of each segment's own frame (stripCells()), below - a spiral
@@ -1496,6 +1519,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 ++slantedFrom;
                 const double reach = std::hypot(bounds.width(), bounds.height());
                 const bool curve = isCurved(outline);
+                const qsizetype first = pieces.size();
                 for (const Slab& slab : slabs) {
                     Piece piece;
                     piece.conductor = c;
@@ -1543,8 +1567,100 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     piece.along = slab.along;
                     piece.cuts = slab.cuts;
                     piece.curve = curve;
+                    piece.onCurve = slab.onCurve;
                     pieces << piece;
                     ++(slab.rectangle ? slantedRectangles : slantedParts);
+                }
+                // A curve's parts - and the rectangles it was cut into that
+                // are no strips of their own - joined into one region, cut on
+                // one grid of its own width's cells and clipped to the curve,
+                // not each band cut apart and their lines shared: a disc of
+                // 100 µm was some 80 bands of 70 cells each, 5,301 cells where
+                // a square of its area is 288, and a round MIM 40 s to solve.
+                // Not where a slanted side of a part is a straight edge of the
+                // outline - a feed at 30 degrees -: such a strip is meshed as
+                // its own width, as a line inside its pads is, and its bands'
+                // lines stay as they were.
+                bool allOnCurve = true;
+                for (qsizetype k = first; k < pieces.size(); ++k) allOnCurve = allOnCurve && (pieces.at(k).rectangle || pieces.at(k).onCurve);
+                if (curve && allOnCurve) {
+                    QList<QPolygonF> parts;
+                    int cuts = -1;
+                    // (A rectangle of the curve's own joins it too, unless it is
+                    //  a strip of its own - a feed: a long side of it on the
+                    //  outline, no metal beyond it. Kept apart, the rectangle a
+                    //  ring was cut into beside its keyhole's slit, 1.75 µm deep,
+                    //  met the region on lines of its own, and the ring's R at
+                    //  20 across read 0.85 % over its value at 10 and at 40.)
+                    const auto ownStrip = [&outline](const QRectF& b) {
+                        const bool wide = b.width() >= b.height();
+                        const double e = 1e-6 * std::max(b.width(), b.height());
+                        const QList<QPointF> beyond = wide ? QList<QPointF>{QPointF(b.center().x(), b.top() - e), QPointF(b.center().x(), b.bottom() + e)}
+                                                           : QList<QPointF>{QPointF(b.left() - e, b.center().y()), QPointF(b.right() + e, b.center().y())};
+                        for (const QPointF& p : beyond)
+                            if (!outline.containsPoint(p, Qt::OddEvenFill)) return true;
+                        return false;
+                    };
+                    QList<qsizetype> joined;
+                    for (qsizetype k = first; k < pieces.size(); ++k)
+                        if (!pieces.at(k).rectangle || !ownStrip(pieces.at(k).box)) {
+                            parts << (pieces.at(k).rectangle ? QPolygonF(pieces.at(k).box) : pieces.at(k).outline);
+                            cuts = pieces.at(k).cuts;
+                            joined << k;
+                        }
+                    // (The union is on a nanometre's grid: each corner of it put
+                    //  back where the parts had it, so that the region meets the
+                    //  rectangles beside it on their own lines. Left rounded, a
+                    //  feed's end and the region's edge were a nanometre apart,
+                    //  met along a nanometre, and shared no lines.)
+                    QHash<qint64, QList<QPointF>> near;
+                    const auto keyOf = [](qint64 i, qint64 j) { return (i << 32) ^ (j & 0xffffffffLL); };
+                    const double grid = kBooleanGrid;   // (the union's grid, in the layout's units)
+                    for (const QPolygonF& p : std::as_const(parts))
+                        for (const QPointF& q : p) near[keyOf(qint64(std::floor(q.x() / grid)), qint64(std::floor(q.y() / grid)))] << q;
+                    QList<QPolygonF> regions = unionOf(parts);
+                    for (QPolygonF& region : regions)
+                        for (QPointF& q : region) {
+                            const qint64 i = qint64(std::floor(q.x() / grid)), j = qint64(std::floor(q.y() / grid));
+                            double closest = 1.5 * grid;
+                            QPointF best = q;
+                            for (qint64 di = -2; di <= 2; ++di)
+                                for (qint64 dj = -2; dj <= 2; ++dj)
+                                    for (const QPointF& o : near.value(keyOf(i + di, j + dj))) {
+                                        const double d = std::hypot(o.x() - q.x(), o.y() - q.y());
+                                        if (d < closest) {
+                                            closest = d;
+                                            best = o;
+                                        }
+                                    }
+                            q = best;
+                        }
+                    // (Where each fills a fifth of its box or more: a ring 1 µm
+                    //  wide of 200 µm fills a fiftieth, its grid's squares
+                    //  nearly all empty - 40,000 of them clipped for 1,462
+                    //  cells, and at 0.1 µm wide four million, the mesh
+                    //  refused at one cell across. Its bands stay.)
+                    bool filled = !regions.isEmpty();
+                    for (const QPolygonF& region : std::as_const(regions)) {
+                        const QRectF box = region.boundingRect();
+                        filled = filled && std::abs(areaOf(region)) >= 0.2 * box.width() * box.height();
+                    }
+                    if (!filled) continue;
+                    for (qsizetype i = joined.size() - 1; i >= 0; --i) pieces.removeAt(joined.at(i));
+                    ++curvedRegions;
+                    for (const QPolygonF& region : std::as_const(regions)) {
+                        const double a = std::abs(areaOf(region)), p = perimeterOf(region);
+                        if (!(a > 0) || !(p > 0)) continue;
+                        Piece piece;
+                        piece.conductor = c;
+                        piece.box = region.boundingRect();
+                        piece.outline = region;
+                        piece.feature = 2 * a / p;
+                        piece.cuts = cuts;
+                        piece.curve = true;
+                        piece.region = true;
+                        pieces << piece;
+                    }
                 }
                 continue;
             }
@@ -1570,6 +1686,37 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // upper plate - a MIM's plates of 0.49 and 0.15 µm 40 nm apart as their
     // faces, the gap -0.45 µm - and its cells were never aligned: 52 % low at
     // 5 µm cells.
+    // Where a region meets a strip of its conductor - a feed -: the lines of
+    // each found there (Piece::junctions), for the region's grid graded
+    // toward them. The current spreads into the region from the strip's
+    // end and its corners, and the region's cells, its own width's, were
+    // four to five times the feed's there: a disc fed by two strips read its
+    // R 1.3 % over, 0.3 % graded.
+    for (Piece& r : pieces) {
+        if (!r.region) continue;
+        const double tol = 1e-9 * std::max(1.0, std::max(r.box.width(), r.box.height()));
+        for (int q = 0; q < pieces.size(); ++q) {
+            // (Its conductor's pieces left beside it are its strips: the rest
+            //  it holds.)
+            const Piece& rect = pieces.at(q);
+            if (rect.region || rect.conductor != r.conductor) continue;
+            const QRectF& b = rect.box;
+            if (!b.adjusted(-tol, -tol, tol, tol).intersects(r.box)) continue;
+            const int n = int(r.outline.size());
+            for (int i = 0; i < n; ++i) {
+                const QPointF p = r.outline.at(i), w = r.outline.at((i + 1) % n);
+                if (std::abs(p.y() - w.y()) <= tol) {
+                    for (const double y : {b.top(), b.bottom()})
+                        if (std::abs(p.y() - y) <= tol && std::min(std::max(p.x(), w.x()), b.right()) - std::max(std::min(p.x(), w.x()), b.left()) > tol)
+                            r.junctions << std::make_tuple(1, y, q);
+                } else if (std::abs(p.x() - w.x()) <= tol) {
+                    for (const double x : {b.left(), b.right()})
+                        if (std::abs(p.x() - x) <= tol && std::min(std::max(p.y(), w.y()), b.bottom()) - std::max(std::min(p.y(), w.y()), b.top()) > tol)
+                            r.junctions << std::make_tuple(0, x, q);
+                }
+            }
+        }
+    }
     QHash<QString, QPair<double, double>> span;
     {
         double z = 0;
@@ -1906,6 +2053,10 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                          "of its own, and %3 part(s) along the slanted sides, each meshed by its own width; where two "
                          "meet, their cells meet edge to edge.")
                           .arg(slantedFrom).arg(slantedRectangles).arg(slantedParts);
+    if (curvedRegions > 0)
+        mesh.lines << tr("%1 shape(s) with a curve meshed as one region each, on one grid of their own width's cells clipped "
+                         "to the curve, graded where a strip of theirs joins them.")
+                          .arg(curvedRegions);
     if (stripsCut > 0)
         mesh.lines << tr("%1 strip(s) cut along their centrelines, %2 segment(s) in all: each segment cut across its width and "
                          "along its length in cells of its own frame, the next segment's meeting them edge to edge at the "
@@ -2095,13 +2246,48 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             // lines of all of them - 151 where its own were 14.
             if (!piece.rectangle && piece.curve && piece.cuts >= 0) {
                 const QRectF whole = conductor.outline.boundingRect();
-                const double base = coarsest.value(piece.conductor, size);
+                const double base = piece.region ? std::min(size, piece.feature / std::max(1, perFeature)) : coarsest.value(piece.conductor, size);
                 if (piece.cuts == 1)
                     piece.xs = latticeLines(bounds.left(), bounds.width(), whole.left(), base, stepX, edges && piece.grade[0],
                                             edges && piece.grade[1], how.gapShare * gap[0], how.gapShare * gap[1]);
                 else
                     piece.ys = latticeLines(bounds.top(), bounds.height(), whole.top(), base, stepY, edges && piece.grade[2],
                                             edges && piece.grade[3], how.gapShare * gap[2], how.gapShare * gap[3]);
+                // (A region: cut both ways on its own width's lattice, then
+                //  graded toward each strip it meets - at the strip's end,
+                //  and along it toward its two corners - down to half the
+                //  strip's own cells.)
+                if (piece.region) {
+                    piece.xs = latticeLines(bounds.left(), bounds.width(), whole.left(), base, base, edges && piece.grade[0],
+                                            edges && piece.grade[1], how.gapShare * gap[0], how.gapShare * gap[1]);
+                    piece.ys = latticeLines(bounds.top(), bounds.height(), whole.top(), base, base, edges && piece.grade[2],
+                                            edges && piece.grade[3], how.gapShare * gap[2], how.gapShare * gap[3]);
+                    for (const auto& [axis, at, q] : std::as_const(piece.junctions)) {
+                        const QRectF& b = pieces.at(q).box;
+                        const double narrow = std::min(b.width(), b.height());
+                        const double fine = std::min(size, perFeature > 0 ? narrow / perFeature : size) / 2;
+                        QList<double>& lines = axis == 0 ? piece.xs : piece.ys;
+                        const double lo = axis == 0 ? bounds.left() : bounds.top(), hi = axis == 0 ? bounds.right() : bounds.bottom();
+                        for (double w = base / 2; w >= fine * 0.99; w /= 2)
+                            for (const double v : {at - w, at + w})
+                                if (v > lo + 0.25 * w && v < hi - 0.25 * w) lines << v;
+                        if (at > lo && at < hi) lines << at;
+                        std::sort(lines.begin(), lines.end());
+                        lines.erase(std::unique(lines.begin(), lines.end(), [](double a, double b) { return std::abs(a - b) < 1e-9; }), lines.end());
+                        // (And along it, toward the rectangle's two ends: the
+                        //  current spreads from its corners.)
+                        QList<double>& across = axis == 0 ? piece.ys : piece.xs;
+                        const double alo = axis == 0 ? bounds.top() : bounds.left(), ahi = axis == 0 ? bounds.bottom() : bounds.right();
+                        for (const double end : axis == 0 ? std::array{b.top(), b.bottom()} : std::array{b.left(), b.right()}) {
+                            for (double w = base / 2; w >= fine * 0.99; w /= 2)
+                                for (const double v : {end - w, end + w})
+                                    if (v > alo + 0.25 * w && v < ahi - 0.25 * w) across << v;
+                            if (end > alo && end < ahi) across << end;
+                        }
+                        std::sort(across.begin(), across.end());
+                        across.erase(std::unique(across.begin(), across.end(), [](double a, double b) { return std::abs(a - b) < 1e-9; }), across.end());
+                    }
+                }
             }
             if (round) continue;
             // (The sides graded past the edges' one halving, for the line
