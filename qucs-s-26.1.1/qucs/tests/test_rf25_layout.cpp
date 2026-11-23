@@ -1865,6 +1865,61 @@ private slots:
         QVERIFY(rf::processRead(flat, nothingRead(), QStringLiteral("none")).problems.join(' ').contains(QStringLiteral("no area")));
     }
 
+    // A gear of 18 teeth 100 µm across (arcs of 50 and 40 µm radius, 10
+    // degrees each, joined by its teeth's radial sides), fed by two strips,
+    // is one region at the mesh's defaults: ten across, one piece, its loop's
+    // R within 1 % of its value at 20 across - square to the axes and turned.
+    // It was no curve - its arcs, simplified to a corner of 5 degrees each,
+    // never 45 degrees in a run - and its teeth's sides, slanted straight
+    // edges, took any curve off its region: its parts each meshed by its own
+    // width, their lines shared from part to part, it was cut to one or two
+    // across in 6,500 to 7,600 cells, and turned read 9.05 squares where it
+    // is 9.70. A pie's sector, its two radial sides slanted straight edges,
+    // is one region too: 469 cells where its bands were 4,115. (A slanted
+    // strip - both sides parallel straight edges, a feed at 30 degrees -
+    // keeps its bands: aCurveJoinedByAFeedIsMeshedWhole.)
+    void aGearIsMeshedAsOneRegion()
+    {
+        const auto gear = [](double turn) {
+            QJsonArray rows;
+            for (int t = 0; t < 36; ++t) {
+                const double r = t % 2 == 0 ? 50 : 40, a0 = turn + M_PI * t / 18;
+                for (int k = 0; k <= 6; ++k) {
+                    const double a = a0 + M_PI / 18 * k / 6;
+                    rows.append(QJsonArray{QString::number(r * std::cos(a), 'f', 6) + "[um]", QString::number(r * std::sin(a), 'f', 6) + "[um]"});
+                }
+            }
+            return QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}};
+        };
+        for (const double turn : {0.0, 0.07}) {
+            const rf::Model m = shaped({gear(turn), boxOn("M1", -10, 45, 10, 100), boxOn("M1", -10, -100, 10, -45)});
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            QCOMPARE(int(processed.conductors.size()), 1);
+            const rf::Stack stack = m.solveStack();
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), stack, 1e9);
+            const QString what = QStringLiteral("turned %1").arg(turn);
+            QVERIFY2(mesh.ok() && mesh.lines.join(' ').contains(QStringLiteral("meshed as one region")), qPrintable(what + ": " + mesh.lines.join(" | ")));
+            QVERIFY2(mesh.across == 10, qPrintable(QStringLiteral("%1: %2 across, %3 cells").arg(what).arg(mesh.across).arg(mesh.cells.size())));
+            const auto [clashes, pieces] = clashesAndPieces(mesh);
+            QVERIFY2(clashes == 0 && pieces == 1, qPrintable(QStringLiteral("%1: %2 clashes, %3 pieces").arg(what).arg(clashes).arg(pieces)));
+            rf::MeshSettings finer;
+            finer.cellsAcross = 20;
+            const rf::Mesh fine = rf::meshOf(processed.conductors, finer, stack, 1e9);
+            const rf::Inductance at10 = rf::inductanceOf(mesh, processed.conductors, stack, QPointF(0, 100), QPointF(0, -100));
+            const rf::Inductance at20 = rf::inductanceOf(fine, processed.conductors, stack, QPointF(0, 100), QPointF(0, -100));
+            QVERIFY2(at10.ok() && at20.ok(), qPrintable((at10.problems + at20.problems).join(" | ")));
+            QVERIFY2(std::abs(at10.rDc / at20.rDc - 1) < 0.01, qPrintable(QStringLiteral("%1: %2 Ohm at 10 across, %3 at 20").arg(what).arg(at10.rDc).arg(at20.rDc)));
+        }
+        QJsonArray pie;
+        pie.append(QJsonArray{"0", "0"});
+        for (int k = 0; k <= 45; ++k)
+            pie.append(QJsonArray{QString::number(100 * std::cos(0.3 + k * M_PI / 90), 'f', 6) + "[um]", QString::number(100 * std::sin(0.3 + k * M_PI / 90), 'f', 6) + "[um]"});
+        const rf::Model sector = shaped({QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", pie}}});
+        const rf::Mesh cut = rf::meshOf(rf::processRead(sector, nothingRead(), QStringLiteral("none")).conductors, rf::MeshSettings(), sector.solveStack(), 1e9);
+        QVERIFY2(cut.ok() && cut.lines.join(' ').contains(QStringLiteral("meshed as one region")) && cut.cells.size() < 1000,
+                 qPrintable(QStringLiteral("%1 cells | %2").arg(cut.cells.size()).arg(cut.lines.join(" | "))));
+    }
+
     // A region's square clipped within its row (rf::RowClip) comes out as
     // against the whole outline, corner for corner: 10,000 random rows, six
     // squares in each, over a thin ring as processing writes it - a keyhole
