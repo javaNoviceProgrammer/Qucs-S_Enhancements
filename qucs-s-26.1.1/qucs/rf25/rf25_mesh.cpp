@@ -831,29 +831,43 @@ bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi
             kept << x;
         }
         // Each side's lines inside the stretch that are not kept, out.
+        // (Kept is sorted: each line found by halving. Walked whole for
+        //  each line, and each line looked for in the other's walked whole,
+        //  a circle drawn with 720 corners - 2 µm teeth - took 72 s to mesh,
+        //  all of it here.)
+        const auto near = [tol](const QList<double>& sorted, double x) {
+            const auto it = std::lower_bound(sorted.cbegin(), sorted.cend(), x - tol);
+            return it != sorted.cend() && *it <= x + tol;
+        };
         for (QList<double>* lines : {&mine, &theirs}) {
             const qsizetype was = lines->size();
             lines->erase(std::remove_if(lines->begin(), lines->end(),
                                         [&](double x) {
                                             if (x < lo - tol || x > hi + tol) return false;
                                             if (std::abs(x - lo) <= tol || std::abs(x - hi) <= tol) return false;
-                                            for (const double k : std::as_const(kept))
-                                                if (std::abs(x - k) <= tol) return false;
-                                            return true;
+                                            return !near(kept, x);
                                         }),
                          lines->end());
             gained = gained || lines->size() != was;
         }
         both = kept;
     }
-    for (QList<double>* lines : {&mine, &theirs})
+    // Each line of the two not within the tolerance of one a side has, added
+    // to it: the lines it lacks, then the two sorted lists merged once.
+    for (QList<double>* lines : {&mine, &theirs}) {
+        QList<double> missing;
         for (const double x : std::as_const(both)) {
-            bool known = false;
-            for (const double y : std::as_const(*lines)) known = known || std::abs(x - y) <= tol;
-            if (known) continue;
-            lines->insert(std::lower_bound(lines->begin(), lines->end(), x), x);
-            gained = true;
+            const auto it = std::lower_bound(lines->cbegin(), lines->cend(), x - tol);
+            if ((it != lines->cend() && *it <= x + tol) || (!missing.isEmpty() && x - missing.last() <= tol)) continue;
+            missing << x;
         }
+        if (missing.isEmpty()) continue;
+        QList<double> merged;
+        merged.reserve(lines->size() + missing.size());
+        std::merge(lines->cbegin(), lines->cend(), missing.cbegin(), missing.cend(), std::back_inserter(merged));
+        *lines = merged;
+        gained = true;
+    }
     return gained;
 }
 
@@ -940,11 +954,17 @@ void conform(QList<MeshCell>& cells, QList<int>& conductor)
             for (const QPointF& p : std::as_const(c.outline))
                 if (o.isEmpty() || p != o.last()) o << p;
             while (o.size() > 1 && o.first() == o.last()) o.removeLast();
-            // (Its mean thickness, its area over its longer side, under half
-            //  a nanometre: on one line, the shoelace's rounding leaves it an
-            //  area of 1e-14 µm² and not nought.)
+            // (Its mean thickness, its area over its longer side, under a
+            //  nanometre: on one line, the shoelace's rounding leaves it an
+            //  area of 1e-14 µm² and not nought. And under a nanometre, not
+            //  half of one: a triangle 1 nm wide, cut where a curve's line
+            //  ran a hair inside its slanted side, had the middles of its
+            //  slanted side and its upright one under a nanometre apart, one
+            //  side by edgeKey()'s rounding, held twice by it - two such on
+            //  a ring 1 µm wide, 40 and the mesh in four pieces on one 0.1
+            //  µm wide.)
             const QRectF box = o.boundingRect();
-            if (o.size() < 3 || !(std::abs(areaOf(o)) > 0.5 * tol * std::max(box.width(), box.height()))) continue;
+            if (o.size() < 3 || !(std::abs(areaOf(o)) > tol * std::max(box.width(), box.height()))) continue;
             c.outline = o;
             kept << c;
             keptConductor << conductor.at(i);
@@ -2363,7 +2383,30 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     //  times the gap: misaligned cells cost some ten times what aligned ones
     //  do, a third of the C at 25 times - the review of 2b157c78.)
     double unalignedGap = 0, unalignedCell = 0;
+    // (Not where the two are one outline cut at the same lines: their cells
+    //  face cell for cell however they came to. A disc on M1 under the same
+    //  disc on M2, 40 nm apart, its C 0.2 % from the plates' εA/d, was said
+    //  to read low, and told to take cells under 0.4 µm - some 60,000 on a
+    //  disc of 100 µm, past any solve.)
+    const auto alike = [](const QList<double>& a, const QList<double>& b, double tol) {
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); ++i)
+            if (std::abs(a.at(i) - b.at(i)) > tol) return false;
+        return true;
+    };
+    const auto sameCells = [&](const Piece& p, const Piece& q) {
+        const double tol = 1e-9 * std::max(1.0, std::max(p.box.width(), p.box.height()));
+        if (std::abs(p.box.left() - q.box.left()) > tol || std::abs(p.box.top() - q.box.top()) > tol
+            || std::abs(p.box.right() - q.box.right()) > tol || std::abs(p.box.bottom() - q.box.bottom()) > tol)
+            return false;
+        const QPolygonF a = outlineOfPiece(p), b = outlineOfPiece(q);
+        if (a.size() != b.size()) return false;
+        for (int i = 0; i < a.size(); ++i)
+            if (std::abs(a.at(i).x() - b.at(i).x()) > tol || std::abs(a.at(i).y() - b.at(i).y()) > tol) return false;
+        return alike(p.xs, q.xs, tol) && alike(p.ys, q.ys, tol);
+    };
     for (const Facing& pair : std::as_const(unaligned)) {
+        if (sameCells(pieces.at(pair.a), pieces.at(pair.b))) continue;
         double widest = 0;
         for (const int k : {pair.a, pair.b})
             for (const QList<double>* lines : {&pieces.at(k).xs, &pieces.at(k).ys})

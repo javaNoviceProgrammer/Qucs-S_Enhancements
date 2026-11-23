@@ -10,6 +10,7 @@
  * (at your option) any later version.
  */
 #include "rf25_inductance.h"
+#include "rf25_dense.h"
 
 #include "multiphysics/fem_sparse.h"
 #include "rf25_fast.h"
@@ -458,16 +459,28 @@ double alignedInductance(const Filament& a, const Filament& b)
 
 QList<QList<double>> partialInductances(const QList<Filament>& runs)
 {
-    QList<QList<double>> out;
+    // Each row's upper part on a thread of its own, taken in turn, and the
+    // lower part mirrored after: every entry as one thread made it, the
+    // same to the last bit. (Some 2,000 runs are four million entries.)
     const int n = int(runs.size());
-    for (int i = 0; i < n; ++i) out << QList<double>(n, 0.0);
+    std::vector<double> l(std::size_t(n) * std::size_t(n), 0.0);
+    std::atomic_int next{0};
+    const auto work = [&] {
+        for (int i = next.fetch_add(1); i < n; i = next.fetch_add(1))
+            for (int j = i; j < n; ++j) l[std::size_t(i) * std::size_t(n) + std::size_t(j)] = partialInductance(runs.at(i), runs.at(j));
+    };
+    const int threads = std::max(1, std::min(QThread::idealThreadCount(), n / 32));
+    std::vector<std::thread> pool;
+    for (int t = 1; t < threads; ++t) pool.emplace_back(work);
+    work();
+    for (std::thread& t : pool) t.join();
+    QList<QList<double>> out;
+    out.reserve(n);
     for (int i = 0; i < n; ++i) {
-        out[i][i] = partialInductance(runs.at(i), runs.at(i));
-        for (int j = i + 1; j < n; ++j) {
-            const double m = partialInductance(runs.at(i), runs.at(j));
-            out[i][j] = m;
-            out[j][i] = m;
-        }
+        QList<double> row(n);
+        for (int j = 0; j < n; ++j)
+            row[j] = j >= i ? l[std::size_t(i) * std::size_t(n) + std::size_t(j)] : l[std::size_t(j) * std::size_t(n) + std::size_t(i)];
+        out << row;
     }
     return out;
 }
@@ -505,8 +518,9 @@ double heightOf(const Stack& stack, const QString& metal)
 } // namespace
 
 QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre,
-                       QList<QPair<int, int>>* ends, bool vias, int* clashes)
+                       QList<QPair<int, int>>* ends, bool vias, int* clashes, int* offMetal)
 {
+    if (offMetal != nullptr) *offMetal = 0;
     Q_UNUSED(conductors);
     QList<Filament> runs;
     if (ends != nullptr) ends->clear();
@@ -589,22 +603,39 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
         if (via == nullptr || via->kind != Layer::Via) continue;
         const double za = heightOf(stack, via->from), zb = heightOf(stack, via->to);
         if (!(za >= 0) || !(zb >= 0) || za == zb) continue;
-        const auto nearest = [&mesh, &cell](const QString& layer) {
-            int best = -1;
+        // The cell of each metal under it, as the full wave lands a via
+        // (viaRunsOf()): the one holding its centre, else the nearest whose
+        // box, grown by half the via cell's diagonal, does; none where it is
+        // over no cell of that metal. (Taken however far, a via drawn 30 µm
+        // off both strips joined them, and the loop through it read 0.84 Ohm
+        // with nothing said.)
+        const QRectF own = cell.outline.boundingRect();
+        const double grow = std::hypot(own.width(), own.height()) / 2;
+        const auto under = [&mesh, &cell, grow](const QString& layer) {
+            int best = -1, holding = -1;
             double closest = 0;
             for (int c = 0; c < mesh.cells.size(); ++c) {
-                if (mesh.cells.at(c).layer != layer) continue;
-                const QPointF d = mesh.cells.at(c).centre - cell.centre;
+                const MeshCell& m = mesh.cells.at(c);
+                if (m.layer != layer) continue;
+                if (m.outline.containsPoint(cell.centre, Qt::OddEvenFill)) {
+                    if (holding < 0) holding = c;
+                    continue;
+                }
+                if (!m.outline.boundingRect().adjusted(-grow, -grow, grow, grow).contains(cell.centre)) continue;
+                const QPointF d = m.centre - cell.centre;
                 const double far = d.x() * d.x() + d.y() * d.y();
                 if (best < 0 || far < closest) {
                     best = c;
                     closest = far;
                 }
             }
-            return best;
+            return holding >= 0 ? holding : best;
         };
-        const int a = nearest(via->from), b = nearest(via->to);
-        if (a < 0 || b < 0) continue;
+        const int a = under(via->from), b = under(via->to);
+        if (a < 0 || b < 0) {
+            if (offMetal != nullptr) ++*offMetal;
+            continue;
+        }
         Filament f;
         f.from = f.to = cell.centre * micrometre;
         f.z0 = std::min(za, zb);
@@ -832,6 +863,32 @@ PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QSt
     for (const Conductor& c : conductors)
         if ((layer.isEmpty() || c.layer == layer) && c.outline.containsPoint(where, Qt::OddEvenFill)) return PortPlace::Inside;
     return PortPlace::Outside;
+}
+
+QPointF ontoNearestEdge(const QList<Conductor>& conductors, QPointF where, const QString& layer, double reach, double* moved)
+{
+    if (moved != nullptr) *moved = 0;
+    if (!(reach > 0) || portPlace(conductors, where, layer) != PortPlace::Outside) return where;
+    QPointF best = where;
+    double closest = std::numeric_limits<double>::infinity();
+    for (const Conductor& c : conductors) {
+        if (!layer.isEmpty() && c.layer != layer) continue;
+        for (int i = 0, n = int(c.outline.size()); i < n; ++i) {
+            const QPointF a = c.outline.at(i), d = c.outline.at((i + 1) % n) - a;
+            const double len2 = d.x() * d.x() + d.y() * d.y();
+            if (!(len2 > 0)) continue;
+            const double u = std::clamp(QPointF::dotProduct(where - a, d) / len2, 0.0, 1.0);
+            const QPointF p = a + d * u;
+            const double far = std::hypot(where.x() - p.x(), where.y() - p.y());
+            if (far < closest) {
+                closest = far;
+                best = p;
+            }
+        }
+    }
+    if (!(closest <= reach)) return where;
+    if (moved != nullptr) *moved = closest;
+    return best;
 }
 
 QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const QList<int>& reached, QPointF where,
@@ -1110,7 +1167,10 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     }
     QList<QPair<int, int>> ends;
     int clashes = 0;
-    out.runs = runsOf(mesh, conductors, stack, micrometre, &ends, true, &clashes);
+    int offMetal = 0;
+    out.runs = runsOf(mesh, conductors, stack, micrometre, &ends, true, &clashes, &offMetal);
+    if (offMetal > 0)
+        out.lines << tr("%1 via cell(s) drawn off the pads of their two metals join nothing.").arg(offMetal);
     // (Each run in the plane of a metal thick against its narrowest conductor
     // a bar, its metal's thickness through: its current even across its
     // cross-section, as at the low frequency this is solved for -
@@ -1328,8 +1388,12 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         }
         if (!joined.at(nodeOf.value(outAt))) {
             out.problems << tr("The runs of current do not make a path from one end of the loop to the other: the layout "
-                               "is in pieces that nothing joins.%1")
-                                .arg(clashSaid);
+                               "is in pieces that nothing joins.%1%2")
+                                .arg(clashSaid)
+                                .arg(offMetal > 0 ? tr(" %1 via cell(s) are drawn off the pads of their two metals, and join "
+                                                       "nothing.")
+                                                        .arg(offMetal)
+                                                  : QString());
             return out;
         }
         const int alone = int(std::count(joined.begin(), joined.end(), false));
@@ -1386,8 +1450,19 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         QList<QList<std::pair<int, double>>> next(nn);
         for (int b = 0; b < nb; ++b) {
             const int a = nodeOf.value(ends.at(b).first), c = nodeOf.value(ends.at(b).second);
-            next[a].append({c, out.runs.at(b).length()});
-            next[c].append({a, out.runs.at(b).length()});
+            // (A via's run stands at the via, its length its height: the two
+            //  cells it joins, the nearest of each metal, may be a cell
+            //  apart in the plane. Counted as its height alone, a strip on M1
+            //  over a strip on M2, a via where they overlap and their cells
+            //  10 µm long, went from end to end in 391 µm of 400, and the
+            //  loop was refused as made wrong.)
+            double length = out.runs.at(b).length();
+            if (out.runs.at(b).z0 != out.runs.at(b).z1) {
+                const QPointF d = (mesh.cells.at(ends.at(b).first).centre - mesh.cells.at(ends.at(b).second).centre) * micrometre;
+                length = std::hypot(length, std::hypot(d.x(), d.y()));
+            }
+            next[a].append({c, length});
+            next[c].append({a, length});
         }
         using Step = std::pair<double, int>;
         std::priority_queue<Step, std::vector<Step>, std::greater<Step>> queue;
@@ -1463,13 +1538,18 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
             m(t.col(), nb + t.row()) += t.value();
         }
         rhs(row(in)) = 1.0;   // one amp in, and out at the node that was dropped
-        const Eigen::FullPivLU<Eigen::MatrixXd> lu(m);
-        if (!lu.isInvertible()) {
+        // (An LU with partial pivoting, by the library in effect - Accelerate's
+        //  or OpenBLAS's on all the threads -, singular where its condition
+        //  is: Eigen's full-pivoting LU, unblocked and on one thread, took
+        //  4.5 s of a hexagon's 4.8 at 3,000 rows, where the compressed
+        //  solve gave the same R and L to six digits in 0.12.)
+        const DenseFactors<double> lu(std::move(m));
+        answer = lu.solve(rhs);
+        if (!(lu.rcond() > 1e-14) || !answer.allFinite()) {
             out.problems << tr("The runs of current do not make a path from one end of the loop to the other: the layout is "
                                "in pieces that nothing joins.");
             return out;
         }
-        answer = lu.solve(rhs);
         applyL = [&lp, nb](const Eigen::VectorXd& x, Eigen::VectorXd& y) {
             y = Eigen::VectorXd::Zero(nb);
             for (int i = 0; i < nb; ++i)

@@ -674,6 +674,29 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
                                             : tr("No ports: a loop's inductance wants two of them.");
         }
     }
+    // A port or a loop's end drawn on a curve's edge, which processing
+    // moved - its corners dropped within the curves' tolerance, and a
+    // circle's own sides a nanometre inside it: taken onto the processed
+    // edge, said. (Left, an end on a disc's edge at (100, 0) was "on no
+    // conductor", and a ring's outer edge alike.)
+    {
+        const double reach = processed.report.simplifiedMost + 0.002;
+        const auto onto = [&](QPointF& at, const QString& layer, const QString& what) {
+            double moved = 0;
+            const QPointF to = ontoNearestEdge(job.conductors, at, layer, reach, &moved);
+            if (!(moved > 0)) return;
+            job.notes << tr("%1, at %2, %3 µm, is %4 µm off the processed outline it was drawn on - a curve the processing "
+                            "simplified -: taken on it.")
+                             .arg(what).arg(at.x(), 0, 'g', 6).arg(at.y(), 0, 'g', 6).arg(moved, 0, 'g', 2);
+            at = to;
+        };
+        if (job.loop) {
+            onto(job.in, job.inLayer, tr("The loop's start"));
+            onto(job.out, job.outLayer, tr("Its end"));
+        }
+        for (FullWavePort& p : job.ports)
+            if (!p.internal) onto(p.at, p.metal, tr("Port %1").arg(p.name));
+    }
     // A layer whose permittivity in the plane differs along x and y: a
     // layered solve has none, and takes their geometric mean - said.
     for (const Layer& l : job.stack.layers)
