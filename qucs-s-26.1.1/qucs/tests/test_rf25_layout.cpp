@@ -1874,7 +1874,11 @@ private slots:
     // edges, took any curve off its region: its parts each meshed by its own
     // width, their lines shared from part to part, it was cut to one or two
     // across in 6,500 to 7,600 cells, and turned read 9.05 squares where it
-    // is 9.70. A pie's sector, its two radial sides slanted straight edges,
+    // is 9.70. Square or turned, under 3,200 cells (2,728 and 2,652): turned,
+    // a gap between teeth under a feed's end left a piece of the feed 5.3 µm
+    // wide with its bottom on the outline, meshed as a strip of its own, its
+    // lines fine through the feed and the gear - 6,939 cells. A pie's sector,
+    // its two radial sides slanted straight edges,
     // is one region too: 469 cells where its bands were 4,115. (A slanted
     // strip - both sides parallel straight edges, a feed at 30 degrees -
     // keeps its bands: aCurveJoinedByAFeedIsMeshedWhole.)
@@ -1899,7 +1903,7 @@ private slots:
             const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), stack, 1e9);
             const QString what = QStringLiteral("turned %1").arg(turn);
             QVERIFY2(mesh.ok() && mesh.lines.join(' ').contains(QStringLiteral("meshed as one region")), qPrintable(what + ": " + mesh.lines.join(" | ")));
-            QVERIFY2(mesh.across == 10, qPrintable(QStringLiteral("%1: %2 across, %3 cells").arg(what).arg(mesh.across).arg(mesh.cells.size())));
+            QVERIFY2(mesh.across == 10 && mesh.cells.size() < 3200, qPrintable(QStringLiteral("%1: %2 across, %3 cells").arg(what).arg(mesh.across).arg(mesh.cells.size())));
             const auto [clashes, pieces] = clashesAndPieces(mesh);
             QVERIFY2(clashes == 0 && pieces == 1, qPrintable(QStringLiteral("%1: %2 clashes, %3 pieces").arg(what).arg(clashes).arg(pieces)));
             rf::MeshSettings finer;
