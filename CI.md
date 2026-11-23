@@ -11,7 +11,7 @@ fixed in WS1.1; it is blocking.
 Nothing either workflow builds goes into git: CI keeps logs as short-lived
 artifacts, and the Release workflow uploads the bundles as release assets
 only. A manual run publishes to the rolling `continuous` pre-release
-(replaced each time); a tag push (`git tag -a v27.1.6 && git push origin v27.1.6`)
+(replaced each time); a tag push (`git tag -a v27.1.7 && git push origin v27.1.7`)
 publishes a permanent release named after the tag. Releases carry no text.
 Building a tag that already has a release swaps that release's files in
 place and never deletes it; only the highest version tag takes *Latest*
@@ -35,6 +35,6 @@ directories (checksums verified; needs the GitHub CLI):
 
 ```bash
 scripts/fetch-binaries.sh              # latest "continuous" pre-release
-scripts/fetch-binaries.sh v27.1.6      # a tagged release
+scripts/fetch-binaries.sh v27.1.7      # a tagged release
 scripts/fetch-binaries.sh --run 12345  # artifacts of one workflow run
 ```
