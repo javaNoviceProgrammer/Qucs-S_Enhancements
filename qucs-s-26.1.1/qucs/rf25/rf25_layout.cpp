@@ -1367,13 +1367,32 @@ QList<QPolygonF> cutOf(const QList<QPolygonF>& shapes, const Cutout& cutout, con
             continue;
         }
         // A shape the regions hold whole is handed on as it was drawn - its
-        // points and their order -, not as the boolean redrew it.
-        double after = 0;
-        for (const QPolygonF& p : std::as_const(part)) after += areaOf(p);
-        // (Within what the boolean's grid moves it by: half a step at each
-        //  side, along its whole boundary.)
-        const double before = areaOf(s);
-        if (part.size() == 1 && std::abs(after - before) <= perimeterOf(s) / kScaling) {
+        // points and their order -, not as the boolean redrew it: nothing of
+        // it in a region that takes out, nothing of it past those that keep,
+        // each but what the boolean's grid moves - half a step at each side
+        // of what is there, along its own boundary.
+        // (Not its area against the cut one's within its whole boundary's
+        //  step: a slit 2 µm long across a ring 0.3 µm wide of 200 µm took
+        //  0.6 µm², under the 1.26 the ring's boundary allowed, and the ring
+        //  was handed on whole - its slotted loop 99.6 % low, its ends
+        //  joined round the slit.)
+        bool whole = part.size() == 1;
+        const auto nothing = [](const QList<QPolygonF>& pieces) {
+            for (const QPolygonF& p : pieces)
+                if (areaOf(p) > perimeterOf(p) / kScaling) return false;
+            return true;
+        };
+        if (whole && !keep.isEmpty()) {
+            bool ok = false;
+            const QList<QPolygonF> past = booleanOf({s}, keep, gdstk::Operation::Not, &ok);
+            whole = ok && nothing(past);
+        }
+        if (whole && !remove.isEmpty() && near(box, removeBoxes)) {
+            bool ok = false;
+            const QList<QPolygonF> in = booleanOf({s}, remove, gdstk::Operation::And, &ok);
+            whole = ok && nothing(in);
+        }
+        if (whole) {
             out << s;
             continue;
         }
