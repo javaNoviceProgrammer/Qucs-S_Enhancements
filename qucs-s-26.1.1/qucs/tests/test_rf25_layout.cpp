@@ -1687,6 +1687,74 @@ private slots:
         QCOMPARE(rf::latticeLines(3, 20, 0, 5, 5, true, true), (QList<double>{3, 5, 10, 15, 20, 23}));
     }
 
+    // A loop's runs taken as bars by the narrowest conductor its current runs
+    // on, not by every one of their layer: a triangle 5 µm tall drawn 500 µm
+    // off a strip, joined to nothing, made each of the strip's runs a bar -
+    // its metal thick against the triangle -, and the strip's loop read
+    // 1.3 % low. A strip as narrow as the triangle is still solved as bars,
+    // its stubs to the ports not.
+    void aShapeOffTheLoopLeavesItsInductanceAlone()
+    {
+        const auto triangle = [](double y) {
+            QJsonArray rows;
+            for (const QPointF& p : {QPointF(0, y), QPointF(10, y), QPointF(5, y + 5)})
+                rows.append(QJsonArray{QString::number(p.x()) + "[um]", QString::number(p.y()) + "[um]"});
+            return QJsonObject{{"layer", "M2"}, {"shape", "polygon"}, {"points", rows}};
+        };
+        QList<double> ls;
+        for (const double y : {-1.0, 500.0, 50.0, -2.0}) {
+            const double half = y == -2.0 ? 1 : 10;
+            QList<QJsonObject> shapes{boxOn("M2", -100, -half, 100, half)};
+            if (y >= 0) shapes << triangle(y);
+            const rf::Model m = shaped(shapes, QJsonArray() << QJsonArray{"1", "0", "M1"} << QJsonArray{"2", "0", "M2"});
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            QCOMPARE(int(processed.conductors.size()), y < 0 ? 1 : 2);
+            const rf::Stack stack = m.solveStack();
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), stack, 1e9);
+            const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, QPointF(-100, 0), QPointF(100, 0));
+            QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+            int bars = 0;
+            for (const rf::Filament& f : loop.runs) bars += f.bar > 0 ? 1 : 0;
+            QVERIFY2((bars > 0) == (y == -2.0), qPrintable(QStringLiteral("case %1: %2 bars").arg(y).arg(bars)));
+            // (Every run of the narrow strip a bar but the stubs to its
+            //  ports, strips as they were made.)
+            if (y == -2.0) {
+                const QRegularExpressionMatch stubs = QRegularExpression(QStringLiteral("by (\\d+) stub")).match(loop.lines.join(' '));
+                QVERIFY2(stubs.hasMatch() && stubs.captured(1).toInt() > 0, qPrintable(loop.lines.join(" | ")));
+                QCOMPARE(int(loop.runs.size()) - bars, stubs.captured(1).toInt());
+            }
+            ls << loop.lDc;
+        }
+        for (const int k : {1, 2})
+            QVERIFY2(std::abs(ls.at(k) / ls.at(0) - 1) < 1e-9, qPrintable(QStringLiteral("%1 pH against %2").arg(ls.at(k) * 1e12).arg(ls.at(0) * 1e12)));
+    }
+
+    // A polygon crossing itself into two equal lobes - a figure of eight - is
+    // kept, its lobes each a conductor: their shoelace areas cancel, and it
+    // was left out as a shape of no area, its metal lost. Unequal lobes were
+    // kept already; a polygon on one line is still of no area.
+    void aFigureOfEightPolygonIsKept()
+    {
+        const auto polygon = [](const QList<QPointF>& points) {
+            QJsonArray rows;
+            for (const QPointF& p : points) rows.append(QJsonArray{QString::number(p.x()) + "[um]", QString::number(p.y()) + "[um]"});
+            return QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}};
+        };
+        for (const bool equal : {true, false}) {
+            const rf::Model m = shaped({polygon(equal ? QList<QPointF>{{0, 0}, {10, 10}, {10, 0}, {0, 10}} : QList<QPointF>{{0, 0}, {20, 20}, {20, 0}, {0, 10}})});
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            QVERIFY2(!processed.problems.join(' ').contains(QStringLiteral("no area")), qPrintable(processed.problems.join(" | ")));
+            QCOMPARE(int(processed.conductors.size()), 2);
+            double area = 0;
+            for (const rf::Conductor& c : processed.conductors) area += rf::areaOf(c.outline);
+            // (The lobes of the unequal one meet at (20/3, 20/3): 33.3 µm² on
+            //  the left, 133.3 on the right.)
+            QVERIFY2(std::abs(area - (equal ? 50 : 500.0 / 3)) < 0.01, qPrintable(QString::number(area)));
+        }
+        const rf::Model flat = shaped({polygon({{0, 0}, {10, 0}, {20, 0}, {5, 0}})});
+        QVERIFY(rf::processRead(flat, nothingRead(), QStringLiteral("none")).problems.join(' ').contains(QStringLiteral("no area")));
+    }
+
     // A circle and a ring of the model's own, by their centre and radii, each
     // an expression of the parameters: a circle's corners on it, its sides
     // within a nanometre, its area the circle's; a ring the keyhole a file

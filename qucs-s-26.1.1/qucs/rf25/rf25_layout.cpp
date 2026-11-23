@@ -1174,7 +1174,15 @@ QList<OwnShape> ownShapesOf(const Model& model, QStringList* problems)
             shape.outline.removeLast();
         }
         if (!readable) continue;
-        if (!(std::abs(areaOf(shape.outline)) > 0)) {
+        // (Its area as the union fills it: a polygon crossing itself - a
+        //  figure of eight - has lobes turning opposite ways, and their
+        //  shoelace areas cancel. Two equal lobes read as no area, and the
+        //  shape was dropped as one; the union keeps both, as the layer's
+        //  healing does.)
+        double area = std::abs(areaOf(shape.outline));
+        if (!(area > 0) && shape.outline.size() > 3)
+            for (const QPolygonF& lobe : unionOf({shape.outline, shape.outline})) area += std::abs(areaOf(lobe));
+        if (!(area > 0)) {
             say(tr("Shapes: %1 has no area.").arg(name));
             continue;
         }
