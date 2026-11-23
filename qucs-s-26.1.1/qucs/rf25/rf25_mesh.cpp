@@ -148,7 +148,8 @@ QList<double> gridLines(double from, double length, double step, bool gradeLow, 
 /*!
  * Whether \a outline has a curve in it: a run of corners each turning the
  * same way by under 20 degrees - a curve's, as piecesOf() tells them from a
- * polygon's -, 45 degrees or more in all. Not a taper beside a line, whose
+ * polygon's -, 45 degrees or more in all; or such corners, however parted,
+ * a third of a turn in all, a gear's arcs. Not a taper beside a line, whose
  * gentle corners turn one way and back; not an octagon's.
  */
 bool isCurved(const QPolygonF& outline)
@@ -181,7 +182,18 @@ bool isCurved(const QPolygonF& outline)
         }
         if (run >= enough) return true;
     }
-    return false;
+    // Or its gentle corners turning one way, a third of a turn between them
+    // - a third of all a closed outline turns, six such corners at least -,
+    // however they are parted: a gear's of 18 teeth 100 µm across, its arcs
+    // of 10 degrees each between its teeth's sides - simplified, one corner
+    // of 5 degrees each, 174 degrees beside its two feeds -, was no curve,
+    // its slanted parts each meshed by its own width and their lines shared
+    // from part to part, 5,830 cells at one across. (A taper's gentle
+    // corners turn one way and back.)
+    double ways[2] = {0, 0};
+    for (const double t : std::as_const(turn))
+        if (t != 0 && std::abs(t) < small) ways[t > 0 ? 1 : 0] += std::abs(t);
+    return std::max(ways[0], ways[1]) >= 2 * M_PI / 3;
 }
 
 } // namespace
@@ -342,8 +354,9 @@ struct Slab {
     /// Where its outline was cut: 0 at x levels (slabs across x), 1 at y
     /// levels.
     int cuts = -1;
-    /// A side of it lies on a curve: an edge of the outline with a curve's
-    /// corner - turning under 20 degrees - at both its ends.
+    /// It may join its curve's region: no slanted strip's - both its sides
+    /// slanted straight edges of the outline (sharp corners at both ends of
+    /// each), parallel.
     bool onCurve = false;
 };
 
@@ -531,14 +544,26 @@ QList<Slab> piecesOf(const QPolygonF& outline, double merge = 0, double* moved =
             };
             return !gentle(e) && !gentle((e + 1) % m);
         };
-        const auto finish = [&done, &whole, &straightEdge, acrossY, tol](const Span& sp) {
+        const auto finish = [&done, &whole, &straightEdge, &points, m, acrossY, tol](const Span& sp) {
             Slab slab;
             slab.cuts = acrossY ? 1 : 0;
             // (Its slanted sides alone: a side straight across the slab - a
             //  feed's own side, where a curve meets it - is no slanted
             //  straight edge.)
             const bool slant0 = std::abs(sp.u0[0] - sp.u0[1]) > tol, slant1 = std::abs(sp.u1[0] - sp.u1[1]) > tol;
-            slab.onCurve = !(slant0 && straightEdge(sp.e0)) && !(slant1 && straightEdge(sp.e1));
+            // On the curve but where it is a slanted strip's: both its sides
+            // slanted straight edges of the outline, parallel - a feed at 30
+            // degrees (apart: a span's two sides are). A slanted straight edge alone took it off,
+            // a gear's teeth's sides among them: a gear of 18 teeth 100 µm
+            // across kept its bands, their lines shared from band to band,
+            // and was cut to one cell across in 5,830.
+            bool strip = slant0 && slant1 && straightEdge(sp.e0) && straightEdge(sp.e1);
+            if (strip) {
+                const QPointF d0 = points.at((sp.e0 + 1) % m) - points.at(sp.e0), d1 = points.at((sp.e1 + 1) % m) - points.at(sp.e1);
+                const double l0 = std::hypot(d0.x(), d0.y()), l1 = std::hypot(d1.x(), d1.y());
+                strip = l0 > 0 && l1 > 0 && std::abs(d0.x() * d1.y() - d0.y() * d1.x()) <= std::sin(2 * M_PI / 180) * l0 * l1;
+            }
+            slab.onCurve = !strip;
             const auto at = [acrossY](double u, double c) { return acrossY ? QPointF(u, c) : QPointF(c, u); };
             slab.outline = QPolygonF({at(sp.u0[0], sp.c0), at(sp.u1[0], sp.c0), at(sp.u1[1], sp.c1), at(sp.u0[1], sp.c1)});
             slab.box = slab.outline.boundingRect();
@@ -1637,10 +1662,11 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 // not each band cut apart and their lines shared: a disc of
                 // 100 µm was some 80 bands of 70 cells each, 5,301 cells where
                 // a square of its area is 288, and a round MIM 40 s to solve.
-                // Not where a slanted side of a part is a straight edge of the
-                // outline - a feed at 30 degrees -: such a strip is meshed as
-                // its own width, as a line inside its pads is, and its bands'
-                // lines stay as they were.
+                // Not where a part is a slanted strip's - both its sides
+                // slanted straight edges of the outline, parallel, a feed at
+                // 30 degrees -: such a strip is meshed as its own width, as a
+                // line inside its pads is, and its bands' lines stay as they
+                // were.
                 bool allOnCurve = true;
                 for (qsizetype k = first; k < pieces.size(); ++k) allOnCurve = allOnCurve && (pieces.at(k).rectangle || pieces.at(k).onCurve);
                 if (curve && allOnCurve) {
