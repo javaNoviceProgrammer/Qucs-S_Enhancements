@@ -280,6 +280,13 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
 enum class PortPlace { OnEdge, FacingOtherWay, Inside, Outside, OnCorner };
 PortPlace portPlace(const QList<Conductor>& conductors, QPointF where, const QString& layer = QString(),
                     QPointF facing = QPointF());
+/// \a where, on no edge of a conductor on \a layer (any, empty) and inside
+/// none, moved onto the nearest such edge where that is \a reach µm away or
+/// less - \a moved, given, how far -, else where it was. For a port drawn
+/// on an outline the processing moved: a circle's edge, its corners dropped
+/// where they lay within the curves' tolerance of the line between their
+/// neighbours, is up to that tolerance inside the circle drawn.
+QPointF ontoNearestEdge(const QList<Conductor>& conductors, QPointF where, const QString& layer, double reach, double* moved = nullptr);
 
 /// Where an edge port at \a place on \a layer stands, as a clause for why
 /// it is not taken - "it is on a corner of a shape on M1, ..."; empty at
@@ -344,9 +351,10 @@ void setLoopFactorizing(const std::function<void()>& hook);
 /// The cells' shared edges are found by their middles, to a nanometre:
 /// \a clashes, given, is how many places more than two cells' edges, or two
 /// of one cell's, came to the same middle there - cells under a nanometre
-/// across, whose edges no current crosses.
+/// across, whose edges no current crosses. \a offMetal, given, is how many
+/// via cells are over no cell of one of their two metals, and join nothing.
 QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, const Stack& stack, double micrometre = 1e-6,
-                       QList<QPair<int, int>>* ends = nullptr, bool vias = true, int* clashes = nullptr);
+                       QList<QPair<int, int>>* ends = nullptr, bool vias = true, int* clashes = nullptr, int* offMetal = nullptr);
 
 } // namespace qucs_s::rf25
 

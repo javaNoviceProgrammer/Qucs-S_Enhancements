@@ -277,7 +277,14 @@ QList<QPolygonF> withoutHoles(const QPolygonF& outline, const QList<QPolygonF>& 
     a.append(polygonOf(outline));
     for (const QPolygonF& h : holes) b.append(polygonOf(h));
     // (On a thousandth of a nanometre's grid: µm in, µm out.)
-    const gdstk::ErrorCode code = gdstk::boolean(a, b, gdstk::Operation::Not, 1e6, result);
+    // (A coordinate past Clipper's range throws, not fails: caught, as
+    //  rf25_layout.cpp's guarded() does.)
+    gdstk::ErrorCode code = gdstk::ErrorCode::BooleanError;
+    try {
+        code = gdstk::boolean(a, b, gdstk::Operation::Not, 1e6, result);
+    } catch (const std::exception&) {
+        code = gdstk::ErrorCode::BooleanError;
+    }
     QList<QPolygonF> out;
     if (code == gdstk::ErrorCode::NoError)
         for (uint64_t k = 0; k < result.count; ++k) {

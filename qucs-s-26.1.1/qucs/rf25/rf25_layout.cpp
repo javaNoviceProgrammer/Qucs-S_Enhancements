@@ -45,6 +45,20 @@ QString tr(const char* text, const char* disambiguation = nullptr, int n = -1)
 /// (kBooleanGrid).
 constexpr double kScaling = 1 / kBooleanGrid;
 
+/// gdstk's boolean or offset \a call, a failure it reports where Clipper
+/// throws instead: a coordinate past Clipper's range - a rectangle 1e308 µm
+/// tall, which is finite - was a ClipperLib::clipperException that nothing
+/// caught, and Qucs-S ended on reading the model.
+template <typename Call>
+gdstk::ErrorCode guarded(Call&& call)
+{
+    try {
+        return call();
+    } catch (const std::exception&) {
+        return gdstk::ErrorCode::BooleanError;
+    }
+}
+
 /// The smaller side of a polygon's bounding box - how a sliver is told
 /// from a shape, which is exact for a rectangle and an over-estimate for
 /// anything turned at an angle.
@@ -276,7 +290,7 @@ static QList<QPolygonF> mergedOf(const QList<QPolygonF>& shapes, bool* ok)
         in.append(&owned.back());
     }
     gdstk::Array<gdstk::Polygon*> out{};
-    const gdstk::ErrorCode code = gdstk::merge(in, kScaling, out);
+    const gdstk::ErrorCode code = guarded([&] { return gdstk::merge(in, kScaling, out); });
     QList<QPolygonF> joined;
     if (code == gdstk::ErrorCode::NoError)
         for (uint64_t i = 0; i < out.count; ++i) joined << polygonOf(*out[i]);
@@ -560,7 +574,7 @@ QList<QPolygonF> offsetOf(const QList<QPolygonF>& shapes, double distance)
     }
     gdstk::Array<gdstk::Polygon*> out{};
     const gdstk::ErrorCode code =
-        gdstk::offset(in, distance, gdstk::OffsetJoin::Miter, 2, kScaling, true, out);
+        guarded([&] { return gdstk::offset(in, distance, gdstk::OffsetJoin::Miter, 2, kScaling, true, out); });
     QList<QPolygonF> moved;
     if (code == gdstk::ErrorCode::NoError)
         for (uint64_t i = 0; i < out.count; ++i) moved << polygonOf(*out[i]);
@@ -709,7 +723,7 @@ QList<QPolygonF> clipTo(const QList<QPolygonF>& shapes, const QPolygonF& within)
     }
     gdstk::Polygon box = gdstkOf(within);
     gdstk::Array<gdstk::Polygon*> out{};
-    const gdstk::ErrorCode code = gdstk::boolean(in, box, gdstk::Operation::And, kScaling, out);
+    const gdstk::ErrorCode code = guarded([&] { return gdstk::boolean(in, box, gdstk::Operation::And, kScaling, out); });
     QList<QPolygonF> kept;
     if (code == gdstk::ErrorCode::NoError)
         for (uint64_t i = 0; i < out.count; ++i) kept << polygonOf(*out[i]);
@@ -737,7 +751,7 @@ QList<QPolygonF> booleanOf(const QList<QPolygonF>& a, const QList<QPolygonF>& b,
         in2.append(&owned.back());
     }
     gdstk::Array<gdstk::Polygon*> out{};
-    const gdstk::ErrorCode code = gdstk::boolean(in1, in2, op, kScaling, out);
+    const gdstk::ErrorCode code = guarded([&] { return gdstk::boolean(in1, in2, op, kScaling, out); });
     QList<QPolygonF> result;
     if (code == gdstk::ErrorCode::NoError)
         for (uint64_t i = 0; i < out.count; ++i) result << polygonOf(*out[i]);
@@ -1482,6 +1496,26 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
         QList<QPolygonF> shapes = it.value();
         if (shapes.isEmpty()) continue;
         out.report.read += int(shapes.size());
+        // A shape reaching a metre or more from the origin left out, said:
+        // no layout spans that, and past some 4.6e15 µm on the boolean
+        // operations' nanometre grid a coordinate is past Clipper's range -
+        // a rectangle 1e308 µm tall ended Qucs-S.
+        {
+            const double farthest = 1.0 / perUnit;
+            const qsizetype was = shapes.size();
+            shapes.erase(std::remove_if(shapes.begin(), shapes.end(),
+                                        [farthest](const QPolygonF& p) {
+                                            for (const QPointF& q : p)
+                                                if (!(std::abs(q.x()) < farthest && std::abs(q.y()) < farthest)) return true;
+                                            return false;
+                                        }),
+                         shapes.end());
+            if (shapes.size() < was)
+                out.problems << tr("%1: %2 shape(s) reach a metre or more from the origin, past any layout: left out.")
+                                    .arg(layer)
+                                    .arg(was - shapes.size());
+            if (shapes.isEmpty()) continue;
+        }
         const Layer* of = stack.named(layer);
         if (of == nullptr) {
             out.problems << tr("%1 has shapes but is no layer of the stack.").arg(layer);

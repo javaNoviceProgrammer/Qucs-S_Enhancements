@@ -19,6 +19,7 @@
 #include "rf25/rf25_layout.h"
 #include "rf25/rf25_mesh.h"
 #include "rf25/rf25_inductance.h"
+#include "rf25/rf25_solve.h"
 
 namespace rf = qucs_s::rf25;
 
@@ -65,6 +66,129 @@ rf::Model stacked()
     set(m2, "thickness", QStringLiteral("0.9[um]"));
     return m;
 }
+
+/// stacked() with \a shapes of its own and \a rows as its layer map.
+rf::Model shaped(const QList<QJsonObject>& shapes, const QJsonArray& rows = QJsonArray() << QJsonArray{"1", "0", "M1"})
+{
+    rf::Model m = stacked();
+    m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes")));
+    const QString tag = m.layout().child(QStringLiteral("rf_shapes"))->tag;
+    for (const QJsonObject& o : shapes) {
+        rf::Node n = m.make(QStringLiteral("rf_shape"));
+        n.props = o;
+        m.add(tag, n);
+    }
+    m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), rows);
+    return m;
+}
+
+/// A layout read with nothing in it: the model's own shapes alone.
+qucs_s::layout::Layout nothingRead()
+{
+    qucs_s::layout::Layout empty;
+    qucs_s::layout::Cell top;
+    top.name = QStringLiteral("TOP");
+    empty.cells << top;
+    empty.byName.insert(top.name, 0);
+    return empty;
+}
+
+/// A rectangle of the model's own on \a layer, µm.
+QJsonObject boxOn(const char* layer, double x0, double y0, double x1, double y1)
+{
+    QJsonArray rows;
+    for (const QPointF& p : {QPointF(x0, y0), QPointF(x1, y0), QPointF(x1, y1), QPointF(x0, y1)})
+        rows.append(QJsonArray{QString::number(p.x(), 'g', 15) + "[um]", QString::number(p.y(), 'g', 15) + "[um]"});
+    return QJsonObject{{"layer", layer}, {"shape", "polygon"}, {"points", rows}};
+}
+
+/// How many sides of \a mesh are held by three cells or twice by one, as the
+/// solve pairs them (by their middles, to a nanometre), and how many pieces
+/// its cells are in, joined side to side.
+QPair<int, int> clashesAndPieces(const rf::Mesh& mesh)
+{
+    QHash<QString, QList<int>> sides;
+    for (int c = 0; c < mesh.cells.size(); ++c) {
+        const QPolygonF& o = mesh.cells.at(c).outline;
+        for (int i = 0; i < o.size(); ++i) {
+            const QPointF mid = (o.at(i) + o.at((i + 1) % o.size())) / 2;
+            sides[mesh.cells.at(c).layer + QStringLiteral("|%1,%2").arg(std::llround(mid.x() * 1e3)).arg(std::llround(mid.y() * 1e3))] << c;
+        }
+    }
+    QVector<int> parent(mesh.cells.size());
+    std::iota(parent.begin(), parent.end(), 0);
+    std::function<int(int)> find = [&](int x) { return parent[x] == x ? x : parent[x] = find(parent[x]); };
+    int clashes = 0;
+    for (auto it = sides.cbegin(); it != sides.cend(); ++it) {
+        if (it.value().size() > 2 || (it.value().size() == 2 && it.value().at(0) == it.value().at(1))) ++clashes;
+        else if (it.value().size() == 2) parent[find(it.value().at(0))] = find(it.value().at(1));
+    }
+    QSet<int> pieces;
+    for (int c = 0; c < mesh.cells.size(); ++c) pieces.insert(find(c));
+    return {clashes, int(pieces.size())};
+}
+
+/// rf::shareLines() as it was before its lists were halved (47fae397): each
+/// line looked for by walking the lists whole - what the halving must give,
+/// to the last line.
+bool walkedShareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi, double tol, bool ends, double merge)
+{
+    // (\a ends false: the lines strictly inside alone, not the stretch's
+    //  ends - where a slanted side's part meets another, an end at a slanted
+    //  corner is no line of either.)
+    const double in = ends ? -tol : tol;
+    QList<double> both;
+    for (const double x : std::as_const(mine))
+        if (x >= lo + in && x <= hi - in) both << x;
+    for (const double x : std::as_const(theirs))
+        if (x >= lo + in && x <= hi - in) both << x;
+    if (ends) both << lo << hi;
+    std::sort(both.begin(), both.end());
+    bool gained = false;
+    if (merge > tol) {
+        // The lines that stay: the ends, then from the lowest up each one
+        // further than \a merge from the last kept and from the next end.
+        const auto isEnd = [&](double x) { return ends && (std::abs(x - lo) <= tol || std::abs(x - hi) <= tol); };
+        QList<double> kept;
+        for (const double x : std::as_const(both)) {
+            if (!kept.isEmpty() && x - kept.last() <= tol) continue;
+            if (isEnd(x)) {
+                // (An end displaces the line kept just under it.)
+                while (!kept.isEmpty() && !isEnd(kept.last()) && x - kept.last() <= merge) kept.removeLast();
+                kept << x;
+                continue;
+            }
+            if (!kept.isEmpty() && x - kept.last() <= merge) continue;
+            if (ends && hi - x <= merge && hi - x > tol) continue;
+            kept << x;
+        }
+        // Each side's lines inside the stretch that are not kept, out.
+        for (QList<double>* lines : {&mine, &theirs}) {
+            const qsizetype was = lines->size();
+            lines->erase(std::remove_if(lines->begin(), lines->end(),
+                                        [&](double x) {
+                                            if (x < lo - tol || x > hi + tol) return false;
+                                            if (std::abs(x - lo) <= tol || std::abs(x - hi) <= tol) return false;
+                                            for (const double k : std::as_const(kept))
+                                                if (std::abs(x - k) <= tol) return false;
+                                            return true;
+                                        }),
+                         lines->end());
+            gained = gained || lines->size() != was;
+        }
+        both = kept;
+    }
+    for (QList<double>* lines : {&mine, &theirs})
+        for (const double x : std::as_const(both)) {
+            bool known = false;
+            for (const double y : std::as_const(*lines)) known = known || std::abs(x - y) <= tol;
+            if (known) continue;
+            lines->insert(std::lower_bound(lines->begin(), lines->end(), x), x);
+            gained = true;
+        }
+    return gained;
+}
+
 
 /// A region added to \a m's Cutout: its shape and its properties.
 rf::Node& region(rf::Model& m, const char* shape, const QList<QPair<const char*, QJsonValue>>& props, const QString& label = {})
@@ -1021,6 +1145,192 @@ private slots:
                              qPrintable(QStringLiteral("%1: %2 squares against %3").arg(what).arg(squares).arg(expected)));
                 }
             }
+    }
+
+
+    // A ring 1 µm wide, and one 0.1 µm wide, meshed whole: no side held by
+    // three cells or twice by one, one piece. A triangle 1 nm wide, cut where
+    // a curve's line ran a hair inside its slanted side, had the middles of
+    // its slanted side and its upright one under a nanometre apart - one side
+    // as the solve pairs them, held twice by it: two such on the ring 1 µm
+    // wide, 40 and the mesh in four pieces on the one 0.1 µm wide.
+    void aThinRingIsMeshedWhole()
+    {
+        for (const double inner : {99.0, 99.9}) {
+            const rf::Model m = shaped({QJsonObject{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"},
+                                                    {"inner_radius", QString::number(inner) + "[um]"}}});
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            QCOMPARE(int(processed.conductors.size()), 1);
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), m.solveStack(), 1e9);
+            QVERIFY(!mesh.cells.isEmpty());
+            const auto [clashes, pieces] = clashesAndPieces(mesh);
+            QVERIFY2(clashes == 0 && pieces == 1, qPrintable(QStringLiteral("inner radius %1: %2 clashes, %3 pieces").arg(inner).arg(clashes).arg(pieces)));
+        }
+    }
+
+    // A shape reaching a metre or more from the origin is left out, said - a
+    // rectangle 1e308 µm tall, which is finite, was past the boolean
+    // operations' range, a ClipperLib::clipperException that nothing caught,
+    // and Qucs-S ended on reading the model. The shapes beside it are kept.
+    void aShapeFarPastAnyLayoutIsLeftOut()
+    {
+        const rf::Model m = shaped({boxOn("M1", 0, 0, 100, 1e308), boxOn("M1", 0, -50, 100, -10), boxOn("M1", 5e5, 0, 1.5e6, 10)});
+        rf::Processed processed;
+        try {
+            processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+        } catch (...) {
+            QFAIL("processing threw");
+        }
+        QVERIFY2(processed.problems.join(' ').contains(QStringLiteral("M1: 2 shape(s) reach a metre or more from the origin")),
+                 qPrintable(processed.problems.join(" | ")));
+        QCOMPARE(int(processed.conductors.size()), 1);
+        // (The boolean operations themselves fail, and do not throw, past
+        //  their range: a union and a clip of such a shape.)
+        const QPolygonF huge(QRectF(0, 0, 100, 1e17));
+        try {
+            QCOMPARE(rf::unionOf({huge, QPolygonF(QRectF(0, 0, 10, 10))}).size(), 2);
+            QVERIFY(rf::clipTo({huge}, QPolygonF(QRectF(0, 0, 10, 10))).isEmpty());
+        } catch (...) {
+            QFAIL("a boolean operation threw");
+        }
+    }
+
+    // A loop's ends drawn on a circle's edge, and on a ring's outer edge,
+    // are taken on the outline as processed, and said: the processing drops
+    // a curve's corners within its tolerance of the line between their
+    // neighbours, which puts its edge up to that inside the circle drawn,
+    // and an end at (100, 0) on a disc of 100 µm was "on no conductor".
+    void anEndOnACurvesEdgeIsTakenOnIt()
+    {
+        for (const bool ring : {false, true}) {
+            rf::Model m = shaped({ring ? QJsonObject{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"}, {"inner_radius", "50[um]"}}
+                                       : QJsonObject{{"layer", "M1"}, {"shape", "circle"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"}}});
+            rf::Node* ports = nullptr;
+            for (rf::Node& n : m.root.children)
+                if (n.type == QStringLiteral("rf_ports")) ports = &n;
+            QVERIFY(ports != nullptr);
+            ports->children.clear();
+            for (const auto& [name, x, y] : {std::make_tuple("P1", "100[um]", "0"), std::make_tuple("P2", "-70.7106781187[um]", "-70.7106781187[um]")}) {
+                rf::Node p = m.make(QStringLiteral("rf_edge_port"));
+                p.label = QLatin1String(name);
+                p.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+                p.props.insert(QStringLiteral("x"), QLatin1String(x));
+                p.props.insert(QStringLiteral("y"), QLatin1String(y));
+                ports->children.push_back(p);
+            }
+            rf::SolveJob job;
+            rf::SolveRequest request;
+            request.solver = QStringLiteral("quasi_static");
+            request.loopOnly = true;
+            const rf::ModelSolution sol = rf::solveModel(job, m, nothingRead(), QStringLiteral("none"), QDir::tempPath(), request);
+            const QString what = ring ? QStringLiteral("the ring") : QStringLiteral("the disc");
+            QVERIFY2(sol.inductance && sol.inductance->ok(),
+                     qPrintable(what + ": " + sol.problem + " | " + (sol.inductance ? sol.inductance->problems.join(" | ") : QString())));
+            QVERIFY2(sol.inductance->rDc > 0 && std::isfinite(sol.inductance->rDc), qPrintable(what));
+            QVERIFY2(sol.notes.join(' ').contains(QStringLiteral("taken on it")), qPrintable(what + ": " + sol.notes.join(" | ")));
+        }
+    }
+
+    // A disc on M1 under the same disc on M2, 40 nm apart, is not said to
+    // have cells that cannot be aligned: the two are one outline cut at the
+    // same lines, cell for cell. Said so, its C read 0.2 % from the plates'
+    // eps A / d, and it was told to take cells under 0.4 µm - some 60,000 on a
+    // disc of 100 µm, past any solve. A smaller disc over it, off its centre,
+    // still is.
+    void aRoundCapacitorIsNotSaidMisaligned()
+    {
+        for (const bool alike : {true, false}) {
+            rf::Model m = shaped({QJsonObject{{"layer", "M1"}, {"shape", "circle"}, {"x", "0"}, {"y", "0"}, {"radius", "50[um]"}},
+                                  alike ? QJsonObject{{"layer", "M2"}, {"shape", "circle"}, {"x", "0"}, {"y", "0"}, {"radius", "50[um]"}}
+                                        : QJsonObject{{"layer", "M2"}, {"shape", "circle"}, {"x", "7[um]"}, {"y", "3[um]"}, {"radius", "30[um]"}}},
+                                 QJsonArray() << QJsonArray{"1", "0", "M1"} << QJsonArray{"2", "0", "M2"});
+            for (rf::Node& n : m.stackNode().children)
+                if (n.label == QLatin1String("ILD2")) n.props.insert(QStringLiteral("thickness"), QStringLiteral("0.04[um]"));
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            QCOMPARE(int(processed.conductors.size()), 2);
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), m.solveStack(), 1e9);
+            const bool said = mesh.warnings.join(' ').contains(QStringLiteral("cannot be aligned"));
+            QVERIFY2(said == !alike, qPrintable(mesh.warnings.join(" | ")));
+        }
+    }
+
+    // A loop from a strip on M1 to a strip on M2, through a via where they
+    // overlap, square or round, is solved: a via's run stands at the via, its
+    // length its height, and the two cells it joins may be a cell apart in
+    // the plane - counted as its height alone, the runs went from end to end
+    // in 391 µm of 400 and the loop was refused as made wrong. A round via
+    // and a square one of its area agree within a per cent. And a via drawn
+    // off both strips joins nothing, said: taken however far, one 30 µm off
+    // joined them, and the loop read 0.84 Ohm.
+    void aLoopThroughAViaIsSolved()
+    {
+        const double r = 8, side = r * std::sqrt(M_PI);
+        QList<double> rs;
+        for (const QString kind : {QStringLiteral("square"), QStringLiteral("round"), QStringLiteral("away")}) {
+            const QJsonObject via = kind == QLatin1String("square") ? boxOn("V1", -side / 2, -side / 2, side / 2, side / 2)
+                                                                    : QJsonObject{{"layer", "V1"}, {"shape", "circle"}, {"x", "0"},
+                                                                                  {"y", kind == QLatin1String("away") ? "40[um]" : "0"}, {"radius", "8[um]"}};
+            const rf::Model m = shaped({boxOn("M1", -200, -10, 10, 10), boxOn("M2", -10, -10, 200, 10), via},
+                                       QJsonArray() << QJsonArray{"1", "0", "M1"} << QJsonArray{"2", "0", "M2"} << QJsonArray{"3", "0", "V1"});
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            const rf::Stack stack = m.solveStack();
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), stack, 1e9);
+            const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, QPointF(-200, 0), QPointF(200, 0), 1e-6, 0, nullptr,
+                                                         QStringLiteral("M1"), QStringLiteral("M2"));
+            if (kind == QLatin1String("away")) {
+                QVERIFY2(!loop.ok() && loop.problems.join(' ').contains(QStringLiteral("drawn off the pads of their two metals")),
+                         qPrintable(loop.problems.join(" | ")));
+                continue;
+            }
+            QVERIFY2(loop.ok() && loop.rDc > 0 && loop.lDc > 0, qPrintable(kind + ": " + loop.problems.join(" | ")));
+            rs << loop.rDc;
+        }
+        QVERIFY2(std::abs(rs.at(1) / rs.at(0) - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2 Ohm").arg(rs.at(1)).arg(rs.at(0))));
+    }
+
+    // Two pieces' lines shared (rf::shareLines()), its lists halved, come out
+    // as they did when walked whole (walkedShareLines()). Halved with the
+    // first line at or past x - tol asked whether it was at most x + tol, a
+    // line one tolerance from one kept - two lines a nanometre apart on a
+    // nanometre's grid - stayed on its own piece and never reached the other:
+    // {4, 4.001} with nothing, merging at 0.01, gave {4, 4.001} and {4}, where
+    // the walk gave {4} and {4} (the review of 4ce22e87). And 20,000 random
+    // pairs of grids holding such pairs, each shared as meshOf() shares them,
+    // in rounds until neither gains.
+    void sharedLinesComeOutAsWalked()
+    {
+        {
+            QList<double> mine{4, 4.001}, theirs;
+            rf::shareLines(mine, theirs, 0, 100, 0.001, false, 0.01);
+            QCOMPARE(mine, QList<double>{4});
+            QCOMPARE(theirs, QList<double>{4});
+        }
+        std::mt19937 random(11);
+        int apart = 0;
+        for (int k = 0; k < 20000; ++k) {
+            const double tol = 0.001;
+            QList<double> mine, theirs;
+            for (QList<double>* lines : {&mine, &theirs}) {
+                const int n = 1 + int(random() % 12);
+                for (int i = 0; i < n; ++i) {
+                    const double x = double(random() % 100000) * tol;
+                    *lines << x;
+                    if (random() % 3 == 0) *lines << x + tol;
+                }
+                std::sort(lines->begin(), lines->end());
+                lines->erase(std::unique(lines->begin(), lines->end()), lines->end());
+            }
+            const double lo = double(random() % 30000) * tol, hi = lo + double(random() % 70000) * tol + 1;
+            const bool ends = random() % 2 == 0;
+            const double merge = random() % 2 == 0 ? 0.0 : 0.01;
+            QList<double> walkedMine = mine, walkedTheirs = theirs;
+            for (int round = 0; round < 8 && rf::shareLines(mine, theirs, lo, hi, tol, ends, merge); ++round) {
+            }
+            for (int round = 0; round < 8 && walkedShareLines(walkedMine, walkedTheirs, lo, hi, tol, ends, merge); ++round) {
+            }
+            if (mine != walkedMine || theirs != walkedTheirs) ++apart;
+        }
+        QVERIFY2(apart == 0, qPrintable(QStringLiteral("%1 of 20,000 apart from the walk's").arg(apart)));
     }
 
     // A curve's lattice lines (rf::latticeLines()) all within their piece,
