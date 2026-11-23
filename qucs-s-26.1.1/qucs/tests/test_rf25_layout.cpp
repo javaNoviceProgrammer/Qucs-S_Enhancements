@@ -128,6 +128,68 @@ QPair<int, int> clashesAndPieces(const rf::Mesh& mesh)
     return {clashes, int(pieces.size())};
 }
 
+/// rf::shareLines() as it was before its lists were halved (47fae397): each
+/// line looked for by walking the lists whole - what the halving must give,
+/// to the last line.
+bool walkedShareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi, double tol, bool ends, double merge)
+{
+    // (\a ends false: the lines strictly inside alone, not the stretch's
+    //  ends - where a slanted side's part meets another, an end at a slanted
+    //  corner is no line of either.)
+    const double in = ends ? -tol : tol;
+    QList<double> both;
+    for (const double x : std::as_const(mine))
+        if (x >= lo + in && x <= hi - in) both << x;
+    for (const double x : std::as_const(theirs))
+        if (x >= lo + in && x <= hi - in) both << x;
+    if (ends) both << lo << hi;
+    std::sort(both.begin(), both.end());
+    bool gained = false;
+    if (merge > tol) {
+        // The lines that stay: the ends, then from the lowest up each one
+        // further than \a merge from the last kept and from the next end.
+        const auto isEnd = [&](double x) { return ends && (std::abs(x - lo) <= tol || std::abs(x - hi) <= tol); };
+        QList<double> kept;
+        for (const double x : std::as_const(both)) {
+            if (!kept.isEmpty() && x - kept.last() <= tol) continue;
+            if (isEnd(x)) {
+                // (An end displaces the line kept just under it.)
+                while (!kept.isEmpty() && !isEnd(kept.last()) && x - kept.last() <= merge) kept.removeLast();
+                kept << x;
+                continue;
+            }
+            if (!kept.isEmpty() && x - kept.last() <= merge) continue;
+            if (ends && hi - x <= merge && hi - x > tol) continue;
+            kept << x;
+        }
+        // Each side's lines inside the stretch that are not kept, out.
+        for (QList<double>* lines : {&mine, &theirs}) {
+            const qsizetype was = lines->size();
+            lines->erase(std::remove_if(lines->begin(), lines->end(),
+                                        [&](double x) {
+                                            if (x < lo - tol || x > hi + tol) return false;
+                                            if (std::abs(x - lo) <= tol || std::abs(x - hi) <= tol) return false;
+                                            for (const double k : std::as_const(kept))
+                                                if (std::abs(x - k) <= tol) return false;
+                                            return true;
+                                        }),
+                         lines->end());
+            gained = gained || lines->size() != was;
+        }
+        both = kept;
+    }
+    for (QList<double>* lines : {&mine, &theirs})
+        for (const double x : std::as_const(both)) {
+            bool known = false;
+            for (const double y : std::as_const(*lines)) known = known || std::abs(x - y) <= tol;
+            if (known) continue;
+            lines->insert(std::lower_bound(lines->begin(), lines->end(), x), x);
+            gained = true;
+        }
+    return gained;
+}
+
+
 /// A region added to \a m's Cutout: its shape and its properties.
 rf::Node& region(rf::Model& m, const char* shape, const QList<QPair<const char*, QJsonValue>>& props, const QString& label = {})
 {
@@ -1224,6 +1286,51 @@ private slots:
             rs << loop.rDc;
         }
         QVERIFY2(std::abs(rs.at(1) / rs.at(0) - 1) < 0.01, qPrintable(QStringLiteral("%1 against %2 Ohm").arg(rs.at(1)).arg(rs.at(0))));
+    }
+
+    // Two pieces' lines shared (rf::shareLines()), its lists halved, come out
+    // as they did when walked whole (walkedShareLines()). Halved with the
+    // first line at or past x - tol asked whether it was at most x + tol, a
+    // line one tolerance from one kept - two lines a nanometre apart on a
+    // nanometre's grid - stayed on its own piece and never reached the other:
+    // {4, 4.001} with nothing, merging at 0.01, gave {4, 4.001} and {4}, where
+    // the walk gave {4} and {4} (the review of 4ce22e87). And 20,000 random
+    // pairs of grids holding such pairs, each shared as meshOf() shares them,
+    // in rounds until neither gains.
+    void sharedLinesComeOutAsWalked()
+    {
+        {
+            QList<double> mine{4, 4.001}, theirs;
+            rf::shareLines(mine, theirs, 0, 100, 0.001, false, 0.01);
+            QCOMPARE(mine, QList<double>{4});
+            QCOMPARE(theirs, QList<double>{4});
+        }
+        std::mt19937 random(11);
+        int apart = 0;
+        for (int k = 0; k < 20000; ++k) {
+            const double tol = 0.001;
+            QList<double> mine, theirs;
+            for (QList<double>* lines : {&mine, &theirs}) {
+                const int n = 1 + int(random() % 12);
+                for (int i = 0; i < n; ++i) {
+                    const double x = double(random() % 100000) * tol;
+                    *lines << x;
+                    if (random() % 3 == 0) *lines << x + tol;
+                }
+                std::sort(lines->begin(), lines->end());
+                lines->erase(std::unique(lines->begin(), lines->end()), lines->end());
+            }
+            const double lo = double(random() % 30000) * tol, hi = lo + double(random() % 70000) * tol + 1;
+            const bool ends = random() % 2 == 0;
+            const double merge = random() % 2 == 0 ? 0.0 : 0.01;
+            QList<double> walkedMine = mine, walkedTheirs = theirs;
+            for (int round = 0; round < 8 && rf::shareLines(mine, theirs, lo, hi, tol, ends, merge); ++round) {
+            }
+            for (int round = 0; round < 8 && walkedShareLines(walkedMine, walkedTheirs, lo, hi, tol, ends, merge); ++round) {
+            }
+            if (mine != walkedMine || theirs != walkedTheirs) ++apart;
+        }
+        QVERIFY2(apart == 0, qPrintable(QStringLiteral("%1 of 20,000 apart from the walk's").arg(apart)));
     }
 
     // A curve's lattice lines (rf::latticeLines()) all within their piece,

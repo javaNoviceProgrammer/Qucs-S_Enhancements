@@ -685,8 +685,13 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
             double moved = 0;
             const QPointF to = ontoNearestEdge(job.conductors, at, layer, reach, &moved);
             if (!(moved > 0)) return;
-            job.notes << tr("%1, at %2, %3 µm, is %4 µm off the processed outline it was drawn on - a curve the processing "
-                            "simplified -: taken on it.")
+            // (A curve simplified said only where one was: else the end was a
+            //  nanometre or two off an outline as drawn - the review of
+            //  4ce22e87.)
+            job.notes << (processed.report.simplifiedMost > 0
+                              ? tr("%1, at %2, %3 µm, is %4 µm off the processed outline it was drawn on - a curve the "
+                                   "processing simplified -: taken on it.")
+                              : tr("%1, at %2, %3 µm, is %4 µm off the outline it was drawn on: taken on it."))
                              .arg(what).arg(at.x(), 0, 'g', 6).arg(at.y(), 0, 'g', 6).arg(moved, 0, 'g', 2);
             at = to;
         };

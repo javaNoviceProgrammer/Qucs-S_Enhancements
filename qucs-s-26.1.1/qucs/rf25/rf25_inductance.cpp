@@ -597,6 +597,7 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
     // which puts no flux through anything in the plane. (The full-wave
     // solve makes its vias its own way, and asks for none of these: each
     // is a search of every cell, a large mesh's vias a large part of it.)
+    const CellBins bins(mesh);
     for (int v = 0; vias && v < mesh.cells.size(); ++v) {
         const MeshCell& cell = mesh.cells.at(v);
         const Layer* via = stack.named(cell.layer);
@@ -609,19 +610,21 @@ QList<Filament> runsOf(const Mesh& mesh, const QList<Conductor>& conductors, con
         // over no cell of that metal. (Taken however far, a via drawn 30 µm
         // off both strips joined them, and the loop through it read 0.84 Ohm
         // with nothing said.)
+        // (Of the metal's cells in the bins the grown box touches, as there:
+        //  each via cell's walk of the whole mesh was most of a large via
+        //  farm's solve in the full wave - the review of 4ce22e87.)
         const QRectF own = cell.outline.boundingRect();
         const double grow = std::hypot(own.width(), own.height()) / 2;
-        const auto under = [&mesh, &cell, grow](const QString& layer) {
+        const auto under = [&mesh, &bins, &cell, grow](const QString& layer) {
             int best = -1, holding = -1;
             double closest = 0;
-            for (int c = 0; c < mesh.cells.size(); ++c) {
+            for (const int c : bins.near(layer, cell.centre, grow)) {
                 const MeshCell& m = mesh.cells.at(c);
-                if (m.layer != layer) continue;
+                if (!m.outline.boundingRect().adjusted(-grow, -grow, grow, grow).contains(cell.centre)) continue;
                 if (m.outline.containsPoint(cell.centre, Qt::OddEvenFill)) {
-                    if (holding < 0) holding = c;
+                    if (holding < 0 || c < holding) holding = c;
                     continue;
                 }
-                if (!m.outline.boundingRect().adjusted(-grow, -grow, grow, grow).contains(cell.centre)) continue;
                 const QPointF d = m.centre - cell.centre;
                 const double far = d.x() * d.x() + d.y() * d.y();
                 if (best < 0 || far < closest) {

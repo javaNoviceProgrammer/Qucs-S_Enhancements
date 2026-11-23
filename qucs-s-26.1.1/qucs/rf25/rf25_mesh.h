@@ -32,6 +32,7 @@
 #include <QString>
 #include <QStringList>
 
+#include <algorithm>
 #include <cmath>
 
 namespace qucs_s::rf25 {
@@ -156,6 +157,15 @@ MeshSettings refinedBy(const MeshSettings& how, double factor);
 QList<double> latticeLines(double from, double length, double origin, double base, double step, bool gradeLow, bool gradeHigh,
                            double finestLow = 0, double finestHigh = 0);
 
+/*!
+ * The lines of \a mine and of \a theirs within [\a lo, \a hi] each made the
+ * other's too, where two pieces meet along that stretch (meshOf()): lines
+ * within \a tol of each other are one, and with \a merge, those nearer than
+ * it are one, the lower kept. \a ends: the stretch's own ends are lines of
+ * both. Whether either gained a line or lost one.
+ */
+bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi, double tol, bool ends = true, double merge = 0);
+
 /// How many cells the charge solve of a static extraction will set up a
 /// dense matrix of: 8000 is half a gigabyte a matrix and some thirty
 /// seconds a solve on a desktop of 2026.
@@ -210,6 +220,51 @@ struct Mesh {
     double smallest = 0, largest = 0;
     bool ok() const { return problems.isEmpty(); }
     QMap<QString, int> byLayer() const;
+};
+
+/*!
+ * The cells of a mesh in bins of the plane, layer by layer, each in every
+ * bin its box touches: what is near a point, without a search of every
+ * cell. The bins are as wide as the mesh's widest cell.
+ */
+class CellBins
+{
+public:
+    explicit CellBins(const Mesh& mesh)
+    {
+        for (const MeshCell& cell : mesh.cells) {
+            const QRectF box = cell.outline.boundingRect();
+            a_bin = std::max({a_bin, box.width(), box.height()});
+        }
+        if (!(a_bin > 0)) a_bin = 1;
+        for (int c = 0; c < mesh.cells.size(); ++c) {
+            const QRectF box = mesh.cells.at(c).outline.boundingRect();
+            QHash<qint64, QList<int>>& layer = a_layers[mesh.cells.at(c).layer];
+            for (qint64 i = binOf(box.left()); i <= binOf(box.right()); ++i)
+                for (qint64 j = binOf(box.top()); j <= binOf(box.bottom()); ++j) layer[key(i, j)] << c;
+        }
+    }
+    /// The cells of \a layer in the bins within \a reach of \a at, each once.
+    QList<int> near(const QString& layer, QPointF at, double reach) const
+    {
+        QList<int> out;
+        const auto found = a_layers.constFind(layer);
+        if (found == a_layers.constEnd()) return out;
+        for (qint64 i = binOf(at.x() - reach); i <= binOf(at.x() + reach); ++i)
+            for (qint64 j = binOf(at.y() - reach); j <= binOf(at.y() + reach); ++j) {
+                const auto bin = found->constFind(key(i, j));
+                if (bin != found->constEnd()) out << *bin;
+            }
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+        return out;
+    }
+
+private:
+    qint64 binOf(double v) const { return qint64(std::floor(v / a_bin)); }
+    static qint64 key(qint64 i, qint64 j) { return (i << 32) ^ (j & 0xffffffffLL); }
+    double a_bin = 0;
+    QHash<QString, QHash<qint64, QList<int>>> a_layers;
 };
 
 /*!

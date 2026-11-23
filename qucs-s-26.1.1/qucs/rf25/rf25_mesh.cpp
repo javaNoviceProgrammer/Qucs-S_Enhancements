@@ -785,6 +785,8 @@ double outlineDistance(const QPolygonF& a, const QPolygonF& b)
     return best;
 }
 
+} // namespace
+
 /// The lines of \a mine and of \a theirs within [\a lo, \a hi] each made
 /// the other's too: where two pieces meet along that stretch, so that
 /// every cell of one there shares a whole edge with a cell of the other.
@@ -798,9 +800,22 @@ double outlineDistance(const QPolygonF& a, const QPolygonF& b)
 /// 4648 cell(s) from 0.000548 to 14.9 µm", and the loop shorted). The lower
 /// of a cluster, and an end over any, is a choice both pieces make alike
 /// whatever they held, so that rounds of sharing settle.
-bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi, double tol, bool ends = true,
-                double merge = 0)
+bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi, double tol, bool ends, double merge)
 {
+    // A line of \a sorted within the tolerance of \a x: found by halving,
+    // and told by the two lines either side of where x falls, by their
+    // differences from it - as walking them all and asking |x - y| <= tol
+    // told it, to the last bit. (Walked whole for each line, a circle drawn
+    // with 720 corners - 2 µm teeth - took 72 s to mesh, all of it here.
+    // Asked instead whether the first line at or past x - tol was at most
+    // x + tol, a line one tolerance from one kept - two lines a nanometre
+    // apart on a nanometre's grid - was kept where it was not, and stayed on
+    // one piece of the two: the review of 4ce22e87, 11,486 random grids of
+    // 200,000 left the two unalike, where the walk left 1,293.)
+    const auto near = [tol](const QList<double>& sorted, double x) {
+        const auto it = std::lower_bound(sorted.cbegin(), sorted.cend(), x);
+        return (it != sorted.cend() && *it - x <= tol) || (it != sorted.cbegin() && x - *std::prev(it) <= tol);
+    };
     // (\a ends false: the lines strictly inside alone, not the stretch's
     //  ends - where a slanted side's part meets another, an end at a slanted
     //  corner is no line of either.)
@@ -831,14 +846,6 @@ bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi
             kept << x;
         }
         // Each side's lines inside the stretch that are not kept, out.
-        // (Kept is sorted: each line found by halving. Walked whole for
-        //  each line, and each line looked for in the other's walked whole,
-        //  a circle drawn with 720 corners - 2 µm teeth - took 72 s to mesh,
-        //  all of it here.)
-        const auto near = [tol](const QList<double>& sorted, double x) {
-            const auto it = std::lower_bound(sorted.cbegin(), sorted.cend(), x - tol);
-            return it != sorted.cend() && *it <= x + tol;
-        };
         for (QList<double>* lines : {&mine, &theirs}) {
             const qsizetype was = lines->size();
             lines->erase(std::remove_if(lines->begin(), lines->end(),
@@ -857,8 +864,7 @@ bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi
     for (QList<double>* lines : {&mine, &theirs}) {
         QList<double> missing;
         for (const double x : std::as_const(both)) {
-            const auto it = std::lower_bound(lines->cbegin(), lines->cend(), x - tol);
-            if ((it != lines->cend() && *it <= x + tol) || (!missing.isEmpty() && x - missing.last() <= tol)) continue;
+            if (near(*lines, x) || (!missing.isEmpty() && x - missing.last() <= tol)) continue;
             missing << x;
         }
         if (missing.isEmpty()) continue;
@@ -870,6 +876,8 @@ bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi
     }
     return gained;
 }
+
+namespace {
 
 /*!
  * \a cells made to meet side to side: into each side of a cell that runs

@@ -883,51 +883,6 @@ struct ViaRun {
 };
 
 /*!
- * The cells of a mesh in bins of the plane, layer by layer, each in every
- * bin its box touches: what is near a point, without a search of every
- * cell. The bins are as wide as the mesh's widest cell.
- */
-class CellBins
-{
-public:
-    explicit CellBins(const Mesh& mesh)
-    {
-        for (const MeshCell& cell : mesh.cells) {
-            const QRectF box = cell.outline.boundingRect();
-            a_bin = std::max({a_bin, box.width(), box.height()});
-        }
-        if (!(a_bin > 0)) a_bin = 1;
-        for (int c = 0; c < mesh.cells.size(); ++c) {
-            const QRectF box = mesh.cells.at(c).outline.boundingRect();
-            QHash<qint64, QList<int>>& layer = a_layers[mesh.cells.at(c).layer];
-            for (qint64 i = binOf(box.left()); i <= binOf(box.right()); ++i)
-                for (qint64 j = binOf(box.top()); j <= binOf(box.bottom()); ++j) layer[key(i, j)] << c;
-        }
-    }
-    /// The cells of \a layer in the bins within \a reach of \a at, each once.
-    QList<int> near(const QString& layer, QPointF at, double reach) const
-    {
-        QList<int> out;
-        const auto found = a_layers.constFind(layer);
-        if (found == a_layers.constEnd()) return out;
-        for (qint64 i = binOf(at.x() - reach); i <= binOf(at.x() + reach); ++i)
-            for (qint64 j = binOf(at.y() - reach); j <= binOf(at.y() + reach); ++j) {
-                const auto bin = found->constFind(key(i, j));
-                if (bin != found->constEnd()) out << *bin;
-            }
-        std::sort(out.begin(), out.end());
-        out.erase(std::unique(out.begin(), out.end()), out.end());
-        return out;
-    }
-
-private:
-    qint64 binOf(double v) const { return qint64(std::floor(v / a_bin)); }
-    static qint64 key(qint64 i, qint64 j) { return (i << 32) ^ (j & 0xffffffffLL); }
-    double a_bin = 0;
-    QHash<QString, QHash<qint64, QList<int>>> a_layers;
-};
-
-/*!
  * The vias of \a mesh as runs of current in z, each from the cell of the
  * lower metal under it - or the ground - to the cell of the upper one. The
  * cells of a via that land on the same two cells are one run: their
