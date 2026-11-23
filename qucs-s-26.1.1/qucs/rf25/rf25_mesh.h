@@ -166,6 +166,34 @@ QList<double> latticeLines(double from, double length, double origin, double bas
  */
 bool shareLines(QList<double>& mine, QList<double>& theirs, double lo, double hi, double tol, bool ends = true, double merge = 0);
 
+/*!
+ * A region's outline clipped a square at a time within one row of its
+ * lattice, \a lo <= y <= \a hi (meshOf()), as clipTo() clips it whole, and
+ * cheaply. Its band's outline: every edge of it that reaches the band, as it
+ * is, and each stretch wholly above or below the band put as the one side
+ * from where it leaves the band to where it comes back - outside the band
+ * too, both its ends being on that side. In the band it is the outline's own
+ * edges and corners. A square a slit crosses - an edge whose reverse is an
+ * edge too, a keyhole's - is clipped against the whole outline: there the
+ * boolean's pieces are not the edges' alone, and the band's outline came out
+ * as two pieces along a slanted slit where the whole was one, a corner on
+ * the square's side the cell beside it did not have.
+ */
+class RowClip
+{
+public:
+    RowClip() = default;
+    RowClip(const QPolygonF& outline, double lo, double hi);
+    /// The outline within the band, empty where it has no area there.
+    const QPolygonF& band() const { return m_band; }
+    QList<QPolygonF> clip(const QRectF& square) const;
+
+private:
+    const QPolygonF* m_outline = nullptr;
+    QPolygonF m_band;
+    QList<QRectF> m_slits;   ///< the slits' boxes
+};
+
 /// How many cells the charge solve of a static extraction will set up a
 /// dense matrix of: 8000 is half a gigabyte a matrix and some thirty
 /// seconds a solve on a desktop of 2026.

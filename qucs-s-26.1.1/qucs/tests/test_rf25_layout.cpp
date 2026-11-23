@@ -1413,7 +1413,7 @@ private slots:
         QVERIFY2(std::abs(double(banded.cells.size()) / 4271 - 1) < 0.1, qPrintable(QStringLiteral("%1 cells, fed at 30 degrees").arg(banded.cells.size())));
     }
 
-    // A ring 900 µm across its middle and 10 µm wide, slotted, at the mesh's
+    // A ring of 900 µm radius and 10 µm wide, slotted, at the mesh's
     // defaults: one region, under the solver's 8,000 cells at three across
     // or more, its R within 5 % of the sector's theta / ln(ro / ri) squares
     // (4.0 % under at three). Its bands, their lines shared from band to band
@@ -1863,6 +1863,67 @@ private slots:
         }
         const rf::Model flat = shaped({polygon({{0, 0}, {10, 0}, {20, 0}, {5, 0}})});
         QVERIFY(rf::processRead(flat, nothingRead(), QStringLiteral("none")).problems.join(' ').contains(QStringLiteral("no area")));
+    }
+
+    // A region's square clipped within its row (rf::RowClip) comes out as
+    // against the whole outline, corner for corner: 10,000 random rows, six
+    // squares in each, over a thin ring as processing writes it - a keyhole
+    // of some 1,400 corners -, a keyhole ring with a slanted slit, a star
+    // crossing itself and a figure of eight. Its band's outline is the edges
+    // that reach the row, a stretch outside it one side, outside too: on the
+    // ring, under a quarter of its corners. (meshOf() clipped every square
+    // against the whole outline: the ring 1 µm wide took 5 s.) A square the
+    // slanted slit crosses is clipped whole: against the band's outline the
+    // boolean split some 70 of 72,000 along it, the same area in two pieces
+    // where the whole outline gave one.
+    void aRowsOutlineClipsAsTheWhole()
+    {
+        QList<QPolygonF> outlines;
+        {
+            const rf::Model m = shaped({QJsonObject{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "100.5[um]"}, {"inner_radius", "99.5[um]"}}});
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            QCOMPARE(int(processed.conductors.size()), 1);
+            outlines << processed.conductors.first().outline;
+        }
+        QPolygonF key, star;
+        for (int k = 0; k <= 180; ++k) key << QPointF(100 * std::cos(2.0 * k * M_PI / 180), 100 * std::sin(2.0 * k * M_PI / 180));
+        for (int k = 180; k >= 0; --k) key << QPointF(30 + 50 * std::cos(2.0 * k * M_PI / 180), 10 + 50 * std::sin(2.0 * k * M_PI / 180));
+        for (int k = 0; k < 7; ++k) star << QPointF(80 * std::cos(4 * M_PI * k / 7), 80 * std::sin(4 * M_PI * k / 7));
+        outlines << key << star << QPolygonF{{0, 0}, {20, 20}, {20, 0}, {0, 10}};
+        const auto corners = [](const QList<QPolygonF>& parts) {
+            QStringList all;
+            for (const QPolygonF& p : parts) {
+                QStringList pts;
+                for (const QPointF& q : p) pts << QStringLiteral("%1,%2").arg(qint64(std::llround(q.x() * 1e6))).arg(qint64(std::llround(q.y() * 1e6)));
+                std::sort(pts.begin(), pts.end());
+                all << pts.join(';');
+            }
+            std::sort(all.begin(), all.end());
+            return all.join('|');
+        };
+        std::mt19937 random(5);
+        int compared = 0, cut = 0;
+        for (const QPolygonF& outline : std::as_const(outlines)) {
+            const QRectF box = outline.boundingRect();
+            const auto within = [&random](double lo, double hi) { return lo + (hi - lo) * double(random() % 100001) / 100000.0; };
+            for (int row = 0; row < 2500; ++row) {
+                const double y0 = within(box.top(), box.bottom()), y1 = std::min(box.bottom(), y0 + within(0.01, 0.1) * box.height());
+                const double margin = 1e-6 * std::max(box.width(), box.height());
+                const rf::RowClip clip(outline, y0 - margin, y1 + margin);
+                if (outline.size() > 1000) QVERIFY2(clip.band().size() < outline.size() / 4, qPrintable(QStringLiteral("%1 of %2 corners").arg(clip.band().size()).arg(outline.size())));
+                for (int k = 0; k < 6; ++k) {
+                    const double x0 = within(box.left(), box.right()), x1 = std::min(box.right(), x0 + within(0.01, 0.2) * box.width());
+                    const QPolygonF square(QRectF(QPointF(x0, y0), QPointF(x1, y1)));
+                    const QList<QPolygonF> whole = rf::clipTo({outline}, square);
+                    const QList<QPolygonF> banded = clip.clip(square.boundingRect());
+                    QCOMPARE(corners(banded), corners(whole));
+                    ++compared;
+                    if (!whole.isEmpty()) ++cut;
+                }
+            }
+        }
+        QCOMPARE(compared, 4 * 2500 * 6);
+        QVERIFY2(cut > compared / 4, qPrintable(QStringLiteral("%1 of %2 squares cut anything").arg(cut).arg(compared)));
     }
 
     // A circle and a ring of the model's own, by their centre and radii, each
