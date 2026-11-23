@@ -983,7 +983,15 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
             if (std::abs(offA) > tol || std::abs(offB) > tol) continue;
             const double tA = (a.x() - p.x()) * unit.x() + (a.y() - p.y()) * unit.y();
             const double tB = (b.x() - p.x()) * unit.x() + (b.y() - p.y()) * unit.y();
-            if (std::max(tA, tB) < -tol || std::min(tA, tB) > len + tol) continue;
+            // (Along it by more than tol: a side that only reaches one of
+            //  its ends is no part of it. Taken where it touched an end, a
+            //  cell of another conductor meeting the edge's end at a point
+            //  was driven - two squares meeting at a corner solved as a loop
+            //  through the second alone -, and on an inner edge of an L the
+            //  cells past its corner: their two stubs and the run between
+            //  them a loop of no area, the dense LU singular at 10 across,
+            //  and R 15 % low at 20.)
+            if (std::max(tA, tB) <= tol || std::min(tA, tB) >= len - tol) continue;
             cells << c;
             break;
         }

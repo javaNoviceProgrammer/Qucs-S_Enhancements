@@ -1733,6 +1733,70 @@ private slots:
         QCOMPARE(rf::latticeLines(3, 20, 0, 5, 5, true, true), (QList<double>{3, 5, 10, 15, 20, 23}));
     }
 
+    // A face is the cells with a side along its edge by more than the
+    // tolerance, not those whose side only reaches one of its ends
+    // (faceCells(), which the loop and the full wave's ports drive). Taken
+    // where they touched an end:
+    // - two squares meeting at a corner, a loop from the first's top edge
+    //   at (5, 10) to the second solved through the second alone (3.7 pH,
+    //   0.147 Ohm), its face holding the second's corner cell; the full
+    //   wave's port there drove both, Z21 15 % off. As from (0, 5), the
+    //   pieces that nothing joins are said. So a figure of eight from the
+    //   corner beside its pinch;
+    // - an L's inner edge from (12, 5) took the two cells past its corner
+    //   at (5, 5): their stubs and the run between them a loop of no area,
+    //   the dense LU singular at 10 across - a one-piece L in "pieces
+    //   that nothing joins" - and R 0.0491 Ohm at 20, where it is 0.0574.
+    //   Now 0.0587 at 10 and 0.0574 at 20; drawn as two boxes the same, and
+    //   from the arm's inner edge too.
+    void aFaceStopsAtItsEdgesEnds()
+    {
+        const auto poly = [](const QList<QPointF>& pts) {
+            QJsonArray rows;
+            for (const QPointF& p : pts) rows.append(QJsonArray{QString::number(p.x()) + "[um]", QString::number(p.y()) + "[um]"});
+            return QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}};
+        };
+        const auto solved = [](const QList<QJsonObject>& shapes, QPointF from, QPointF to, int across, QList<int>* face = nullptr) {
+            const rf::Model m = shaped(shapes);
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            const rf::Stack stack = m.solveStack();
+            rf::MeshSettings how;
+            how.cellsAcross = across;
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, how, stack, 1e9);
+            if (face != nullptr) {
+                QList<int> all(mesh.cells.size());
+                std::iota(all.begin(), all.end(), 0);
+                face->clear();
+                for (const int c : rf::faceCells(mesh, processed.conductors, all, from)) *face << c;
+                // (Each as its cell's centre, packed: x * 1000 + y, in µm.)
+                for (int& c : *face) c = int(std::lround(mesh.cells.at(c).centre.x() * 10)) * 1000 + int(std::lround(mesh.cells.at(c).centre.y() * 10));
+            }
+            return rf::inductanceOf(mesh, processed.conductors, stack, from, to);
+        };
+        // Two squares at a corner, and a figure of eight beside its pinch.
+        const QList<QJsonObject> squares{boxOn("M1", 0, 0, 10, 10), boxOn("M1", 10, 10, 20, 20)};
+        QList<int> face;
+        const rf::Inductance corner = solved(squares, QPointF(5, 10), QPointF(20, 15), 10, &face);
+        QVERIFY2(!corner.ok() && corner.problems.join(' ').contains(QStringLiteral("pieces that nothing joins")), qPrintable(corner.problems.join(" | ")));
+        for (const int c : std::as_const(face)) QVERIFY2(c / 1000 < 100, qPrintable(QStringLiteral("a face cell at x %1 µm").arg((c / 1000) / 10.0)));
+        const rf::Inductance eight = solved({poly({{0, 0}, {20, 20}, {20, 0}, {0, 10}})}, QPointF(0, 10), QPointF(20, 10), 10);
+        QVERIFY2(!eight.ok() && eight.problems.join(' ').contains(QStringLiteral("pieces that nothing joins")), qPrintable(eight.problems.join(" | ")));
+        // An L's inner edges.
+        const QList<QJsonObject> l{poly({{0, 0}, {20, 0}, {20, 5}, {5, 5}, {5, 20}, {0, 20}})};
+        const rf::Inductance at10 = solved(l, QPointF(12, 5), QPointF(0, 12), 10, &face);
+        for (const int c : std::as_const(face)) QVERIFY2(c / 1000 > 50, qPrintable(QStringLiteral("a face cell at x %1 µm").arg((c / 1000) / 10.0)));
+        const rf::Inductance at20 = solved(l, QPointF(12, 5), QPointF(0, 12), 20);
+        const rf::Inductance arm = solved(l, QPointF(5, 12), QPointF(12, 0), 20);
+        const rf::Inductance boxes = solved({boxOn("M1", 0, 0, 20, 5), boxOn("M1", 0, 5, 5, 20)}, QPointF(12, 5), QPointF(0, 12), 20);
+        for (const auto& [what, loop] : {std::pair{"at 10", &at10}, std::pair{"at 20", &at20}, std::pair{"from the arm", &arm}, std::pair{"as boxes", &boxes}})
+            QVERIFY2(loop->ok(), qPrintable(QStringLiteral("%1: %2").arg(what, loop->problems.join(" | "))));
+        QVERIFY2(std::abs(at10.rDc / at20.rDc - 1) < 0.03 && std::abs(at10.lDc / at20.lDc - 1) < 0.03,
+                 qPrintable(QStringLiteral("%1 Ohm %2 pH at 10, %3 Ohm %4 pH at 20").arg(at10.rDc).arg(at10.lDc * 1e12).arg(at20.rDc).arg(at20.lDc * 1e12)));
+        QVERIFY2(std::abs(at20.rDc / 0.0574 - 1) < 0.01, qPrintable(QString::number(at20.rDc)));
+        QVERIFY2(std::abs(arm.rDc / at20.rDc - 1) < 1e-6 && std::abs(boxes.rDc / at20.rDc - 1) < 1e-6,
+                 qPrintable(QStringLiteral("%1 and %2 against %3 Ohm").arg(arm.rDc).arg(boxes.rDc).arg(at20.rDc)));
+    }
+
     // A loop's runs taken as bars by the narrowest conductor its current runs
     // on, not by every one of their layer: a triangle 5 µm tall drawn 500 µm
     // off a strip, joined to nothing, made each of the strip's runs a bar -
