@@ -3649,8 +3649,12 @@ QStringList RF25Doc::writePalace(const QString& path, const PalaceOptions& optio
     const QString meshPath = info.absoluteDir().filePath(info.completeBaseName() + QStringLiteral(".msh"));
     for (const QString& where : {info.absoluteFilePath(), meshPath})
         if (const QString why = overOwnFile(where); !why.isEmpty()) return fail(why);
+    // (An edge port drawn on a curve's edge taken onto it as the solve takes
+    //  it: within the processing's largest move of an outline.)
+    PalaceOptions how = options;
+    if (!(how.portReach > 0)) how.portReach = a_processed->report.simplifiedMost + 0.002;
     const PalaceExport written =
-        palaceExportOf(a_model, a_processed->conductors, options, info.completeBaseName(), QStringLiteral("Qucs-S %1").arg(misc::buildName()));
+        palaceExportOf(a_model, a_processed->conductors, how, info.completeBaseName(), QStringLiteral("Qucs-S %1").arg(misc::buildName()));
     if (!written.ok()) return fail(written.problems.join(QLatin1Char(' ')));
     QStringList files;
     QString why;
@@ -3732,6 +3736,7 @@ HfssExport RF25Doc::hfssExport(const HfssOptions& options) const
     const QString name = getDocName();
     HfssOptions how = options;
     if (!name.isEmpty() && how.modelFolder.isEmpty()) how.modelFolder = QFileInfo(name).absolutePath();
+    if (!(how.portReach > 0)) how.portReach = a_processed->report.simplifiedMost + 0.002;
     return hfssExportOf(a_model, a_processed->conductors, how, name.isEmpty() ? QStringLiteral("RF25") : QFileInfo(name).completeBaseName(),
                         QStringLiteral("Qucs-S %1").arg(misc::buildName()), returnShapes());
 }

@@ -52,6 +52,11 @@ struct HfssOptions {
     /// the setup's own option - RF 2.5D's sheets, for a like with like.
     /// Nought: every metal as thick as it is.
     double thinMetal = 0;
+    /// µm: an edge port on no edge and inside no shape taken onto the nearest
+    /// edge within this, as the solve takes it (setUpSolve()): the processing
+    /// moves a curve's outline up to its tolerance inside the curve drawn.
+    /// Nought: none (the tab gives the processing's largest move).
+    double portReach = 0;
     /// The folder of the model, kept in the script: its layout file is found
     /// there when the script has moved. Empty: none said.
     QString modelFolder;

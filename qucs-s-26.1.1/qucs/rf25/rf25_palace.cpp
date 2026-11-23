@@ -374,7 +374,7 @@ PalaceExport palaceExportOf(const Model& model, const QList<Conductor>& given, c
         const QString own = portName(p);
         const bool edge = p.type == QLatin1String("rf_edge_port");
         const bool lumpedElement = !edge && textOf(p, QStringLiteral("element")) == QLatin1String("lumped");
-        const QPointF at = QPointF(numberOf(p, QStringLiteral("x"), model, 0), numberOf(p, QStringLiteral("y"), model, 0)) * toUm;
+        QPointF at = QPointF(numberOf(p, QStringLiteral("x"), model, 0), numberOf(p, QStringLiteral("y"), model, 0)) * toUm;
         PortWritten w;
         w.name = own;
         w.driven = !lumpedElement;
@@ -414,6 +414,13 @@ PalaceExport palaceExportOf(const Model& model, const QList<Conductor>& given, c
             QLineF face;
             QPointF outward;
             QString onLayer;
+            // (Taken onto the edge it was drawn on, as the solve takes it: a
+            //  port on a circle's edge was "not written", on no conductor.)
+            {
+                double moved = 0;
+                at = ontoNearestEdge(outlines, at, metal, options.portReach, &moved);
+                if (moved > 0) out.notes << tr("%1 is %2 µm off the processed outline it was drawn on: written on it.").arg(own).arg(moved, 0, 'g', 2);
+            }
             // (On the edge, as the solve has it: portPlace(). The nearest
             //  edge however far was written.)
             const QPointF way = facingOf(textOf(p, QStringLiteral("facing")));
