@@ -1367,9 +1367,10 @@ private slots:
     // region each - in fewer than 1,000 cells, its C within half a per cent of
     // the plates' eps A / d (0.17 % under) -, where its 80 bands each were
     // 5,562 cells and 40 s to solve. And a ring 1 µm wide of 200 µm, filling a
-    // fiftieth of its box, keeps its bands: as one region, its grid's squares
-    // were nearly all empty, and one 0.1 µm wide was refused at one cell
-    // across.
+    // fiftieth of its box, is one region too: only the squares its outline
+    // crosses are cut. It kept its bands, their lines shared from band to
+    // band: as a region every square of its box was clipped, 40,000 for
+    // 1,462 cells, and one 0.1 µm wide was refused at one cell across.
     void aRoundShapeIsMeshedAsOneRegion()
     {
         rf::Model m = shaped({QJsonObject{{"layer", "M1"}, {"shape", "circle"}, {"x", "0"}, {"y", "0"}, {"radius", "50[um]"}},
@@ -1392,11 +1393,53 @@ private slots:
         const rf::Model thin = shaped({QJsonObject{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"}, {"inner_radius", "99[um]"}}});
         const rf::Processed ring = rf::processRead(thin, nothingRead(), QStringLiteral("none"));
         const rf::Mesh bands = rf::meshOf(ring.conductors, rf::MeshSettings(), thin.solveStack(), 1e9);
-        QVERIFY2(bands.ok() && !bands.lines.join(' ').contains(QStringLiteral("meshed as one region")), qPrintable(bands.lines.join(" | ")));
-        // (Its bands as they were: 5,935 cells, within a tenth - each sized by
-        //  the ring's chord where both its long sides are cuts, and graded
-        //  only at the ring's edges.)
-        QVERIFY2(std::abs(double(bands.cells.size()) / 5935 - 1) < 0.1, qPrintable(QStringLiteral("%1 cells").arg(bands.cells.size())));
+        QVERIFY2(bands.ok() && bands.lines.join(' ').contains(QStringLiteral("meshed as one region")), qPrintable(bands.lines.join(" | ")));
+        // (4,185 cells, where its bands were 5,935.)
+        QVERIFY2(bands.cells.size() < 4500, qPrintable(QStringLiteral("%1 cells").arg(bands.cells.size())));
+        // Fed at 30 degrees, a strip 10 µm wide on its outer edge, it keeps its
+        // bands - its feed's slanted sides straight edges of its outline -:
+        // 4,271 cells, within a tenth. A band sized across its slanted sides,
+        // not by the ring's chord, made 5,265; its pieces graded at every side
+        // of their boxes, 7,474.
+        const double a = 30 * M_PI / 180;
+        const QPointF along(std::cos(a), std::sin(a)), side(-5 * std::sin(a), 5 * std::cos(a));
+        QJsonArray feed;
+        for (const QPointF& p : {99.5 * along - side, 160 * along - side, 160 * along + side, 99.5 * along + side})
+            feed.append(QJsonArray{QString::number(p.x(), 'f', 6) + "[um]", QString::number(p.y(), 'f', 6) + "[um]"});
+        const rf::Model fed = shaped({QJsonObject{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"}, {"inner_radius", "99[um]"}},
+                                      QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", feed}}});
+        const rf::Mesh banded = rf::meshOf(rf::processRead(fed, nothingRead(), QStringLiteral("none")).conductors, rf::MeshSettings(), fed.solveStack(), 1e9);
+        QVERIFY2(banded.ok() && !banded.lines.join(' ').contains(QStringLiteral("meshed as one region")), qPrintable(banded.lines.join(" | ")));
+        QVERIFY2(std::abs(double(banded.cells.size()) / 4271 - 1) < 0.1, qPrintable(QStringLiteral("%1 cells, fed at 30 degrees").arg(banded.cells.size())));
+    }
+
+    // A ring 900 µm across its middle and 10 µm wide, slotted, at the mesh's
+    // defaults: one region, under the solver's 8,000 cells at three across
+    // or more, its R within 5 % of the sector's theta / ln(ro / ri) squares
+    // (4.0 % under at three). Its bands, their lines shared from band to band
+    // along its upright stretches, were 4,006 cells at one across and 8,117
+    // at two: cut to one across, 8.3 % under.
+    void aThinRingIsMeshedUnderTheSolversBound()
+    {
+        const double r = 900, w = 10;
+        rf::Model m = shaped({QJsonObject{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", QString::number(r + w / 2) + "[um]"},
+                                          {"inner_radius", QString::number(r - w / 2) + "[um]"}}});
+        region(m, "rectangle", {{"x0", QString::number(r - w) + "[um]"}, {"y0", QStringLiteral("-1[um]")}, {"x1", QString::number(r + w) + "[um]"},
+                                {"y1", QStringLiteral("1[um]")}, {"action", QStringLiteral("remove")}});
+        const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+        QCOMPARE(int(processed.conductors.size()), 1);
+        const rf::Stack stack = m.solveStack();
+        const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), stack, 1e9);
+        QVERIFY2(mesh.ok() && mesh.lines.join(' ').contains(QStringLiteral("meshed as one region")), qPrintable(mesh.lines.join(" | ")));
+        QVERIFY2(mesh.across >= 3 && mesh.cells.size() <= 8000, qPrintable(QStringLiteral("%1 across, %2 cells").arg(mesh.across).arg(mesh.cells.size())));
+        const auto [clashes, pieces] = clashesAndPieces(mesh);
+        QVERIFY2(clashes == 0 && pieces == 1, qPrintable(QStringLiteral("%1 clashes, %2 pieces").arg(clashes).arg(pieces)));
+        const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, QPointF(r, 1), QPointF(r, -1));
+        QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+        const rf::Layer* metal = stack.named(QStringLiteral("M1"));
+        const double squares = (2 * M_PI - 2 * std::asin(1.0 / r)) / std::log((r + w / 2) / (r - w / 2));
+        const double read = loop.rDc * metal->sigma * metal->thickness;
+        QVERIFY2(std::abs(read / squares - 1) < 0.05, qPrintable(QStringLiteral("%1 squares against %2").arg(read).arg(squares)));
     }
 
     // A ring of 100 and 50 µm drawn as a file draws one - a keyhole polygon of
@@ -1408,8 +1451,8 @@ private slots:
     // cells across. Its region's corners left on the union's nanometre grid,
     // half a nanometre off the feeds' ends, the two met along a nanometre and
     // shared no lines; and the rectangle its slit cut it into kept apart, it
-    // read 0.85 % over at 20 across. (At 10 MHz, its cells set by the cells
-    // across alone.)
+    // read 0.85 % over at 20 across, and is a fifth more cells at 10. (At
+    // 10 MHz, its cells set by the cells across alone.)
     void aKeyholeRingIsMeshedAsOneRegion()
     {
         QJsonArray rows;
@@ -1459,6 +1502,9 @@ private slots:
                 }
             }
             QVERIFY2(split <= 1, qPrintable(QStringLiteral("%1 across: %2 cells with a side split").arg(across).arg(split)));
+            // (2,241 cells at 10 across; with the rectangle beside its slit
+            //  kept apart, 2,720 - its R now within 0.3 % either way.)
+            if (across == 10) QVERIFY2(mesh.cells.size() < 2400, qPrintable(QStringLiteral("%1 cells").arg(mesh.cells.size())));
             const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, QPointF(0, 150), QPointF(0, -150));
             QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
             QVERIFY2(std::abs(loop.rDc / square / 8.2697 - 1) < 0.003,
@@ -2191,6 +2237,30 @@ private slots:
         rf::Cutout hole;
         hole.regions << rf::CutRegion{QStringLiteral("H"), QPolygonF(QRectF(0, 0, 10, 10)), false, {}};
         QCOMPARE(rf::cutOf({outside, inside}, hole, QStringLiteral("M1"), &cut, &masked), (QList<QPolygonF>{outside, inside}));
+        QCOMPARE(cut + masked, 0);
+
+        // A cut taking little of a long shape is made: a gap 1 µm long across
+        // a line 0.3 µm wide and 1 mm long, and a region that keeps all of it
+        // but its last micrometre. Each takes 0.3 µm², under the 2 µm² the
+        // line's boundary's step allowed against its area, and the line was
+        // handed on whole - as was a ring 0.3 µm wide whose slit was so cut.
+        // One touching a region that takes out, along its edge, is still
+        // handed on as drawn.
+        const QPolygonF line = box(0, 0, 1000, 0.3);
+        rf::Cutout gap;
+        gap.regions << rf::CutRegion{QStringLiteral("G"), QPolygonF(QRectF(500, -1, 1, 2)), false, {}};
+        const QList<QPolygonF> parted = rf::cutOf({line}, gap, QStringLiteral("M1"), &cut, &masked);
+        QCOMPARE(cut, 1);
+        QCOMPARE(parted.size(), 2);
+        QVERIFY2(qAbs(areaOfAll(parted) - (300 - 0.3)) < 1e-6, qPrintable(QString::number(areaOfAll(parted), 'g', 10)));
+        rf::Cutout most;
+        most.regions << rf::CutRegion{QStringLiteral("K"), QPolygonF(QRectF(-1, -1, 1000, 2)), true, {}};
+        const QList<QPolygonF> shorter = rf::cutOf({line}, most, QStringLiteral("M1"), &cut, &masked);
+        QCOMPARE(cut, 1);
+        QVERIFY2(qAbs(areaOfAll(shorter) - (300 - 0.3)) < 1e-6, qPrintable(QString::number(areaOfAll(shorter), 'g', 10)));
+        rf::Cutout beside;
+        beside.regions << rf::CutRegion{QStringLiteral("T"), QPolygonF(QRectF(30, 0, 10, 50)), false, {}};
+        QCOMPARE(rf::cutOf({inside}, beside, QStringLiteral("M1"), &cut, &masked), QList<QPolygonF>{inside});
         QCOMPARE(cut + masked, 0);
     }
 

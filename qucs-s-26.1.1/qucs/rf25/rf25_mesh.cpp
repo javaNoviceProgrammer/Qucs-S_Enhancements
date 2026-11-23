@@ -1663,17 +1663,19 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                                     }
                             q = best;
                         }
-                    // (Where each fills a fifth of its box or more: a ring 1 µm
-                    //  wide of 200 µm fills a fiftieth, its grid's squares
-                    //  nearly all empty - 40,000 of them clipped for 1,462
-                    //  cells, and at 0.1 µm wide four million, the mesh
-                    //  refused at one cell across. Its bands stay.)
-                    bool filled = !regions.isEmpty();
-                    for (const QPolygonF& region : std::as_const(regions)) {
-                        const QRectF box = region.boundingRect();
-                        filled = filled && std::abs(areaOf(region)) >= 0.2 * box.width() * box.height();
-                    }
-                    if (!filled) continue;
+                    // (However little of its box it fills: a ring 1 µm wide of
+                    //  200 µm fills a fiftieth, and its squares nearly all
+                    //  empty were each clipped - 40,000 for 1,462 cells, at
+                    //  0.1 µm wide four million, the mesh refused at one cell
+                    //  across -, so it kept its bands. Their lines shared from
+                    //  band to band, each took the sides of every band along
+                    //  the ring's upright stretches: a ring of 900 µm 10 µm
+                    //  wide was 4,006 cells at one across, the default ten cut
+                    //  to one under the solver's 8,000 and its slotted R 8.3 %
+                    //  under the sector's. Only the squares its outline crosses
+                    //  are cut now (counted so, below): one region, 7,373 cells
+                    //  at three across, 4.0 % under.)
+                    if (regions.isEmpty()) continue;
                     for (qsizetype i = joined.size() - 1; i >= 0; --i) pieces.removeAt(joined.at(i));
                     ++curvedRegions;
                     for (const QPolygonF& region : std::as_const(regions)) {
@@ -2250,7 +2252,12 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             const double stepY = strip ? (alongX ? across : along) : across;
             // (Counted before the lines are made: a fine grid over a large
             // layout would be millions of them.)
-            const double squares = std::ceil(bounds.width() / stepX) * std::ceil(bounds.height() / stepY);
+            // (A region's: those its outline crosses or holds alone - its area
+            //  in squares, and a row of them along its perimeter -, as many
+            //  as are cut. Its box's, a ring 0.1 µm wide of 100 µm was four
+            //  million.)
+            const double boxed = std::ceil(bounds.width() / stepX) * std::ceil(bounds.height() / stepY);
+            const double squares = piece.region ? std::min(boxed, area / (stepX * stepY) + 2 * perimeter / std::min(stepX, stepY) + 4) : boxed;
             total += squares;
             if (squares > 4.0 * pieceMost) {
                 *many = squares;
@@ -2476,7 +2483,16 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         shareAll(false);
         // (The squares of every piece counted before any is made.)
         double squaresAll = 0;
-        for (const Piece& piece : std::as_const(pieces)) squaresAll += double(piece.xs.size() - 1) * double(piece.ys.size() - 1);
+        for (const Piece& piece : std::as_const(pieces)) {
+            const double boxed = double(piece.xs.size() - 1) * double(piece.ys.size() - 1);
+            if (!piece.region || piece.xs.size() < 2 || piece.ys.size() < 2) {
+                squaresAll += boxed;
+                continue;
+            }
+            const double sx = (piece.xs.last() - piece.xs.first()) / double(piece.xs.size() - 1);
+            const double sy = (piece.ys.last() - piece.ys.first()) / double(piece.ys.size() - 1);
+            squaresAll += std::min(boxed, std::abs(areaOf(piece.outline)) / (sx * sy) + 2 * perimeterOf(piece.outline) / std::min(sx, sy) + 4);
+        }
         if (squaresAll > 4.0 * pieceMost) {
             *many = squaresAll;
             return false;
@@ -2485,8 +2501,31 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             const Conductor& conductor = conductors.at(piece.conductor);
             const QList<double>& xs = piece.xs;
             const QList<double>& ys = piece.ys;
+            // (A region's squares only where its outline is in their row: each
+            //  row clipped to it once, and a square past every piece of that
+            //  - nothing of the outline in it - left out unclipped. Every
+            //  square was clipped, and a ring's box is nearly all empty:
+            //  40,000 squares for 1,462 cells, a ring of 900 µm 10 µm wide
+            //  146 s at 10 across.)
+            QList<QList<std::pair<double, double>>> spans;
+            if (piece.region) {
+                spans.resize(ys.size());
+                const double margin = 1e-6 * std::max(1.0, std::max(piece.box.width(), piece.box.height()));
+                for (int j = 0; j + 1 < ys.size(); ++j) {
+                    const QRectF row(QPointF(xs.first() - margin, ys.at(j) - margin), QPointF(xs.last() + margin, ys.at(j + 1) + margin));
+                    for (const QPolygonF& part : clipTo({piece.outline}, QPolygonF(row))) {
+                        const QRectF b = part.boundingRect();
+                        spans[j].append({b.left() - margin, b.right() + margin});
+                    }
+                }
+            }
             for (int i = 0; i + 1 < xs.size(); ++i)
                 for (int j = 0; j + 1 < ys.size(); ++j) {
+                    if (piece.region) {
+                        bool touched = false;
+                        for (const auto& [lo, hi] : spans.at(j)) touched = touched || (xs.at(i + 1) > lo && xs.at(i) < hi);
+                        if (!touched) continue;
+                    }
                     const QRectF square(QPointF(xs.at(i), ys.at(j)), QPointF(xs.at(i + 1), ys.at(j + 1)));
                     const double full = square.width() * square.height();
                     const QList<QPolygonF> cut = piece.rectangle ? QList<QPolygonF>{QPolygonF(square)}
