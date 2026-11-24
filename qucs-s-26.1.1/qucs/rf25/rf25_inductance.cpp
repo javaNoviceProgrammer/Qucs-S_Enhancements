@@ -1271,12 +1271,24 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     // (Kept for the stubs below: how wide the cell is across the way the
     //  current comes into it.)
     const auto acrossOf = [&mesh](int cell, QPointF along) {
-        const QRectF box = mesh.cells.at(cell).outline.boundingRect();
+        const QPolygonF& outline = mesh.cells.at(cell).outline;
+        const QRectF box = outline.boundingRect();
         const double n = std::hypot(along.x(), along.y());
         if (!(n > 0)) return std::min(box.width(), box.height());
-        // The extent across the direction: the box's own side that the
-        // direction does not run along.
-        return std::abs(along.x()) > std::abs(along.y()) ? box.height() : box.width();
+        // The extent across the direction: the outline's own, between its
+        // corners furthest either side of the line it runs along. (The
+        // box's side was that only for a cell square to the axes: a slanted
+        // strip's cells, a 30-degree feed's 2 µm across, were taken 5.7 µm,
+        // its stubs' resistance a third of theirs - a strip at 30 degrees
+        // 0.66 % short, a ring fed so 1.3 %: the review's P63.)
+        const QPointF normal(-along.y() / n, along.x() / n);
+        double lo = std::numeric_limits<double>::max(), hi = std::numeric_limits<double>::lowest();
+        for (const QPointF& p : outline) {
+            const double t = p.x() * normal.x() + p.y() * normal.y();
+            lo = std::min(lo, t);
+            hi = std::max(hi, t);
+        }
+        return hi > lo ? hi - lo : std::min(box.width(), box.height());
     };
     if (source < 0 || sink < 0) {
         out.problems << tr("Neither end of the loop landed on a cell that a current can reach.");
