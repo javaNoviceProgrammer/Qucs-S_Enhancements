@@ -854,6 +854,23 @@ private slots:
         // effective loss tangent is nearly the substrate's own.
         QVERIFY2(e.lossTangent.first() > 0.5 * tand && e.lossTangent.first() < tand,
                  qPrintable(QStringLiteral("%1 vs the substrate's %2").arg(e.lossTangent.first()).arg(tand)));
+        // And so of a uniaxial substrate, its loss tangent the plane's both
+        // ways: its loss is of the field along z as well. Only the plane's
+        // share was counted, an eighth of it under this line - eps_z given
+        // equal to eps_r, the same material, lost 88 % of its G.
+        for (const double ez : {epsr, 2 * epsr}) {
+            rf::Stack uni = stack;
+            for (rf::Layer& l : uni.layers)
+                if (l.kind == rf::Layer::Substrate) l.epsz = ez;
+            const rf::Extraction u = rf::extract(meshed(line, 50), line, uni);
+            QVERIFY2(u.ok() && u.lossTangent.size() == 1, qPrintable(u.problems.join(" | ")));
+            if (ez == epsr)
+                QVERIFY2(std::abs(u.lossTangent.first() / e.lossTangent.first() - 1) < 1e-4,
+                         qPrintable(QStringLiteral("%1 against %2").arg(u.lossTangent.first()).arg(e.lossTangent.first())));
+            else
+                QVERIFY2(u.lossTangent.first() > 0.5 * tand && u.lossTangent.first() < tand,
+                         qPrintable(QStringLiteral("eps_z %1: %2").arg(ez).arg(u.lossTangent.first())));
+        }
 
         const double f = 10e9;
         const rf::LineParameters lp = rf::lineParameters(e, 0, 600e-6, f);

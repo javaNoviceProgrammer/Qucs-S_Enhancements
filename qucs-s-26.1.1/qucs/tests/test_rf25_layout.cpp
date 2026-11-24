@@ -1211,9 +1211,42 @@ private slots:
         } catch (...) {
             QFAIL("processing threw");
         }
-        QVERIFY2(processed.problems.join(' ').contains(QStringLiteral("M1: 2 shape(s) reach a metre or more from the origin")),
-                 qPrintable(processed.problems.join(" | ")));
+        // (Not a problem standing in the way of the solve, which goes on
+        //  without them, but said with its answer - it was in none.)
+        QVERIFY2(processed.leftOut.join(' ').contains(QStringLiteral("M1: 2 shape(s) reach a metre or more from the origin")),
+                 qPrintable(processed.leftOut.join(" | ")));
+        QVERIFY2(processed.ok(), qPrintable(processed.problems.join(" | ")));
         QCOMPARE(int(processed.conductors.size()), 1);
+        {
+            rf::Model fed = shaped({boxOn("M1", 0, 0, 200, 20), boxOn("M1", 0, 0, 100, 1e308)});
+            rf::Node* ports = nullptr;
+            for (rf::Node& n : fed.root.children)
+                if (n.type == QStringLiteral("rf_ports")) ports = &n;
+            QVERIFY(ports != nullptr);
+            ports->children.clear();
+            for (const auto& [name, x] : {std::make_pair("P1", "0"), std::make_pair("P2", "200[um]")}) {
+                rf::Node p = fed.make(QStringLiteral("rf_edge_port"));
+                p.label = QLatin1String(name);
+                p.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+                p.props.insert(QStringLiteral("x"), QLatin1String(x));
+                p.props.insert(QStringLiteral("y"), QStringLiteral("10[um]"));
+                ports->children.push_back(p);
+            }
+            rf::SolveJob job;
+            rf::SolveRequest request;
+            request.solver = QStringLiteral("quasi_static");
+            request.loopOnly = true;
+            const rf::ModelSolution sol = rf::solveModel(job, fed, nothingRead(), QStringLiteral("none"), QDir::tempPath(), request);
+            QVERIFY2(sol.inductance && sol.inductance->ok(), qPrintable(sol.problem));
+            // (The strip alone: ten squares.)
+            const rf::Stack stack = fed.solveStack();
+            const rf::Layer* metal = stack.named(QStringLiteral("M1"));
+            QVERIFY(metal != nullptr);
+            const double squares = sol.inductance->rDc * metal->sigma * metal->thickness;
+            QVERIFY2(std::abs(squares / 10 - 1) < 0.01, qPrintable(QString::number(squares)));
+            QVERIFY2(sol.inductance->lines.join(' ').contains(QStringLiteral("M1: 1 shape(s) reach a metre or more")),
+                     qPrintable(sol.inductance->lines.join(" | ")));
+        }
         // (The boolean operations themselves fail, and do not throw, past
         //  their range: a union and a clip of such a shape.)
         const QPolygonF huge(QRectF(0, 0, 100, 1e17));

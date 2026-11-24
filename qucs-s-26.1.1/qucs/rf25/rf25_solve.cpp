@@ -413,7 +413,7 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
     if (const QStringList wrong = valueProblemsOf(job.stack); !wrong.isEmpty()) return said(wrong.join(QLatin1Char(' ')));
     // (The Cutout's, as processing kept them: matched by their text, they
     //  held only while nothing was translated - the review of 26ff2805.)
-    job.processWarnings << processed.cutoutProblems;
+    job.processWarnings << processed.cutoutProblems << processed.leftOut;
     // The layers that end: their shapes, and what is beyond them.
     for (auto it = processed.extents.cbegin(); it != processed.extents.cend(); ++it) {
         const Layer* layer = job.stack.named(it.key());
@@ -759,6 +759,7 @@ void runSolve(SolveJob& job)
     control.done = &job.stepDone;
     control.all = &job.stepAll;
     control.images = &job.images;
+    control.mostCompressed = job.how.mostCompressedCharges();
     // (The loop alone - rf25_inductance's -: no charge solve before it,
     //  which was most of a spiral's time and nothing of its answer.)
     if (!job.loopOnly)
@@ -782,6 +783,9 @@ void runSolve(SolveJob& job)
         job.inductance = std::make_shared<Inductance>(
             inductanceOf(job.mesh, job.conductors, job.stack, job.in, job.out, 1e-6, job.frequency, &job.stop, job.inLayer, job.outLayer,
                          &job.loopProgress));
+        // (What processing left out, said with the loop's answer as with the
+        //  others': it was in none of them.)
+        if (job.inductance->ok()) job.inductance->lines += job.processWarnings;
     }
 }
 
@@ -1098,6 +1102,7 @@ void convergeOn(SolveJob& job)
             control.done = &job.stepDone;
             control.all = &job.stepAll;
             control.images = &job.images;
+            control.mostCompressed = job.how.mostCompressedCharges();
             const Extraction e = extract(mesh, job.conductors, job.stack, 1e-6, job.returns, &control);
             if (job.stop.load()) break;
             if (!e.ok()) {

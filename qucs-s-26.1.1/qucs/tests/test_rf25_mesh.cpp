@@ -1233,6 +1233,27 @@ private slots:
         QCOMPARE(rf::integerOf(rf::Model::blank().mesh(), QStringLiteral("most_cells")), 0);
         // The quasi-static's, as it was.
         QCOMPARE(rf::MeshSettings().mostCells(), rf::kMostCharges);
+        // The quasi-static's held compressed: Most cells above the build's
+        // 40,000 raises its bound too, as its warning says. It cut the mesh
+        // to it and refused it past 40,000 all the same - an IDC of 50,734
+        // cells under a Most cells of 300,000 (the review's P68).
+        rf::MeshSettings statics;
+        statics.chargeCompressed = true;
+        QCOMPARE(statics.mostCompressedCharges(), rf::kMostCompressedCells);
+        statics.most = 60000;
+        QCOMPARE(statics.mostCompressedCharges(), 60000);
+        const rf::Mesh raised = rf::meshOf(many, statics, m.stack(), 10e9);
+        QVERIFY2(raised.ok() && raised.cells.size() > rf::kMostCompressedCells && raised.cells.size() <= 60000,
+                 qPrintable(QString::number(raised.cells.size()) + ": " + raised.problems.join(" | ")));
+        QVERIFY2(says(raised.lines, "held compressed") && !says(raised.lines, "more than this build will solve"),
+                 qPrintable(raised.lines.join(" | ")));
+        // (The solve's bound the same: refused before anything is built at
+        //  the build's own, not at the one raised.)
+        rf::ExtractControl control;
+        const rf::Extraction refused = rf::extract(raised, many, m.stack(), 1e-6, {}, &control);
+        QVERIFY2(!refused.ok() && says(refused.problems, "(40000 at most)"), qPrintable(refused.problems.join(" | ")));
+        statics.most = 5000;
+        QCOMPARE(statics.mostCompressedCharges(), rf::kMostCompressedCells);
     }
 
     // The two new settings read from the node, and what is no setting.

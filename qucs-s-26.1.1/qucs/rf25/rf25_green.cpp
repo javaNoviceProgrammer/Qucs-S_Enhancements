@@ -525,6 +525,11 @@ QStringList valueProblemsOf(const Stack& stack)
             if (l.roughness < 0) out << tr("%1 has a roughness below zero.").arg(l.name);
             if (l.huray && !(l.nodule > 0)) out << tr("%1's nodules have no radius.").arg(l.name);
             if (l.huray && l.surfaceRatio < 0) out << tr("%1's surface ratio is below nought.").arg(l.name);
+            // (Below nought it was solved as a perfect conductor, as nought
+            //  is - which nought is meant to be, and this is not.)
+            if (l.sigma < 0) out << tr("%1 has a conductivity below zero.").arg(l.name);
+        } else if (l.kind == Layer::Via) {
+            if (l.sigma < 0) out << tr("The via %1 has a conductivity below zero.").arg(l.name);
         }
     }
     return out;

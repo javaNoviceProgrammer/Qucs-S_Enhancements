@@ -3037,6 +3037,9 @@ private slots:
              },
              "outside Djordjevic-Sarkar's poles"},
             {[](rf::Stack& s) { s.layers[2].roughness = -1e-6; }, "M1 has a roughness below zero"},
+            // (A metal's conductivity below nought was solved as a perfect
+            //  conductor, as nought is: the review's P61.)
+            {[](rf::Stack& s) { s.layers[2].sigma = -5.8e7; }, "M1 has a conductivity below zero"},
             {[](rf::Stack& s) {
                  s.layers[2].huray = true;
                  s.layers[2].surfaceRatio = 2;

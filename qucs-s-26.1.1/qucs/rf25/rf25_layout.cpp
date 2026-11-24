@@ -1537,10 +1537,13 @@ Processed processShapes(const QMap<QString, QList<QPolygonF>>& byLayer, const QS
                                             return false;
                                         }),
                          shapes.end());
-            if (shapes.size() < was)
-                out.problems << tr("%1: %2 shape(s) reach a metre or more from the origin, past any layout: left out.")
-                                    .arg(layer)
-                                    .arg(was - shapes.size());
+            if (shapes.size() < was) {
+                const QString said = tr("%1: %2 shape(s) reach a metre or more from the origin, past any layout: left out.")
+                                         .arg(layer)
+                                         .arg(was - shapes.size());
+                out.leftOut << said;
+                out.report.lines << said;
+            }
             if (shapes.isEmpty()) continue;
         }
         const Layer* of = stack.named(layer);

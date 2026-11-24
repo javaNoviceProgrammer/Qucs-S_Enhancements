@@ -1338,6 +1338,11 @@ int MeshSettings::mostCells() const
     return most > 0 ? most : (compressed || chargeCompressed ? kMostCompressedCells : kMostCharges);
 }
 
+int MeshSettings::mostCompressedCharges() const
+{
+    return std::max(kMostCompressedCells, most);
+}
+
 MeshCost costOf(int unknowns, bool compressed)
 {
     MeshCost cost;
@@ -1382,13 +1387,14 @@ double topFrequency(const Model& model)
     return std::max(from, to);
 }
 
-QString chargeCostOf(int cells, bool compressedPast)
+QString chargeCostOf(int cells, bool compressedPast, int mostCompressed)
 {
     // (Past the dense limit, where the solve holds it compressed: said so.)
+    const int compressedMost = std::max(kMostCompressedCells, mostCompressed);
     if (compressedPast && cells > kMostCharges)
-        return cells > kMostCompressedCells
+        return cells > compressedMost
                    ? tr("%1 to solve the charge on - more than this build will solve, compressed (%2 at most): ask for fewer "
-                        "cells across a conductor, or a larger largest cell").arg(cells).arg(kMostCompressedCells)
+                        "cells across a conductor, or a larger largest cell").arg(cells).arg(compressedMost)
                    : tr("%1 to solve the charge on, past the dense limit (%2): held compressed, solved by iteration")
                          .arg(cells).arg(kMostCharges);
     // A dense real matrix: 8 bytes a term.
@@ -3196,18 +3202,22 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                           .arg(costOf(unknowns + charges, true).said.section(QLatin1String("; "), 1));
     else
         mesh.lines << tr("%1 cell(s) on %2 layer(s): %3. The %4 edge(s) between them are a full-wave solve's unknowns: %5.")
-                          .arg(charges).arg(mesh.byLayer().size()).arg(chargeCostOf(charges, how.chargeCompressed))
+                          .arg(charges).arg(mesh.byLayer().size()).arg(chargeCostOf(charges, how.chargeCompressed, how.mostCompressedCharges()))
                           .arg(unknowns).arg(mesh.cost.said);
     if (!faced.isEmpty())
         mesh.lines << tr("%1 solved as its two faces: its cells and their edges twice, and a wall up from each cell along "
                          "its edges, in those counts.")
                           .arg(faced.join(QStringLiteral(", ")));
-    if (mesh.cost.tooBig)
+    // (A quasi-static study's mesh is the charge solve's: the full wave's
+    //  dense matrix of its edges is said among its lines, not refused - its
+    //  Most cells past 40,000 stood in the way of a solve that needs none of
+    //  it.)
+    if (mesh.cost.tooBig && !how.chargeCompressed)
         mesh.problems << mesh.cost.said;
     // (The mesh's own cells: a metal's top face is the solver's to refuse,
     //  which a calibration strip too long for it is cut short for.)
-    if (!how.compressed && mesh.cells.size() > (how.chargeCompressed ? kMostCompressedCells : kMostCharges))
-        mesh.problems << chargeCostOf(int(mesh.cells.size()), how.chargeCompressed);
+    if (!how.compressed && mesh.cells.size() > (how.chargeCompressed ? how.mostCompressedCharges() : kMostCharges))
+        mesh.problems << chargeCostOf(int(mesh.cells.size()), how.chargeCompressed, how.mostCompressedCharges());
     if (mesh.cells.isEmpty()) mesh.problems << tr("The mesh came out empty.");
     return mesh;
 }

@@ -1326,6 +1326,8 @@ QJsonObject QucsControl::rf25Inductance(const QJsonObject& args)
     //  study's top beside a "Q" of the one asked for - 6.91e+03 at 0.1 GHz
     //  beside 690.7 at 10 MHz.)
     for (const QString& line : ind->lines) {
+        // (What processing left out is among the prepared lines as well.)
+        if (said.contains(line)) continue;
         if (asked > 0 && ind->rDc > 0 && line.startsWith(QLatin1String("Q is ")))
             said.append(tr("Q is %1 at %2 GHz, of that inductance over the resistance at direct current.")
                             .arg(2 * M_PI * asked * ind->l / ind->rDc, 0, 'g', 3)
