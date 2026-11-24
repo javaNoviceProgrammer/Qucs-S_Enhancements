@@ -822,11 +822,12 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
         // (Past the dense limit the charge is solved compressed - its far
         //  blocks of low rank, by iteration -, to the compressed mesh's own
         //  bound, where past 8,000 cells it was refused.)
-        if (charges > kMostCompressedCells) {
+        const int compressedMost = std::max(kMostCompressedCells, control != nullptr ? control->mostCompressed : 0);
+        if (charges > compressedMost) {
             out.unknowns = int(charges);
             out.problems << tr("%1 cells is more than this build will solve the charge on, compressed (%2 at most): ask for "
                                "fewer cells across a conductor, or a larger largest cell.")
-                                .arg(charges).arg(kMostCompressedCells);
+                                .arg(charges).arg(compressedMost);
             return out;
         }
     }
@@ -1003,10 +1004,10 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     for (const Net& n : nets) which += n.cells;
     const int n = int(which.size());
     out.unknowns = n;
-    if (n > kMostCompressedCells) {
+    if (const int compressedMost = std::max(kMostCompressedCells, control != nullptr ? control->mostCompressed : 0); n > compressedMost) {
         out.problems << tr("%1 cells is more than this build will solve the charge on, compressed (%2 at most): ask for fewer "
                            "cells across a conductor, or a larger largest cell.")
-                            .arg(n).arg(kMostCompressedCells);
+                            .arg(n).arg(compressedMost);
         return out;
     }
     // Past the dense limit: held compressed, solved by iteration. A layer
@@ -1833,6 +1834,13 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             const double was = nudged.slabs[k].epsr;
             const double step = was * 1e-3;
             nudged.slabs[k].epsr = was + step;
+            // A uniaxial slab's along z by the same part in a thousand: its
+            // loss tangent is the plane's both ways (Slab::permittivityZAt()),
+            // so its loss is of the field it holds along z as well. The plane's
+            // alone counted only that share, under a microstrip an eighth of
+            // it, its G 88 % low - and one with eps_z given equal to eps_r
+            // was taken as uniaxial once nudged (the review's P60).
+            if (nudged.slabs[k].epsz > 0) nudged.slabs[k].epsz *= (was + step) / was;
             QMap<QString, Green> some;
             for (const QString& a : std::as_const(layers))
                 for (const QString& b : std::as_const(layers)) {

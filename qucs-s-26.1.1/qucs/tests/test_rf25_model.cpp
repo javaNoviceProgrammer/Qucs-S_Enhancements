@@ -414,6 +414,15 @@ private slots:
             m.stackNode().children.at(4).props.insert(QStringLiteral("sigma"), QStringLiteral("0"));
             QVERIFY(says(m.stack().problems, "M1 has no conductivity"));
             QVERIFY(says(m.stack().problems, "via V1 has no conductivity"));
+            // Below nought, said as what it is - and a substrate's too, which
+            // the solve refused and the edit did not list.
+            m.stackNode().children.at(0).props.insert(QStringLiteral("sigma"), QStringLiteral("-1"));
+            m.stackNode().children.at(2).props.insert(QStringLiteral("sigma"), QStringLiteral("-5.8e7"));
+            m.stackNode().children.at(4).props.insert(QStringLiteral("sigma"), QStringLiteral("-1e7"));
+            const QStringList p = m.stack().problems;
+            QVERIFY2(says(p, "M1 has a conductivity below zero") && !says(p, "M1 has no conductivity"), qPrintable(p.join(" | ")));
+            QVERIFY2(says(p, "via V1 has a conductivity below zero") && !says(p, "via V1 has no conductivity"), qPrintable(p.join(" | ")));
+            QVERIFY2(p.join(' ').count(QStringLiteral("has a conductivity below zero")) == 3, qPrintable(p.join(" | ")));
         }
         {   // A via that names nothing, something that is no metal, and
             // two metals that are not neighbours.

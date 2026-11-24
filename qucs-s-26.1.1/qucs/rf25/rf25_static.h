@@ -288,6 +288,10 @@ struct ExtractControl {
     /// (nought: the build's, kMostNearFill in rf25_static.cpp) - tests set
     /// it lower, to reach the bound.
     qint64 mostNearFill = 0;
+    /// The most charges solved compressed (nought, or under the build's
+    /// kMostCompressedCells: that): the Mesh node's Most cells, where it asks
+    /// for more (MeshSettings::mostCompressedCharges()).
+    int mostCompressed = 0;
     std::atomic_int* step = nullptr;   ///< a Step
     std::atomic_int* done = nullptr;
     std::atomic_int* all = nullptr;

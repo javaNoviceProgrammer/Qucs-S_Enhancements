@@ -1599,9 +1599,16 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
                                 .arg(l.tand, 0, 'g', 3)
                                 .arg(l.dispersionAt / 1e9, 0, 'g', 4)
                                 .arg(djordjevicSarkar(l.epsr, l.tand, l.dispersionAt, 1e30).real(), 0, 'g', 3);
-        if (l.kind == Layer::Metal && !(l.sigma > 0) && read("sigma"))
+        // (A conductivity below nought is not none: said as what it is, and
+        //  refused by every solve, where it was solved as a perfect conductor
+        //  - the review's P61.)
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate || l.kind == Layer::Metal) && l.sigma < 0 && read("sigma"))
+            out.problems << tr("%1 has a conductivity below zero.").arg(name(l));
+        else if (l.kind == Layer::Metal && !(l.sigma > 0) && read("sigma"))
             out.problems << tr("%1 has no conductivity.").arg(name(l));
-        if (l.kind == Layer::Via && !(l.sigma > 0) && read("sigma"))
+        if (l.kind == Layer::Via && l.sigma < 0 && read("sigma"))
+            out.problems << tr("The via %1 has a conductivity below zero.").arg(name(l));
+        else if (l.kind == Layer::Via && !(l.sigma > 0) && read("sigma"))
             out.problems << tr("The via %1 has no conductivity.").arg(name(l));
         if (l.kind == Layer::Metal && l.roughness < 0 && read("roughness"))
             out.problems << tr("%1 has a roughness below zero.").arg(name(l));

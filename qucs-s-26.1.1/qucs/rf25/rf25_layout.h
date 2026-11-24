@@ -323,6 +323,12 @@ struct Processed {
     /// Those of problems that are the Cutout's: a region left out, which
     /// the solve warns of.
     QStringList cutoutProblems;
+    /// What the processing left out and the solve goes on without, said
+    /// with every answer's warnings: a shape reaching a metre or more from
+    /// the origin. (Among problems it was listed as standing in the way of
+    /// a solve that went ahead, and no answer said it - a disc covering the
+    /// layout gone without a word: the review's P65.)
+    QStringList leftOut;
     bool ok() const { return problems.isEmpty(); }
     /// How many conductors each layer has.
     QMap<QString, int> byLayer() const;

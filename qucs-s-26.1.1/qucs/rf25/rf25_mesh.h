@@ -135,6 +135,11 @@ struct MeshSettings {
     double symmetryAt = 0;
     /// The most cells, as the solver has it.
     int mostCells() const;
+    /// The most charges the quasi-static solve holds compressed: the build's
+    /// kMostCompressedCells, or Most cells where that is more. (Most cells cut
+    /// the mesh to it, and the solve refused it past 40,000 all the same, its
+    /// warning saying Most cells raises it: the review's P68.)
+    int mostCompressedCharges() const;
 };
 MeshSettings meshSettingsOf(const Node& node, const QList<fem::Model::Parameter>& parameters, QStringList* problems);
 /// \a how with every size it sets divided by \a factor - the cells across
@@ -324,7 +329,7 @@ MeshCost costOf(int unknowns, bool compressed = false);
 /// build solves (kMostCharges). The mesh has two counts - its cells, the
 /// charge solve's, and the edges between them, a full-wave solve's - and
 /// they were said side by side with the second's matrix.
-QString chargeCostOf(int cells, bool compressedPast = false);
+QString chargeCostOf(int cells, bool compressedPast = false, int mostCompressed = 0);
 
 /// The highest frequency of the model's study, Hz; 0 when it says none.
 double topFrequency(const Model& model);
