@@ -1144,19 +1144,27 @@ private slots:
     //   ring's own parts banded about its feeds in the layout's axes.
     // - Its own measures are those of it fed square: its gaps between its
     //   own parts (Mesh::gapByLayer, by which Automatic solves a metal as
-    //   its faces), taken in its frame - in the layout's axes, pairs across
-    //   the wedges where its feeds meet its curve read 0.85 µm for the ring
-    //   at 45 degrees, 5.06 for the disc, and Automatic took a 3 µm metal as
-    //   its faces, C 2.6 % over -; and its narrowest part, cells across and
-    //   cells there, none of them said with it turned. The ring 100 by 99 µm
-    //   fed at 30 degrees, alone more than the 8,000 at 10 across, is cut at
-    //   3, and that said, of it.
-    // - Kept in the layout's axes by a square stub as well, a disc fed at 30
-    //   or 45 degrees is said to have no gaps: two of its slanted parts, the
-    //   disc halfway between their nearest points, face none. (Looked for in
-    //   the middle of their boxes' overlap, it read gaps of 1.79 and 1.75 µm.
-    //   The ring so kept still reads 3.15 and 0.85 µm, across the wedges
-    //   where its feeds meet it.)
+    //   its faces) - pairs across the wedges where its feeds meet its curve
+    //   read 0.85 µm for the ring at 45 degrees, 5.06 for the disc, and
+    //   Automatic took a 3 µm metal as its faces, C 2.6 % over -; and its
+    //   narrowest part, cells across and cells there, none of them said
+    //   with it turned. The ring 100 by 99 µm fed at 30 degrees, alone more
+    //   than the 8,000 at 10 across, is cut at 3, and that said, of it; with
+    //   20,000 and a strip 0.5 µm wide beside it, the narrowest conductor's
+    //   cells across are said of the strip, not the ring's 5 (the mesh's
+    //   across the least, for the convergence check).
+    // - A disc or a ring with a stub of 20 µm square on it as well, fed at
+    //   0, 30 or 45 degrees, is said to have no gaps: two of one conductor's
+    //   parts face a gap only across two of its walls facing each other.
+    //   (Looked for in the middle of their boxes' overlap, the disc read gaps
+    //   of 1.79 and 1.75 µm; the ring, with the conductor looked for between
+    //   their nearest points, 3.15 and 0.85 µm, two of its parts ending on
+    //   its edge a hair apart, then 80 µm across its hole along a chord. Fed
+    //   square, its two feeds' ends were a gap of 199 µm, the ring between
+    //   them.) Fed at 30 or 45 it is turned, its feeds' sides the longer, its
+    //   R within half a per cent of it fed at 0: kept in the layout's axes
+    //   for any square side, it was banded, the disc at 30 degrees 1.8 %
+    //   under.
     // - Fed at 0 degrees with a stub at 120, a straight side along an axis,
     //   it is not turned: turned by the stub, its feeds were banded about,
     //   its R 1.8 % under.
@@ -1168,7 +1176,8 @@ private slots:
         // (A ring or a circle of 100 µm fed by two strips 20 µm wide from 95
         //  to 150 µm out at \a degrees, a ring of \a inner its hole's radius,
         //  and \a more shapes on M1.)
-        const auto meshOf = [this](double inner, double degrees, const QList<QJsonObject>& more, rf::Processed* processed, rf::Stack* stack) {
+        const auto meshOf = [this](double inner, double degrees, const QList<QJsonObject>& more, rf::Processed* processed, rf::Stack* stack,
+                                   const rf::MeshSettings& how = rf::MeshSettings()) {
             rf::Model m = stacked();
             m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes")));
             const QString shapes = m.layout().child(QStringLiteral("rf_shapes"))->tag;
@@ -1201,7 +1210,7 @@ private slots:
             empty.byName.insert(top.name, 0);
             *processed = rf::processRead(m, empty, QStringLiteral("none"));
             *stack = m.solveStack();
-            return rf::meshOf(processed->conductors, rf::MeshSettings(), *stack, 1e9);
+            return rf::meshOf(processed->conductors, how, *stack, 1e9);
         };
         rf::Processed processed;
         rf::Stack stack;
@@ -1220,18 +1229,56 @@ private slots:
                          qPrintable(QStringLiteral("%1: narrowest %2 µm, cells %3 there; fed square %4, %5").arg(what).arg(mesh.narrowest).arg(mesh.acrossCell).arg(square.narrowest).arg(square.acrossCell)));
             }
         }
-        for (const double degrees : {30.0, 45.0}) {
-            QJsonArray rows;
-            for (const QPointF& p : {QPointF(-10, 95), QPointF(-10, 110), QPointF(10, 110), QPointF(10, 95)})
-                rows.append(QJsonArray{QString::number(p.x()) + "[um]", QString::number(p.y()) + "[um]"});
-            const rf::Mesh mesh = meshOf(0, degrees, {QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}}}, &processed, &stack);
-            QVERIFY2(mesh.ok() && !says(mesh.lines, "frame of its feeds") && !says(mesh.lines, "beside gaps"),
-                     qPrintable(QStringLiteral("a disc fed at %1 degrees and square: %2").arg(degrees).arg(mesh.lines.join(" | "))));
+        for (const double inner : {0.0, 50.0}) {
+            double square = 0;
+            for (const double degrees : {0.0, 30.0, 45.0}) {
+                QJsonArray rows;
+                for (const QPointF& p : {QPointF(-10, 95), QPointF(-10, 110), QPointF(10, 110), QPointF(10, 95)})
+                    rows.append(QJsonArray{QString::number(p.x()) + "[um]", QString::number(p.y()) + "[um]"});
+                const rf::Mesh mesh = meshOf(inner, degrees, {QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}}}, &processed, &stack);
+                const QString what = QStringLiteral("%1 fed at %2 degrees with a square stub").arg(inner > 0 ? "a ring" : "a disc").arg(degrees);
+                QVERIFY2(mesh.ok() && says(mesh.lines, "frame of its feeds") == (degrees != 0) && !says(mesh.lines, "beside gaps"),
+                         qPrintable(what + ": " + mesh.lines.join(" | ")));
+                QVERIFY2(!mesh.gapByLayer.contains(QStringLiteral("M1")),
+                         qPrintable(QStringLiteral("%1: gaps of %2 µm").arg(what).arg(mesh.gapByLayer.value(QStringLiteral("M1")))));
+                const double a = degrees * M_PI / 180;
+                const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, 150 * QPointF(std::cos(a), std::sin(a)),
+                                                             -150 * QPointF(std::cos(a), std::sin(a)));
+                const rf::Layer* metal = stack.named(QStringLiteral("M1"));
+                QVERIFY2(loop.ok() && metal != nullptr, qPrintable(what + ": " + loop.problems.join(" | ")));
+                const double squares = loop.rDc * metal->sigma * metal->thickness;
+                if (degrees == 0) square = squares;
+                QVERIFY2(std::abs(squares / square - 1) < 0.005, qPrintable(QStringLiteral("%1: %2 squares, fed at 0 %3").arg(what).arg(squares).arg(square)));
+            }
         }
         {
             const rf::Mesh mesh = meshOf(99, 30, {}, &processed, &stack);
             QVERIFY2(mesh.ok() && mesh.across == 3 && says(mesh.warnings, "would alone be more than"),
                      qPrintable(QStringLiteral("%1 across: %2").arg(mesh.across).arg(mesh.lines.join(" | "))));
+            // (The ring of aRoundShapeIsMeshedAsOneRegion, fed once, with a
+            //  strip 0.5 µm wide, at Most cells 20,000: the whole cut at 7
+            //  across, more than the dense solve's 8,000 and so refused,
+            //  its lines said; the ring's own mesh cut to 5, not refused
+            //  alone for those 8,000 - refused, the ring was counted as its
+            //  bands, and the strip cut at 3.)
+            rf::MeshSettings more;
+            more.most = 20000;
+            const double a = 30 * M_PI / 180;
+            const QPointF along(std::cos(a), std::sin(a)), side(-5 * std::sin(a), 5 * std::cos(a));
+            QJsonArray feed;
+            for (const QPointF& p : {99.5 * along - side, 160 * along - side, 160 * along + side, 99.5 * along + side})
+                feed.append(QJsonArray{QString::number(p.x(), 'f', 6) + "[um]", QString::number(p.y(), 'f', 6) + "[um]"});
+            const rf::Model thin = shaped({QJsonObject{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"}, {"inner_radius", "99[um]"}},
+                                           QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", feed}},
+                                           QJsonObject{{"layer", "M1"}, {"shape", "rectangle"}, {"x", "-10[um]"}, {"y", "-130[um]"}, {"width", "20[um]"}, {"height", "0.5[um]"}}});
+            const rf::Mesh beside = rf::meshOf(rf::processRead(thin, nothingRead(), QStringLiteral("none")).conductors, more, thin.solveStack(), 1e9);
+            QString line;
+            for (const QString& l : beside.lines)
+                if (l.contains(QStringLiteral("across the narrowest conductor"))) line = l;
+            const int there = line.section(QLatin1Char(' '), 0, 0).toInt();
+            QVERIFY2(there >= 6 && std::abs(beside.narrowest - 0.5) < 1e-3 && std::abs(there * beside.acrossCell / beside.narrowest - 1) < 0.01
+                         && beside.across < there && says(beside.warnings, "would alone be more than"),
+                     qPrintable(QStringLiteral("%1 across the mesh, %2 µm narrowest, cells %3: %4").arg(beside.across).arg(beside.narrowest).arg(beside.acrossCell).arg(line)));
         }
         // A ring inside the ring.
         const QJsonObject ring{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "45[um]"}, {"inner_radius", "35[um]"}};
