@@ -1924,6 +1924,47 @@ private slots:
                  qPrintable(QStringLiteral("%1 cells | %2").arg(cut.cells.size()).arg(cut.lines.join(" | "))));
     }
 
+    // A plate 300 µm square with three round holes cut by the cutout keeps its
+    // edge strips - each with a long side on the plate's edge, as deep as half
+    // its width (2A/P, 92 µm) and more - meshed as strips, their cells long
+    // along the edge: 3,677 cells at 20 across, its R within 0.5 % of its
+    // value at 40. Taken as strips only by both long sides on the outline
+    // (1b2681d9), they joined the region's square cells: 8,610 at 20 across,
+    // 33,602 at 40 where it is 13,600. A disc's short wide feed, 20 by 9 µm
+    // beyond it, with one long side on the outline and shallower than half
+    // the conductor's width, joins the disc's region: 431 cells at 10 across
+    // where as a strip of its own it was 982.
+    void aPlatesEdgeStripsStayStrips()
+    {
+        rf::Model plate = shaped({boxOn("M1", 0, 0, 300, 300)});
+        for (const QPointF& h : {QPointF(80, 80), QPointF(210, 140), QPointF(110, 220)})
+            region(plate, "circle", {{"x", QString::number(h.x()) + "[um]"}, {"y", QString::number(h.y()) + "[um]"}, {"radius", "30[um]"}, {"action", QStringLiteral("remove")}});
+        const rf::Processed processed = rf::processRead(plate, nothingRead(), QStringLiteral("none"));
+        QCOMPARE(int(processed.conductors.size()), 1);
+        const rf::Stack stack = plate.solveStack();
+        QList<double> rs;
+        for (const int across : {20, 40}) {
+            rf::MeshSettings how;
+            how.cellsAcross = across;
+            how.most = 60000;
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, how, stack, 1e9);
+            // (At 40 across, past the charge solve's dense bound: the loop's
+            //  is its own.)
+            QVERIFY2(!mesh.cells.isEmpty() && mesh.lines.join(' ').contains(QStringLiteral("meshed as one region")), qPrintable(mesh.lines.join(" | ")));
+            if (across == 20) QVERIFY2(mesh.ok() && mesh.cells.size() < 4500, qPrintable(QStringLiteral("%1 cells at 20 across").arg(mesh.cells.size())));
+            const auto [clashes, pieces] = clashesAndPieces(mesh);
+            QVERIFY2(clashes == 0 && pieces == 1, qPrintable(QStringLiteral("%1 across: %2 clashes, %3 pieces").arg(across).arg(clashes).arg(pieces)));
+            const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, QPointF(0, 150), QPointF(300, 150));
+            QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+            rs << loop.rDc;
+        }
+        QVERIFY2(std::abs(rs.at(0) / rs.at(1) - 1) < 0.005, qPrintable(QStringLiteral("%1 Ohm at 20 across, %2 at 40").arg(rs.at(0)).arg(rs.at(1))));
+        const rf::Model fed = shaped({QJsonObject{{"layer", "M1"}, {"shape", "circle"}, {"x", "0"}, {"y", "0"}, {"radius", "50[um]"}},
+                                      boxOn("M1", -10, 48, 10, 58), boxOn("M1", -10, -58, 10, -48)});
+        const rf::Mesh disc = rf::meshOf(rf::processRead(fed, nothingRead(), QStringLiteral("none")).conductors, rf::MeshSettings(), fed.solveStack(), 1e9);
+        QVERIFY2(disc.ok() && disc.cells.size() < 700, qPrintable(QStringLiteral("%1 cells, a disc with short feeds").arg(disc.cells.size())));
+    }
+
     // A region's square clipped within its row (rf::RowClip) comes out as
     // against the whole outline, corner for corner: 10,000 random rows, six
     // squares in each, over a thin ring as processing writes it - a keyhole
