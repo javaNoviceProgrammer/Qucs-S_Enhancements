@@ -1762,12 +1762,19 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         const Operator precondition = [&lu](const VectorC& x, VectorC& y) { y = lu.solve(x); };
         VectorC rhs = VectorC::Zero(rows), x = VectorC::Zero(rows);
         rhs(row(in)) = 1.0;
+        // (Stopped at its rounding: the node potentials along a long line
+        //  grow with its cells, and their rounding in A^T phi is the floor of
+        //  the residual - a line 3 mm long on 1 µm cells, its potentials to
+        //  1.5e6, met 1.35e-10 in 28 iterations and restarted at one product
+        //  a time to the 3,000 allowed, 157 s for the answer of the first 3;
+        //  a meander's 138,746 cells 885 s - the review's P66.)
         const Gmres solved = gmres(system, precondition, rhs, x, kLoopResidual, kLoopRestart, kLoopMostIterations, stop,
                                    [progress](int iterations, double residual) {
                                        if (progress == nullptr) return;
                                        progress->iterations = iterations;
                                        progress->residual = residual;
-                                   });
+                                   },
+                                   true);
         if (solved.stopped) {
             out.problems << tr("The inductance was stopped.");
             return out;
@@ -1796,7 +1803,11 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
                          .arg(whole / 1048576.0, 0, 'f', 0)
                          .arg(solved.iterations)
                          .arg(solved.residual, 0, 'g', 2)
-                         .arg(solved.converged ? QString() : tr(" (short of the 1e-10 asked)"))
+                         .arg(solved.converged    ? QString()
+                              : solved.atRounding ? tr(" (as low as its rounding goes: its node potentials are some %1 times its "
+                                                       "residual's scale)")
+                                                        .arg(x.tail(rows - nb).cwiseAbs().maxCoeff(), 0, 'g', 2)
+                                                  : tr(" (short of the 1e-10 asked)"))
                          .arg(clock.elapsed() / 1000.0, 0, 'f', 1);
     }
 
