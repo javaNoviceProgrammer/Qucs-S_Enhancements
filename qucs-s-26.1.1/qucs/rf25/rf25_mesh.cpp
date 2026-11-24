@@ -1296,53 +1296,71 @@ double turnOf(const QPolygonF& outline, double perUnit)
         //  drawn at one angle come out some 2e-5 rad apart.)
         else if (std::min(std::abs(way - angle), M_PI / 2 - std::abs(way - angle)) > 1e-4) return 0;
     }
+    // The outline's straight sides: a side its corners either end turn from
+    // by 20 degrees or more, as piecesOf() tells a straight edge from a
+    // curve's, its edges in one line taken as one, a twentieth of the
+    // shape's width long or more, with metal on one side of it alone (a
+    // ring's slit there and back, metal either side, is no side).
+    QList<QPointF> points(outline.begin(), outline.end());
+    if (points.size() > 1 && points.first() == points.last()) points.removeLast();
+    const auto turnAt = [](QPointF a, QPointF b, QPointF c) {
+        const QPointF u = b - a, v = c - b;
+        return std::atan2(u.x() * v.y() - u.y() * v.x(), u.x() * v.x() + u.y() * v.y());
+    };
+    for (bool changed = true; changed && points.size() > 3;) {
+        changed = false;
+        for (int i = 0, m = int(points.size()); i < m && m > 3; ++i) {
+            const QPointF a = points.at((i + m - 1) % m), b = points.at(i), c = points.at((i + 1) % m);
+            if (a == b || std::abs(turnAt(a, b, c)) < 1e-4) {
+                points.removeAt(i);
+                changed = true;
+                break;
+            }
+        }
+    }
+    const double beside = 8 * kBooleanGrid * 1e-6 / perUnit;
+    bool square = false;   // (a straight side along an axis)
+    double slanted = -1;   // (the straight sides off the axes: their angle; -2 where they differ)
+    for (int k = 0, m = int(points.size()); k < m && m > 3; ++k) {
+        const QPointF a = points.at(k), b = points.at((k + 1) % m);
+        const QPointF d = b - a;
+        const double length = std::hypot(d.x(), d.y());
+        if (length < 0.05 * wide) continue;
+        const double small = 20 * M_PI / 180;
+        if (std::abs(turnAt(points.at((k + m - 1) % m), a, b)) < small || std::abs(turnAt(a, b, points.at((k + 2) % m))) < small) continue;
+        const QPointF mid = (a + b) / 2, normal(-d.y() / length * beside, d.x() / length * beside);
+        if (outline.containsPoint(mid + normal, Qt::OddEvenFill) == outline.containsPoint(mid - normal, Qt::OddEvenFill)) continue;
+        if (std::abs(d.x()) <= 1e-9 * length || std::abs(d.y()) <= 1e-9 * length) {
+            square = true;
+            continue;
+        }
+        const double way = std::fmod(std::atan2(d.y(), d.x()) + 2 * M_PI, M_PI / 2);
+        if (slanted == -1) slanted = way;
+        else if (slanted >= 0 && std::min(std::abs(way - slanted), M_PI / 2 - std::abs(way - slanted)) > 1e-4) slanted = -2;
+    }
     // Or, with no part a slanted strip's - feeds reaching no further past the
-    // curve than half their width, each part of them on it -, the outline's
-    // straight sides off the axes, all at one angle or at right angles to
-    // it: a side its corners either end turn from by 20 degrees or more, as
-    // piecesOf() tells a straight edge from a curve's, its edges in one line
-    // taken as one, a twentieth of the shape's width long or more. (A disc
+    // curve than half their width, each part of them on it -, the straight
+    // sides off the axes, all at one angle or at right angles to it. (A disc
     // fed by strips at 45 degrees 10 µm past it was meshed in the layout's
     // axes, its R 4.2 % under it fed square.)
     if (angle < 0) {
-        QList<QPointF> points(outline.begin(), outline.end());
-        if (points.size() > 1 && points.first() == points.last()) points.removeLast();
-        // (Its corners, those in a line left out.)
-        const auto turnAt = [](QPointF a, QPointF b, QPointF c) {
-            const QPointF u = b - a, v = c - b;
-            return std::atan2(u.x() * v.y() - u.y() * v.x(), u.x() * v.x() + u.y() * v.y());
-        };
-        for (bool changed = true; changed && points.size() > 3;) {
-            changed = false;
-            for (int i = 0, m = int(points.size()); i < m && m > 3; ++i) {
-                const QPointF a = points.at((i + m - 1) % m), b = points.at(i), c = points.at((i + 1) % m);
-                if (a == b || std::abs(turnAt(a, b, c)) < 1e-4) {
-                    points.removeAt(i);
-                    changed = true;
-                    break;
-                }
-            }
-        }
-        const int m = int(points.size());
-        for (int k = 0; k < m && m > 3; ++k) {
-            const QPointF a = points.at(k), b = points.at((k + 1) % m);
-            const QPointF d = b - a;
-            const double length = std::hypot(d.x(), d.y());
-            if (length < 0.05 * wide || std::abs(d.x()) <= 1e-9 * length || std::abs(d.y()) <= 1e-9 * length) continue;
-            const double small = 20 * M_PI / 180;
-            if (std::abs(turnAt(points.at((k + m - 1) % m), a, b)) < small || std::abs(turnAt(a, b, points.at((k + 2) % m))) < small) continue;
-            const double way = std::fmod(std::atan2(d.y(), d.x()) + 2 * M_PI, M_PI / 2);
-            if (angle < 0) angle = way;
-            else if (std::min(std::abs(way - angle), M_PI / 2 - std::abs(way - angle)) > 1e-4) return 0;
-        }
+        if (slanted == -2) return 0;
+        angle = slanted;
     }
+    // And none where a straight side runs along an axis: a curve fed square
+    // with a strip at a slant too, turned by it, had its square feeds
+    // slanted and its parts banded about them - a disc fed at 0 degrees with
+    // a stub at 120, 1.8 % under it without the turn.
+    if (square) return 0;
     if (angle < 0 || angle < 1e-6 || angle > M_PI / 2 - 1e-6) return 0;
     return angle;
 }
 
 /// While a conductor turned (turnOf()) is meshed with the rest in its frame:
-/// that meshOf() turns none.
+/// that meshOf() turns none, and cuts the conductor of \a meshingOnly alone,
+/// the rest there for what it faces (the gaps its edges are graded to).
 thread_local bool meshingTurned = false;
+thread_local int meshingOnly = -1;
 
 } // namespace
 
@@ -1580,8 +1598,16 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     struct Turned {
         int conductor = -1;
         QList<MeshCell> cells;
+        QStringList warnings;   // (its own mesh's: fewer across, where it alone was too many)
     };
     QList<Turned> turnedCells;
+    struct Turn {
+        int conductor = -1;
+        double angle = 0;
+        QPointF about;
+        QList<Conductor> turned;
+    };
+    QList<Turn> turns;
     if (axis == 0 && !meshingTurned) {
         for (int c = 0; c < conductors.size(); ++c) {
             if (conductors.at(c).isStrip()) continue;
@@ -1639,20 +1665,38 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     }
                 }
             }
+            turns << Turn{c, angle, about, turned};
+        }
+    }
+    // Each turned conductor meshed in its frame at \a perFeature across, as
+    // the rest are below (once each: the cut below tries fewer across where
+    // the whole is too many, these with the rest - counted here, its cells
+    // in the layout's frame not cut -, and a turned ring once counted as its
+    // bands, its neighbours cut to one across for cells it had not).
+    QHash<int, QList<Turned>> turnedAt;
+    const auto turnedFor = [&](int perFeature) -> const QList<Turned>& {
+        const auto at = turnedAt.constFind(perFeature);
+        if (at != turnedAt.cend()) return at.value();
+        QList<Turned>& out = turnedAt[perFeature];
+        for (const Turn& turn : std::as_const(turns)) {
+            const int c = turn.conductor;
+            const double angle = turn.angle;
+            const QPointF about = turn.about;
+            const QList<Conductor>& turned = turn.turned;
+            MeshSettings own = how;
+            own.cellsAcross = perFeature;
             // (Cleared however the meshOf() ends, a throw among them.)
             struct Turning {
-                Turning() { meshingTurned = true; }
-                ~Turning() { meshingTurned = false; }
+                explicit Turning(int only) { meshingTurned = true; meshingOnly = only; }
+                ~Turning() { meshingTurned = false; meshingOnly = -1; }
                 Turning(const Turning&) = delete;
                 Turning& operator=(const Turning&) = delete;
             };
             const Mesh inFrame = [&] {
-                const Turning turning;
-                return meshOf(turned, how, stack, top, micrometre);
+                const Turning turning(c);
+                return meshOf(turned, own, stack, top, micrometre);
             }();
             if (!inFrame.ok()) continue;
-            const QPolygonF& own = turned.at(c).outline;
-            const QRectF ownBox = own.boundingRect();
             // (A corner turned back within a few of the grid's nanometres of
             //  the outline as drawn put on it: the sides put on an axis above
             //  moved corners by up to 2 nm, and a feed's end cells then lay
@@ -1682,18 +1726,13 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             };
             Turned t;
             t.conductor = c;
+            t.warnings = inFrame.warnings;
+            // (Every cell its own: that mesh cut it alone. Its cells were
+            //  told from the rest's by where their centres lay, and a ring
+            //  inside a ring fed at 30 degrees lost slivers of its hole's edge
+            //  to it, their centres in no outline.)
             for (const MeshCell& cell : inFrame.cells) {
-                if (cell.layer != turned.at(c).layer || !cell.outline.boundingRect().intersects(ownBox)) continue;
-                // (Its own: its centre in its outline, or in none of the
-                //  others' on its layer - a clipped cell's centroid can lie
-                //  just outside a curve it hugs.)
-                bool mine = own.containsPoint(cell.centre, Qt::OddEvenFill);
-                if (!mine) {
-                    mine = true;
-                    for (int o = 0; o < turned.size() && mine; ++o)
-                        if (o != c && turned.at(o).layer == cell.layer && turned.at(o).outline.containsPoint(cell.centre, Qt::OddEvenFill)) mine = false;
-                }
-                if (!mine) continue;
+                if (cell.layer != turned.at(c).layer) continue;
                 MeshCell back = cell;
                 back.frame = cell.charged().size();
                 back.angle = angle + cell.angle;
@@ -1701,9 +1740,10 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 back.centre = MeshCell::turnedAbout(cell.centre, about, angle);
                 t.cells << back;
             }
-            if (!t.cells.isEmpty()) turnedCells << t;
+            if (!t.cells.isEmpty()) out << t;
         }
-    }
+        return out;
+    };
 
     // The cell size: a wavelength at the highest frequency, in the fastest
     // dielectric of the stack, divided by the cells asked for - and never
@@ -2511,16 +2551,26 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     for (const Layer& l : stack.layers)
         if (l.roundWire) roundWires << l.name;
     const auto cut = [&mesh, &pieces, &meetings, &conductors, &how, &narrowest, &finest, &strips, &facing, &cellConductor,
-                      &roundWires, &quadsOf, size, pieceMost](int perFeature, double* many) {
+                      &roundWires, &quadsOf, &turnedFor, size, pieceMost](int perFeature, double* many) {
         mesh.cells.clear();
         cellConductor.clear();
         narrowest = finest = 0;
         strips = 0;
         facing = 0;
+        // A conductor meshed in its own frame (turnOf()): its cells there at
+        // as many across counted, none cut here; and in that frame's meshOf()
+        // the one turned alone cut.
+        QSet<int> elsewhere;
+        double reserved = 0;
+        for (const Turned& t : turnedFor(perFeature)) {
+            elsewhere.insert(t.conductor);
+            reserved += double(t.cells.size());
+        }
+        const auto uncut = [&elsewhere](int c) { return elsewhere.contains(c) || (meshingOnly >= 0 && c != meshingOnly); };
         // (Over every piece too, not each alone: 2,000 pads of 20 µm at a
         //  largest cell of 0.1 µm, each under the bound, were cut into
         //  8e7 cells, 29 GB and 18 s before the whole was found too many.)
-        double total = 0;
+        double total = reserved;
         // (Each curve's lattice from its bands' coarsest step, halved for
         //  the finer ones: where all ask the same, the lattice is that step.
         //  From the largest cell instead, a step of 5 µm under one of 6.25
@@ -2533,6 +2583,11 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             coarsest[piece.conductor] = std::max(coarsest.value(piece.conductor), across);
         }
         for (Piece& piece : pieces) {
+            if (uncut(piece.conductor)) {
+                piece.xs.clear();
+                piece.ys.clear();
+                continue;
+            }
             const Conductor& conductor = conductors.at(piece.conductor);
             const QRectF bounds = piece.box;
             const double narrow = std::min(bounds.width(), bounds.height());
@@ -2876,13 +2931,13 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 }
         }
         for (int c = 0; c < conductors.size(); ++c) {
-            if (!quadsOf.at(c).ok()) continue;
+            if (!quadsOf.at(c).ok() || uncut(c)) continue;
             double across = 0;
             bool strip = false;
             const QList<MeshCell> cells =
                 stripCells(conductors.at(c), quadsOf.at(c), size, perFeature, how.stretch, how.edges, &across, &strip);
-            if (double(mesh.cells.size() + cells.size()) > 4.0 * pieceMost) {
-                *many = double(mesh.cells.size() + cells.size());
+            if (reserved + double(mesh.cells.size() + cells.size()) > 4.0 * pieceMost) {
+                *many = reserved + double(mesh.cells.size() + cells.size());
                 return false;
             }
             for (const MeshCell& cell : cells) {
@@ -2894,7 +2949,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             if (finest <= 0 || across < finest) finest = across;
             if (strip) ++strips;
         }
-        *many = double(mesh.cells.size());
+        *many = reserved + double(mesh.cells.size());
         return true;
     };
     // As many across as asked, or as many as the solver will take: a large
@@ -2921,6 +2976,13 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         many = now;
         fits = cutOk && many <= most;
     }
+    turnedCells = turnedFor(perFeature);
+    for (const Turned& t : std::as_const(turnedCells))
+        for (const QString& w : t.warnings)
+            if (!mesh.warnings.contains(w)) {
+                mesh.lines << w;
+                mesh.warnings << w;
+            }
     if (!fits && many > 4.0 * pieceMost) {
         mesh.cells.clear();
         mesh.problems << tr("The layout would take %1 cells of %2 µm even at one across a conductor: ask for a larger "

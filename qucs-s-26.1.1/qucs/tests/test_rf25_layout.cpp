@@ -1079,7 +1079,7 @@ private slots:
             }
             if (over) {
                 rf::Node plate = m.make(QStringLiteral("rf_shape"));
-                plate.props = QJsonObject{{"layer", "M2"}, {"shape", "rectangle"}, {"x0", "-20[um]"}, {"y0", "-20[um]"}, {"x1", "20[um]"}, {"y1", "20[um]"}};
+                plate.props = QJsonObject{{"layer", "M2"}, {"shape", "rectangle"}, {"x", "-20[um]"}, {"y", "-20[um]"}, {"width", "40[um]"}, {"height", "40[um]"}};
                 m.add(shapes, plate);
             }
             m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"1", "0", "M1"} << QJsonArray{"2", "0", "M2"});
@@ -1122,6 +1122,116 @@ private slots:
         QVERIFY2(std::abs(slant.stubs / 20 - 1) < 1e-3, qPrintable(QStringLiteral("under M2, its stubs %1 µm across").arg(slant.stubs)));
         QVERIFY2(std::abs(slant.squares / square.squares - 1) < 0.01,
                  qPrintable(QStringLiteral("under M2 at 45 degrees: %1 squares against %2 fed at 0").arg(slant.squares).arg(square.squares)));
+    }
+
+    // A curve turned (turnOf()) beside other shapes on its layer, and fed
+    // square with a strip at a slant.
+    // - Its turned mesh cuts it alone, the rest there for the gaps it faces,
+    //   and the whole mesh counts its turned cells, not the bands it has in
+    //   the layout's axes. A ring 45 by 35 µm inside a ring fed at 30 degrees
+    //   is cut as it is fed at 0 (3,075 cells; counted as its bands, 2,048),
+    //   none of the turned ring's cells inside it (two slivers of its edge,
+    //   their centres in no outline, were the turned ring's); a strip 2 by
+    //   60 µm beside a ring 100 by 99 µm fed at 30 degrees is cut as many
+    //   across as it is, 3 (125 cells; it was 1 across, 20 cells, the mesh
+    //   4,063 of the 8,000).
+    // - Fed at 0 degrees with a stub at 120, a straight side along an axis,
+    //   it is not turned: turned by the stub, its feeds were banded about,
+    //   its R 1.8 % under.
+    // - Its C fed at 0 degrees within half a per cent of it turned at 30
+    //   (0.16 % over): a cell clipped by the curve, its charge spread over
+    //   its box past the metal, read the disc's C 1.7 % over.
+    void aTurnedCurveMeshesItsNeighboursAsItIs()
+    {
+        // (A ring or a circle of 100 µm fed by two strips 20 µm wide from 95
+        //  to 150 µm out at \a degrees, a ring of \a inner its hole's radius,
+        //  and \a more shapes on M1.)
+        const auto meshOf = [this](double inner, double degrees, const QList<QJsonObject>& more, rf::Processed* processed, rf::Stack* stack) {
+            rf::Model m = stacked();
+            m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes")));
+            const QString shapes = m.layout().child(QStringLiteral("rf_shapes"))->tag;
+            rf::Node round = m.make(QStringLiteral("rf_shape"));
+            round.props = inner > 0 ? QJsonObject{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"},
+                                                  {"inner_radius", QString::number(inner) + "[um]"}}
+                                    : QJsonObject{{"layer", "M1"}, {"shape", "circle"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"}};
+            m.add(shapes, round);
+            const double a = degrees * M_PI / 180;
+            const QPointF along(std::cos(a), std::sin(a)), across(-std::sin(a), std::cos(a));
+            const double half = inner > 90 ? 5 : 10, from = inner > 90 ? 99.5 : 95;
+            QList<QJsonObject> all = more;
+            for (const double side : {1.0, -1.0}) {
+                QJsonArray rows;
+                for (const QPointF& p : {side * from * along + half * across, side * 150 * along + half * across, side * 150 * along - half * across,
+                                         side * from * along - half * across})
+                    rows.append(QJsonArray{QString::number(p.x(), 'g', 12) + "[um]", QString::number(p.y(), 'g', 12) + "[um]"});
+                all << QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}};
+            }
+            for (const QJsonObject& props : std::as_const(all)) {
+                rf::Node shape = m.make(QStringLiteral("rf_shape"));
+                shape.props = props;
+                m.add(shapes, shape);
+            }
+            m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"1", "0", "M1"});
+            qucs_s::layout::Layout empty;
+            qucs_s::layout::Cell top;
+            top.name = QStringLiteral("TOP");
+            empty.cells << top;
+            empty.byName.insert(top.name, 0);
+            *processed = rf::processRead(m, empty, QStringLiteral("none"));
+            *stack = m.solveStack();
+            return rf::meshOf(processed->conductors, rf::MeshSettings(), *stack, 1e9);
+        };
+        rf::Processed processed;
+        rf::Stack stack;
+        // A ring inside the ring.
+        const QJsonObject ring{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "45[um]"}, {"inner_radius", "35[um]"}};
+        QMap<double, int> inside;
+        for (const double degrees : {0.0, 30.0}) {
+            const rf::Mesh mesh = meshOf(50, degrees, {ring}, &processed, &stack);
+            QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+            QCOMPARE(says(mesh.lines, "meshed in the frame of its feeds"), degrees != 0);
+            int turnedInside = 0;
+            for (const rf::MeshCell& cell : mesh.cells) {
+                const bool in = std::hypot(cell.centre.x(), cell.centre.y()) < 47.5;
+                if (in && cell.angle == 0) ++inside[degrees];
+                if (in && cell.angle != 0) ++turnedInside;
+            }
+            QVERIFY2(turnedInside == 0, qPrintable(QStringLiteral("fed at %1 degrees: %2 of the turned ring's cells inside the ring in it").arg(degrees).arg(turnedInside)));
+        }
+        QVERIFY2(inside.value(0) > 0 && std::abs(double(inside.value(30)) / inside.value(0) - 1) < 0.05,
+                 qPrintable(QStringLiteral("the ring inside: %1 cells, %2 fed at 0").arg(inside.value(30)).arg(inside.value(0))));
+        // A strip beside a thin ring.
+        {
+            const QJsonObject strip{{"layer", "M1"}, {"shape", "rectangle"}, {"x", "-30[um]"}, {"y", "-104[um]"}, {"width", "60[um]"}, {"height", "2[um]"}};
+            const rf::Mesh mesh = meshOf(99, 30, {strip}, &processed, &stack);
+            QVERIFY2(mesh.ok() && says(mesh.lines, "meshed in the frame of its feeds"), qPrintable(mesh.lines.join(" | ")));
+            int cells = 0;
+            for (const rf::MeshCell& cell : mesh.cells)
+                if (cell.centre.y() < -101.5 && std::abs(cell.centre.x()) < 30) ++cells;
+            QVERIFY2(mesh.cells.size() <= 8000 && cells >= 60,
+                     qPrintable(QStringLiteral("the strip %1 cells, the mesh %2: %3").arg(cells).arg(mesh.cells.size()).arg(mesh.lines.join(" | "))));
+        }
+        // Fed square, a stub at a slant.
+        {
+            const double b = 120 * M_PI / 180;
+            const QPointF u(std::cos(b), std::sin(b)), v(-std::sin(b), std::cos(b));
+            QJsonArray rows;
+            for (const QPointF& p : {95 * u + 10 * v, 110 * u + 10 * v, 110 * u - 10 * v, 95 * u - 10 * v})
+                rows.append(QJsonArray{QString::number(p.x(), 'g', 12) + "[um]", QString::number(p.y(), 'g', 12) + "[um]"});
+            const rf::Mesh mesh = meshOf(0, 0, {QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}}}, &processed, &stack);
+            QVERIFY2(mesh.ok() && !says(mesh.lines, "meshed in the frame of its feeds"), qPrintable(mesh.lines.join(" | ")));
+            QVERIFY2(std::abs(double(mesh.cells.size()) / 1173 - 1) < 0.1, qPrintable(QStringLiteral("%1 cells").arg(mesh.cells.size())));
+        }
+        // The disc's C, fed square and turned.
+        QMap<double, double> c;
+        for (const double degrees : {0.0, 30.0}) {
+            const rf::Mesh mesh = meshOf(0, degrees, {}, &processed, &stack);
+            const rf::Extraction e = rf::extract(mesh, processed.conductors, stack);
+            QVERIFY2(e.ok() && e.maxwell.size() == 1, qPrintable(e.problems.join(" | ")));
+            c.insert(degrees, e.maxwell.at(0).at(0));
+        }
+        QVERIFY2(c.value(30) > 0 && std::abs(c.value(0) / c.value(30) - 1) < 0.005,
+                 qPrintable(QStringLiteral("the disc's C fed at 0 degrees %1 fF, turned %2").arg(c.value(0) * 1e15).arg(c.value(30) * 1e15)));
     }
 
     // A circle or a ring joined by a feed is meshed whole, the feed at 0, 30,
