@@ -1604,6 +1604,8 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         int conductor = -1;
         QList<MeshCell> cells;
         int across = 0;   // (the cells across its own mesh cut it at: fewer than asked where it alone was too many)
+        double narrowest = 0, acrossCell = 0;   // (its own mesh's: Mesh::narrowest, acrossCell)
+        QMap<QString, double> gaps;   // (between its own parts, in its frame: Mesh::gapByLayer)
     };
     QList<Turned> turnedCells;
     struct Turn {
@@ -1735,6 +1737,9 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             Turned t;
             t.conductor = c;
             t.across = inFrame.across;
+            t.narrowest = inFrame.narrowest;
+            t.acrossCell = inFrame.acrossCell;
+            t.gaps = inFrame.gapByLayer;
             // (Every cell its own: that mesh cut it alone. Its cells were
             //  told from the rest's by where their centres lay, and a ring
             //  inside a ring fed at 30 degrees lost slivers of its hole's edge
@@ -3035,14 +3040,25 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         mesh.lines << w;
         mesh.warnings << w;
     }
-    if (perFeature > 0 && narrowest > 0) {
+    // A turned conductor's own (its cells are none of the cut's here): its
+    // narrowest part, its cells across - fewer where it alone was too many -
+    // and its cells there. (Left out, a layout of one ring fed at 30 degrees
+    // said no cells across, and the convergence check took a level its
+    // ring was cut to fewer across at as asked.)
+    int across = perFeature;
+    for (const Turned& t : std::as_const(turnedCells)) {
+        if (t.narrowest > 0 && (narrowest <= 0 || t.narrowest < narrowest)) narrowest = t.narrowest;
+        if (t.acrossCell > 0 && (finest <= 0 || t.acrossCell < finest)) finest = t.acrossCell;
+        if (t.across > 0 && t.across < across) across = t.across;
+    }
+    if (across > 0 && narrowest > 0) {
         mesh.narrowest = narrowest;
-        mesh.across = perFeature;
+        mesh.across = across;
         mesh.acrossCell = finest;
     }
-    if (perFeature > 0 && narrowest > 0)
+    if (across > 0 && narrowest > 0)
         mesh.lines << tr("%1 cell(s) across the narrowest conductor (%2 µm across): cells of %3 µm there%4.")
-                          .arg(perFeature).arg(narrowest, 0, 'g', 4).arg(finest, 0, 'g', 3)
+                          .arg(across).arg(narrowest, 0, 'g', 4).arg(finest, 0, 'g', 3)
                           .arg(strips > 0 ? tr(", up to %1 times as long along a straight strip").arg(how.stretch, 0, 'g', 3)
                                           : QString());
     if (how.edges) mesh.lines << tr("The outermost cells of each conductor's sides are half as wide, where its charge "
@@ -3176,10 +3192,21 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     QSet<QString> wallsWarned;   // (a sheet's layers said so: their thickness over the ground is not said again, below)
     {
         QMap<QString, double> narrowestGap;   // (µm, by layer: between pieces facing each other across x or y)
+        // A turned conductor's gaps between its own parts measured in its
+        // frame, as it is cut (Turned::gaps, folded in below), and there
+        // only those: here its parts are banded about its slanted feeds,
+        // and pairs across the wedges where its feeds meet its curve were
+        // taken for gaps - a ring fed at 45 degrees with nothing beside it
+        // was said to be thick beside gaps of 0.85 µm, and Automatic solved
+        // it as its two faces, its C 2.6 % over the ring fed square.
+        QSet<int> turnedHere;
+        for (const Turned& t : std::as_const(turnedCells)) turnedHere.insert(t.conductor);
         for (int a = 0; a < pieces.size(); ++a)
             for (int b = a + 1; b < pieces.size(); ++b) {
                 const QString& layer = conductors.at(pieces.at(a).conductor).layer;
                 if (conductors.at(pieces.at(b).conductor).layer != layer) continue;
+                const int ca = pieces.at(a).conductor, cb = pieces.at(b).conductor;
+                if (meshingOnly >= 0 ? (ca != meshingOnly || cb != meshingOnly) : (ca == cb && turnedHere.contains(ca))) continue;
                 const QRectF& A = pieces.at(a).box;
                 const QRectF& B = pieces.at(b).box;
                 double gap = -1;
@@ -3224,6 +3251,10 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 }
                 if (!narrowestGap.contains(layer) || gap < narrowestGap.value(layer)) narrowestGap.insert(layer, gap);
             }
+        for (const Turned& t : std::as_const(turnedCells))
+            for (auto it = t.gaps.constBegin(); it != t.gaps.constEnd(); ++it)
+                if (it.value() > 0 && (!narrowestGap.contains(it.key()) || it.value() < narrowestGap.value(it.key())))
+                    narrowestGap.insert(it.key(), it.value());
         for (const double gap : std::as_const(narrowestGap))
             if (mesh.narrowestGap <= 0 || gap < mesh.narrowestGap) mesh.narrowestGap = gap;
         mesh.gapByLayer = narrowestGap;
