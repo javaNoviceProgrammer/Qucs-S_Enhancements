@@ -1135,6 +1135,13 @@ private slots:
     //   60 µm beside a ring 100 by 99 µm fed at 30 degrees is cut as many
     //   across as it is, 3 (125 cells; it was 1 across, 20 cells, the mesh
     //   4,063 of the 8,000).
+    // - What its turned mesh measures among its neighbours slanted is not
+    //   said, its own cut to fewer across alone; nor a gap between two of one
+    //   conductor's parts with it halfway between them. A strip 2 by 60 µm
+    //   1.5 µm past the ring fed at 30 degrees: its gap line said twice, of
+    //   1.56 and 1.54 µm, and its narrowest conductor's too. 40 µm past, or
+    //   with no strip: "thick beside gaps as narrow as 1.75 µm", of the
+    //   ring's own parts banded about its feeds in the layout's axes.
     // - Fed at 0 degrees with a stub at 120, a straight side along an axis,
     //   it is not turned: turned by the stub, its feeds were banded about,
     //   its R 1.8 % under.
@@ -1210,6 +1217,17 @@ private slots:
                 if (cell.centre.y() < -101.5 && std::abs(cell.centre.x()) < 30) ++cells;
             QVERIFY2(mesh.cells.size() <= 8000 && cells >= 60,
                      qPrintable(QStringLiteral("the strip %1 cells, the mesh %2: %3").arg(cells).arg(mesh.cells.size()).arg(mesh.lines.join(" | "))));
+        }
+        // A strip past the ring fed at 30 degrees, far and near.
+        for (const double gap : {40.0, 1.5}) {
+            const QJsonObject strip{{"layer", "M1"}, {"shape", "rectangle"}, {"x", "-30[um]"}, {"y", QString::number(100 + gap) + "[um]"},
+                                    {"width", "60[um]"}, {"height", "2[um]"}};
+            const rf::Mesh mesh = meshOf(50, 30, {strip}, &processed, &stack);
+            QVERIFY2(mesh.ok() && says(mesh.lines, "meshed in the frame of its feeds"), qPrintable(mesh.lines.join(" | ")));
+            const QString all = mesh.lines.join(" | ");
+            QCOMPARE(int(QSet<QString>(mesh.lines.cbegin(), mesh.lines.cend()).size()), int(mesh.lines.size()));
+            QCOMPARE(int(QSet<QString>(mesh.warnings.cbegin(), mesh.warnings.cend()).size()), int(mesh.warnings.size()));
+            QVERIFY2(all.count(QStringLiteral("beside gaps")) == (gap < 10 ? 1 : 0), qPrintable(QStringLiteral("%1 µm past: %2").arg(gap).arg(all)));
         }
         // Fed square, a stub at a slant.
         {

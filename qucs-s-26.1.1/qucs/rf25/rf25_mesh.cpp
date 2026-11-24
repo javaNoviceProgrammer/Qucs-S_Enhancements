@@ -808,18 +808,23 @@ QList<MeshCell> stripCells(const Conductor& conductor, const StripQuads& quads, 
 
 /// How far apart outlines \a a and \a b are at their nearest, where they
 /// do not cross: the least distance from a corner of either to a side of
-/// the other.
-double outlineDistance(const QPolygonF& a, const QPolygonF& b)
+/// the other. \a between, where given: the point halfway between the two
+/// nearest points.
+double outlineDistance(const QPolygonF& a, const QPolygonF& b, QPointF* between = nullptr)
 {
     double best = std::numeric_limits<double>::infinity();
-    const auto toSides = [&best](const QPolygonF& points, const QPolygonF& sides) {
+    const auto toSides = [&best, between](const QPolygonF& points, const QPolygonF& sides) {
         const int n = int(sides.size());
         for (const QPointF& p : points)
             for (int i = 0; i < n; ++i) {
                 const QPointF s = sides.at(i), e = sides.at((i + 1) % n), d = e - s;
                 const double len2 = d.x() * d.x() + d.y() * d.y();
                 const double t = len2 > 0 ? std::clamp(((p.x() - s.x()) * d.x() + (p.y() - s.y()) * d.y()) / len2, 0.0, 1.0) : 0.0;
-                best = std::min(best, std::hypot(p.x() - s.x() - t * d.x(), p.y() - s.y() - t * d.y()));
+                const double apart = std::hypot(p.x() - s.x() - t * d.x(), p.y() - s.y() - t * d.y());
+                if (apart < best) {
+                    best = apart;
+                    if (between != nullptr) *between = (p + s + t * d) / 2;
+                }
             }
     };
     toSides(a, b);
@@ -1598,16 +1603,66 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     struct Turned {
         int conductor = -1;
         QList<MeshCell> cells;
-        QStringList warnings;   // (its own mesh's: fewer across, where it alone was too many)
+        int across = 0;   // (the cells across its own mesh cut it at: fewer than asked where it alone was too many)
     };
     QList<Turned> turnedCells;
     struct Turn {
         int conductor = -1;
         double angle = 0;
         QPointF about;
-        QList<Conductor> turned;
     };
     QList<Turn> turns;
+    // Every conductor turned by \a angle about \a about, for a turned one's
+    // mesh: made as it is meshed, one copy of the layout at a time.
+    const auto turnedLayout = [&conductors, perUnit](double angle, QPointF about) {
+        QList<Conductor> turned = conductors;
+        for (Conductor& t : turned) {
+            for (QPointF& q : t.outline) q = MeshCell::turnedAbout(q, about, -angle);
+            t.spine.clear();
+            // (A side the turn leaves along an axis within the processing's
+            //  grid put on it, and sides of one line on one: the outline's
+            //  corners are on a nanometre's grid, so a feed's sides turned
+            //  came out up to 0.3 nm off the axis along 20 µm - no
+            //  rectangle's, and a disc fed at 30 degrees cut its two feeds
+            //  and itself into one slanted slab -, and its two feeds' sides
+            //  0.2 nm apart, a row of cells that thin across the disc and
+            //  its R 2.7 % over.)
+            const double grid = 2 * kBooleanGrid * 1e-6 / perUnit;
+            QPolygonF& o = t.outline;
+            const int n = int(o.size());
+            for (const int along : {0, 1}) {
+                // (along 0: upright sides, their x; 1: level ones, their y.)
+                const auto at = [along](const QPointF& q) { return along == 0 ? q.x() : q.y(); };
+                const auto other = [along](const QPointF& q) { return along == 0 ? q.y() : q.x(); };
+                QList<int> ends;
+                QList<double> values;
+                for (int k = 0; k < n; ++k) {
+                    const QPointF &a = o.at(k), &b = o.at((k + 1) % n);
+                    if (std::abs(at(b) - at(a)) <= grid && std::abs(other(b) - other(a)) >= 20 * grid) {
+                        ends << k << (k + 1) % n;
+                        values << at(a) << at(b);
+                    }
+                }
+                QList<double> sorted = values;
+                std::sort(sorted.begin(), sorted.end());
+                QList<double> lines;   // (each run of values within the grid of the one before: its mean)
+                for (int i = 0; i < sorted.size();) {
+                    int j = i + 1;
+                    double sum = sorted.at(i);
+                    while (j < sorted.size() && sorted.at(j) - sorted.at(j - 1) <= grid) sum += sorted.at(j++);
+                    for (int k = i; k < j; ++k) lines << sum / (j - i);
+                    i = j;
+                }
+                for (int i = 0; i < ends.size(); ++i) {
+                    const double v = lines.at(int(std::lower_bound(sorted.begin(), sorted.end(), values.at(i)) - sorted.begin()));
+                    QPointF& q = o[ends.at(i)];
+                    if (along == 0) q.setX(v);
+                    else q.setY(v);
+                }
+            }
+        }
+        return turned;
+    };
     if (axis == 0 && !meshingTurned) {
         for (int c = 0; c < conductors.size(); ++c) {
             if (conductors.at(c).isStrip()) continue;
@@ -1618,54 +1673,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             for (int o = 0; o < conductors.size() && !over; ++o)
                 over = o != c && conductors.at(o).layer != conductors.at(c).layer && conductors.at(o).outline.boundingRect().intersects(box);
             if (over) continue;
-            const QPointF about = box.center();
-            QList<Conductor> turned = conductors;
-            for (Conductor& t : turned) {
-                for (QPointF& q : t.outline) q = MeshCell::turnedAbout(q, about, -angle);
-                t.spine.clear();
-                // (A side the turn leaves along an axis within the processing's
-                //  grid put on it, and sides of one line on one: the outline's
-                //  corners are on a nanometre's grid, so a feed's sides turned
-                //  came out up to 0.3 nm off the axis along 20 µm - no
-                //  rectangle's, and a disc fed at 30 degrees cut its two feeds
-                //  and itself into one slanted slab -, and its two feeds' sides
-                //  0.2 nm apart, a row of cells that thin across the disc and
-                //  its R 2.7 % over.)
-                const double grid = 2 * kBooleanGrid * 1e-6 / perUnit;
-                QPolygonF& o = t.outline;
-                const int n = int(o.size());
-                for (const int along : {0, 1}) {
-                    // (along 0: upright sides, their x; 1: level ones, their y.)
-                    const auto at = [along](const QPointF& q) { return along == 0 ? q.x() : q.y(); };
-                    const auto other = [along](const QPointF& q) { return along == 0 ? q.y() : q.x(); };
-                    QList<int> ends;
-                    QList<double> values;
-                    for (int k = 0; k < n; ++k) {
-                        const QPointF &a = o.at(k), &b = o.at((k + 1) % n);
-                        if (std::abs(at(b) - at(a)) <= grid && std::abs(other(b) - other(a)) >= 20 * grid) {
-                            ends << k << (k + 1) % n;
-                            values << at(a) << at(b);
-                        }
-                    }
-                    QList<double> sorted = values;
-                    std::sort(sorted.begin(), sorted.end());
-                    QList<double> lines;   // (each run of values within the grid of the one before: its mean)
-                    for (int i = 0; i < sorted.size();) {
-                        int j = i + 1;
-                        double sum = sorted.at(i);
-                        while (j < sorted.size() && sorted.at(j) - sorted.at(j - 1) <= grid) sum += sorted.at(j++);
-                        for (int k = i; k < j; ++k) lines << sum / (j - i);
-                        i = j;
-                    }
-                    for (int i = 0; i < ends.size(); ++i) {
-                        const double v = lines.at(int(std::lower_bound(sorted.begin(), sorted.end(), values.at(i)) - sorted.begin()));
-                        QPointF& q = o[ends.at(i)];
-                        if (along == 0) q.setX(v);
-                        else q.setY(v);
-                    }
-                }
-            }
-            turns << Turn{c, angle, about, turned};
+            turns << Turn{c, angle, box.center()};
         }
     }
     // Each turned conductor meshed in its frame at \a perFeature across, as
@@ -1682,7 +1690,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             const int c = turn.conductor;
             const double angle = turn.angle;
             const QPointF about = turn.about;
-            const QList<Conductor>& turned = turn.turned;
+            const QList<Conductor> turned = turnedLayout(angle, about);
             MeshSettings own = how;
             own.cellsAcross = perFeature;
             // (Cleared however the meshOf() ends, a throw among them.)
@@ -1726,7 +1734,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             };
             Turned t;
             t.conductor = c;
-            t.warnings = inFrame.warnings;
+            t.across = inFrame.across;
             // (Every cell its own: that mesh cut it alone. Its cells were
             //  told from the rest's by where their centres lay, and a ring
             //  inside a ring fed at 30 degrees lost slivers of its hole's edge
@@ -2977,12 +2985,24 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         fits = cutOk && many <= most;
     }
     turnedCells = turnedFor(perFeature);
+    // (Its own mesh's fewer across alone said, of it: its other lines, the
+    //  gaps and widths it measured there among its neighbours slanted, said
+    //  a gap of 1.75 µm 40 µm from a strip, and said again what the whole
+    //  says.)
     for (const Turned& t : std::as_const(turnedCells))
-        for (const QString& w : t.warnings)
-            if (!mesh.warnings.contains(w)) {
-                mesh.lines << w;
-                mesh.warnings << w;
-            }
+        if (t.across > 0 && t.across < perFeature) {
+            const QRectF box = conductors.at(t.conductor).outline.boundingRect();
+            const QString w = tr("%1's shape about %2, %3 µm, meshed in the frame of its feeds, would alone be more than the %4 cells "
+                                 "this build solves at %5 across: %6 across instead (Most cells on the Mesh node raises it).")
+                                  .arg(conductors.at(t.conductor).layer)
+                                  .arg(box.center().x(), 0, 'g', 6)
+                                  .arg(box.center().y(), 0, 'g', 6)
+                                  .arg(how.mostCells())
+                                  .arg(perFeature)
+                                  .arg(t.across);
+            mesh.lines << w;
+            mesh.warnings << w;
+        }
     if (!fits && many > 4.0 * pieceMost) {
         mesh.cells.clear();
         mesh.problems << tr("The layout would take %1 cells of %2 µm even at one across a conductor: ask for a larger "
@@ -3189,9 +3209,19 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                                                   Qt::OddEvenFill))
                     continue;
                 // (A slanted side's part: how far apart the outlines are, as
-                //  the grading above has it.)
-                if (!pieces.at(a).rectangle || !pieces.at(b).rectangle)
-                    gap = std::max(gap, outlineDistance(outlineOfPiece(pieces.at(a)), outlineOfPiece(pieces.at(b))));
+                //  the grading above has it; and of one conductor, no gap where
+                //  that conductor is halfway between their nearest points. The
+                //  middle of their boxes' overlap could lie off it: a ring fed
+                //  by strips at 30 degrees, its parts banded about them, was
+                //  said to be thick beside gaps of 1.75 µm, at 45 of 0.85 µm,
+                //  with nothing beside it.)
+                if (!pieces.at(a).rectangle || !pieces.at(b).rectangle) {
+                    QPointF between;
+                    gap = std::max(gap, outlineDistance(outlineOfPiece(pieces.at(a)), outlineOfPiece(pieces.at(b)), &between));
+                    if (pieces.at(a).conductor == pieces.at(b).conductor
+                        && conductors.at(pieces.at(a).conductor).outline.containsPoint(between, Qt::OddEvenFill))
+                        continue;
+                }
                 if (!narrowestGap.contains(layer) || gap < narrowestGap.value(layer)) narrowestGap.insert(layer, gap);
             }
         for (const double gap : std::as_const(narrowestGap))
