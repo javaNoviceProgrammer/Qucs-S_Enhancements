@@ -809,11 +809,11 @@ QList<MeshCell> stripCells(const Conductor& conductor, const StripQuads& quads, 
 /// How far apart outlines \a a and \a b are at their nearest, where they
 /// do not cross: the least distance from a corner of either to a side of
 /// the other. \a between, where given: the point halfway between the two
-/// nearest points.
-double outlineDistance(const QPolygonF& a, const QPolygonF& b, QPointF* between = nullptr)
+/// nearest points; \a onA and \a onB, the nearest points themselves.
+double outlineDistance(const QPolygonF& a, const QPolygonF& b, QPointF* between = nullptr, QPointF* onA = nullptr, QPointF* onB = nullptr)
 {
     double best = std::numeric_limits<double>::infinity();
-    const auto toSides = [&best, between](const QPolygonF& points, const QPolygonF& sides) {
+    const auto toSides = [&best, between, onA, onB, &a](const QPolygonF& points, const QPolygonF& sides) {
         const int n = int(sides.size());
         for (const QPointF& p : points)
             for (int i = 0; i < n; ++i) {
@@ -824,12 +824,55 @@ double outlineDistance(const QPolygonF& a, const QPolygonF& b, QPointF* between 
                 if (apart < best) {
                     best = apart;
                     if (between != nullptr) *between = (p + s + t * d) / 2;
+                    const bool fromA = &points == &a;
+                    if (onA != nullptr) *onA = fromA ? p : s + t * d;
+                    if (onB != nullptr) *onB = fromA ? s + t * d : p;
                 }
             }
     };
     toSides(a, b);
     toSides(b, a);
     return best;
+}
+
+/// Whether \a p and \a q are on walls of \a outline (within \a near) that
+/// face each other across the space between them: each on a side of the
+/// outline, their outward normals within 30 degrees of opposite and the
+/// one pointing at the other - a gap between two of a conductor's own
+/// parts, as between a spiral's turns or across a slot. Not two points of
+/// one side a hair apart along it, nor of two sides meeting at a corner,
+/// nor two across a ring's hole along a chord, nor a point on a cut
+/// between two of its parts and not on its outline at all. And each wall a
+/// quarter of \a apart long or more: a curve's short sides across a hole
+/// many times as wide hold no field between them as walls across a gap
+/// do.
+bool wallsFace(const QPolygonF& outline, QPointF p, QPointF q, double near, double apart)
+{
+    const auto normalAt = [&outline, near, apart](QPointF at, QPointF* normal) {
+        double best = near;
+        bool found = false;
+        for (int k = 0, n = int(outline.size()); k < n; ++k) {
+            const QPointF s = outline.at(k), e = outline.at((k + 1) % n), d = e - s;
+            const double len2 = d.x() * d.x() + d.y() * d.y();
+            if (!(len2 > 0)) continue;
+            const double t = std::clamp(((at.x() - s.x()) * d.x() + (at.y() - s.y()) * d.y()) / len2, 0.0, 1.0);
+            const double off = std::hypot(at.x() - s.x() - t * d.x(), at.y() - s.y() - t * d.y());
+            if (off > best) continue;
+            best = off;
+            const double len = std::sqrt(len2);
+            found = len >= 0.25 * apart;
+            QPointF m(-d.y() / len, d.x() / len);
+            // (Outward: off the metal.)
+            const QPointF mid = s + 0.5 * d, beside = mid + m * std::max(near, 1e-6 * len);
+            if (outline.containsPoint(beside, Qt::OddEvenFill)) m = -m;
+            *normal = m;
+        }
+        return found;
+    };
+    QPointF np, nq;
+    if (!normalAt(p, &np) || !normalAt(q, &nq)) return false;
+    const QPointF pq = q - p;
+    return np.x() * nq.x() + np.y() * nq.y() <= -std::cos(30 * M_PI / 180) && pq.x() * np.x() + pq.y() * np.y() > 0;
 }
 
 } // namespace
@@ -1324,8 +1367,9 @@ double turnOf(const QPolygonF& outline, double perUnit)
         }
     }
     const double beside = 8 * kBooleanGrid * 1e-6 / perUnit;
-    bool square = false;   // (a straight side along an axis)
+    double square = 0;     // (the straight sides along the axes: their length in all)
     double slanted = -1;   // (the straight sides off the axes: their angle; -2 where they differ)
+    QList<QPair<double, double>> offAxes;   // (each of those: its angle within a quarter turn, its length)
     for (int k = 0, m = int(points.size()); k < m && m > 3; ++k) {
         const QPointF a = points.at(k), b = points.at((k + 1) % m);
         const QPointF d = b - a;
@@ -1336,10 +1380,11 @@ double turnOf(const QPolygonF& outline, double perUnit)
         const QPointF mid = (a + b) / 2, normal(-d.y() / length * beside, d.x() / length * beside);
         if (outline.containsPoint(mid + normal, Qt::OddEvenFill) == outline.containsPoint(mid - normal, Qt::OddEvenFill)) continue;
         if (std::abs(d.x()) <= 1e-9 * length || std::abs(d.y()) <= 1e-9 * length) {
-            square = true;
+            square += length;
             continue;
         }
         const double way = std::fmod(std::atan2(d.y(), d.x()) + 2 * M_PI, M_PI / 2);
+        offAxes.append({way, length});
         if (slanted == -1) slanted = way;
         else if (slanted >= 0 && std::min(std::abs(way - slanted), M_PI / 2 - std::abs(way - slanted)) > 1e-4) slanted = -2;
     }
@@ -1352,12 +1397,19 @@ double turnOf(const QPolygonF& outline, double perUnit)
         if (slanted == -2) return 0;
         angle = slanted;
     }
-    // And none where a straight side runs along an axis: a curve fed square
-    // with a strip at a slant too, turned by it, had its square feeds
-    // slanted and its parts banded about them - a disc fed at 0 degrees with
-    // a stub at 120, 1.8 % under it without the turn.
-    if (square) return 0;
     if (angle < 0 || angle < 1e-6 || angle > M_PI / 2 - 1e-6) return 0;
+    // And none where its straight sides along the axes are as long in all as
+    // those at its angle, or longer: the frame its sides mostly run along.
+    // A curve fed square with a stub at a slant, turned by the stub, had its
+    // square feeds slanted and its parts banded about them - a disc fed at 0
+    // degrees with a stub at 120, 1.8 % under it without the turn -; one fed
+    // at a slant with a stub square, kept in the layout's axes for the
+    // stub's sake, was banded about its feeds, the disc fed at 30 degrees
+    // 1.8 % under.
+    double along = 0;
+    for (const auto& [way, length] : std::as_const(offAxes))
+        if (std::min(std::abs(way - angle), M_PI / 2 - std::abs(way - angle)) <= 1e-4) along += length;
+    if (square > 0 && square >= along) return 0;
     return angle;
 }
 
@@ -1605,7 +1657,6 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         QList<MeshCell> cells;
         int across = 0;   // (the cells across its own mesh cut it at: fewer than asked where it alone was too many)
         double narrowest = 0, acrossCell = 0;   // (its own mesh's: Mesh::narrowest, acrossCell)
-        QMap<QString, double> gaps;   // (between its own parts, in its frame: Mesh::gapByLayer)
     };
     QList<Turned> turnedCells;
     struct Turn {
@@ -1739,7 +1790,6 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             t.across = inFrame.across;
             t.narrowest = inFrame.narrowest;
             t.acrossCell = inFrame.acrossCell;
-            t.gaps = inFrame.gapByLayer;
             // (Every cell its own: that mesh cut it alone. Its cells were
             //  told from the rest's by where their centres lay, and a ring
             //  inside a ring fed at 30 degrees lost slivers of its hole's edge
@@ -3045,11 +3095,18 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // and its cells there. (Left out, a layout of one ring fed at 30 degrees
     // said no cells across, and the convergence check took a level its
     // ring was cut to fewer across at as asked.)
-    int across = perFeature;
+    // (The narrowest's three together, for the line: taken each least on its
+    //  own, a strip 0.5 µm wide at 7 across beside a turned ring cut at 5 was
+    //  said to be 5 across. The mesh's across the least of all, for the
+    //  convergence check.)
+    int across = perFeature, acrossThere = perFeature;
     for (const Turned& t : std::as_const(turnedCells)) {
-        if (t.narrowest > 0 && (narrowest <= 0 || t.narrowest < narrowest)) narrowest = t.narrowest;
-        if (t.acrossCell > 0 && (finest <= 0 || t.acrossCell < finest)) finest = t.acrossCell;
         if (t.across > 0 && t.across < across) across = t.across;
+        if (t.narrowest > 0 && (narrowest <= 0 || t.narrowest < narrowest)) {
+            narrowest = t.narrowest;
+            finest = t.acrossCell;
+            acrossThere = t.across > 0 ? t.across : perFeature;
+        }
     }
     if (across > 0 && narrowest > 0) {
         mesh.narrowest = narrowest;
@@ -3058,7 +3115,7 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     }
     if (across > 0 && narrowest > 0)
         mesh.lines << tr("%1 cell(s) across the narrowest conductor (%2 µm across): cells of %3 µm there%4.")
-                          .arg(across).arg(narrowest, 0, 'g', 4).arg(finest, 0, 'g', 3)
+                          .arg(acrossThere).arg(narrowest, 0, 'g', 4).arg(finest, 0, 'g', 3)
                           .arg(strips > 0 ? tr(", up to %1 times as long along a straight strip").arg(how.stretch, 0, 'g', 3)
                                           : QString());
     if (how.edges) mesh.lines << tr("The outermost cells of each conductor's sides are half as wide, where its charge "
@@ -3192,21 +3249,14 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     QSet<QString> wallsWarned;   // (a sheet's layers said so: their thickness over the ground is not said again, below)
     {
         QMap<QString, double> narrowestGap;   // (µm, by layer: between pieces facing each other across x or y)
-        // A turned conductor's gaps between its own parts measured in its
-        // frame, as it is cut (Turned::gaps, folded in below), and there
-        // only those: here its parts are banded about its slanted feeds,
-        // and pairs across the wedges where its feeds meet its curve were
-        // taken for gaps - a ring fed at 45 degrees with nothing beside it
-        // was said to be thick beside gaps of 0.85 µm, and Automatic solved
-        // it as its two faces, its C 2.6 % over the ring fed square.
-        QSet<int> turnedHere;
-        for (const Turned& t : std::as_const(turnedCells)) turnedHere.insert(t.conductor);
-        for (int a = 0; a < pieces.size(); ++a)
+        // (None in a turned conductor's own frame: measured here, a turned
+        //  one's parts banded about its slanted feeds as they are, two of
+        //  them facing a gap only across walls of its outline facing each
+        //  other - wallsFace(), below -, whichever way they run.)
+        for (int a = 0; a < pieces.size() && meshingOnly < 0; ++a)
             for (int b = a + 1; b < pieces.size(); ++b) {
                 const QString& layer = conductors.at(pieces.at(a).conductor).layer;
                 if (conductors.at(pieces.at(b).conductor).layer != layer) continue;
-                const int ca = pieces.at(a).conductor, cb = pieces.at(b).conductor;
-                if (meshingOnly >= 0 ? (ca != meshingOnly || cb != meshingOnly) : (ca == cb && turnedHere.contains(ca))) continue;
                 const QRectF& A = pieces.at(a).box;
                 const QRectF& B = pieces.at(b).box;
                 double gap = -1;
@@ -3236,25 +3286,31 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                                                   Qt::OddEvenFill))
                     continue;
                 // (A slanted side's part: how far apart the outlines are, as
-                //  the grading above has it; and of one conductor, no gap where
-                //  that conductor is halfway between their nearest points. The
-                //  middle of their boxes' overlap could lie off it: a ring fed
-                //  by strips at 30 degrees, its parts banded about them, was
-                //  said to be thick beside gaps of 1.75 µm, at 45 of 0.85 µm,
-                //  with nothing beside it.)
-                if (!pieces.at(a).rectangle || !pieces.at(b).rectangle) {
-                    QPointF between;
-                    gap = std::max(gap, outlineDistance(outlineOfPiece(pieces.at(a)), outlineOfPiece(pieces.at(b)), &between));
-                    if (pieces.at(a).conductor == pieces.at(b).conductor
-                        && conductors.at(pieces.at(a).conductor).outline.containsPoint(between, Qt::OddEvenFill))
-                        continue;
+                //  the grading above has it.)
+                const bool slanted = !pieces.at(a).rectangle || !pieces.at(b).rectangle, own = pieces.at(a).conductor == pieces.at(b).conductor;
+                if (slanted || own) {
+                    QPointF between, onA, onB;
+                    const double apart = outlineDistance(outlineOfPiece(pieces.at(a)), outlineOfPiece(pieces.at(b)), &between, &onA, &onB);
+                    if (slanted) gap = std::max(gap, apart);
+                    // (Of one conductor, a gap only between two of its walls
+                    //  facing each other (wallsFace()), it not halfway between
+                    //  them. The middle of their boxes' overlap could lie off
+                    //  it: a ring fed by strips at 30 degrees, its parts banded
+                    //  about them, was said to be thick beside gaps of 1.75 µm,
+                    //  at 45 of 0.85 µm - two of its parts ending on its edge a
+                    //  hair apart along it -, and with that taken out, 3.15 and
+                    //  0.85 µm, then 80 µm across its hole along a chord;
+                    //  fed square, its two feeds' ends 199 µm apart with the
+                    //  ring between them. Automatic took a 3 µm metal on it as
+                    //  its faces, C 2.6 % over.)
+                    if (own) {
+                        const QPolygonF& outline = conductors.at(pieces.at(a).conductor).outline;
+                        if (outline.containsPoint(between, Qt::OddEvenFill) || !wallsFace(outline, onA, onB, 4 * kBooleanGrid * 1e-6 / perUnit, gap))
+                            continue;
+                    }
                 }
                 if (!narrowestGap.contains(layer) || gap < narrowestGap.value(layer)) narrowestGap.insert(layer, gap);
             }
-        for (const Turned& t : std::as_const(turnedCells))
-            for (auto it = t.gaps.constBegin(); it != t.gaps.constEnd(); ++it)
-                if (it.value() > 0 && (!narrowestGap.contains(it.key()) || it.value() < narrowestGap.value(it.key())))
-                    narrowestGap.insert(it.key(), it.value());
         for (const double gap : std::as_const(narrowestGap))
             if (mesh.narrowestGap <= 0 || gap < mesh.narrowestGap) mesh.narrowestGap = gap;
         mesh.gapByLayer = narrowestGap;
@@ -3588,11 +3644,17 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     //  dense matrix of its edges is said among its lines, not refused - its
     //  Most cells past 40,000 stood in the way of a solve that needs none of
     //  it.)
-    if (mesh.cost.tooBig && !how.chargeCompressed)
+    // (Neither of a turned conductor's own mesh (meshingOnly): the whole's
+    //  holds its cells with the rest, and refused alone, the turned one was
+    //  counted as its bands in the layout's axes for that many across - a
+    //  thin ring fed at 30 degrees, its own mesh cut to 5 across at Most
+    //  cells 20,000 and refused at the dense solve's 8,000, its neighbours
+    //  cut from 10 across to 3.)
+    if (mesh.cost.tooBig && !how.chargeCompressed && meshingOnly < 0)
         mesh.problems << mesh.cost.said;
     // (The mesh's own cells: a metal's top face is the solver's to refuse,
     //  which a calibration strip too long for it is cut short for.)
-    if (!how.compressed && mesh.cells.size() > (how.chargeCompressed ? how.mostCompressedCharges() : kMostCharges))
+    if (!how.compressed && meshingOnly < 0 && mesh.cells.size() > (how.chargeCompressed ? how.mostCompressedCharges() : kMostCharges))
         mesh.problems << chargeCostOf(int(mesh.cells.size()), how.chargeCompressed, how.mostCompressedCharges());
     if (mesh.cells.isEmpty()) mesh.problems << tr("The mesh came out empty.");
     return mesh;
