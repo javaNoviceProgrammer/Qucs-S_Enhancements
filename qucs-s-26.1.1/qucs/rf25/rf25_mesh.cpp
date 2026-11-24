@@ -1296,6 +1296,46 @@ double turnOf(const QPolygonF& outline, double perUnit)
         //  drawn at one angle come out some 2e-5 rad apart.)
         else if (std::min(std::abs(way - angle), M_PI / 2 - std::abs(way - angle)) > 1e-4) return 0;
     }
+    // Or, with no part a slanted strip's - feeds reaching no further past the
+    // curve than half their width, each part of them on it -, the outline's
+    // straight sides off the axes, all at one angle or at right angles to
+    // it: a side its corners either end turn from by 20 degrees or more, as
+    // piecesOf() tells a straight edge from a curve's, its edges in one line
+    // taken as one, a twentieth of the shape's width long or more. (A disc
+    // fed by strips at 45 degrees 10 µm past it was meshed in the layout's
+    // axes, its R 4.2 % under it fed square.)
+    if (angle < 0) {
+        QList<QPointF> points(outline.begin(), outline.end());
+        if (points.size() > 1 && points.first() == points.last()) points.removeLast();
+        // (Its corners, those in a line left out.)
+        const auto turnAt = [](QPointF a, QPointF b, QPointF c) {
+            const QPointF u = b - a, v = c - b;
+            return std::atan2(u.x() * v.y() - u.y() * v.x(), u.x() * v.x() + u.y() * v.y());
+        };
+        for (bool changed = true; changed && points.size() > 3;) {
+            changed = false;
+            for (int i = 0, m = int(points.size()); i < m && m > 3; ++i) {
+                const QPointF a = points.at((i + m - 1) % m), b = points.at(i), c = points.at((i + 1) % m);
+                if (a == b || std::abs(turnAt(a, b, c)) < 1e-4) {
+                    points.removeAt(i);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        const int m = int(points.size());
+        for (int k = 0; k < m && m > 3; ++k) {
+            const QPointF a = points.at(k), b = points.at((k + 1) % m);
+            const QPointF d = b - a;
+            const double length = std::hypot(d.x(), d.y());
+            if (length < 0.05 * wide || std::abs(d.x()) <= 1e-9 * length || std::abs(d.y()) <= 1e-9 * length) continue;
+            const double small = 20 * M_PI / 180;
+            if (std::abs(turnAt(points.at((k + m - 1) % m), a, b)) < small || std::abs(turnAt(a, b, points.at((k + 2) % m))) < small) continue;
+            const double way = std::fmod(std::atan2(d.y(), d.x()) + 2 * M_PI, M_PI / 2);
+            if (angle < 0) angle = way;
+            else if (std::min(std::abs(way - angle), M_PI / 2 - std::abs(way - angle)) > 1e-4) return 0;
+        }
+    }
     if (angle < 0 || angle < 1e-6 || angle > M_PI / 2 - 1e-6) return 0;
     return angle;
 }
@@ -1599,9 +1639,17 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     }
                 }
             }
-            meshingTurned = true;
-            const Mesh inFrame = meshOf(turned, how, stack, top, micrometre);
-            meshingTurned = false;
+            // (Cleared however the meshOf() ends, a throw among them.)
+            struct Turning {
+                Turning() { meshingTurned = true; }
+                ~Turning() { meshingTurned = false; }
+                Turning(const Turning&) = delete;
+                Turning& operator=(const Turning&) = delete;
+            };
+            const Mesh inFrame = [&] {
+                const Turning turning;
+                return meshOf(turned, how, stack, top, micrometre);
+            }();
             if (!inFrame.ok()) continue;
             const QPolygonF& own = turned.at(c).outline;
             const QRectF ownBox = own.boundingRect();

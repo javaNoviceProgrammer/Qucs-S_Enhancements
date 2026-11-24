@@ -1040,6 +1040,90 @@ private slots:
         QCOMPARE(areas, (QList<double>{1600.0, 10000.0}));
     }
 
+    // A disc or ring fed by strips 20 µm wide reaching 10 µm past it, no
+    // part of them a strip of its own, at 30 or 45 degrees: meshed in its
+    // feeds' frame too, its R within half a per cent of it fed at 0 degrees
+    // (0.08 % over at most) - in the layout's axes, the circle at 45 degrees
+    // read 3.0 % under. (Fed at 90, the ring's mesh is another, 1,583 cells
+    // to 1,452, and reads 0.5 % over it fed at 0.) And the loop's stubs at each face, from its
+    // edge to the cells' centres, as wide in all as the face: 20 µm. With a
+    // shape on M2 over it, it is meshed in the layout's axes, its cells
+    // square to them and clipped by the slanted face; its stubs taken as
+    // wide as the cells' outlines across came to 26.6 to 32.5 µm, the
+    // circle at 45 degrees 4.2 % under it fed square (0.27 % now).
+    void aCurveFedShortAtASlantIsTurned()
+    {
+        struct Fed {
+            int cells = 0;
+            bool turned = false;
+            double squares = 0, stubs = 0;
+        };
+        const auto fed = [this](bool ring, double degrees, bool over) {
+            rf::Model m = stacked();
+            m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes")));
+            const QString shapes = m.layout().child(QStringLiteral("rf_shapes"))->tag;
+            rf::Node round = m.make(QStringLiteral("rf_shape"));
+            round.props = ring ? QJsonObject{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"}, {"inner_radius", "50[um]"}}
+                               : QJsonObject{{"layer", "M1"}, {"shape", "circle"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"}};
+            m.add(shapes, round);
+            const double a = degrees * M_PI / 180;
+            const QPointF along(std::cos(a), std::sin(a)), across(-std::sin(a), std::cos(a));
+            for (const double side : {1.0, -1.0}) {
+                QJsonArray rows;
+                for (const QPointF& p : {side * 95 * along + 10 * across, side * 110 * along + 10 * across, side * 110 * along - 10 * across,
+                                         side * 95 * along - 10 * across})
+                    rows.append(QJsonArray{QString::number(p.x(), 'g', 12) + "[um]", QString::number(p.y(), 'g', 12) + "[um]"});
+                rf::Node feed = m.make(QStringLiteral("rf_shape"));
+                feed.props = QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}};
+                m.add(shapes, feed);
+            }
+            if (over) {
+                rf::Node plate = m.make(QStringLiteral("rf_shape"));
+                plate.props = QJsonObject{{"layer", "M2"}, {"shape", "rectangle"}, {"x0", "-20[um]"}, {"y0", "-20[um]"}, {"x1", "20[um]"}, {"y1", "20[um]"}};
+                m.add(shapes, plate);
+            }
+            m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"1", "0", "M1"} << QJsonArray{"2", "0", "M2"});
+            qucs_s::layout::Layout empty;
+            qucs_s::layout::Cell top;
+            top.name = QStringLiteral("TOP");
+            empty.cells << top;
+            empty.byName.insert(top.name, 0);
+            const rf::Processed processed = rf::processRead(m, empty, QStringLiteral("none"));
+            const rf::Stack stack = m.solveStack();
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), stack, 1e9);
+            const rf::Layer* metal = stack.named(QStringLiteral("M1"));
+            const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, 110 * along, -110 * along);
+            Fed out;
+            out.cells = int(mesh.cells.size());
+            out.turned = says(mesh.lines, "meshed in the frame of its feeds");
+            if (!loop.ok() || metal == nullptr) return out;
+            out.squares = loop.rDc * metal->sigma * metal->thickness;
+            // (The stubs going in: the runs from the face at 110 µm out.)
+            const QPointF face = 110e-6 * along;
+            for (const rf::Filament& f : loop.runs)
+                if (std::abs((f.from - face).x() * along.x() + (f.from - face).y() * along.y()) < 3e-9) out.stubs += f.width * 1e6;
+            return out;
+        };
+        for (const bool ring : {false, true}) {
+            const QString shape = ring ? QStringLiteral("a ring") : QStringLiteral("a circle");
+            const Fed square = fed(ring, 0, false);
+            QVERIFY2(square.squares > 0 && !square.turned, qPrintable(shape));
+            for (const double degrees : {30.0, 45.0}) {
+                const Fed slant = fed(ring, degrees, false);
+                const QString what = QStringLiteral("%1 fed at %2 degrees 10 µm past it").arg(shape).arg(degrees);
+                QVERIFY2(slant.turned, qPrintable(what));
+                QVERIFY2(std::abs(slant.squares / square.squares - 1) < 0.005,
+                         qPrintable(QStringLiteral("%1: %2 squares against %3 fed at 0").arg(what).arg(slant.squares).arg(square.squares)));
+                QVERIFY2(std::abs(slant.stubs / 20 - 1) < 1e-3, qPrintable(QStringLiteral("%1: its stubs %2 µm across").arg(what).arg(slant.stubs)));
+            }
+        }
+        const Fed square = fed(false, 0, true), slant = fed(false, 45, true);
+        QVERIFY2(!slant.turned && slant.squares > 0, qPrintable(QStringLiteral("%1 cells").arg(slant.cells)));
+        QVERIFY2(std::abs(slant.stubs / 20 - 1) < 1e-3, qPrintable(QStringLiteral("under M2, its stubs %1 µm across").arg(slant.stubs)));
+        QVERIFY2(std::abs(slant.squares / square.squares - 1) < 0.01,
+                 qPrintable(QStringLiteral("under M2 at 45 degrees: %1 squares against %2 fed at 0").arg(slant.squares).arg(square.squares)));
+    }
+
     // A circle or a ring joined by a feed is meshed whole, the feed at 0, 30,
     // 45 or 90 degrees, as the tab meshes them: no side held by three cells or
     // twice by one - which the solve leaves out as none's -, and the cells one
