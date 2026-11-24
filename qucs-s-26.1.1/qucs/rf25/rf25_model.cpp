@@ -1610,6 +1610,13 @@ Stack stackOf(const Node& node, const QList<fem::Model::Parameter>& parameters)
             out.problems << tr("The via %1 has a conductivity below zero.").arg(name(l));
         else if (l.kind == Layer::Via && !(l.sigma > 0) && read("sigma"))
             out.problems << tr("The via %1 has no conductivity.").arg(name(l));
+        // (A ground plane's too: of metal, its conductivity; a surface
+        //  impedance, its ohms a square - both solved as a perfect plane
+        //  below nought, as nought is.)
+        if (l.kind == Layer::Ground && l.variant == QLatin1String("metal") && l.sigma < 0 && read("sigma"))
+            out.problems << tr("%1 has a conductivity below zero.").arg(name(l));
+        if (l.kind == Layer::Ground && l.variant == QLatin1String("impedance") && l.sigma < 0 && read("impedance"))
+            out.problems << tr("%1 has a surface impedance below zero.").arg(name(l));
         if (l.kind == Layer::Metal && l.roughness < 0 && read("roughness"))
             out.problems << tr("%1 has a roughness below zero.").arg(name(l));
         if (l.kind == Layer::Metal && l.huray && !(l.nodule > 0) && read("nodule_radius"))

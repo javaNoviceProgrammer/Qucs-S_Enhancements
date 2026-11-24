@@ -1244,8 +1244,21 @@ private slots:
             QVERIFY(metal != nullptr);
             const double squares = sol.inductance->rDc * metal->sigma * metal->thickness;
             QVERIFY2(std::abs(squares / 10 - 1) < 0.01, qPrintable(QString::number(squares)));
-            QVERIFY2(sol.inductance->lines.join(' ').contains(QStringLiteral("M1: 1 shape(s) reach a metre or more")),
+            QVERIFY2(sol.inductance->lines.join(' ').count(QStringLiteral("M1: 1 shape(s) reach a metre or more")) == 1,
                      qPrintable(sol.inductance->lines.join(" | ")));
+            // The extraction's: among its warnings, and not its lines - the
+            // processing's lines say it, listed beside them by rf25_solve and
+            // the tab, where it was said twice.
+            rf::SolveJob both;
+            request.loopOnly = false;
+            const rf::ModelSolution whole = rf::solveModel(both, fed, nothingRead(), QStringLiteral("none"), QDir::tempPath(), request);
+            QVERIFY2(whole.extraction && whole.extraction->ok(), qPrintable(whole.problem));
+            QVERIFY2(whole.extraction->warnings.join(' ').count(QStringLiteral("M1: 1 shape(s) reach a metre or more")) == 1,
+                     qPrintable(whole.extraction->warnings.join(" | ")));
+            QVERIFY2(!whole.extraction->lines.join(' ').contains(QStringLiteral("reach a metre or more")),
+                     qPrintable(whole.extraction->lines.join(" | ")));
+            QVERIFY2(whole.processed && whole.processed->report.lines.join(' ').count(QStringLiteral("M1: 1 shape(s) reach a metre or more")) == 1,
+                     qPrintable(whole.processed ? whole.processed->report.lines.join(" | ") : QString()));
         }
         // (The boolean operations themselves fail, and do not throw, past
         //  their range: a union and a clip of such a shape.)

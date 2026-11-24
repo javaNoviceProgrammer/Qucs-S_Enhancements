@@ -530,6 +530,15 @@ QStringList valueProblemsOf(const Stack& stack)
             if (l.sigma < 0) out << tr("%1 has a conductivity below zero.").arg(l.name);
         } else if (l.kind == Layer::Via) {
             if (l.sigma < 0) out << tr("The via %1 has a conductivity below zero.").arg(l.name);
+        } else if (l.kind == Layer::Ground) {
+            // (Its value in sigma, a conductivity of metal or the ohms a
+            //  square of a surface impedance: below nought every solver took
+            //  it as a perfect plane - a microstrip's R over -5.8e7 S/m the
+            //  perfect plane's 34.93 Ohm/m, over +5.8e7 45.83. A perfect or
+            //  open plane carries none.)
+            if (l.variant == QLatin1String("metal") && l.sigma < 0) out << tr("%1 has a conductivity below zero.").arg(l.name);
+            if (l.variant == QLatin1String("impedance") && l.sigma < 0)
+                out << tr("%1 has a surface impedance below zero.").arg(l.name);
         }
     }
     return out;

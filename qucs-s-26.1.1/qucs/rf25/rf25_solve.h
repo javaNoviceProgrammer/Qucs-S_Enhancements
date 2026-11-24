@@ -76,10 +76,15 @@ struct SolveJob {
     /// frequency (Stack::atFrequency()): said beside its answer.
     QString dispersedSaid;
     /// What the processing could not read but solved without - a Cutout's
-    /// region that is no region -: among the answer's warnings, where a
+    /// region that is no region -, or left out - a shape a metre or more from
+    /// the origin -: among the answer's warnings, where a
     /// region dropped this way solved more metal than meant with no sign in
     /// the result.
     QStringList processWarnings;
+    /// Of processWarnings, those the processing's own lines say already
+    /// (Processed::leftOut, in its report): not put among the extraction's
+    /// lines again, which rf25_solve and the tab list beside those.
+    QStringList processSaid;
     /// What the stack is taken as where it is not as given - a layer's
     /// permittivity in the plane averaged: said beside a quasi-static answer
     /// (a full wave's is in its notes).
