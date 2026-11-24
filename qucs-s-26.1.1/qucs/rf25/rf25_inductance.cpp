@@ -1268,19 +1268,48 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     const QList<int> sinkFace = faceAt(to, &sinkOn, &sinkAlong, toLayer);
     const int source = sourceFace.isEmpty() ? -1 : sourceFace.first();
     const int sink = sinkFace.isEmpty() ? -1 : sinkFace.first();
-    // (Kept for the stubs below: how wide the cell is across the way the
-    //  current comes into it.)
-    const auto acrossOf = [&mesh](int cell, QPointF along) {
+    // (Kept for the stubs below: how wide the cell is where the current
+    //  comes into it.)
+    const auto acrossOf = [&mesh](int cell, QPointF along, QPointF on, QPointF unit) {
         const QPolygonF& outline = mesh.cells.at(cell).outline;
         const QRectF box = outline.boundingRect();
+        const double u = std::hypot(unit.x(), unit.y());
+        if (u > 0) {
+            // How much of the face the cell holds: the length of the face's
+            // line inside its outline, the line moved just inside it, past
+            // the processing's grid its corners lie on. So the stubs of a
+            // face come to its breadth, whatever the cells' shape. (The
+            // box's side across the way in, then the outline's, were that
+            // only for a cell square to the face: a slanted strip's cells, a
+            // 30-degree feed's 2 µm across, were taken 5.7 µm, a strip at 30
+            // degrees 0.66 % short and a ring fed so 1.3 % - the review's
+            // P63 -; the outline's, at a slanted face of cells square to the
+            // axes and clipped by it, made the stubs of a face 20 µm across
+            // 26.6 to 32.5 µm, a circle fed at 45 degrees 4.2 % under it fed
+            // square.)
+            const QPointF t = unit / u, normal(-t.y(), t.x());
+            const QPointF centre = mesh.cells.at(cell).centre;
+            const double side = (centre - on).x() * normal.x() + (centre - on).y() * normal.y() >= 0 ? 1.0 : -1.0;
+            double depth = 0;
+            for (const QPointF& p : outline) depth = std::max(depth, side * ((p - on).x() * normal.x() + (p - on).y() * normal.y()));
+            const QPointF base = on + normal * (side * std::min(4 * kBooleanGrid, 0.5 * depth));
+            QList<double> at;
+            for (int k = 0, n = int(outline.size()); k < n; ++k) {
+                const QPointF a = outline.at(k), b = outline.at((k + 1) % n);
+                const double da = (a - base).x() * normal.x() + (a - base).y() * normal.y();
+                const double db = (b - base).x() * normal.x() + (b - base).y() * normal.y();
+                if ((da > 0) == (db > 0)) continue;
+                const QPointF crossing = a + (b - a) * (da / (da - db));
+                at << (crossing - base).x() * t.x() + (crossing - base).y() * t.y();
+            }
+            std::sort(at.begin(), at.end());
+            double inside = 0;
+            for (int k = 0; k + 1 < at.size(); k += 2) inside += at.at(k + 1) - at.at(k);
+            return inside;
+        }
+        // (No face to go by: the outline's extent across the way in.)
         const double n = std::hypot(along.x(), along.y());
         if (!(n > 0)) return std::min(box.width(), box.height());
-        // The extent across the direction: the outline's own, between its
-        // corners furthest either side of the line it runs along. (The
-        // box's side was that only for a cell square to the axes: a slanted
-        // strip's cells, a 30-degree feed's 2 µm across, were taken 5.7 µm,
-        // its stubs' resistance a third of theirs - a strip at 30 degrees
-        // 0.66 % short, a ring fed so 1.3 %: the review's P63.)
         const QPointF normal(-along.y() / n, along.x() / n);
         double lo = std::numeric_limits<double>::max(), hi = std::numeric_limits<double>::lowest();
         for (const QPointF& p : outline) {
@@ -1333,7 +1362,7 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         f.from = (inwards ? at : centre) * micrometre;
         f.to = (inwards ? centre : at) * micrometre;
         f.z0 = f.z1 = heightOf(stack, mesh.cells.at(cell).layer);
-        f.width = acrossOf(cell, along) * micrometre;
+        f.width = acrossOf(cell, along, on, unit) * micrometre;
         const Layer* m = stack.named(mesh.cells.at(cell).layer);
         f.thickness = m != nullptr ? m->thickness : 0.0;
         f.sigma = m != nullptr ? m->sigma : 0.0;
