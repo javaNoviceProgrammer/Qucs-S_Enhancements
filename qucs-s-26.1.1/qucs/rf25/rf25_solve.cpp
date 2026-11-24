@@ -414,6 +414,7 @@ QString setUpSolve(SolveJob& job, const Model& model, const Processed& processed
     // (The Cutout's, as processing kept them: matched by their text, they
     //  held only while nothing was translated - the review of 26ff2805.)
     job.processWarnings << processed.cutoutProblems << processed.leftOut;
+    job.processSaid = processed.leftOut;
     // The layers that end: their shapes, and what is beyond them.
     for (auto it = processed.extents.cbegin(); it != processed.extents.cend(); ++it) {
         const Layer* layer = job.stack.named(it.key());
@@ -769,7 +770,11 @@ void runSolve(SolveJob& job)
     if (job.result && job.result->ok()) job.result->lines.prepend(meshNoteOf(job.mesh));
     if (job.result && job.result->ok() && !job.processWarnings.isEmpty()) {
         job.result->warnings += job.processWarnings;
-        job.result->lines += job.processWarnings;
+        // (Not what the processing's lines say already, which are listed
+        //  beside these: a shape left out far away was said twice in
+        //  rf25_solve's "what it did" and in the tab.)
+        for (const QString& w : std::as_const(job.processWarnings))
+            if (!job.processSaid.contains(w)) job.result->lines << w;
     }
     if (job.result && job.result->ok() && !job.dispersedSaid.isEmpty()) job.result->lines.prepend(job.dispersedSaid);
     if (job.result && job.result->ok())

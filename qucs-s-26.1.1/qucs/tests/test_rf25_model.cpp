@@ -424,6 +424,21 @@ private slots:
             QVERIFY2(says(p, "via V1 has a conductivity below zero") && !says(p, "via V1 has no conductivity"), qPrintable(p.join(" | ")));
             QVERIFY2(p.join(' ').count(QStringLiteral("has a conductivity below zero")) == 3, qPrintable(p.join(" | ")));
         }
+        {   // A ground plane's below nought too: of metal its conductivity, a
+            // surface impedance its ohms a square. A perfect or open plane has
+            // neither, whatever its node holds.
+            for (const char* kind : {"metal", "impedance", "perfect", "open"}) {
+                rf::Model m = twoMetals();
+                rf::Node& g = add(m.stackNode(), "rf_ground", QStringLiteral("gnd"), QStringLiteral("GND"));
+                set(g, "kind", QLatin1String(kind));
+                set(g, "sigma", QStringLiteral("-5.8e7"));
+                set(g, "impedance", QStringLiteral("-0.01"));
+                const QStringList p = m.stack().problems;
+                const QString k = QLatin1String(kind);
+                QVERIFY2(says(p, "GND has a conductivity below zero") == (k == "metal"), qPrintable(k + ": " + p.join(" | ")));
+                QVERIFY2(says(p, "GND has a surface impedance below zero") == (k == "impedance"), qPrintable(k + ": " + p.join(" | ")));
+            }
+        }
         {   // A via that names nothing, something that is no metal, and
             // two metals that are not neighbours.
             rf::Model m = twoMetals();

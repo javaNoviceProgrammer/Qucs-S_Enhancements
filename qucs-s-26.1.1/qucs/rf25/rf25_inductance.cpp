@@ -1764,10 +1764,10 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         rhs(row(in)) = 1.0;
         // (Stopped at its rounding: the node potentials along a long line
         //  grow with its cells, and their rounding in A^T phi is the floor of
-        //  the residual - a line 3 mm long on 1 µm cells, its potentials to
-        //  1.5e6, met 1.35e-10 in 28 iterations and restarted at one product
-        //  a time to the 3,000 allowed, 157 s for the answer of the first 3;
-        //  a meander's 138,746 cells 885 s - the review's P66.)
+        //  the residual - a line 3 mm long on 1 µm cells, its potentials up
+        //  to 1.5e4, met 1.35e-10 in 28 iterations and restarted at one
+        //  product a time to the 3,000 allowed, 157 s for the answer it had
+        //  at the 28th; a meander's 138,746 cells 885 s - the review's P66.)
         const Gmres solved = gmres(system, precondition, rhs, x, kLoopResidual, kLoopRestart, kLoopMostIterations, stop,
                                    [progress](int iterations, double residual) {
                                        if (progress == nullptr) return;

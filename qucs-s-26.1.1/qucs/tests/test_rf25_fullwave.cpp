@@ -3040,6 +3040,17 @@ private slots:
             // (A metal's conductivity below nought was solved as a perfect
             //  conductor, as nought is: the review's P61.)
             {[](rf::Stack& s) { s.layers[2].sigma = -5.8e7; }, "M1 has a conductivity below zero"},
+            // (And a ground plane's: of metal, or a surface impedance.)
+            {[](rf::Stack& s) {
+                 s.layers[0].variant = QStringLiteral("metal");
+                 s.layers[0].sigma = -5.8e7;
+             },
+             "GND has a conductivity below zero"},
+            {[](rf::Stack& s) {
+                 s.layers[0].variant = QStringLiteral("impedance");
+                 s.layers[0].sigma = -0.01;
+             },
+             "GND has a surface impedance below zero"},
             {[](rf::Stack& s) {
                  s.layers[2].huray = true;
                  s.layers[2].surfaceRatio = 2;
