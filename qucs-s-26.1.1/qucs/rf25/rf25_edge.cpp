@@ -466,11 +466,16 @@ QHash<int, QList<ChargePart>> chargeParts(const Thickened& thick, double microme
         if (facedNear(m)) continue;
         QList<ChargePart> parts = out.value(m);
         if (parts.isEmpty()) {
-            // (A strip's cell's in its own frame: its rectangle of that frame
-            //  about its centre, and the profile across its sides there -
-            //  MeshCell::angle.)
+            // (Over the rectangle its charge is spread over everywhere else,
+            //  MeshCell::charged(): a turned cell's of its frame about its
+            //  centre, the profile across its sides there - MeshCell::angle -;
+            //  a cell clipped by a curve or a slanted side, of its own area at
+            //  its centroid. Its box reached past the metal, up to twice its
+            //  area: a disc meshed in the layout's axes read its C 1.7 % over
+            //  it turned, a ring 0.8 %, and two rings one inside the other
+            //  their mutual C 6 % over, 26.89 fF for 25.27.)
             const MeshCell& cell = thick.mesh.cells.at(m);
-            const QRectF box = cell.turned() ? cell.charged() : cell.outline.boundingRect();
+            const QRectF box = cell.charged();
             parts << wholeCell(QRectF(box.left() * micrometre, box.top() * micrometre, box.width() * micrometre, box.height() * micrometre), zOf(m));
         }
         out.insert(m, profiled(parts, it.value(), 0.5));
