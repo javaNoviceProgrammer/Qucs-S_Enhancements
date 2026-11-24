@@ -1704,12 +1704,6 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     };
                     QList<qsizetype> joined;
                     for (qsizetype k = first; k < pieces.size(); ++k)
-                            if (pieces.at(k).rectangle) {
-                                const QRectF& b = pieces.at(k).box;
-                                qWarning().noquote() << QStringLiteral("RECT %1,%2 - %3,%4 (%5 x %6) own %7").arg(b.left(), 0, 'f', 3).arg(b.top(), 0, 'f', 3).arg(b.right(), 0, 'f', 3).arg(b.bottom(), 0, 'f', 3)
-                                                            .arg(b.width(), 0, 'f', 3).arg(b.height(), 0, 'f', 3).arg(ownStrip(b));
-                            }
-                    for (qsizetype k = first; k < pieces.size(); ++k)
                         if (!pieces.at(k).rectangle || !ownStrip(pieces.at(k).box)) {
                             parts << (pieces.at(k).rectangle ? QPolygonF(pieces.at(k).box) : pieces.at(k).outline);
                             cuts = pieces.at(k).cuts;
