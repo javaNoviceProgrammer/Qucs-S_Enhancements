@@ -1056,13 +1056,44 @@ private slots:
     // then its bands, each graded at every side and each a grid from its own
     // end, every one with all their lines, 20,000 to 39,000; then its bands on
     // one lattice, 3,300 to 7,600. Fed at 0 or 90 degrees, a curve's parts are
-    // now one region (1,140 to 2,270); fed at 30 or 45, its feeds' slanted
-    // sides straight edges of the outline, they keep their bands. And the
-    // loop's R at direct current, fed at 90 degrees, in squares of the metal
-    // within half a per cent of a finite-difference solve of each sheet: the
-    // circle's 7.4084, the ring's 8.2696 (7.4303 and 8.2649 here).
+    // now one region (1,140 to 2,270); fed at 30 or 45, it is meshed in the
+    // frame its feeds run along, one region there too (1,140 to 2,330) - in
+    // the layout's own its feeds' slanted sides kept its bands, their cells
+    // clipped by them, and its R read 1.3 to 1.6 % under the ring fed
+    // square, converging from below (the review's P63). And the loop's R at
+    // direct current, fed at 90 degrees, in squares of the metal within half
+    // a per cent of a finite-difference solve of each sheet: the circle's
+    // 7.4084, the ring's 8.2696 (7.4303 and 8.2649 here); fed at 0, 30 or 45
+    // degrees, the same shape turned, within half a per cent of that.
     void aCurveJoinedByAFeedIsMeshedWhole()
     {
+        // (A strip at 30 degrees alone, its ends' stubs as wide as its cells
+        //  are across: taken by their boxes, three times that, it read 14.90
+        //  squares of its 15.)
+        {
+            rf::Model m = stacked();
+            m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes")));
+            const QString shapes = m.layout().child(QStringLiteral("rf_shapes"))->tag;
+            const double a = 30 * M_PI / 180;
+            const QPointF along(std::cos(a), std::sin(a)), across(-std::sin(a), std::cos(a));
+            QJsonArray rows;
+            for (const QPointF& p : {-150 * along + 10 * across, 150 * along + 10 * across, 150 * along - 10 * across, -150 * along - 10 * across})
+                rows.append(QJsonArray{QString::number(p.x(), 'g', 12) + "[um]", QString::number(p.y(), 'g', 12) + "[um]"});
+            rf::Node strip = m.make(QStringLiteral("rf_shape"));
+            strip.props = QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}};
+            m.add(shapes, strip);
+            m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"1", "0", "M1"});
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            const rf::Stack stack = m.solveStack();
+            const rf::Layer* metal = stack.named(QStringLiteral("M1"));
+            QVERIFY(metal != nullptr);
+            const rf::Inductance loop =
+                rf::inductanceOf(rf::meshOf(processed.conductors, rf::MeshSettings(), stack, 1e9), processed.conductors, stack, 150 * along, -150 * along);
+            QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+            const double squares = loop.rDc * metal->sigma * metal->thickness;
+            QVERIFY2(std::abs(squares / 15 - 1) < 1e-3, qPrintable(QStringLiteral("a strip at 30 degrees: %1 squares of 15").arg(squares)));
+        }
+        QMap<QString, double> squaresOf;
         for (const bool ring : {false, true})
             for (const double degrees : {0.0, 30.0, 45.0, 90.0, -90.0}) {
                 // (-90: the ring fed at 90 degrees meshed with no cells across
@@ -1131,13 +1162,28 @@ private slots:
                 //  band sized across its slanted sides, the lattice from the
                 //  largest cell, the bands each a grid of their own; under it
                 //  a curve's edges not graded.)
-                const QMap<QString, int> counts{{"a circle fed at 0 degrees", 1145},  {"a circle fed at 30 degrees", 6945},
-                                                {"a circle fed at 45 degrees", 6708}, {"a circle fed at 90 degrees", 1144},
-                                                {"a ring fed at 0 degrees", 2222},    {"a ring fed at 30 degrees", 7592},
-                                                {"a ring fed at 45 degrees", 7264},   {"a ring fed at 90 degrees", 2265},
+                const QMap<QString, int> counts{{"a circle fed at 0 degrees", 1145},  {"a circle fed at 30 degrees", 1385},
+                                                {"a circle fed at 45 degrees", 1144}, {"a circle fed at 90 degrees", 1144},
+                                                {"a ring fed at 0 degrees", 2222},    {"a ring fed at 30 degrees", 2330},
+                                                {"a ring fed at 45 degrees", 2243},   {"a ring fed at 90 degrees", 2265},
                                                 {"a ring fed at -90 degrees", 1355}};
                 const double ratio = double(mesh.cells.size()) / counts.value(what);
                 QVERIFY2(ratio > 0.9 && ratio < 1.1, qPrintable(QStringLiteral("%1: %2 cells, against %3").arg(what).arg(mesh.cells.size()).arg(counts.value(what))));
+                // (Fed at an angle off the axes: meshed in its feeds' frame,
+                //  every cell of it turned, and said.)
+                if (degrees == 30.0 || degrees == 45.0) {
+                    QVERIFY2(says(mesh.lines, "meshed in the frame of its feeds"), qPrintable(what + ": " + mesh.lines.join(" | ")));
+                    QVERIFY2(std::all_of(mesh.cells.cbegin(), mesh.cells.cend(), [](const rf::MeshCell& cell) { return cell.angle != 0; }),
+                             qPrintable(what));
+                }
+                if (!coarse) {
+                    const rf::Stack stack = m.solveStack();
+                    const rf::Layer* metal = stack.named(QStringLiteral("M1"));
+                    QVERIFY(metal != nullptr);
+                    const rf::Inductance loop = rf::inductanceOf(mesh, processed.conductors, stack, 150 * along, -150 * along);
+                    QVERIFY2(loop.ok(), qPrintable(what + ": " + loop.problems.join(" | ")));
+                    squaresOf.insert(what, loop.rDc * metal->sigma * metal->thickness);
+                }
                 if (degrees == 90.0) {
                     const rf::Stack stack = m.solveStack();
                     const rf::Layer* metal = stack.named(QStringLiteral("M1"));
@@ -1174,6 +1220,15 @@ private slots:
                                  qPrintable(QStringLiteral("%1 at 20 across: %2 squares against %3").arg(what).arg(at20.rDc / square).arg(expected)));
                     }
                 }
+            }
+        // The same shape turned, the same R: within half a per cent of it fed
+        // at 90 degrees.
+        for (const char* shape : {"a circle", "a ring"})
+            for (const double degrees : {0.0, 30.0, 45.0}) {
+                const QString what = QStringLiteral("%1 fed at %2 degrees").arg(QLatin1String(shape)).arg(degrees);
+                const double square = squaresOf.value(QStringLiteral("%1 fed at 90 degrees").arg(QLatin1String(shape)));
+                QVERIFY2(square > 0 && std::abs(squaresOf.value(what) / square - 1) < 0.005,
+                         qPrintable(QStringLiteral("%1: %2 squares against %3 fed at 90").arg(what).arg(squaresOf.value(what)).arg(square)));
             }
     }
 
@@ -1442,11 +1497,13 @@ private slots:
         QVERIFY2(bands.ok() && bands.lines.join(' ').contains(QStringLiteral("meshed as one region")), qPrintable(bands.lines.join(" | ")));
         // (4,185 cells, where its bands were 5,935.)
         QVERIFY2(bands.cells.size() < 4500, qPrintable(QStringLiteral("%1 cells").arg(bands.cells.size())));
-        // Fed at 30 degrees, a strip 10 µm wide on its outer edge, it keeps its
-        // bands - its feed's slanted sides straight edges of its outline -:
-        // 4,271 cells, within a tenth. A band sized across its slanted sides,
-        // not by the ring's chord, made 5,265; its pieces graded at every side
-        // of their boxes, 7,474.
+        // Fed at 30 degrees, a strip 10 µm wide on its outer edge, it is meshed
+        // in the frame its feed runs along, one region there: 7,845 cells,
+        // within a tenth of the 7,874 it is fed at 0 degrees. (In the layout's
+        // own frame its feed's slanted sides kept its bands, 4,271 cells
+        // clipped by them; a band sized across its slanted sides, not by the
+        // ring's chord, made 5,265; its pieces graded at every side of their
+        // boxes, 7,474.)
         const double a = 30 * M_PI / 180;
         const QPointF along(std::cos(a), std::sin(a)), side(-5 * std::sin(a), 5 * std::cos(a));
         QJsonArray feed;
@@ -1455,8 +1512,8 @@ private slots:
         const rf::Model fed = shaped({QJsonObject{{"layer", "M1"}, {"shape", "ring"}, {"x", "0"}, {"y", "0"}, {"radius", "100[um]"}, {"inner_radius", "99[um]"}},
                                       QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", feed}}});
         const rf::Mesh banded = rf::meshOf(rf::processRead(fed, nothingRead(), QStringLiteral("none")).conductors, rf::MeshSettings(), fed.solveStack(), 1e9);
-        QVERIFY2(banded.ok() && !banded.lines.join(' ').contains(QStringLiteral("meshed as one region")), qPrintable(banded.lines.join(" | ")));
-        QVERIFY2(std::abs(double(banded.cells.size()) / 4271 - 1) < 0.1, qPrintable(QStringLiteral("%1 cells, fed at 30 degrees").arg(banded.cells.size())));
+        QVERIFY2(banded.ok() && banded.lines.join(' ').contains(QStringLiteral("meshed in the frame of its feeds")), qPrintable(banded.lines.join(" | ")));
+        QVERIFY2(std::abs(double(banded.cells.size()) / 7874 - 1) < 0.1, qPrintable(QStringLiteral("%1 cells, fed at 30 degrees").arg(banded.cells.size())));
     }
 
     // A ring of 900 µm radius and 10 µm wide, slotted, at the mesh's

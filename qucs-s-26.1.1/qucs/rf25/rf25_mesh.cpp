@@ -1259,6 +1259,51 @@ QStringList facesDecided(Stack* stack, const QList<Conductor>& conductors, const
     return metals;
 }
 
+/*!
+ * The angle (radians, in (0, pi/2)) to turn \a outline's frame by for its
+ * cells: where it is a curve (isCurved()) whose every part off it is a
+ * slanted strip's (Slab::onCurve false: both its sides straight edges, and
+ * parallel) and they all run at one angle, or at right angles to it, off
+ * the axes - a disc or a ring fed by strips at 30 degrees. Nought where it
+ * is none of that. Turned by it, the strips run along the axes and the
+ * curve is meshed as one region, as it is fed square: in the layout's own
+ * frame its parts were cut into bands across the feeds, their cells
+ * clipped by the feeds' slanted sides, and its R read 1.3 to 1.6 % under
+ * the same ring fed square, converging from below (the review's P63).
+ */
+double turnOf(const QPolygonF& outline, double perUnit)
+{
+    if (outline.size() < 4 || !isCurved(outline)) return 0;
+    const double area = std::abs(areaOf(outline)), around = perimeterOf(outline), wide = around > 0 ? 2 * area / around : 0;
+    if (!(wide > 0)) return 0;
+    const QList<Slab> slabs = piecesOf(outline, kCornersMerged * wide, nullptr, std::min(0.1e-6 / perUnit, 0.01 * wide));
+    double angle = -1;
+    for (const Slab& slab : slabs) {
+        if (slab.rectangle || slab.onCurve) continue;
+        // (Its slanted sides: the longest edge off the axes, the way it runs
+        //  taken within a quarter turn.)
+        double longest = 0, way = -1;
+        for (int k = 0, n = int(slab.outline.size()); k < n; ++k) {
+            const QPointF d = slab.outline.at((k + 1) % n) - slab.outline.at(k);
+            const double length = std::hypot(d.x(), d.y());
+            if (!(length > longest) || std::abs(d.x()) <= 1e-9 * length || std::abs(d.y()) <= 1e-9 * length) continue;
+            longest = length;
+            way = std::fmod(std::atan2(d.y(), d.x()) + 2 * M_PI, M_PI / 2);
+        }
+        if (way < 0) return 0;
+        if (angle < 0) angle = way;
+        // (Within the processing's nanometre grid along the side: two feeds
+        //  drawn at one angle come out some 2e-5 rad apart.)
+        else if (std::min(std::abs(way - angle), M_PI / 2 - std::abs(way - angle)) > 1e-4) return 0;
+    }
+    if (angle < 0 || angle < 1e-6 || angle > M_PI / 2 - 1e-6) return 0;
+    return angle;
+}
+
+/// While a conductor turned (turnOf()) is meshed with the rest in its frame:
+/// that meshOf() turns none.
+thread_local bool meshingTurned = false;
+
 } // namespace
 
 QMap<QString, int> Mesh::byLayer() const
@@ -1481,6 +1526,134 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                                  .arg(box.center().x(), 0, 'g', 6)
                                  .arg(box.center().y(), 0, 'g', 6);
             return mesh;
+        }
+    }
+
+    // A curve fed by strips at one angle off the axes (turnOf()): meshed
+    // with every conductor in the frame its strips run along, each turned
+    // about its middle, and its own cells kept - turned back, each with its
+    // frame (MeshCell::angle) - in the place of those it has here, below.
+    // The others turned with it, so that what it faces is as it is here.
+    // Not with a plane of symmetry, nor where a metal of another layer lies
+    // over or under it, its cells to be aligned with that one's or a via
+    // landed on them.
+    struct Turned {
+        int conductor = -1;
+        QList<MeshCell> cells;
+    };
+    QList<Turned> turnedCells;
+    if (axis == 0 && !meshingTurned) {
+        for (int c = 0; c < conductors.size(); ++c) {
+            if (conductors.at(c).isStrip()) continue;
+            const double angle = turnOf(conductors.at(c).outline, perUnit);
+            if (angle == 0) continue;
+            const QRectF box = conductors.at(c).outline.boundingRect();
+            bool over = false;
+            for (int o = 0; o < conductors.size() && !over; ++o)
+                over = o != c && conductors.at(o).layer != conductors.at(c).layer && conductors.at(o).outline.boundingRect().intersects(box);
+            if (over) continue;
+            const QPointF about = box.center();
+            QList<Conductor> turned = conductors;
+            for (Conductor& t : turned) {
+                for (QPointF& q : t.outline) q = MeshCell::turnedAbout(q, about, -angle);
+                t.spine.clear();
+                // (A side the turn leaves along an axis within the processing's
+                //  grid put on it, and sides of one line on one: the outline's
+                //  corners are on a nanometre's grid, so a feed's sides turned
+                //  came out up to 0.3 nm off the axis along 20 µm - no
+                //  rectangle's, and a disc fed at 30 degrees cut its two feeds
+                //  and itself into one slanted slab -, and its two feeds' sides
+                //  0.2 nm apart, a row of cells that thin across the disc and
+                //  its R 2.7 % over.)
+                const double grid = 2 * kBooleanGrid * 1e-6 / perUnit;
+                QPolygonF& o = t.outline;
+                const int n = int(o.size());
+                for (const int along : {0, 1}) {
+                    // (along 0: upright sides, their x; 1: level ones, their y.)
+                    const auto at = [along](const QPointF& q) { return along == 0 ? q.x() : q.y(); };
+                    const auto other = [along](const QPointF& q) { return along == 0 ? q.y() : q.x(); };
+                    QList<int> ends;
+                    QList<double> values;
+                    for (int k = 0; k < n; ++k) {
+                        const QPointF &a = o.at(k), &b = o.at((k + 1) % n);
+                        if (std::abs(at(b) - at(a)) <= grid && std::abs(other(b) - other(a)) >= 20 * grid) {
+                            ends << k << (k + 1) % n;
+                            values << at(a) << at(b);
+                        }
+                    }
+                    QList<double> sorted = values;
+                    std::sort(sorted.begin(), sorted.end());
+                    QList<double> lines;   // (each run of values within the grid of the one before: its mean)
+                    for (int i = 0; i < sorted.size();) {
+                        int j = i + 1;
+                        double sum = sorted.at(i);
+                        while (j < sorted.size() && sorted.at(j) - sorted.at(j - 1) <= grid) sum += sorted.at(j++);
+                        for (int k = i; k < j; ++k) lines << sum / (j - i);
+                        i = j;
+                    }
+                    for (int i = 0; i < ends.size(); ++i) {
+                        const double v = lines.at(int(std::lower_bound(sorted.begin(), sorted.end(), values.at(i)) - sorted.begin()));
+                        QPointF& q = o[ends.at(i)];
+                        if (along == 0) q.setX(v);
+                        else q.setY(v);
+                    }
+                }
+            }
+            meshingTurned = true;
+            const Mesh inFrame = meshOf(turned, how, stack, top, micrometre);
+            meshingTurned = false;
+            if (!inFrame.ok()) continue;
+            const QPolygonF& own = turned.at(c).outline;
+            const QRectF ownBox = own.boundingRect();
+            // (A corner turned back within a few of the grid's nanometres of
+            //  the outline as drawn put on it: the sides put on an axis above
+            //  moved corners by up to 2 nm, and a feed's end cells then lay
+            //  off its face - a port's face taking some of them, a disc fed
+            //  at 30 degrees 2.7 % over.)
+            const QPolygonF& drawn = conductors.at(c).outline;
+            const double near = 4 * kBooleanGrid * 1e-6 / perUnit;
+            const auto onOutline = [&drawn, near](QPointF q) {
+                double best = near;
+                QPointF to = q;
+                for (int k = 0, n = int(drawn.size()); k < n; ++k) {
+                    const QPointF a = drawn.at(k), b = drawn.at((k + 1) % n);
+                    if (q.x() < std::min(a.x(), b.x()) - near || q.x() > std::max(a.x(), b.x()) + near
+                        || q.y() < std::min(a.y(), b.y()) - near || q.y() > std::max(a.y(), b.y()) + near)
+                        continue;
+                    const QPointF d = b - a;
+                    const double l2 = d.x() * d.x() + d.y() * d.y();
+                    const double u = l2 > 0 ? std::clamp(((q.x() - a.x()) * d.x() + (q.y() - a.y()) * d.y()) / l2, 0.0, 1.0) : 0.0;
+                    const QPointF p = a + u * d;
+                    const double gone = std::hypot(p.x() - q.x(), p.y() - q.y());
+                    if (gone < best) {
+                        best = gone;
+                        to = p;
+                    }
+                }
+                return to;
+            };
+            Turned t;
+            t.conductor = c;
+            for (const MeshCell& cell : inFrame.cells) {
+                if (cell.layer != turned.at(c).layer || !cell.outline.boundingRect().intersects(ownBox)) continue;
+                // (Its own: its centre in its outline, or in none of the
+                //  others' on its layer - a clipped cell's centroid can lie
+                //  just outside a curve it hugs.)
+                bool mine = own.containsPoint(cell.centre, Qt::OddEvenFill);
+                if (!mine) {
+                    mine = true;
+                    for (int o = 0; o < turned.size() && mine; ++o)
+                        if (o != c && turned.at(o).layer == cell.layer && turned.at(o).outline.containsPoint(cell.centre, Qt::OddEvenFill)) mine = false;
+                }
+                if (!mine) continue;
+                MeshCell back = cell;
+                back.frame = cell.charged().size();
+                back.angle = angle + cell.angle;
+                for (QPointF& q : back.outline) q = onOutline(MeshCell::turnedAbout(q, about, angle));
+                back.centre = MeshCell::turnedAbout(cell.centre, about, angle);
+                t.cells << back;
+            }
+            if (!t.cells.isEmpty()) turnedCells << t;
         }
     }
 
@@ -1801,9 +1974,15 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     // end and its corners, and the region's cells, its own width's, were
     // four to five times the feed's there: a disc fed by two strips read its
     // R 1.3 % over, 0.3 % graded.
+    // (Within the processing's grid: where a feed meets a curve whose corners
+    //  either side of it are not alike, its end and the region's edge come
+    //  out a fraction of a nanometre apart - 0.2 nm on a disc turned 30
+    //  degrees -, no junction was found within 1e-9 of the region, its
+    //  cells beside the feed 4.7 by 10 µm against the feed's 1 by 2, and
+    //  its R 2.7 % over: the review's P63.)
     for (Piece& r : pieces) {
         if (!r.region) continue;
-        const double tol = 1e-9 * std::max(1.0, std::max(r.box.width(), r.box.height()));
+        const double tol = std::max(1e-9 * std::max(1.0, std::max(r.box.width(), r.box.height())), kBooleanGrid);
         for (int q = 0; q < pieces.size(); ++q) {
             // (Its conductor's pieces left beside it are its strips: the rest
             //  it holds.)
@@ -3157,6 +3336,32 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         mesh.lines << tr("Meshed as the whole with its mirror across the plane of symmetry, %1 cells, and the half of them "
                          "beyond the plane kept: %2.")
                           .arg(whole).arg(half.size());
+    }
+
+    // A curve fed at an angle: its cells of its own frame (turnOf(), above)
+    // in the place of these.
+    if (!turnedCells.isEmpty() && cellConductor.size() == mesh.cells.size()) {
+        QSet<int> replaced;
+        for (const Turned& t : std::as_const(turnedCells)) replaced.insert(t.conductor);
+        QList<MeshCell> kept;
+        QList<int> keptConductor;
+        for (int k = 0; k < mesh.cells.size(); ++k) {
+            if (replaced.contains(cellConductor.at(k))) continue;
+            kept << mesh.cells.at(k);
+            keptConductor << cellConductor.at(k);
+        }
+        for (const Turned& t : std::as_const(turnedCells)) {
+            kept += t.cells;
+            for (qsizetype k = 0; k < t.cells.size(); ++k) keptConductor << t.conductor;
+            mesh.lines << tr("%1's shape about %2, %3 µm, a curve fed at %4 degrees, meshed in the frame of its feeds: %5 cells.")
+                              .arg(conductors.at(t.conductor).layer)
+                              .arg(conductors.at(t.conductor).outline.boundingRect().center().x(), 0, 'g', 6)
+                              .arg(conductors.at(t.conductor).outline.boundingRect().center().y(), 0, 'g', 6)
+                              .arg(t.cells.first().angle * 180 / M_PI, 0, 'g', 4)
+                              .arg(t.cells.size());
+        }
+        mesh.cells = kept;
+        cellConductor = keptConductor;
     }
 
     // Its cells made to meet side to side, each piece's cells and its
