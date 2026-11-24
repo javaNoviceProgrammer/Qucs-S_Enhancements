@@ -530,7 +530,8 @@ template class HMatrixOf<Complex>;
 template class HMatrixOf<double>;
 
 Gmres gmres(const Operator& apply, const Operator& precondition, const VectorC& b, VectorC& x, double tolerance,
-            int restart, int most, const std::atomic_bool* stop, const std::function<void(int, double)>& progress)
+            int restart, int most, const std::atomic_bool* stop, const std::function<void(int, double)>& progress,
+            bool atRounding)
 {
     Gmres out;
     const int n = int(b.size());
@@ -553,6 +554,11 @@ Gmres gmres(const Operator& apply, const Operator& precondition, const VectorC& 
         else
             result = in;
     };
+    // (The last restart's residual, and whether its recurrence met the
+    //  tolerance: where it did and the system's own stays, it is rounding.)
+    double before = 0;
+    bool claimed = false;
+    int stalled = 0;
     while (true) {
         // The residual of the system itself, at each restart.
         w.setZero();
@@ -564,6 +570,13 @@ Gmres gmres(const Operator& apply, const Operator& precondition, const VectorC& 
             out.converged = true;
             return out;
         }
+        stalled = claimed && before > 0 && out.residual > 0.5 * before ? stalled + 1 : 0;
+        if (atRounding && stalled >= 2) {
+            out.atRounding = true;
+            return out;
+        }
+        before = out.residual;
+        claimed = false;
         if (out.iterations >= most) return out;
         if (stop != nullptr && stop->load()) {
             out.stopped = true;
@@ -617,6 +630,7 @@ Gmres gmres(const Operator& apply, const Operator& precondition, const VectorC& 
             ++k;
             out.residual = std::abs(g[k]) / scale;
             if (progress) progress(out.iterations, out.residual);
+            if (out.residual <= tolerance) claimed = true;
             if (out.residual <= tolerance || next == 0 || (stop != nullptr && stop->load())) break;
         }
         // The least squares of the Hessenberg matrix, by its triangle.

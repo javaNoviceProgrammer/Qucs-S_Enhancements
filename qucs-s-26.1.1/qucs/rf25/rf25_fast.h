@@ -239,6 +239,11 @@ struct Gmres {
     double residual = 0;        ///< |b - A x| / |b| at the end
     bool converged = false;     ///< to the tolerance asked
     bool stopped = false;       ///< by the flag
+    /// Stopped at its rounding (\a atRounding): its recurrence met the
+    /// tolerance and the system's own residual, two restarts running, fell
+    /// by less than half - what is left is the rounding of A x, which
+    /// another restart does not take away.
+    bool atRounding = false;
 };
 
 /// y = A x, of a vector to a vector.
@@ -250,10 +255,13 @@ using Operator = std::function<void(const VectorC& x, VectorC& y)>;
  * |b - A x| <= \a tolerance |b|, \a restart vectors at a time and
  * \a most products in all. Orthogonalized twice by modified Gram-Schmidt;
  * the residual at each restart the system's own, not the recurrence's.
+ * \a atRounding: it stops where that residual has stopped falling though
+ * the recurrence met \a tolerance (Gmres::atRounding), where it restarted
+ * at one product a time to \a most.
  */
 Gmres gmres(const Operator& apply, const Operator& precondition, const VectorC& b, VectorC& x, double tolerance,
             int restart, int most, const std::atomic_bool* stop = nullptr,
-            const std::function<void(int iterations, double residual)>& progress = {});
+            const std::function<void(int iterations, double residual)>& progress = {}, bool atRounding = false);
 
 /// The machine's memory, bytes; nought where it cannot be told.
 double physicalMemory();

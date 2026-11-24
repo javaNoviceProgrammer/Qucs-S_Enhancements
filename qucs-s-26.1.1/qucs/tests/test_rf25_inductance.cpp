@@ -1213,6 +1213,26 @@ private slots:
         QVERIFY2(std::abs(held.l / dense.l - 1) < 0.005, qPrintable(QStringLiteral("%1 against %2 nH").arg(held.l * 1e9).arg(dense.l * 1e9)));
     }
 
+    // A long line's loop, compressed, stops at its rounding: its node
+    // potentials grow with its cells along it, and their rounding is the
+    // floor of GMRES's residual. A line 3 mm long on 1 µm cells met 1.35e-10
+    // in 28 iterations and restarted at one product a time to the 3,000
+    // allowed - 157 s for the answer it had at the 28th, where on 2 µm cells
+    // it took 18 iterations and a third of a second (the review's P66: a
+    // meander's 138,746 cells 885 s). Said, and its answer the same.
+    void aLongLinesLoopStopsAtItsRounding()
+    {
+        const rf::Stack stack = grounded(1, 10e-3, 1e-6, 5.8e7);
+        const QList<rf::Conductor> line{strip(0, 0, 3000, 10)};
+        const rf::Inductance l = rf::inductanceOf(meshed(line, 1), line, stack, QPointF(0, 5), QPointF(3000, 5), 1e-6, 0);
+        QVERIFY2(l.ok() && l.compressed, qPrintable(l.problems.join(" | ")));
+        QVERIFY2(l.iterations < 200, qPrintable(QStringLiteral("%1 iterations to %2").arg(l.iterations).arg(l.residual)));
+        QVERIFY2(l.residual < 1e-9, qPrintable(QString::number(l.residual)));
+        QVERIFY2(std::abs(l.rDc * 5.8e7 * 1e-6 / 300 - 1) < 1e-6, qPrintable(QString::number(l.rDc * 5.8e7 * 1e-6)));
+        QVERIFY2(std::abs(l.lDc / 4.13862e-9 - 1) < 1e-4, qPrintable(QString::number(l.lDc * 1e9)));
+        QVERIFY2(l.lines.join(' ').contains(QStringLiteral("as low as its rounding goes")), qPrintable(l.lines.join(" | ")));
+    }
+
     // Stopped while its near field is factorized - which Accelerate's
     // factorization cannot be, "still at work after 60 s" till Qucs-S was
     // quit -, the loop ends at once and
