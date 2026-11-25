@@ -3338,17 +3338,42 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 int conductor = -1;
                 int segment = -1;   // (a strip's; -1: a piece)
                 QPolygonF outline;
+                QRectF box;
+                // (A strip's: its outline's longest side by it - its own
+                //  segment's sides, its neighbours', its end where it is one -,
+                //  for a wall a quarter of a gap long (wallsFace()) found or
+                //  not without the outline's every side. A piece's: no bound.)
+                double longest = std::numeric_limits<double>::infinity();
             };
             QList<Part> stripParts, all;
             for (int c = 0; c < conductors.size() && meshingOnly < 0; ++c) {
                 const StripQuads& q = quadsOf.at(c);
                 if (!q.ok()) continue;
-                for (int k = 0; k + 1 < q.left.size(); ++k)
-                    stripParts << Part{c, k, QPolygonF({q.left.at(k), q.left.at(k + 1), q.right.at(k + 1), q.right.at(k)})};
+                const int segments = int(q.left.size()) - 1;
+                const auto sideOf = [&q, segments](int k) {
+                    if (k < 0 || k >= segments) return 0.0;
+                    const QPointF l = q.left.at(k + 1) - q.left.at(k), r = q.right.at(k + 1) - q.right.at(k);
+                    return std::max(std::hypot(l.x(), l.y()), std::hypot(r.x(), r.y()));
+                };
+                for (int k = 0; k < segments; ++k) {
+                    Part part{c, k, QPolygonF({q.left.at(k), q.left.at(k + 1), q.right.at(k + 1), q.right.at(k)})};
+                    part.box = part.outline.boundingRect();
+                    part.longest = std::max({sideOf(k - 1), sideOf(k), sideOf(k + 1)});
+                    for (const int end : {0, segments})
+                        if (std::abs(k - end) <= 1) {
+                            const QPointF across = q.right.at(end) - q.left.at(end);
+                            part.longest = std::max(part.longest, std::hypot(across.x(), across.y()));
+                        }
+                    stripParts << part;
+                }
             }
             if (!stripParts.isEmpty()) {
                 all = stripParts;
-                for (const Piece& piece : std::as_const(pieces)) all << Part{piece.conductor, -1, outlineOfPiece(piece)};
+                for (const Piece& piece : std::as_const(pieces)) {
+                    Part part{piece.conductor, -1, outlineOfPiece(piece)};
+                    part.box = part.outline.boundingRect();
+                    all << part;
+                }
             }
             const double near = 4 * kBooleanGrid * 1e-6 / perUnit;
             for (int i = 0; i < stripParts.size(); ++i)
@@ -3360,9 +3385,22 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     if (b.segment >= 0 && j <= i) continue;
                     const QString& layer = conductors.at(a.conductor).layer;
                     if (conductors.at(b.conductor).layer != layer) continue;
+                    // (Only a gap narrower than the narrowest yet changes the
+                    //  answer: their boxes, then their outlines, that far apart
+                    //  or more go no further. And a wall a quarter of the gap
+                    //  long beside each, or no facing, before the outlines'
+                    //  sides are looked through. Each pair apart looking
+                    //  through both outlines whole, a spiral of one strip of
+                    //  1,800 segments took 69 s to mesh, 0.19 without.)
+                    const double narrowest = narrowestGap.value(layer, std::numeric_limits<double>::infinity());
+                    const double dx = std::max({0.0, b.box.left() - a.box.right(), a.box.left() - b.box.right()});
+                    const double dy = std::max({0.0, b.box.top() - a.box.bottom(), a.box.top() - b.box.bottom()});
+                    const double boxes = std::hypot(dx, dy);   // (no more than the gap)
+                    if (boxes >= narrowest || a.longest < 0.25 * boxes || b.longest < 0.25 * boxes) continue;
                     QPointF between, onA, onB;
                     const double gap = outlineDistance(a.outline, b.outline, &between, &onA, &onB);
-                    if (!(gap > 1e-9 * size)) continue;
+                    if (!(gap > 1e-9 * size) || gap >= narrowest) continue;
+                    if (a.longest < 0.25 * gap || b.longest < 0.25 * gap) continue;
                     const QPolygonF& outlineA = conductors.at(a.conductor).outline;
                     const QPolygonF& outlineB = conductors.at(b.conductor).outline;
                     if (outlineA.containsPoint(between, Qt::OddEvenFill) || outlineB.containsPoint(between, Qt::OddEvenFill)) continue;
