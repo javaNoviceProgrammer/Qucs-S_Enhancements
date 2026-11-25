@@ -3759,6 +3759,122 @@ private slots:
         QCOMPARE(deck->render(3, 1.0), want);
         QCOMPARE(deck->find(QStringLiteral("β")).size(), 4);
     }
+
+    /// Text placed and coloured as PowerPoint places and colours it: tab
+    /// stops an inch apart and its own where it lists them; Hebrew aligned
+    /// as it says, its margin and bullet on the right; a hyperlink in the
+    /// theme's colour; preset colours by their short names; outlined and
+    /// hidden letters; a centred paragraph's bullet beside its text.
+    void textAsPowerPointLaysItOut()
+    {
+        // (A box at 40 with its inset of 7.2: its text from 47.2 to 912.8.)
+        const auto box = [](int id, double y, const QByteArray& paras) {
+            return shape(id, xfrm(40, y, 880, 50) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>", text(paras, "<a:bodyPr wrap=\"square\"/>"));
+        };
+        const QByteArray plain = "<a:rPr lang=\"en-US\" sz=\"2000\"/>";
+        const auto tabs = [](const QByteArray& margins, const QByteArray& list) {
+            return "<a:pPr " + margins + "><a:buNone/>" + (list.isEmpty() ? QByteArray() : "<a:tabLst>" + list + "</a:tabLst>") + "</a:pPr>";
+        };
+        const QByteArray at300 = "<a:tab pos=\"" + emu(300) + "\" algn=\"l\"/>";
+        const QByteArray bulleted = "<a:pPr marL=\"342900\" indent=\"-342900\"><a:buFont typeface=\"Arial\"/><a:buChar char=\"&#8226;\"/>";
+        Deck d;
+        Deck::SlideSpec tabbed;
+        tabbed.tree = box(2, 20, para(run(QStringLiteral("|\tAA"), plain), tabs("", "")))   // the default stop: 72
+                      + box(3, 80, para(run(QStringLiteral("|\tBB"), plain), tabs("", at300)))
+                      + box(4, 140, para(run(QStringLiteral("|\tCC"), plain), tabs("marL=\"" + emu(100) + "\"", at300)))
+                      + box(5, 200, para(run(QStringLiteral("|\tDD"), plain), bulleted + "<a:tabLst>" + at300 + "</a:tabLst></a:pPr>"))
+                      + box(6, 260, para(run(QStringLiteral("|\tEE\tFF"), plain), tabs("defTabSz=\"" + emu(50) + "\"", "")));
+        Deck::SlideSpec hebrew;
+        const QString shalom = QStringLiteral("שלום עולם");
+        hebrew.tree = box(2, 20, para(run(shalom, plain), "<a:pPr algn=\"r\" rtl=\"1\"><a:buNone/></a:pPr>"))
+                      + box(3, 80, para(run(shalom, plain), "<a:pPr><a:buNone/></a:pPr>"))
+                      + box(4, 140, para(run(shalom, plain), "<a:pPr marL=\"" + emu(72) + "\" indent=\"-" + emu(36) + "\" algn=\"r\" rtl=\"1\">"
+                                                                 "<a:buFont typeface=\"Arial\"/><a:buChar char=\"&#8226;\"/></a:pPr>"));
+        Deck::SlideSpec coloured;
+        coloured.rels = "<Relationship Id=\"rIdH\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" "
+                        "Target=\"https://example.com/\" TargetMode=\"External\"/>";
+        const QByteArray big = "sz=\"6000\"";
+        const auto letters = [&](int id, double y, const QByteArray& inner) {
+            return box(id, y, para(run(QStringLiteral("MMMM"), "<a:rPr lang=\"en-US\" " + big + ">" + inner + "</a:rPr>"), "<a:pPr><a:buNone/></a:pPr>"));
+        };
+        coloured.tree = letters(2, 20, solid("FF0000") + "<a:hlinkClick r:id=\"rIdH\"/>")   // the link's colour, over the run's own
+                        + letters(3, 110, solid("FF0000") + "<a:hlinkClick r:id=\"rIdH\"><a:extLst><a:ext uri=\"{A12FA001-AC4F-418D-AE19-62706E023703}\">"
+                                                            "<ahyp:hlinkClr xmlns:ahyp=\"http://schemas.microsoft.com/office/drawing/2018/hyperlinkcolor\" "
+                                                            "val=\"tx\"/></a:ext></a:extLst></a:hlinkClick>")   // its own
+                        + letters(4, 200, "<a:ln w=\"12700\">" + solid("00FF00") + "</a:ln><a:noFill/>")    // outlined
+                        + letters(5, 290, "<a:noFill/>")                                                    // hidden
+                        + shape(6, xfrm(40, 400, 100, 100) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:solidFill><a:prstClr val=\"dkBlue\"/></a:solidFill>")
+                        + shape(7, xfrm(160, 400, 100, 100) + "<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:solidFill><a:prstClr val=\"medSeaGreen\"/></a:solidFill>");
+        Deck::SlideSpec centred;
+        centred.tree = box(2, 20, para(run(QStringLiteral("centred"), plain), "<a:pPr marL=\"342900\" indent=\"-342900\" algn=\"ctr\"><a:buFont typeface=\"Arial\"/>"
+                                                                                 "<a:buChar char=\"&#8226;\"/></a:pPr>"));
+        d.slides << tabbed << hebrew << coloured << centred;
+        QString why;
+        const auto deck = readDeck(d, &why);
+        QVERIFY2(deck != nullptr, qPrintable(why));
+        const auto word = [&deck](int slide, const QString& w) {
+            for (const pptx::SlidePart& part : deck->parts(slide))
+                for (const auto& [text, at] : part.words)
+                    if (text == w) return at.boundingRect();
+            return QRectF();
+        };
+        const auto near = [](double got, double want) { return std::abs(got - want) < 0.75; };
+        // Tabs: from the text's left, whatever its margin or bullet. (Qt's
+        // stops were 80 points apart, and three quarters of that offscreen.)
+        QVERIFY2(near(word(0, QStringLiteral("AA")).left(), 47.2 + 72), qPrintable(QString::number(word(0, QStringLiteral("AA")).left())));
+        QVERIFY2(near(word(0, QStringLiteral("BB")).left(), 47.2 + 300), qPrintable(QString::number(word(0, QStringLiteral("BB")).left())));
+        QVERIFY2(near(word(0, QStringLiteral("CC")).left(), 47.2 + 300), qPrintable(QString::number(word(0, QStringLiteral("CC")).left())));
+        QVERIFY2(near(word(0, QStringLiteral("DD")).left(), 47.2 + 300), qPrintable(QString::number(word(0, QStringLiteral("DD")).left())));
+        QVERIFY2(near(word(0, QStringLiteral("EE")).left(), 47.2 + 50), qPrintable(QString::number(word(0, QStringLiteral("EE")).left())));
+        QVERIFY2(near(word(0, QStringLiteral("FF")).left(), 47.2 + 100), qPrintable(QString::number(word(0, QStringLiteral("FF")).left())));
+        // Hebrew: aligned right where it says right (it was drawn at the
+        // left), at the left where it says nothing; a right-to-left
+        // paragraph's margin from the right.
+        const auto line = [&deck](int slide, int index) {
+            QRectF r;
+            for (const pptx::SlidePart& part : deck->parts(slide))
+                if (part.kind == pptx::SlidePart::Paragraph && index-- == 0) r = part.outline.boundingRect();
+            return r;
+        };
+        QVERIFY2(near(line(1, 0).right(), 912.8), qPrintable(QString::number(line(1, 0).right())));
+        QVERIFY2(near(line(1, 1).left(), 47.2), qPrintable(QString::number(line(1, 1).left())));
+        QVERIFY2(near(line(1, 2).right(), 912.8 - 72), qPrintable(QString::number(line(1, 2).right())));
+        const QImage rtl = deck->render(1, 1.0);
+        int bulletLeft = rtl.width();
+        for (int y = 145; y < 185; ++y)
+            for (int x = qRound(line(1, 2).right()) + 2; x < rtl.width(); ++x)
+                if (qGray(rtl.pixel(x, y)) < 128) bulletLeft = std::min(bulletLeft, x);
+        // (The bullet in the margin's half nearer the text: at marL + indent from the right.)
+        QVERIFY2(bulletLeft > 912.8 - 72 && bulletLeft < 912.8 - 36, qPrintable(QString::number(bulletLeft)));
+        // Colours.
+        const QImage page = deck->render(2, 1.0);
+        const auto count = [&page](double top, const std::function<bool(QColor)>& is) {
+            int n = 0;
+            for (int y = int(top); y < int(top) + 80; ++y)
+                for (int x = 40; x < 920; ++x) n += is(page.pixelColor(x, y)) ? 1 : 0;
+            return n;
+        };
+        const auto close = [](const QColor& want) {
+            return [want](QColor c) { return std::abs(c.red() - want.red()) + std::abs(c.green() - want.green()) + std::abs(c.blue() - want.blue()) < 24; };
+        };
+        QVERIFY(count(20, close(QColor(0x05, 0x63, 0xC1))) > 1000);   // the theme's hlink
+        QCOMPARE(count(20, close(Qt::red)), 0);
+        QVERIFY(count(110, close(Qt::red)) > 1000);
+        QCOMPARE(count(110, close(QColor(0x05, 0x63, 0xC1))), 0);
+        QVERIFY(count(200, [](QColor c) { return c.green() > c.red() + 60 && c.green() > c.blue() + 60; }) > 200);   // outlined
+        QCOMPARE(count(200, [](QColor c) { return qGray(c.rgb()) < 100; }), 0);   // not filled black
+        QCOMPARE(count(290, [](QColor c) { return c != Qt::white; }), 0);       // hidden
+        QCOMPARE(page.pixelColor(90, 450), QColor(0x00, 0x00, 0x8B));   // dkBlue (was black)
+        QCOMPARE(page.pixelColor(210, 450), QColor(0x3C, 0xB3, 0x71));  // medSeaGreen
+        // A centred paragraph's bullet beside its text, not at the box's left.
+        const QImage c = deck->render(3, 1.0);
+        int first = c.width();
+        for (int y = 25; y < 60; ++y)
+            for (int x = 41; x < 919; ++x)
+                if (qGray(c.pixel(x, y)) < 128) first = std::min(first, x);
+        const double text = word(3, QStringLiteral("centred")).left();
+        QVERIFY2(first > text - 27 - 2 && first < text - 5, qPrintable(QStringLiteral("%1 %2").arg(first).arg(text)));
+    }
 };
 
 QTEST_MAIN(TestPptxDoc)

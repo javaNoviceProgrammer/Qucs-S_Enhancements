@@ -56,6 +56,8 @@
 #include <optional>
 #include <vector>
 
+Q_GUI_EXPORT int qt_defaultDpiY();   // (QtGui's: the platform's dots an inch)
+
 namespace qucs_s::pptx {
 
 namespace {
@@ -620,6 +622,7 @@ struct TextPara {
     QString bullet;
     QTextCharFormat bulletFormat;
     bool hanging = false;   // the bullet at marL + indent, the text at marL
+    bool rtl = false;   // right to left: marL and the bullet from the right
     qreal marL = 0, indent = 0;
 };
 
@@ -636,11 +639,21 @@ QPaintDevice* pointDevice()
     return &device;
 }
 
+/// What a tab's points are given to Qt as: it scales a text's tab stops
+/// by its device's dots an inch over the platform's (qtextengine.cpp), 72
+/// over 72 on a Mac's screen, 72 over 96 offscreen and on Linux - tabs
+/// came out three quarters as far apart.
+qreal tabScale()
+{
+    return qreal(qt_defaultDpiY()) / pointDevice()->logicalDpiY();
+}
+
 struct TextFrame {
     qreal l = 7.2, t = 3.6, r = 7.2, b = 3.6;
     QString anchor = QStringLiteral("t");
     bool wrap = true;
     int vertical = 0;   // 90, 270: turned
+    qreal defaultTab = 72;   // points between tab stops past a paragraph's own
     std::optional<QRectF> box;   // a diagram's own text box (txXfrm), in the element's local coordinates
     QList<TextPara> paras;
 
@@ -663,6 +676,7 @@ struct TextFrame {
         doc->setDocumentMargin(0);
         QTextOption option = doc->defaultTextOption();
         option.setWrapMode(wrap && width > 0 ? QTextOption::WrapAtWordBoundaryOrAnywhere : QTextOption::NoWrap);
+        option.setTabStopDistance(defaultTab * tabScale());
         doc->setDefaultTextOption(option);
         // Nothing laid out until all of it is in: QTextDocument lays the
         // text out again at every insertion, so a paragraph of thousands of
@@ -729,14 +743,19 @@ struct TextFrame {
         QAbstractTextDocumentLayout::PaintContext context;
         context.palette.setColor(QPalette::Text, Qt::black);
         doc->documentLayout()->draw(&p, context);
-        // Hanging bullets, at marL + indent on their paragraph's first line.
+        // Hanging bullets, -indent before their paragraph's first line's
+        // text (at marL + indent, aligned left; next to the text centred
+        // or aligned right - not at the box's left; on its right, right
+        // to left).
         QTextBlock block = doc->begin();
         for (int i = 0; i < paras.size() && block.isValid(); ++i, block = block.next()) {
             const TextPara& para = paras.at(i);
             if (!para.hanging || para.bullet.isEmpty() || block.layout() == nullptr || block.layout()->lineCount() == 0) continue;
             const QTextLine line = block.layout()->lineAt(0);
-            const QPointF at(para.marL + para.indent, block.layout()->position().y() + line.y() + line.ascent());
-            QFont f = para.bulletFormat.font();
+            const QFont f = para.bulletFormat.font();
+            const qreal start = block.layout()->position().x() + line.cursorToX(line.textStart());
+            const qreal x = para.rtl ? start - para.indent - QFontMetricsF(f, pointDevice()).horizontalAdvance(para.bullet) : start + para.indent;
+            const QPointF at(x, block.layout()->position().y() + line.y() + line.ascent());
             p.setFont(f);
             p.setPen(para.bulletFormat.foreground().color());
             p.drawText(at, para.bullet);
@@ -1119,6 +1138,18 @@ QColor schemeColor(const QString& name, const Ctx& c, const std::optional<QColor
     return c.theme->colors.value(n, QColor(Qt::black));
 }
 
+/// A preset colour (a:prstClr) by its name. DrawingML names each dark,
+/// light and medium one twice, as the web does (darkBlue) and short
+/// (dkBlue, ltGreen, medSeaGreen); the short names were black.
+QColor presetColor(const QString& name)
+{
+    QString n = name.toLower();
+    if (n.startsWith(QLatin1String("dk"))) n.replace(0, 2, QStringLiteral("dark"));
+    else if (n.startsWith(QLatin1String("lt"))) n.replace(0, 2, QStringLiteral("light"));
+    else if (n.startsWith(QLatin1String("med")) && !n.startsWith(QLatin1String("medium"))) n.replace(0, 3, QStringLiteral("medium"));
+    return QColor::fromString(n);
+}
+
 /// The colour \a holder holds (its srgbClr, schemeClr ... child), its
 /// modifiers applied; none when it holds none.
 std::optional<QColor> colorOf(const Node* holder, const Ctx& c, const std::optional<QColor>& ph = std::nullopt)
@@ -1131,7 +1162,7 @@ std::optional<QColor> colorOf(const Node* holder, const Ctx& c, const std::optio
         else if (n == QLatin1String("schemeClr")) base = schemeColor(k->attr(u"val"), c, ph);
         else if (n == QLatin1String("sysClr"))
             base = QColor(QLatin1Char('#') + k->attr(u"lastClr", k->attr(u"val") == QLatin1String("window") ? QStringLiteral("FFFFFF") : QStringLiteral("000000")));
-        else if (n == QLatin1String("prstClr")) base = QColor(k->attr(u"val").toLower());
+        else if (n == QLatin1String("prstClr")) base = presetColor(k->attr(u"val"));
         else if (n == QLatin1String("scrgbClr"))
             base = QColor::fromRgbF(float(k->num(u"r") / 100000), float(k->num(u"g") / 100000), float(k->num(u"b") / 100000));
         else if (n == QLatin1String("hslClr"))
@@ -1813,6 +1844,7 @@ struct RunSpec {
     std::optional<QColor> color, highlight;
     std::optional<int> baseline;
     std::optional<qreal> spacing;
+    std::optional<QPen> outline;   // its letters' outline (a:ln); Qt::NoPen: none
 
     void over(const RunSpec& o)
     {
@@ -1828,6 +1860,7 @@ struct RunSpec {
         if (o.highlight) highlight = o.highlight;
         if (o.baseline) baseline = o.baseline;
         if (o.spacing) spacing = o.spacing;
+        if (o.outline) outline = o.outline;
     }
 };
 
@@ -1838,7 +1871,10 @@ struct Spacing {
 
 struct ParaSpec {
     std::optional<QString> align;
+    std::optional<bool> rtl;
     std::optional<qreal> marL, indent;
+    std::optional<qreal> defaultTab;   // points between the tab stops past its own (defTabSz)
+    std::optional<QList<QTextOption::Tab>> tabs;   // its own (a:tabLst), from the text's left
     std::optional<Spacing> line, before, after;
     std::optional<QString> bulletKind;   // none, char, autoNum, blip
     std::optional<QString> bulletChar, bulletScheme, bulletFont;
@@ -1851,6 +1887,9 @@ struct ParaSpec {
     void over(const ParaSpec& o)
     {
         if (o.align) align = o.align;
+        if (o.rtl) rtl = o.rtl;
+        if (o.defaultTab) defaultTab = o.defaultTab;
+        if (o.tabs) tabs = o.tabs;
         if (o.marL) marL = o.marL;
         if (o.indent) indent = o.indent;
         if (o.line) line = o.line;
@@ -1905,6 +1944,25 @@ RunSpec readRun(const Node* rPr, const Ctx& c)
     const Fill f = fillOf(rPr, c);
     if (f.kind == Fill::Solid) r.color = f.color;
     else if (f.kind == Fill::Gradient && !f.stops.isEmpty()) r.color = f.stops.first().second;
+    else if (f.kind == Fill::None) r.color = QColor(Qt::transparent);   // (outlined letters, or none: hidden)
+    // Its letters' outline: drawn round them (WordArt's outlined text); no
+    // line of a colour, none.
+    if (const Node* ln = rPr->child(u"ln")) {
+        Stroke s;
+        applyLine(s, ln, c);
+        r.outline = s.visible() ? s.pen() : QPen(Qt::NoPen);
+    }
+    // A hyperlink: in the theme's colour for links, underlined, as
+    // PowerPoint draws it - unless it says (PowerPoint 2019's extension)
+    // to keep the text's own colour.
+    if (const Node* link = rPr->child(u"hlinkClick"); link != nullptr && (!link->rel(u"id").isEmpty() || !link->attr(u"action").isEmpty())) {
+        bool ownColour = false;
+        if (const Node* list = link->child(u"extLst"))
+            for (const Node* ext : list->children(u"ext"))
+                if (const Node* clr = ext->child(u"hlinkClr"); clr != nullptr && clr->attr(u"val") == QLatin1String("tx")) ownColour = true;
+        if (!ownColour) r.color = schemeColor(QStringLiteral("hlink"), c, std::nullopt);
+        if (!r.underline) r.underline = QStringLiteral("sng");
+    }
     if (const Node* h = rPr->child(u"highlight")) r.highlight = colorOf(h, c);
     if (const Node* latin = rPr->child(u"latin"); latin != nullptr && !latin->attr(u"typeface").isEmpty()) r.face = latin->attr(u"typeface");
     if (const Node* sym = rPr->child(u"sym"); sym != nullptr && !sym->attr(u"typeface").isEmpty()) r.sym = sym->attr(u"typeface");
@@ -1927,6 +1985,8 @@ ParaSpec readPara(const Node* pPr, const Ctx& c)
     ParaSpec p;
     if (pPr == nullptr) return p;
     if (pPr->has(u"algn")) p.align = pPr->attr(u"algn");
+    if (pPr->has(u"rtl")) p.rtl = pPr->flag(u"rtl");
+    if (pPr->has(u"defTabSz") && pPr->num(u"defTabSz") > 0) p.defaultTab = std::clamp(pt(pPr->num(u"defTabSz")), 1.0, kMaxSlideSide);
     if (pPr->has(u"marL")) p.marL = pt(pPr->num(u"marL"));
     if (pPr->has(u"indent")) p.indent = pt(pPr->num(u"indent"));
     for (const auto& k : pPr->kids) {
@@ -1953,6 +2013,21 @@ ParaSpec readPara(const Node* pPr, const Ctx& c)
         else if (n == QLatin1String("buSzPts")) p.bulletPts = k->num(u"val") / 100;
         else if (n == QLatin1String("buSzTx")) p.bulletSizeText = true;
         else if (n == QLatin1String("defRPr")) p.run = readRun(k.get(), c);
+        else if (n == QLatin1String("tabLst")) {
+            QList<QTextOption::Tab> tabs;
+            for (const Node* tab : k->children(u"tab")) {
+                if (tabs.size() >= 64) break;
+                const QString a = tab->attr(u"algn");
+                const QTextOption::TabType type = a == QLatin1String("r")     ? QTextOption::RightTab
+                                                  : a == QLatin1String("ctr") ? QTextOption::CenterTab
+                                                  : a == QLatin1String("dec") ? QTextOption::DelimiterTab
+                                                                              : QTextOption::LeftTab;
+                tabs << QTextOption::Tab(std::clamp(pt(tab->num(u"pos")), 0.0, kMaxSlideSide), type,
+                                         type == QTextOption::DelimiterTab ? QLatin1Char('.') : QChar());
+            }
+            std::sort(tabs.begin(), tabs.end(), [](const QTextOption::Tab& a, const QTextOption::Tab& b) { return a.position < b.position; });
+            p.tabs = tabs;
+        }
     }
     return p;
 }
@@ -2354,6 +2429,7 @@ QTextCharFormat charFormat(const RunSpec& r, qreal scale, const Ctx& c)
         else if (u.contains(QLatin1String("dot"))) f.setUnderlineStyle(QTextCharFormat::DotLine);
     }
     f.setForeground(r.color.value_or(schemeColor(QStringLiteral("tx1"), c, std::nullopt)));
+    if (r.outline && r.outline->style() != Qt::NoPen) f.setTextOutline(*r.outline);
     if (r.highlight) f.setBackground(*r.highlight);
     if (const int b = r.baseline.value_or(0); b > 0) f.setVerticalAlignment(QTextCharFormat::AlignSuperScript);
     else if (b < 0) f.setVerticalAlignment(QTextCharFormat::AlignSubScript);
@@ -2460,13 +2536,22 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
         // The block: alignment, margins, spacing.
         QTextBlockFormat& b = para.block;
         const QString align = spec.align.value_or(QStringLiteral("l"));
-        b.setAlignment(align == QLatin1String("ctr") ? Qt::AlignHCenter
-                       : align == QLatin1String("r") ? Qt::AlignRight
-                       : align == QLatin1String("just") || align == QLatin1String("dist") ? Qt::AlignJustify
-                                                                                          : Qt::AlignLeft);
+        // (Left and right as they are on the slide, as DrawingML has them:
+        // Qt's would be mirrored in a paragraph of Hebrew or Arabic, whose
+        // direction it guesses from the text - a Hebrew line aligned right
+        // was drawn at the left. The direction the paragraph's own.)
+        b.setAlignment(Qt::AlignAbsolute
+                       | (align == QLatin1String("ctr") ? Qt::AlignHCenter
+                          : align == QLatin1String("r") ? Qt::AlignRight
+                          : align == QLatin1String("just") || align == QLatin1String("dist") ? Qt::AlignJustify
+                                                                                             : Qt::AlignLeft));
+        para.rtl = spec.rtl.value_or(false);
+        b.setLayoutDirection(para.rtl ? Qt::RightToLeft : Qt::LeftToRight);
+        if (frame->paras.isEmpty()) frame->defaultTab = spec.defaultTab.value_or(72);
         para.marL = spec.marL.value_or(0);
         para.indent = spec.indent.value_or(0);
-        b.setLeftMargin(para.marL);
+        if (para.rtl) b.setRightMargin(para.marL);   // (Qt's margins not mirrored)
+        else b.setLeftMargin(para.marL);
         if (const Spacing line = spec.line.value_or(Spacing()); line.percent) {
             // (A stand-in's lines as far apart as the font asked has them.)
             const qreal pct = std::max(0.1, line.value - lineReduction) * 100 * fontOf((para.runs.isEmpty() ? end : firstRun).face.value_or(QString()), c).lineFactor;
@@ -2522,6 +2607,26 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
             b.setTextIndent(para.hanging ? 0 : para.indent);
         } else {
             b.setTextIndent(para.indent);
+        }
+        // Its tab stops: its own, then one every defTabSz (an inch), from
+        // the text's left as PowerPoint measures them. Qt's were 80 points
+        // apart, and Qt measures them from where the first line starts,
+        // the paragraph's margin and indent in (a stop at 300 points, with
+        // a margin of 100, came out at 400).
+        if (!para.rtl) {
+            const qreal origin = para.marL + b.textIndent();
+            const qreal every = spec.defaultTab.value_or(72);
+            QList<QTextOption::Tab> tabs;
+            qreal last = 0;
+            for (QTextOption::Tab tab : spec.tabs.value_or(QList<QTextOption::Tab>())) {
+                last = tab.position;
+                if (tab.position <= origin) continue;
+                tab.position = (tab.position - origin) * tabScale();
+                tabs << tab;
+            }
+            for (qreal at = (std::floor(std::max(last, origin) / every) + 1) * every; tabs.size() < 64 && at <= kMaxSlideSide; at += every)
+                tabs << QTextOption::Tab((at - origin) * tabScale(), QTextOption::LeftTab);
+            b.setTabPositions(tabs);
         }
         frame->paras << para;
         if (chain.paragraphs != nullptr && hasText)
