@@ -731,7 +731,7 @@ QJsonObject QucsControl::rf25Solve(const QJsonObject& args)
     // Where a quasi-static answer stops being the whole story: the one
     // thing a caller must not be left to guess at.
     {
-        if (e->names.size() == 1) slowest = lineParameters(*e, 0, length).velocity;
+        if (e->names.size() == 1) slowest = slowestVelocity(*e, 0, length);
         const std::shared_ptr<const Mesh> mesh = model->mesh();
         const bool line = e->perMetre.fromMiddle;
         const QuasiStaticLimit limit = quasiStaticLimit(model->model().solveStack(), mesh ? *mesh : Mesh(), 1e-6, slowest, length,

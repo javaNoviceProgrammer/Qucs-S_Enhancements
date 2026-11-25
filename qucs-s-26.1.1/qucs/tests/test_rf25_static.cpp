@@ -938,6 +938,18 @@ private slots:
         }
         // At direct current itself, the silicon a metal.
         QVERIFY2(std::abs(pm.conducting.at(0).at(0).at(0) / low - 1.0) < 1e-6, "at direct current");
+        // Its slowest wave the slow-wave mode's, at direct current, for the
+        // quasi-static solve's limit (slowestVelocity()): its velocity as
+        // solved 1.64 times as fast. Without a layer that conducts, that.
+        {
+            const double slowest = rf::slowestVelocity(e, 0, 600e-6), solved = rf::lineParameters(e, 0, 600e-6).velocity;
+            const double dc = rf::kLightSpeed / std::sqrt(low.real() / pm.maxwell0.at(0).at(0));
+            QVERIFY2(std::abs(slowest / dc - 1) < 1e-3 && slowest < 0.65 * solved,
+                     qPrintable(QStringLiteral("%1 m/s, at direct current %2, as solved %3").arg(slowest).arg(dc).arg(solved)));
+            rf::Extraction plain = e;
+            plain.perMetre.conducting = {};
+            QCOMPARE(rf::slowestVelocity(plain, 0, 600e-6), rf::lineParameters(plain, 0, 600e-6).velocity);
+        }
         // The silicon's own loss tangent in its complex permittivity, not
         // counted again: far above its relaxation, its loss the loss
         // tangent's share alone, as a solve without its conductivity has it.
@@ -952,6 +964,10 @@ private slots:
             a.perMetre.at(1e14, &c, &loss);
             QVERIFY2(std::abs(loss.at(0).at(0) / b.perMetre.dielectricLoss.at(0).at(0) - 1) < 0.02,
                      qPrintable(QStringLiteral("%1 against %2 F/m").arg(loss.at(0).at(0)).arg(b.perMetre.dielectricLoss.at(0).at(0))));
+            // And its loss tangent the silicon's share too: it read the
+            // oxide's alone.
+            QVERIFY2(std::abs(a.lossTangent.value(0) / b.lossTangent.value(0) - 1) < 0.02,
+                     qPrintable(QStringLiteral("%1 against %2").arg(a.lossTangent.value(0)).arg(b.lossTangent.value(0))));
         }
         // A coplanar line, its grounds returns: the signal's C and G against
         // them of the frequency too (signalsOf()). With no ground under the
@@ -971,6 +987,26 @@ private slots:
                 for (int j = 0; j < 3; ++j)
                     QVERIFY2(std::abs(c.at(i).at(j) - e.perMetre.maxwell.at(i).at(j)) < 2e-3 * e.perMetre.maxwell.at(i).at(i),
                              qPrintable(QStringLiteral("[%1][%2] %3 against %4").arg(i).arg(j).arg(c.at(i).at(j)).arg(e.perMetre.maxwell.at(i).at(j))));
+            // Each term of the fit positive semidefinite, and so its G and C
+            // at every frequency: fitted apart and polarized, a pole's
+            // weights were no capacitance's - its least eigenvalue minus its
+            // largest, the constant's -0.12 of it -, its G positive by chance.
+            const auto least = [](const QList<QList<double>>& m) {
+                Eigen::MatrixXd x(m.size(), m.size());
+                for (int i = 0; i < m.size(); ++i)
+                    for (int j = 0; j < m.size(); ++j) x(i, j) = m.at(i).at(j);
+                const Eigen::VectorXd v = Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>(x).eigenvalues();
+                return v.minCoeff() / std::max(1e-300, v.cwiseAbs().maxCoeff());
+            };
+            const rf::Extraction::PerMetre::Conducting& fit = e.perMetre.conducting;
+            QVERIFY2(least(fit.constant) > -1e-9, qPrintable(QString::number(least(fit.constant))));
+            for (const QList<QList<double>>& w : fit.weights) QVERIFY2(least(w) > -1e-9, qPrintable(QString::number(least(w))));
+            for (int k = 0; k <= 14; ++k) {
+                const double f = std::pow(10.0, 4 + k * 0.5);
+                QList<QList<double>> fc, fl;
+                e.perMetre.at(f, &fc, &fl);
+                QVERIFY2(least(fc) > 0 && least(fl) > 0, qPrintable(QStringLiteral("at %1 Hz: C %2, G %3").arg(f).arg(least(fc)).arg(least(fl))));
+            }
             const int signal = int(e.signalNets().value(0, -1));
             rf::Extraction without = e;
             without.perMetre.conducting = {};

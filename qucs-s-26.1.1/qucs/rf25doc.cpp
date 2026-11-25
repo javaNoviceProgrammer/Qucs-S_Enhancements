@@ -3198,7 +3198,7 @@ QStringList RF25Doc::sParameterSummary(double reference) const
                                     .arg(dB(sp[0]), 0, 'f', 1)
                                     .arg(dB(sp[1]), 0, 'f', 2)
                                     .arg(std::arg(sp[1]) * 180 / M_PI, 0, 'f', 1));
-        slowest = lineParameters(*a_extraction, index, a_solvedLength).velocity;
+        slowest = slowestVelocity(*a_extraction, index, a_solvedLength);
     }
     if (out.isEmpty()) return out;
     // And where the quasi-static answer stops being the whole story,
