@@ -1940,8 +1940,8 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         // 3,000 runs and cells, and the coil at 12 cells across had converged
         // where 10 had not - the review's P71. Weighed against what was left
         // beside the compressed solve's own, and said against the whole, a U
-        // whose dense solve was 0.0657 GB was refused at 0.0723 "more than
-        // the 0.067 GB a solve may take here".)
+        // was refused with a budget of 0.0723 GB as "some 0.0657 GB solved
+        // dense, more than the 0.0723 GB a solve may take here".)
         if (!(solved.residual < 1e-4) || !x.allFinite()) {
             const QString stalled = tr("GMRES did not converge: it left a residual of %1 after %2 iterations")
                                         .arg(solved.residual, 0, 'g', 2)
