@@ -2309,6 +2309,79 @@ private slots:
                  qPrintable(QStringLiteral("%1 and %2 against %3 Ohm").arg(arm.rDc).arg(boxes.rDc).arg(at20.rDc)));
     }
 
+    // A port's face ending at an inner corner of its conductor - an L's
+    // inner edge - graded toward it both ways (MeshSettings::ports): the
+    // current is singular there, and cut as anywhere else, an L of arms
+    // 100 by 20 µm from its end to its upright arm's inner edge read 5.018,
+    // 4.908 and 4.836 squares at 10, 20 and 40 across, against 4.720 by
+    // finite differences (on squares of 1 down to 0.125 µm, extrapolated):
+    // 6.3 % high at the defaults, and converging slowly. The tab's ports go
+    // to the mesh. A port on an end, at an outer corner, leaves it alone.
+    void aPortsFaceEndingAtAnInnerCornerIsGradedToIt()
+    {
+        const auto l = [](bool transposed) {
+            QJsonArray rows;
+            for (QPointF p : {QPointF(0, 0), QPointF(100, 0), QPointF(100, 20), QPointF(20, 20), QPointF(20, 100), QPointF(0, 100)}) {
+                if (transposed) p = QPointF(p.y(), p.x());
+                rows.append(QJsonArray{QString::number(p.x()) + "[um]", QString::number(p.y()) + "[um]"});
+            }
+            return QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}};
+        };
+        // The L's loop from its end to its upright arm's inner edge, through
+        // the tab's solve, in squares; and its mesh's cells.
+        const auto solved = [&l](bool transposed, int across) {
+            rf::Model m = shaped({l(transposed)});
+            m.mesh().props.insert(QStringLiteral("cells_across"), QString::number(across));
+            m.ports().children.clear();
+            for (const auto& [name, x, y] : {std::tuple{"P1", 100, 10}, std::tuple{"P2", 20, 60}}) {
+                rf::Node p = m.make(QStringLiteral("rf_edge_port"));
+                p.label = QLatin1String(name);
+                p.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+                p.props.insert(QStringLiteral("x"), QStringLiteral("%1[um]").arg(transposed ? y : x));
+                p.props.insert(QStringLiteral("y"), QStringLiteral("%1[um]").arg(transposed ? x : y));
+                p.props.insert(QStringLiteral("facing"), transposed ? QStringLiteral("+y") : QStringLiteral("+x"));
+                m.ports().children.push_back(p);
+            }
+            rf::SolveJob job;
+            rf::SolveRequest request;
+            request.solver = QStringLiteral("quasi_static");
+            request.loopOnly = true;
+            const rf::ModelSolution sol = rf::solveModel(job, m, nothingRead(), QStringLiteral("none"), QDir::tempPath(), request);
+            if (!sol.inductance || !sol.inductance->ok()) return -1.0;
+            // (Its stack kept: solveStack() returns one by value.)
+            const rf::Stack stack = m.solveStack();
+            const rf::Layer* metal = stack.named(QStringLiteral("M1"));
+            return sol.inductance->rDc * metal->sigma * metal->thickness;
+        };
+        const double fd = 4.720;
+        const double at10 = solved(false, 10), at20 = solved(false, 20);
+        QVERIFY2(at10 > 0 && at20 > 0, "unsolved");
+        QVERIFY2(std::abs(at10 / fd - 1) < 0.02 && std::abs(at20 / fd - 1) < 0.012,
+                 qPrintable(QStringLiteral("%1 and %2 squares at 10 and 20 across, against %3").arg(at10).arg(at20).arg(fd)));
+        QVERIFY2(std::abs(at10 / at20 - 1) < 0.008, qPrintable(QStringLiteral("%1 at 10 across, %2 at 20").arg(at10).arg(at20)));
+        // The same L across the diagonal, cut into its two arms the other
+        // way round: 2.1 % apart, the face's corner cells as they fell.
+        const double transposed = solved(true, 10);
+        QVERIFY2(std::abs(transposed / at10 - 1) < 1e-3, qPrintable(QStringLiteral("%1 against %2 squares").arg(transposed).arg(at10)));
+        // A port on the L's end: its face's ends outer corners, its mesh the
+        // mesh with no ports.
+        const rf::Model m = shaped({l(false)});
+        const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+        rf::MeshSettings how;
+        const int none = int(rf::meshOf(processed.conductors, how, m.solveStack(), 1e9).cells.size());
+        how.ports = {rf::MeshPort{QStringLiteral("M1"), QPointF(100, 10), QPointF(1, 0)}, rf::MeshPort{QStringLiteral("M1"), QPointF(10, 100), QPointF(0, 1)}};
+        QCOMPARE(int(rf::meshOf(processed.conductors, how, m.solveStack(), 1e9).cells.size()), none);
+        how.ports << rf::MeshPort{QStringLiteral("M1"), QPointF(20, 60), QPointF(1, 0)};
+        QVERIFY(int(rf::meshOf(processed.conductors, how, m.solveStack(), 1e9).cells.size()) > none);
+        // An outline with a corner on its inner edge, as one not healed may
+        // have: the port's face the whole side (portFace()), to the corner.
+        rf::Conductor split;
+        split.layer = QStringLiteral("M1");
+        split.outline = QPolygonF({QPointF(0, 0), QPointF(100, 0), QPointF(100, 20), QPointF(20, 20), QPointF(20, 50), QPointF(20, 100), QPointF(0, 100)});
+        rf::MeshSettings bare;
+        QVERIFY(rf::meshOf({split}, how, m.solveStack(), 1e9).cells.size() > rf::meshOf({split}, bare, m.solveStack(), 1e9).cells.size());
+    }
+
     // A loop's runs taken as bars by the narrowest conductor its current runs
     // on, not by every one of their layer: a triangle 5 µm tall drawn 500 µm
     // off a strip, joined to nothing, made each of the strip's runs a bar -

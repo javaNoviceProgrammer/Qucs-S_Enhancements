@@ -2625,8 +2625,34 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     QSet<QString> roundWires;
     for (const Layer& l : stack.layers)
         if (l.roundWire) roundWires << l.name;
+    // Each conductor's inner corners where an edge port's face ends
+    // (MeshSettings::ports): the corner's turn against its outline's. (Not
+    // in a turned conductor's own frame, where the ports are not.)
+    QHash<int, QList<QPointF>> portCorners;
+    for (const MeshPort& port : meshingOnly < 0 ? how.ports : QList<MeshPort>()) {
+        QString onLayer;
+        const QLineF face = portFace(conductors, port.at, port.metal, port.facing, &onLayer);
+        if (onLayer.isEmpty()) continue;
+        for (int c = 0; c < conductors.size(); ++c) {
+            if (conductors.at(c).layer != onLayer) continue;
+            QList<QPointF> points(conductors.at(c).outline.begin(), conductors.at(c).outline.end());
+            if (points.size() > 1 && points.first() == points.last()) points.removeLast();
+            const int m = int(points.size());
+            double twiceArea = 0;
+            for (int i = 0; i < m; ++i)
+                twiceArea += points.at(i).x() * points.at((i + 1) % m).y() - points.at((i + 1) % m).x() * points.at(i).y();
+            const QRectF box = conductors.at(c).outline.boundingRect();
+            const double tol = 1e-9 * std::max({1.0, box.width(), box.height()});
+            for (int i = 0; i < m; ++i) {
+                const QPointF at = points.at(i);
+                if (QLineF(at, face.p1()).length() > tol && QLineF(at, face.p2()).length() > tol) continue;
+                const QPointF in = at - points.at((i + m - 1) % m), out = points.at((i + 1) % m) - at;
+                if ((in.x() * out.y() - in.y() * out.x()) * twiceArea < 0 && !portCorners.value(c).contains(at)) portCorners[c] << at;
+            }
+        }
+    }
     const auto cut = [&mesh, &pieces, &meetings, &conductors, &how, &narrowest, &finest, &strips, &facing, &cellConductor,
-                      &roundWires, &quadsOf, &turnedFor, size, pieceMost](int perFeature, double* many) {
+                      &roundWires, &quadsOf, &turnedFor, &portCorners, size, pieceMost](int perFeature, double* many) {
         mesh.cells.clear();
         cellConductor.clear();
         narrowest = finest = 0;
@@ -2710,6 +2736,27 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                                  how.gapShare * gap[0], how.gapShare * gap[1]);
             piece.ys = gridLines(bounds.top(), bounds.height(), stepY, edges && piece.grade[2], edges && piece.grade[3],
                                  how.gapShare * gap[2], how.gapShare * gap[3]);
+            // A rectangle graded toward an inner corner on it where a port's
+            // face ends, both ways (MeshSettings::ports): each space beside
+            // the corner halved down to an eighth of its cells across - as
+            // thin beside its long cells as an edge's halving is beside a
+            // strip's. Each line a quarter of its space clear of those there.
+            if (piece.rectangle && !piece.curve && edges)
+                for (const QPointF& corner : portCorners.value(piece.conductor)) {
+                    const double t = 1e-9 * std::max({1.0, bounds.width(), bounds.height()});
+                    if (!bounds.adjusted(-t, -t, t, t).contains(corner)) continue;
+                    for (int axis = 0; axis < 2; ++axis) {
+                        QList<double>& lines = axis == 0 ? piece.xs : piece.ys;
+                        const double at = axis == 0 ? corner.x() : corner.y();
+                        const double lo = axis == 0 ? bounds.left() : bounds.top(), hi = axis == 0 ? bounds.right() : bounds.bottom();
+                        for (double w = (axis == 0 ? stepX : stepY) / 2; w >= across / 8 * (1 - 1e-9); w /= 2)
+                            for (const double v : {at - w, at + w}) {
+                                if (!(v > lo + 0.25 * w && v < hi - 0.25 * w)) continue;
+                                if (std::any_of(lines.cbegin(), lines.cend(), [&](double x) { return std::abs(x - v) < 0.25 * w; })) continue;
+                                lines.insert(std::lower_bound(lines.begin(), lines.end(), v), v);
+                            }
+                    }
+                }
             // A curve's bands cut along them on one lattice (latticeLines()),
             // not each from its own end: every band's lines are shared with
             // the bands beside it, and a disc's 80 bands, each a grid of its

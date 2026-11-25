@@ -247,6 +247,12 @@ std::array<QLineF, 2> besideEdges(const QList<Conductor>& conductors, const QLin
 /// exports their ports.
 QLineF wholeSideOf(const QList<Conductor>& conductors, const QLineF& edge, const QString& layer);
 
+/// The face a port at \a where drives, as faceCells() takes it: the whole
+/// side (wholeSideOf()) of the edge faceEdge() finds, the point on it; its
+/// layer in \a onLayer, where given. A null line, and no layer, where there
+/// is none.
+QLineF portFace(const QList<Conductor>& conductors, QPointF where, const QString& layer, QPointF facing, QString* onLayer = nullptr);
+
 /*!
  * The cells a port at \a where (the layout's units) drives: those of \a reached
  * with a side on the outline edge of the conductor the point lies on -

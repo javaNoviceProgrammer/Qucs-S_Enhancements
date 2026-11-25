@@ -85,6 +85,10 @@ MeshSettings tabMeshSettings(const Model& model, QStringList* said)
         how.symmetryAxis = processing.symmetryAxis;
         how.symmetryAt = processing.symmetryAt / 1e-6;   // (the processed shapes are in µm: processRead())
     }
+    // (Its edge ports, toward whose faces' inner corners it is graded.)
+    QString problem;
+    for (const FullWavePort& port : portsOf(model, &problem))
+        if (!port.internal) how.ports << MeshPort{port.metal, port.at, port.facing};
     return how;
 }
 

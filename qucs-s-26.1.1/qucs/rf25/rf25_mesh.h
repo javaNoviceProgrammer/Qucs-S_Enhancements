@@ -86,6 +86,13 @@ struct MeshCell {
     }
 };
 
+/// An edge port as the mesh is graded for it (MeshSettings::ports).
+struct MeshPort {
+    QString metal;   ///< its metal; empty: whichever is there
+    QPointF at;      ///< where, µm (the processed shapes' units)
+    QPointF facing;  ///< its outward direction; nought: the face it is nearest
+};
+
 /// The rf_mesh node read.
 struct MeshSettings {
     int perWavelength = 20;   ///< cells across a wavelength
@@ -133,6 +140,14 @@ struct MeshSettings {
     /// mirror together. Not read from the node: the tab sets it.
     int symmetryAxis = 0;
     double symmetryAt = 0;
+    /// The model's edge ports. Where one's face (portFace()) ends at an inner
+    /// corner of its conductor - a port on an L's inner edge -, the current
+    /// is singular there, its field as r^(-2/3), and a rectangle that the
+    /// corner is on has its lines graded toward it both ways, down to an
+    /// eighth of its cells across. Cut as anywhere else, the L read 6.3 %
+    /// high at 10 across, 2.5 % at 40. Not read from the node: the tab sets
+    /// it.
+    QList<MeshPort> ports;
     /// The most cells, as the solver has it.
     int mostCells() const;
     /// The most charges the quasi-static solve holds compressed: the build's

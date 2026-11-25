@@ -911,6 +911,17 @@ QPointF ontoNearestEdge(const QList<Conductor>& conductors, QPointF where, const
     return best;
 }
 
+QLineF portFace(const QList<Conductor>& conductors, QPointF where, const QString& layer, QPointF facing, QString* onLayer)
+{
+    QLineF edge;
+    QString on;
+    faceEdge(conductors, where, layer, facing, &edge, nullptr, &on);
+    // (On it, not merely nearest: portPlace().)
+    if (!on.isEmpty() && !onEdge(edge, where)) on.clear();
+    if (onLayer != nullptr) *onLayer = on;
+    return on.isEmpty() ? QLineF() : wholeSideOf(conductors, edge, on);
+}
+
 QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const QList<int>& reached, QPointF where,
                      QPointF* onLine, QPointF* alongLine, const QString& layer, QPointF facing)
 {
@@ -945,12 +956,8 @@ QList<int> faceCells(const Mesh& mesh, const QList<Conductor>& conductors, const
     };
     // The outline edge the point is on, over every shape - of the layer
     // asked for, and facing the way asked for.
-    QLineF edge;
     QString onLayer;
-    faceEdge(conductors, where, layer, facing, &edge, nullptr, &onLayer);
-    // (On it, not merely nearest: portPlace().)
-    if (!onLayer.isEmpty() && !onEdge(edge, where)) onLayer.clear();
-    if (!onLayer.isEmpty()) edge = wholeSideOf(conductors, edge, onLayer);
+    const QLineF edge = portFace(conductors, where, layer, facing, &onLayer);
     const QPointF p = edge.p1(), q = edge.p2();
     if (onLayer.isEmpty()) {
         // No edge of that layer facing that way: the cell nearest it.
