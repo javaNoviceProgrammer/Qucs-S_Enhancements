@@ -1133,9 +1133,11 @@ private slots:
     // took a thick metal on them as a sheet. And each turned 30 degrees, its
     // two sides' parts' boxes overlapping: the slot and the narrow jaw read
     // no gap, a pair of one conductor whose boxes overlapped measured by its
-    // boxes alone. (The wide jaw turned, of one width all round, is a strip
-    // along its centreline, whose gaps between its own segments no measure
-    // takes: older, and left.)
+    // boxes alone. The wide jaw turned, of one width all round, is a strip
+    // cut along its centreline, with no pieces, and two strips 20 µm wide
+    // 4 µm apart turned so are two: no measure took their segments, and
+    // they read no gap. A strip's corner 5 µm from another's side, the walls
+    // there 45 degrees off facing each other, faces none.
     void aGapWithinOneConductorIsAcrossItsWalls()
     {
         const QList<QPair<double, QList<QPointF>>> shapes{
@@ -1145,7 +1147,6 @@ private slots:
             {10, {{0, 0}, {100, 0}, {100, 10}, {10, 10}, {10, 20}, {100, 20}, {100, 30}, {10, 30}, {10, 40}, {100, 40}, {100, 50}, {0, 50}}}};
         for (const auto& [gap, points] : shapes)
             for (const double degrees : {0.0, 30.0}) {
-                if (degrees != 0 && gap == 60) continue;
                 const double c = std::cos(degrees * M_PI / 180), s = std::sin(degrees * M_PI / 180);
                 QJsonArray rows;
                 for (const QPointF& q : points)
@@ -1156,6 +1157,38 @@ private slots:
                          qPrintable(QStringLiteral("%1 points at %2 degrees, a gap of %3 µm: read %4")
                                         .arg(points.size()).arg(degrees).arg(gap).arg(mesh.gapByLayer.value(QStringLiteral("M1")))));
             }
+        // Two strips 20 µm wide and 100 long, 4 µm apart, turned 30 degrees.
+        {
+            const double c = std::cos(M_PI / 6), s = std::sin(M_PI / 6);
+            QList<QJsonObject> strips;
+            for (const double y0 : {0.0, 24.0}) {
+                QJsonArray rows;
+                for (const QPointF& q : {QPointF(0, y0), QPointF(100, y0), QPointF(100, y0 + 20), QPointF(0, y0 + 20)})
+                    rows.append(QJsonArray{QString::number(c * q.x() - s * q.y(), 'g', 12) + "[um]", QString::number(s * q.x() + c * q.y(), 'g', 12) + "[um]"});
+                strips << QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}};
+            }
+            const rf::Model m = shaped(strips);
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            QVERIFY(processed.conductors.size() == 2 && processed.conductors.first().isStrip());
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), m.solveStack(), 1e9);
+            QVERIFY2(mesh.ok() && std::abs(mesh.gapByLayer.value(QStringLiteral("M1")) / 4 - 1) < 0.01,
+                     qPrintable(QStringLiteral("two strips at 30 degrees 4 µm apart: read %1").arg(mesh.gapByLayer.value(QStringLiteral("M1")))));
+        }
+        {
+            QList<QJsonObject> strips;
+            for (const QList<QPointF>& points : QList<QList<QPointF>>{{{0, 0}, {86.60254, 50}, {76.60254, 67.320508}, {-10, 17.320508}},
+                                                                    {{78.491217, 0.409613}, {104.373122, 97.002196}, {123.691638, 91.825815}, {97.809734, -4.766767}}}) {
+                QJsonArray rows;
+                for (const QPointF& q : points) rows.append(QJsonArray{QString::number(q.x(), 'g', 12) + "[um]", QString::number(q.y(), 'g', 12) + "[um]"});
+                strips << QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}};
+            }
+            const rf::Model m = shaped(strips);
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            QVERIFY(processed.conductors.size() == 2 && processed.conductors.first().isStrip() && processed.conductors.last().isStrip());
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), m.solveStack(), 1e9);
+            QVERIFY2(mesh.ok() && !mesh.gapByLayer.contains(QStringLiteral("M1")),
+                     qPrintable(QStringLiteral("a strip's corner 5 µm from another's side at 45 degrees: read %1").arg(mesh.gapByLayer.value(QStringLiteral("M1")))));
+        }
     }
 
     // A curve turned (turnOf()) beside other shapes on its layer, and fed
