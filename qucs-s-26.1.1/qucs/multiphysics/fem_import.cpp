@@ -10,6 +10,8 @@
  */
 #include "fem_import.h"
 
+#include <cstring>
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -1222,6 +1224,9 @@ LayoutShapes readLayoutShapes(const QString& path, const QString& cellName, cons
         library.top_level(tops, raw);
         double best = -1;
         for (uint64_t i = 0; i < tops.count; ++i) {
+            // (Not KLayout's context cell, $$$CONTEXT_INFO$$$: a reference to
+            // each PCell at its origin, as large as all of them together.)
+            if (tops[i]->name != nullptr && std::strcmp(tops[i]->name, "$$$CONTEXT_INFO$$$") == 0) continue;
             gdstk::Vec2 lo, hi;
             tops[i]->bounding_box(lo, hi);
             const double area = hi.x >= lo.x ? (hi.x - lo.x) * (hi.y - lo.y) : 0;

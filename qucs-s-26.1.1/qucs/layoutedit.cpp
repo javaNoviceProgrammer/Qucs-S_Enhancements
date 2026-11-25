@@ -736,6 +736,9 @@ EditResult editLayout(const QString& file, const QString& cellName, const QJsonA
         lib.top_level(tops, raw);
         uint64_t most = 0;
         for (uint64_t i = 0; i < tops.count; ++i) {
+            // (KLayout's context cell: a reference to each PCell, often
+            // more than the top cell has - the edits went into it)
+            if (router::isKLayoutContext(tops[i])) continue;
             const uint64_t size = tops[i]->polygon_array.count + tops[i]->flexpath_array.count + tops[i]->reference_array.count;
             if (cell == nullptr || size > most) {
                 cell = tops[i];

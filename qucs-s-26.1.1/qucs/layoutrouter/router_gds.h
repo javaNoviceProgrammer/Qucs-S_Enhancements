@@ -19,6 +19,7 @@
 
 namespace gdstk {
 struct Library;
+struct Cell;
 }
 
 namespace qucs_s::router {
@@ -27,6 +28,11 @@ namespace qucs_s::router {
 /// .oasis.
 bool isWritableLayout(const QString& path);
 bool isOasisFile(const QString& path);
+/// Whether \a cell is KLayout's $$$CONTEXT_INFO$$$: the cell its writer
+/// adds (gdsfactory's files have it) to keep PCells' and libraries' context
+/// in properties, a reference to each of their cells - never the layout's
+/// top cell, though no cell places it.
+bool isKLayoutContext(const gdstk::Cell* cell);
 /// \a path read whole with gdstk - GDSII, or OASIS by its suffix - into
 /// \a lib (its units set when the file has none); false, and why, when it
 /// cannot be (\a lib then freed).
