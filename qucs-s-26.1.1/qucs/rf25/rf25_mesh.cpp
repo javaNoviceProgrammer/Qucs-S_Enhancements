@@ -846,14 +846,14 @@ double outlineDistance(const QPolygonF& a, const QPolygonF& b, QPointF* between 
 /// quarter of \a apart long or more: a curve's short sides across a hole
 /// many times as wide hold no field between them as walls across a gap
 /// do.
-bool wallsFace(const QPolygonF& outline, QPointF p, QPointF q, double near, double apart)
+bool wallsFace(const QPolygonF& onP, QPointF p, const QPolygonF& onQ, QPointF q, double near, double apart)
 {
     // The side \a at lies on, its outward normal: of those within \a near of
     // it - two where it is a corner -, the one turned most towards \a to.
     // (The last of them, a slot's arm's tip took the arm's end for its wall
     //  and faced nothing across the slot: a slot, a jaw or a comb of one
     //  conductor 4 to 60 µm across read no gap.)
-    const auto wallAt = [&outline, near, apart](QPointF at, QPointF to, QPointF* normal) {
+    const auto wallAt = [near, apart](const QPolygonF& outline, QPointF at, QPointF to, QPointF* normal) {
         double most = -std::numeric_limits<double>::infinity();
         bool found = false;
         for (int k = 0, n = int(outline.size()); k < n; ++k) {
@@ -876,9 +876,15 @@ bool wallsFace(const QPolygonF& outline, QPointF p, QPointF q, double near, doub
         return found;
     };
     QPointF np, nq;
-    if (!wallAt(p, q, &np) || !wallAt(q, p, &nq)) return false;
+    if (!wallAt(onP, p, q, &np) || !wallAt(onQ, q, p, &nq)) return false;
     const QPointF pq = q - p;
     return np.x() * nq.x() + np.y() * nq.y() <= -std::cos(30 * M_PI / 180) && pq.x() * np.x() + pq.y() * np.y() > 0;
+}
+
+/// The same, \a p and \a q both on \a outline: two of one conductor's parts.
+bool wallsFace(const QPolygonF& outline, QPointF p, QPointF q, double near, double apart)
+{
+    return wallsFace(outline, p, outline, q, near, apart);
 }
 
 } // namespace
@@ -3321,6 +3327,49 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                 }
                 if (!narrowestGap.contains(layer) || gap < narrowestGap.value(layer)) narrowestGap.insert(layer, gap);
             }
+        // A strip cut along its centreline (stripCells()) has no pieces:
+        // its segments' quadrilaterals, each against the rest of its own,
+        // other strips' and the other conductors' pieces on its layer, a gap
+        // where two walls face each other across it (wallsFace()). (Taken by
+        // none, a jaw 60 µm across of one width all round, turned 30
+        // degrees, read no gap, as did two strips 4 µm apart at a slant.)
+        {
+            struct Part {
+                int conductor = -1;
+                int segment = -1;   // (a strip's; -1: a piece)
+                QPolygonF outline;
+            };
+            QList<Part> stripParts, all;
+            for (int c = 0; c < conductors.size() && meshingOnly < 0; ++c) {
+                const StripQuads& q = quadsOf.at(c);
+                if (!q.ok()) continue;
+                for (int k = 0; k + 1 < q.left.size(); ++k)
+                    stripParts << Part{c, k, QPolygonF({q.left.at(k), q.left.at(k + 1), q.right.at(k + 1), q.right.at(k)})};
+            }
+            if (!stripParts.isEmpty()) {
+                all = stripParts;
+                for (const Piece& piece : std::as_const(pieces)) all << Part{piece.conductor, -1, outlineOfPiece(piece)};
+            }
+            const double near = 4 * kBooleanGrid * 1e-6 / perUnit;
+            for (int i = 0; i < stripParts.size(); ++i)
+                for (int j = 0; j < all.size(); ++j) {
+                    const Part& a = stripParts.at(i);
+                    const Part& b = all.at(j);
+                    // (Each pair once: a strip's against those after it among
+                    //  the strips, and against every piece.)
+                    if (b.segment >= 0 && j <= i) continue;
+                    const QString& layer = conductors.at(a.conductor).layer;
+                    if (conductors.at(b.conductor).layer != layer) continue;
+                    QPointF between, onA, onB;
+                    const double gap = outlineDistance(a.outline, b.outline, &between, &onA, &onB);
+                    if (!(gap > 1e-9 * size)) continue;
+                    const QPolygonF& outlineA = conductors.at(a.conductor).outline;
+                    const QPolygonF& outlineB = conductors.at(b.conductor).outline;
+                    if (outlineA.containsPoint(between, Qt::OddEvenFill) || outlineB.containsPoint(between, Qt::OddEvenFill)) continue;
+                    if (!wallsFace(outlineA, onA, outlineB, onB, near, gap)) continue;
+                    if (!narrowestGap.contains(layer) || gap < narrowestGap.value(layer)) narrowestGap.insert(layer, gap);
+                }
+        }
         for (const double gap : std::as_const(narrowestGap))
             if (mesh.narrowestGap <= 0 || gap < mesh.narrowestGap) mesh.narrowestGap = gap;
         mesh.gapByLayer = narrowestGap;
