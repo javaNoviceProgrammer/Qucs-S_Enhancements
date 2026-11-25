@@ -8,8 +8,10 @@
 #include <QElapsedTimer>
 #include <QThread>
 #include <QSet>
+#include <QTemporaryDir>
 
 #include "rf25/rf25_dense.h"
+#include "rf25/rf25_kept.h"
 #include "rf25/rf25_sparams.h"
 #include "rf25/rf25_solve.h"
 #include "rf25/rf25_static.h"
@@ -261,6 +263,26 @@ bool says(const QStringList& lines, const char* words)
 bool says(const QStringList& lines, const QString& words)
 {
     return says(lines, words.toUtf8().constData());
+}
+
+/// A line over oxide on silicon: a ground, \a si m of silicon (11.9) of
+/// \a sigma S/m, 2 µm of oxide (3.9), M1 on it as a sheet.
+rf::Stack misStack(double sigma, double si)
+{
+    rf::Stack s = grounded(11.9, si);
+    for (rf::Layer& l : s.layers)
+        if (l.kind == rf::Layer::Substrate) {
+            l.name = QStringLiteral("SI");
+            l.sigma = sigma;
+        }
+    rf::Layer ox;
+    ox.kind = rf::Layer::Dielectric;
+    ox.name = QStringLiteral("OX");
+    ox.tag = QStringLiteral("ox");
+    ox.thickness = 2e-6;
+    ox.epsr = 3.9;
+    s.layers.insert(2, ox);
+    return s;
 }
 
 /// A MIM's stack: an oxide 5 µm thick under M1, the MIM dielectric (6.892,
@@ -829,22 +851,154 @@ private slots:
         QCOMPARE(rf::surfaceImpedance(5.8e7, 1e-6, 0), std::complex<double>(0, 0));
     }
 
-    // A dielectric that conducts - a silicon substrate's few S/m - said to
-    // be left out of the quasi-static solve, which takes a loss tangent
-    // alone: its C and G read as without it, and nothing said so.
+    // A dielectric that conducts - a silicon substrate's few S/m - left out
+    // of the quasi-static solve and said so, where it is no uniform line's
+    // one such layer (aLineOverALayerThatConductsIsOfTheFrequency): its C and
+    // G read as without it, and nothing said so. A pad is no uniform line;
+    // a line over two layers that conduct is not taken, as yet.
     void aConductingDielectricIsSaidToBeLeftOut()
     {
-        const QList<rf::Conductor> line{strip(0, 0, 200, 600)};
+        const QList<rf::Conductor> pad{strip(0, 0, 200, 200), strip(200, 90, 400, 20)};
         for (const double sigma : {0.0, 10.0}) {
             rf::Stack stack = grounded(11.9, 300e-6);
             for (rf::Layer& l : stack.layers)
                 if (l.kind == rf::Layer::Substrate) l.sigma = sigma;
-            const rf::Extraction e = rf::extract(meshed(line, 50), line, stack);
+            const rf::Extraction e = rf::extract(meshed(pad, 50), pad, stack);
             QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+            QVERIFY(!e.perMetre.fromMiddle && !e.perMetre.conducting.on());
             const bool said = sigma > 0 ? says(e.warnings, "SUB conducts (10 S/m)") && says(e.lines, "left out of the quasi-static solve")
                                         : !says(e.warnings + e.lines, "conducts");
             QVERIFY2(said, qPrintable(QStringLiteral("at %1 S/m: %2").arg(sigma).arg(e.warnings.join(" | "))));
         }
+        // A glass's 1e-14 S/m, its tangent 1e-11 at 1 MHz: left out with a
+        // line, not warned of as silicon is, nor fitted.
+        {
+            rf::Stack glass = grounded(3.8, 300e-6);
+            for (rf::Layer& l : glass.layers)
+                if (l.kind == rf::Layer::Substrate) l.sigma = 1e-14;
+            const QList<rf::Conductor> line{strip(0, -100, 600, 200)};
+            const rf::Extraction e = rf::extract(meshed(line, 50), line, glass);
+            QVERIFY2(e.ok() && !e.perMetre.conducting.on() && !says(e.warnings, "conducts") && says(e.lines, "SUB conducts (1e-14 S/m)"),
+                     qPrintable((e.warnings + e.lines).join(" | ")));
+        }
+        rf::Stack two = misStack(10, 300e-6);
+        for (rf::Layer& l : two.layers)
+            if (l.name == QLatin1String("OX")) l.sigma = 1e-3;
+        const QList<rf::Conductor> line{strip(0, -100, 600, 200)};
+        const rf::Extraction e = rf::extract(meshed(line, 50), line, two);
+        QVERIFY2(e.ok() && e.perMetre.fromMiddle && !e.perMetre.conducting.on(), qPrintable(e.problems.join(" | ")));
+        QVERIFY2(says(e.warnings, "SI conducts") && says(e.warnings, "OX conducts") && says(e.warnings, "more than one layer that conducts"),
+                 qPrintable(e.warnings.join(" | ")));
+    }
+
+    // A uniform line over a layer that conducts: its C and G per metre of
+    // the frequency (Extraction::PerMetre::conducting), its cross-section
+    // solved over that layer's permittivity and fitted as a Stieltjes
+    // function of it, read at its complex permittivity. A strip 400 µm wide
+    // over 2 µm of oxide on 10 µm of silicon of 10 S/m:
+    // - far above its relaxation, its C the lossless solve's, and no loss;
+    // - at direct current, the silicon a metal: its C a solve's with the
+    //   silicon's permittivity a hundred million;
+    // - between, a parallel-plate line's - the oxide's capacitance in series
+    //   with the silicon's, its conductance across it (Hasegawa et al., IEEE
+    //   Trans. MTT 19(11), 1971) -, each as a share of its direct current's.
+    // Before, it read as without the silicon's conductivity at every
+    // frequency, and a solution read back keeps it (format 6).
+    void aLineOverALayerThatConductsIsOfTheFrequency()
+    {
+        const QList<rf::Conductor> wide{strip(0, -200, 600, 400)};
+        const rf::Extraction e = rf::extract(meshed(wide, 20), wide, misStack(10, 10e-6));
+        QVERIFY2(e.ok() && e.perMetre.fromMiddle, qPrintable(e.problems.join(" | ")));
+        const rf::Extraction::PerMetre& pm = e.perMetre;
+        QVERIFY2(pm.conducting.on() && pm.conducting.layer == QLatin1String("SI") && pm.conducting.solves == 11 && pm.conducting.misfit < 1e-3,
+                 qPrintable(QStringLiteral("%1 solves, misfit %2").arg(pm.conducting.solves).arg(pm.conducting.misfit)));
+        QVERIFY2(says(e.lines, "SI conducts (10 S/m): the line's C and G per metre are of the frequency") && !says(e.warnings, "conducts"),
+                 qPrintable(e.lines.join(" | ")));
+        const auto at = [&pm](double f) {
+            QList<QList<double>> c, loss;
+            pm.at(f, &c, &loss);
+            return std::complex<double>(c.at(0).at(0), -loss.at(0).at(0));
+        };
+        const std::complex<double> high = at(1e14), low = at(1e3);
+        QVERIFY2(std::abs(high.real() / pm.maxwell.at(0).at(0) - 1) < 1e-3 && -high.imag() < 1e-3 * high.real(),
+                 qPrintable(QStringLiteral("%1 %2 against %3").arg(high.real()).arg(high.imag()).arg(pm.maxwell.at(0).at(0))));
+        rf::Stack metal = misStack(0, 10e-6);
+        for (rf::Layer& l : metal.layers)
+            if (l.name == QLatin1String("SI")) l.epsr = 1e8;
+        const rf::Extraction m = rf::extract(meshed(wide, 20), wide, metal);
+        QVERIFY2(m.ok() && std::abs(low.real() / m.perMetre.maxwell.at(0).at(0) - 1) < 2e-3 && -low.imag() < 1e-3 * low.real(),
+                 qPrintable(QStringLiteral("%1 against %2").arg(low.real()).arg(m.perMetre.maxwell.value(0).value(0))));
+        for (const double f : {1e8, 1e9, 3e9, 1e10, 1e11}) {
+            const std::complex<double> si(11.9, -10 / (2 * M_PI * f * rf::kEps0));
+            const std::complex<double> plates = 1.0 / (1.0 + (10.0 * 3.9) / (2.0 * si));
+            const std::complex<double> solved = at(f) / low;
+            QVERIFY2(std::abs(solved - plates) < 0.03 * std::abs(plates),
+                     qPrintable(QStringLiteral("at %1 Hz %2%3j of its direct current's, the plates %4%5j")
+                                    .arg(f).arg(solved.real()).arg(solved.imag()).arg(plates.real()).arg(plates.imag())));
+        }
+        // At direct current itself, the silicon a metal.
+        QVERIFY2(std::abs(pm.conducting.at(0).at(0).at(0) / low - 1.0) < 1e-6, "at direct current");
+        // The silicon's own loss tangent in its complex permittivity, not
+        // counted again: far above its relaxation, its loss the loss
+        // tangent's share alone, as a solve without its conductivity has it.
+        {
+            rf::Stack lossy = misStack(10, 10e-6), plain = misStack(0, 10e-6);
+            for (rf::Stack* st : {&lossy, &plain})
+                for (rf::Layer& l : st->layers)
+                    if (l.name == QLatin1String("SI")) l.tand = 0.01;
+            const rf::Extraction a = rf::extract(meshed(wide, 20), wide, lossy), b = rf::extract(meshed(wide, 20), wide, plain);
+            QVERIFY(a.ok() && b.ok() && a.perMetre.conducting.on() && !b.perMetre.conducting.on());
+            QList<QList<double>> c, loss;
+            a.perMetre.at(1e14, &c, &loss);
+            QVERIFY2(std::abs(loss.at(0).at(0) / b.perMetre.dielectricLoss.at(0).at(0) - 1) < 0.02,
+                     qPrintable(QStringLiteral("%1 against %2 F/m").arg(loss.at(0).at(0)).arg(b.perMetre.dielectricLoss.at(0).at(0))));
+        }
+        // A coplanar line, its grounds returns: the signal's C and G against
+        // them of the frequency too (signalsOf()). With no ground under the
+        // silicon, its images at a permittivity of a million do not settle -
+        // both its faces reflect all -: no fit, the solve as it was, and why
+        // said.
+        {
+            const QList<rf::Conductor> cpw{strip(0, -10, 600, 20), strip(0, 20, 600, 60), strip(0, -80, 600, 60)};
+            const QList<rf::ReturnMark> marks{{QPointF(300, 50), QStringLiteral("M1")}, {QPointF(300, -50), QStringLiteral("M1")}};
+            const rf::Extraction e = rf::extract(meshed(cpw, 5), cpw, misStack(10, 300e-6), 1e-6, marks);
+            QVERIFY2(e.ok() && e.perMetre.fromMiddle && e.perMetre.conducting.on() && e.hasReturns(), qPrintable(e.problems.join(" | ")));
+            // (The whole matrix far above its relaxation the lossless one's,
+            //  between the nets too: each entry from its forms' fits.)
+            QList<QList<double>> c, loss;
+            e.perMetre.at(1e14, &c, &loss);
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j)
+                    QVERIFY2(std::abs(c.at(i).at(j) - e.perMetre.maxwell.at(i).at(j)) < 2e-3 * e.perMetre.maxwell.at(i).at(i),
+                             qPrintable(QStringLiteral("[%1][%2] %3 against %4").arg(i).arg(j).arg(c.at(i).at(j)).arg(e.perMetre.maxwell.at(i).at(j))));
+            const int signal = int(e.signalNets().value(0, -1));
+            rf::Extraction without = e;
+            without.perMetre.conducting = {};
+            const rf::LineParameters mid = rf::lineParameters(e, signal, 600e-6, 1e8), high = rf::lineParameters(e, signal, 600e-6, 1e14),
+                                     lossless = rf::lineParameters(without, signal, 600e-6, 1e8);
+            QVERIFY2(mid.problems.isEmpty() && high.problems.isEmpty() && lossless.problems.isEmpty(), qPrintable(mid.problems.join(" | ")));
+            QVERIFY2(mid.c > 1.2 * lossless.c && mid.g > 0 && std::abs(high.c / lossless.c - 1) < 2e-3,
+                     qPrintable(QStringLiteral("C %1 at 0.1 GHz, %2 far above, %3 without; G %4")
+                                    .arg(mid.c).arg(high.c).arg(lossless.c).arg(mid.g)));
+            rf::Stack open = misStack(10, 300e-6);
+            open.layers.removeFirst();   // (the ground)
+            const rf::Extraction o = rf::extract(meshed(cpw, 5), cpw, open, 1e-6, marks);
+            QVERIFY2(o.ok() && o.perMetre.fromMiddle && !o.perMetre.conducting.on(), qPrintable(o.problems.join(" | ")));
+            QVERIFY2(says(o.warnings, "SI conducts (10 S/m): its conductivity is left out of the quasi-static solve (the line's cross-section could not be solved over its permittivity"),
+                     qPrintable(o.warnings.join(" | ")));
+        }
+        // Read back as solved.
+        QTemporaryDir dir;
+        rf::KeptSolution kept;
+        kept.extraction = std::make_shared<rf::Extraction>(e);
+        kept.solvedAt = QDateTime::currentDateTimeUtc();
+        QString why;
+        QVERIFY2(rf::writeSolution(dir.filePath(QStringLiteral("m.solution")), kept, &why), qPrintable(why));
+        const std::optional<rf::KeptSolution> back = rf::readSolution(dir.filePath(QStringLiteral("m.solution")), &why);
+        QVERIFY2(back && back->extraction && back->extraction->perMetre.conducting.on(), qPrintable(why));
+        QList<QList<double>> c, loss;
+        back->extraction->perMetre.at(1e9, &c, &loss);
+        QCOMPARE(std::complex<double>(c.at(0).at(0), -loss.at(0).at(0)), at(1e9));
     }
 
     // R and G of a microstrip: the resistance from the surface impedance

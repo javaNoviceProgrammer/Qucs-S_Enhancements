@@ -746,6 +746,112 @@ QStringList maxwellDoubts(const QList<QList<double>>& maxwell, const QStringList
     return out;
 }
 
+namespace {
+
+/// min |A x - b| over x >= 0 (Lawson and Hanson, Solving Least Squares
+/// Problems, 1974, ch. 23): columns taken in one at a time by the gradient,
+/// and dropped where the unconstrained solve on those in would turn one
+/// negative.
+Eigen::VectorXd nonNegativeLeastSquares(const Eigen::MatrixXd& a, const Eigen::VectorXd& b)
+{
+    const int n = int(a.cols());
+    Eigen::VectorXd x = Eigen::VectorXd::Zero(n);
+    std::vector<bool> in(std::size_t(n), false);
+    const double small = 1e-12 * std::max(1.0, a.norm() * b.norm());
+    for (int round = 0; round < 3 * n; ++round) {
+        const Eigen::VectorXd w = a.transpose() * (b - a * x);
+        int best = -1;
+        double most = small;
+        for (int j = 0; j < n; ++j)
+            if (!in[std::size_t(j)] && w(j) > most) {
+                most = w(j);
+                best = j;
+            }
+        if (best < 0) break;
+        in[std::size_t(best)] = true;
+        for (int inner = 0; inner < 3 * n; ++inner) {
+            QList<int> set;
+            for (int j = 0; j < n; ++j)
+                if (in[std::size_t(j)]) set << j;
+            Eigen::MatrixXd part(a.rows(), set.size());
+            for (int k = 0; k < set.size(); ++k) part.col(k) = a.col(set.at(k));
+            const Eigen::VectorXd z = part.colPivHouseholderQr().solve(b);
+            bool positive = true;
+            for (int k = 0; k < set.size(); ++k) positive = positive && z(k) > 0;
+            if (positive) {
+                x.setZero();
+                for (int k = 0; k < set.size(); ++k) x(set.at(k)) = z(k);
+                break;
+            }
+            double step = 1;
+            for (int k = 0; k < set.size(); ++k)
+                if (z(k) <= 0) step = std::min(step, x(set.at(k)) / (x(set.at(k)) - z(k)));
+            for (int k = 0; k < set.size(); ++k) {
+                const int j = set.at(k);
+                x(j) += step * (z(k) - x(j));
+                if (x(j) <= 1e-15 * std::max(1.0, x.cwiseAbs().maxCoeff())) {
+                    x(j) = 0;
+                    in[std::size_t(j)] = false;
+                }
+            }
+        }
+    }
+    return x;
+}
+
+/// \a values, each at \a samples' permittivity, fitted as q0 + sum w_i
+/// eps / (eps + poles_i), q0 and w_i nought or above, each value to its
+/// own share of it: [q0, w_0, w_1, ...]. \a misfit, its worst share.
+Eigen::VectorXd stieltjesFit(const QList<double>& samples, const QList<double>& values, const QList<double>& poles, double* misfit)
+{
+    const int m = int(samples.size()), n = int(poles.size());
+    Eigen::MatrixXd a(m, n + 1);
+    Eigen::VectorXd b(m);
+    for (int s = 0; s < m; ++s) {
+        const double weight = values.at(s) != 0 ? 1 / std::abs(values.at(s)) : 1;
+        a(s, 0) = weight;
+        for (int i = 0; i < n; ++i) a(s, i + 1) = weight * samples.at(s) / (samples.at(s) + poles.at(i));
+        b(s) = weight * values.at(s);
+    }
+    const Eigen::VectorXd x = nonNegativeLeastSquares(a, b);
+    *misfit = 0;
+    for (int s = 0; s < m; ++s) *misfit = std::max(*misfit, std::abs((a.row(s) * x)(0) - b(s)));
+    return x;
+}
+
+} // namespace
+
+QList<QList<std::complex<double>>> Extraction::PerMetre::Conducting::at(double frequency) const
+{
+    const int n = int(constant.size());
+    QList<QList<std::complex<double>>> out(n, QList<std::complex<double>>(n, 0.0));
+    // (At direct current the layer is a metal: eps over eps + delta one.)
+    const bool metal = !(frequency > 0);
+    const std::complex<double> eps = metal ? std::complex<double>(0, 0)
+                                           : std::complex<double>(epsr, -epsr * tand - sigma / (2 * M_PI * frequency * kEps0));
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j) out[i][j] = constant.at(i).value(j);
+    for (int p = 0; p < poles.size() && p < weights.size(); ++p) {
+        const std::complex<double> share = metal ? std::complex<double>(1, 0) : eps / (eps + poles.at(p));
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) out[i][j] += weights.at(p).at(i).value(j) * share;
+    }
+    return out;
+}
+
+void Extraction::PerMetre::at(double frequency, QList<QList<double>>* c, QList<QList<double>>* loss) const
+{
+    *c = maxwell;
+    *loss = dielectricLoss;
+    if (!conducting.on() || !(frequency > 0) || conducting.constant.size() != maxwell.size()) return;
+    const QList<QList<std::complex<double>>> z = conducting.at(frequency);
+    for (int i = 0; i < z.size(); ++i)
+        for (int j = 0; j < z.at(i).size(); ++j) {
+            (*c)[i][j] = z.at(i).at(j).real();
+            if (i < loss->size() && j < loss->at(i).size()) (*loss)[i][j] += -z.at(i).at(j).imag();
+        }
+}
+
 QString extractStepSaid(int step, int done, int all, int images)
 {
     switch (step) {
@@ -765,6 +871,10 @@ QString extractStepSaid(int step, int done, int all, int images)
     case ExtractControl::Ended:
         return done < 0 ? tr("solving the correction of the layers that end over its panels")
                         : tr("building the Green's functions of the layers that end, %1 of %2").arg(done).arg(all);
+    case ExtractControl::Conducting:
+        return tr("solving the line's cross-section again over the permittivity of the layer that conducts, %1 of %2")
+            .arg(done + 1)
+            .arg(all);
     default:
         return tr("starting");
     }
@@ -941,18 +1051,22 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     // of the field (below), and a conductivity is no such share. Its
     // tangent sigma / (omega eps) is some 15 for 10 S/m at 1 GHz, the field
     // itself changed by it - the slow-wave mode of a line over oxide on
-    // silicon (Hasegawa et al., IEEE Trans. MTT 19(11), 1971). Left out
-    // and said: it was left out without a word, C and G read as without
-    // it.
+    // silicon (Hasegawa et al., IEEE Trans. MTT 19(11), 1971). A uniform
+    // line over one such layer takes it, of the frequency
+    // (PerMetre::conducting, below); else it is left out, and said so: it
+    // was left out without a word, C and G read as without it.
+    // (One whose tangent at 1 MHz, the foot of an RF sweep, is under a
+    //  thousandth - a glass's 1e-14 S/m, a semi-insulator's - left out with
+    //  a line alone: it was warned of as silicon is, and would be solved
+    //  over its permittivity eleven times for nothing.)
+    QList<const Layer*> conductingLayers, barelyConducting;
     for (const Layer& l : stack.layers)
-        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.sigma > 0) {
-            const QString w = tr("%1 conducts (%2 S/m): its conductivity is left out of the quasi-static solve, which takes a "
-                                 "dielectric's loss tangent alone. The full-wave solve takes it.")
-                                  .arg(l.name)
-                                  .arg(l.sigma, 0, 'g', 4);
-            out.warnings << w;
-            out.lines << w;
-        }
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.sigma > 0)
+            (l.sigma / (2 * M_PI * 1e6 * kEps0 * std::max(1.0, l.epsr)) >= 1e-3 ? conductingLayers : barelyConducting) << &l;
+    for (const Layer* l : std::as_const(barelyConducting))
+        out.lines << tr("%1 conducts (%2 S/m), its loss tangent of that under a thousandth at 1 MHz and less above: left out.")
+                         .arg(l->name)
+                         .arg(l->sigma, 0, 'g', 3);
     if (layers0.groundAbove)
         out.lines << tr("A perfect metal lid closes the stack at %1 µm: the charges' images, and C0's, are of the ground and "
                         "the lid together.")
@@ -1820,6 +1934,12 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     // dC/deps_k) - and dC/deps is taken by solving again with that layer
     // a little different, which is a solve per lossy layer and none at
     // all for a stack that says no loss.
+    // (The one layer that conducts, a uniform line's: its slab.)
+    int conductingSlab = -1;
+    if (uniform && conductingLayers.size() == 1)
+        for (int k = 0; k < layers0.slabs.size(); ++k)
+            if (layers0.slabs.at(k).name == conductingLayers.first()->name) conductingSlab = k;
+    QList<QList<double>> ownLoss(nets.size(), QList<double>(nets.size(), 0.0));
     out.dielectricLoss.clear();
     for (int i = 0; i < nets.size(); ++i) out.dielectricLoss << QList<double>(nets.size(), 0.0);
     out.perMetre.dielectricLoss.clear();
@@ -1899,9 +2019,11 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                 for (int j = 0; j < nets.size(); ++j) {
                     if (i < nudgedMaxwell.size() && j < nudgedMaxwell.at(i).size())
                         out.dielectricLoss[i][j] += tand * was * (nudgedMaxwell.at(i).at(j) - out.maxwell.at(i).at(j)) / step;
-                    // (And per metre, of the cross-section.)
+                    // (And per metre, of the cross-section; a layer that
+                    //  conducts, its own apart: the fit below takes its loss
+                    //  tangent with its conductivity.)
                     if (uniform && i < nudgedPerMetre.size() && j < nudgedPerMetre.at(i).size())
-                        out.perMetre.dielectricLoss[i][j] +=
+                        (k == conductingSlab ? ownLoss : out.perMetre.dielectricLoss)[i][j] +=
                             tand * was * (nudgedPerMetre.at(i).at(j) - out.perMetre.maxwell.at(i).at(j)) / step;
                 }
         }
@@ -1912,6 +2034,133 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                 for (int j = 0; j < nets.size() && j < out.perMetre.dielectricLoss.at(i).size(); ++j)
                     out.dielectricLoss[i][j] = out.perMetre.dielectricLoss.at(i).at(j) * lineLength * micrometre;
     }
+    // A uniform line over one layer that conducts: its cross-section solved
+    // again with that layer's permittivity at real values from 1 to ten
+    // million times its own, and its own, and each quadratic form of the
+    // Maxwell matrix - each net's, and each two nets' together - fitted as
+    // a Stieltjes function of it over poles ten to a decade
+    // (PerMetre::Conducting): its C and G of the frequency then read at the
+    // layer's complex permittivity. A strip 20 µm wide on 2 µm of oxide over
+    // 300 µm of silicon of 10 S/m: so fitted to a 2D finite-difference solve
+    // at real permittivities, within 0.1 % of the same solve at the complex
+    // one from 0.1 MHz to 100 GHz, its C falling through the slow-wave
+    // transition from 404 pF/m to 74 (five poles to a decade, 1.1 % off; its
+    // values' noise of 1e-4 made 0.08 % at most); and here, its alpha within
+    // 1.8 % of the full wave's, its beta within 1.3 %, from 0.3 to 10 GHz.
+    Extraction::PerMetre::Conducting& fit = out.perMetre.conducting;
+    fit = {};
+    QString fitFailed;   // (why no fit could be had)
+    if (conductingSlab >= 0 && !stopped()) {
+        const Layers base = corrected && uniform ? stackLayers : layers0;
+        const double own = base.slabs.at(conductingSlab).epsr;
+        QList<double> samples;
+        const double top = std::log10(1e7 * std::max(1.0, own));
+        for (int i = 0; i < 10; ++i) samples << std::pow(10.0, top * i / 9);
+        samples << own;
+        std::sort(samples.begin(), samples.end());
+        QList<QList<QList<double>>> solved;   // (each value's per metre Maxwell matrix)
+        for (int s = 0; s < samples.size() && fitFailed.isEmpty(); ++s) {
+            if (control != nullptr) control->at(ExtractControl::Conducting, s, int(samples.size()));
+            Layers nudged = base;
+            nudged.slabs[conductingSlab].epsr = samples.at(s);
+            if (nudged.slabs[conductingSlab].epsz > 0) nudged.slabs[conductingSlab].epsz *= samples.at(s) / own;
+            QMap<QString, Green> some;
+            for (const QString& a : std::as_const(layers))
+                for (const QString& b : std::as_const(layers)) {
+                    const QString key = keyOf(a, b);
+                    if (some.contains(key)) continue;
+                    some.insert(key, Green(nudged, height.value(a), height.value(b)));
+                    Green& g = some[key];
+                    if (control != nullptr) {
+                        g.stopWith(control->stop);
+                        if (control->mostPairs > 0) g.limitPairs(control->mostPairs);
+                    }
+                    g.images();
+                    if (stopped()) return out;
+                    // (A stack whose images do not settle at that permittivity
+                    //  - silicon of a million with no ground under it, both
+                    //  its faces reflecting all -: no fit, the conductivity
+                    //  left out and said, the solve as it was.)
+                    if (!g.ok() && fitFailed.isEmpty()) fitFailed = g.problems().join(QLatin1Char(' '));
+                }
+            if (!fitFailed.isEmpty()) break;
+            const auto fromSome = [&some, &keyOf](const QString& a, const QString& b) -> const Green& {
+                const auto it = some.constFind(keyOf(a, b));
+                return it != some.constEnd() ? it.value() : some.constBegin().value();
+            };
+            QList<QList<double>> m;
+            crossSection(fromSome, &m, nullptr, true);
+            if (stopped()) return out;
+            solved << m;
+        }
+        // Poles from a ten-thousandth of its permittivity to a billion times
+        // it, ten to a decade.
+        QList<double> poles;
+        for (int i = 0; i <= 130; ++i) poles << std::max(1.0, own) * std::pow(10.0, -4 + i / 10.0);
+        const int n = int(nets.size());
+        const auto form = [&solved, n](int s, int i, int j) {   // (q of e_i + e_j; of e_i where j < 0)
+            const QList<QList<double>>& m = solved.at(s);
+            return j < 0 ? m.at(i).at(i) : m.at(i).at(i) + m.at(j).at(j) + m.at(i).at(j) + m.at(j).at(i);
+        };
+        QList<Eigen::VectorXd> single(n);
+        QMap<QPair<int, int>, Eigen::VectorXd> pairs;
+        double worst = 0;
+        bool sized = true;
+        sized = fitFailed.isEmpty() && solved.size() == samples.size();
+        for (const QList<QList<double>>& m : std::as_const(solved)) sized = sized && m.size() == n;
+        for (int i = 0; i < n && sized; ++i) {
+            QList<double> values;
+            for (int s = 0; s < samples.size(); ++s) values << form(s, i, -1);
+            double misfit = 0;
+            single[i] = stieltjesFit(samples, values, poles, &misfit);
+            worst = std::max(worst, misfit);
+            for (int j = i + 1; j < n; ++j) {
+                QList<double> both;
+                for (int s = 0; s < samples.size(); ++s) both << form(s, i, j);
+                pairs.insert({i, j}, stieltjesFit(samples, both, poles, &misfit));
+                worst = std::max(worst, misfit);
+            }
+        }
+        if (sized && n > 0) {
+            // Each entry's coefficients from the forms', the poles any of
+            // them takes kept.
+            const auto entry = [&single, &pairs](int i, int j, int c) {
+                if (i == j) return single.at(i)(c);
+                const Eigen::VectorXd& both = pairs.value({std::min(i, j), std::max(i, j)});
+                return 0.5 * (both(c) - single.at(i)(c) - single.at(j)(c));
+            };
+            fit.layer = conductingLayers.first()->name;
+            fit.epsr = own;
+            fit.tand = base.slabs.at(conductingSlab).tand;
+            fit.sigma = base.slabs.at(conductingSlab).sigma;
+            fit.solves = int(samples.size());
+            fit.misfit = worst;
+            fit.constant = QList<QList<double>>(n, QList<double>(n, 0.0));
+            for (int i = 0; i < n; ++i)
+                for (int j = 0; j < n; ++j) fit.constant[i][j] = entry(i, j, 0);
+            for (int p = 0; p < poles.size(); ++p) {
+                bool taken = false;
+                for (int i = 0; i < n && !taken; ++i) {
+                    taken = single.at(i)(p + 1) != 0;
+                    for (int j = i + 1; j < n && !taken; ++j) taken = pairs.value({i, j})(p + 1) != 0;
+                }
+                if (!taken) continue;
+                QList<QList<double>> w(n, QList<double>(n, 0.0));
+                for (int i = 0; i < n; ++i)
+                    for (int j = 0; j < n; ++j) w[i][j] = entry(i, j, p + 1);
+                fit.poles << poles.at(p);
+                fit.weights << w;
+            }
+        }
+    }
+    // (The layer's own loss tangent's share: the fit's where it was made, the
+    //  whole line's too as ever.)
+    if (uniform && !out.perMetre.dielectricLoss.isEmpty())
+        for (int i = 0; i < nets.size(); ++i)
+            for (int j = 0; j < nets.size(); ++j) {
+                if (!fit.on()) out.perMetre.dielectricLoss[i][j] += ownLoss.at(i).at(j);
+                out.dielectricLoss[i][j] += ownLoss.at(i).at(j) * lineLength * micrometre;
+            }
     // What was done for the per-metre values, said.
     {
         Extraction::PerMetre& pm = out.perMetre;
@@ -1932,6 +2181,7 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             pm.maxwell0.clear();
             pm.dielectricLoss.clear();
             pm.crowding.clear();
+            pm.conducting = {};
             // (A straight line drawn at an angle, every conductor a rectangle
             //  along one way that is no axis, is uniform but not taken so -
             //  its cross-section is cut along x or y -: said so, where it was
@@ -1977,6 +2227,43 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                                    "the full-wave solve's.");
         }
         out.lines << pm.said;
+    }
+    // The layers that conduct, said: one a uniform line's C and G take, of
+    // the frequency; else each left out.
+    for (const Layer* l : std::as_const(conductingLayers)) {
+        const Extraction::PerMetre::Conducting& c = out.perMetre.conducting;
+        if (c.on() && c.layer == l->name) {
+            QString line = tr("%1 conducts (%2 S/m): the line's C and G per metre are of the frequency, its cross-section solved "
+                              "%3 times over %1's permittivity and fitted (within %4 % of them) - its slow-wave mode in "
+                              "them, and its loss. L is the vacuum's, %1's own currents left out")
+                               .arg(l->name)
+                               .arg(l->sigma, 0, 'g', 4)
+                               .arg(c.solves)
+                               .arg(100 * c.misfit, 0, 'g', 2);
+            // (Its skin depth under its thickness above this frequency: the
+            //  skin-effect mode, whose L falls.)
+            if (l->thickness > 0) {
+                constexpr double mu0 = 4e-7 * M_PI;
+                const double skin = 1 / (M_PI * mu0 * l->sigma * l->thickness * l->thickness);
+                line += tr(", which lowers it above %1 GHz, where its skin depth falls under its %2 µm")
+                            .arg(skin / 1e9, 0, 'g', 3)
+                            .arg(l->thickness * 1e6, 0, 'g', 4);
+            }
+            out.lines << line + tr(". The capacitance standing whole leaves its conductivity out.");
+            continue;
+        }
+        const QString why = conductingLayers.size() > 1 && out.perMetre.fromMiddle
+                                ? tr(" (with more than one layer that conducts, as yet)")
+                            : !fitFailed.isEmpty() && out.perMetre.fromMiddle
+                                ? tr(" (the line's cross-section could not be solved over its permittivity: %1)").arg(fitFailed)
+                                : QString();
+        const QString w = tr("%1 conducts (%2 S/m): its conductivity is left out of the quasi-static solve%3, which takes a "
+                             "dielectric's loss tangent alone. The full-wave solve takes it.")
+                              .arg(l->name)
+                              .arg(l->sigma, 0, 'g', 4)
+                              .arg(why);
+        out.warnings << w;
+        out.lines << w;
     }
     // One net's own loss tangent, for a single line: its row of the loss
     // matrix over its row of the capacitance - of the line's middle where
@@ -2164,7 +2451,7 @@ QList<QList<double>> resistancePerMetre(const Extraction& extraction, double fre
     return r;
 }
 
-SignalLines signalsOf(const Extraction& extraction, double length)
+SignalLines signalsOf(const Extraction& extraction, double length, double frequency)
 {
     SignalLines out;
     const int n = int(extraction.names.size());
@@ -2189,13 +2476,34 @@ SignalLines signalsOf(const Extraction& extraction, double length)
                 r(i, j) = 0.5 * (from.at(i).at(j) + from.at(j).at(i)) / (middle ? 1.0 : length);
         return r;
     };
-    Eigen::MatrixXd c = perMetre(pm.maxwell, extraction.maxwell), c0 = perMetre(pm.maxwell0, extraction.maxwell0);
-    Eigen::MatrixXd loss = perMetre(pm.dielectricLoss, extraction.dielectricLoss);
+    // (Over a layer that conducts, of the frequency: PerMetre::at().)
+    const bool conducts = middle && pm.conducting.on() && frequency > 0;
+    QList<QList<double>> atC = pm.maxwell, atLoss = pm.dielectricLoss;
+    if (conducts) pm.at(frequency, &atC, &atLoss);
+    Eigen::MatrixXd c = perMetre(atC, extraction.maxwell), c0 = perMetre(pm.maxwell0, extraction.maxwell0);
+    Eigen::MatrixXd loss = perMetre(atLoss, extraction.dielectricLoss);
     // With returns and no ground plane, a line's charge to infinity per
     // metre is nothing - it falls as the log of its length - so infinity
     // floats: the charge is held to none in all, C - (C1)(C1)'/(1'C1). Its
-    // loss matrix is that one's derivative in the permittivities.
-    if (extraction.hasReturns() && !extraction.grounded) {
+    // loss matrix is that one's derivative in the permittivities - or, over
+    // a layer that conducts, whose loss is no small share, the same held to
+    // none of the complex C - j loss.
+    if (extraction.hasReturns() && !extraction.grounded && conducts) {
+        const Eigen::MatrixXcd z = c.cast<std::complex<double>>() - std::complex<double>(0, 1) * loss.cast<std::complex<double>>();
+        const Eigen::VectorXcd one = Eigen::VectorXcd::Ones(n);
+        const Eigen::VectorXcd a = z * one;
+        const std::complex<double> sum = one.dot(a);
+        const Eigen::VectorXd a0 = c0 * Eigen::VectorXd::Ones(n);
+        const double sum0 = a0.sum();
+        if (!(sum.real() > 0) || !(sum0 > 0)) {
+            out.problem = tr("the conductors' charge to infinity came out as none");
+            return out;
+        }
+        const Eigen::MatrixXcd held = z - a * a.transpose() / sum;
+        c = held.real();
+        loss = -held.imag();
+        c0 = c0 - a0 * a0.transpose() / sum0;
+    } else if (extraction.hasReturns() && !extraction.grounded) {
         const Eigen::VectorXd one = Eigen::VectorXd::Ones(n);
         const Eigen::VectorXd a = c * one, a0 = c0 * one, d = loss * one;
         const double sum = one.dot(a), sum0 = one.dot(a0), dsum = one.dot(d);
@@ -2271,7 +2579,7 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
             out.problems << tr("%1 is a return conductor: the lines are of the signals, against it.").arg(extraction.names.value(index));
             return out;
         }
-        const SignalLines sl = signalsOf(extraction, length);
+        const SignalLines sl = signalsOf(extraction, length, frequency);
         if (!sl.ok() || sl.nets.size() != 1) {
             out.problems << (sl.ok() ? tr("%1 is one of %2 signals, which are coupled lines with modes rather than a line "
                                           "each: see the coupled lines.")
@@ -2283,6 +2591,14 @@ LineParameters lineParameters(const Extraction& extraction, int index, double le
         held = sl.c.at(0).at(0);
         bare = sl.c0.at(0).at(0);
         lost = sl.loss.at(0).at(0);
+    } else if (pm.conducting.on() && frequency > 0) {
+        // (Over a layer that conducts, of the frequency, its loss with it.)
+        QList<QList<double>> atC, atLoss;
+        pm.at(frequency, &atC, &atLoss);
+        lost = 0;
+        for (int j = 0; j < atC.value(index).size(); ++j) held += atC.at(index).at(j);
+        for (int j = 0; j < atLoss.value(index).size(); ++j) lost += atLoss.at(index).at(j);
+        for (int j = 0; j < pm.maxwell0.at(index).size(); ++j) bare += pm.maxwell0.at(index).at(j);
     } else {
         for (int j = 0; j < pm.maxwell.at(index).size(); ++j) held += pm.maxwell.at(index).at(j);
         for (int j = 0; j < pm.maxwell0.at(index).size(); ++j) bare += pm.maxwell0.at(index).at(j);

@@ -113,7 +113,7 @@ fem::CoupledLines asCoupledLines(const Extraction& extraction, double length, do
     // The signals against the returns, where there are returns: a coplanar
     // line's, its grounds at nought -
     // else every net, against the ground or infinity.
-    const SignalLines lines = signalsOf(extraction, length);
+    const SignalLines lines = signalsOf(extraction, length, frequency);
     if (!lines.ok()) {
         out.error = lines.problem;
         return out;

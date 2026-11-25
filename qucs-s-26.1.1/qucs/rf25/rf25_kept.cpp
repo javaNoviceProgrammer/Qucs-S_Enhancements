@@ -40,9 +40,12 @@ QString tr(const char* text) { return QCoreApplication::translate("RF25Kept", te
 // to 3 is read without them, its metals' roughness Hammerstad's. Format 5
 // adds, after a full-wave answer's adaptive frequencies, its ports' own paths
 // up from the ground (FullWave::portPaths), which its far field has; a file of
-// 1 to 4 is read without them.
+// 1 to 4 is read without them. Format 6 adds, after a quasi-static answer's
+// nodules, its line's fit over a layer that conducts
+// (Extraction::PerMetre::conducting); a file of 1 to 5 is read without it,
+// its line's C and G of no frequency.
 const QByteArray kMagic = QByteArrayLiteral("QRF25SOL");
-constexpr quint32 kFormat = 5;
+constexpr quint32 kFormat = 6;
 // A list longer than this is a damaged file's, not a solve's.
 constexpr qint64 kMostItems = qint64(1) << 28;
 
@@ -304,6 +307,25 @@ bool get(QDataStream& s, FullWave& v)
            && get(s, v.tooLarge) && get(s, v.portsSaid) && get(s, v.problems) && get(s, v.lines) && get(s, v.warnings);
 }
 
+void put(QDataStream& s, const Extraction::PerMetre::Conducting& v)
+{
+    put(s, v.layer);
+    put(s, v.epsr);
+    put(s, v.tand);
+    put(s, v.sigma);
+    put(s, v.poles);
+    put(s, v.constant);
+    put(s, v.weights);
+    put(s, v.solves);
+    put(s, v.misfit);
+}
+
+bool get(QDataStream& s, Extraction::PerMetre::Conducting& v)
+{
+    return get(s, v.layer) && get(s, v.epsr) && get(s, v.tand) && get(s, v.sigma) && get(s, v.poles) && get(s, v.constant)
+           && get(s, v.weights) && get(s, v.solves) && get(s, v.misfit);
+}
+
 void put(QDataStream& s, const Extraction::PerMetre& v)
 {
     put(s, v.fromMiddle);
@@ -471,6 +493,7 @@ bool writeSolution(const QString& path, const KeptSolution& kept, QString* error
             put(s, kept.solvedLength);
             put(s, kept.extraction->nodule);
             put(s, kept.extraction->surfaceRatio);
+            put(s, kept.extraction->perMetre.conducting);
         }
     }
     QByteArray all;
@@ -548,6 +571,7 @@ std::optional<KeptSolution> readSolution(const QString& path, QString* why)
         if (!get(b, kept.portsSaid) || !get(b, kept.solvedLength)) return none(tr("%1 is damaged.").arg(path));
         if (format >= 4 && (!get(b, extraction->nodule) || !get(b, extraction->surfaceRatio)))
             return none(tr("%1 is damaged.").arg(path));
+        if (format >= 6 && !get(b, extraction->perMetre.conducting)) return none(tr("%1 is damaged.").arg(path));
         kept.extraction = extraction;
     }
     if (!b.atEnd()) return none(tr("%1 is damaged.").arg(path));

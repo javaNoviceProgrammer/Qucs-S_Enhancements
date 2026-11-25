@@ -211,6 +211,49 @@ struct Extraction {
         /// together, which every signal's current comes back through.
         double dcReturn = 0;
         QString said;                 ///< what was done, in words
+        /*!
+         * A dielectric that conducts (Layer::sigma - a silicon substrate's
+         * few S/m), its share of the line's C and G per metre of the
+         * frequency: the cross-section solved over a span of real
+         * permittivities of that layer, and each of the Maxwell matrix's
+         * quadratic forms fitted as a Stieltjes function of it - its value
+         * as nought permittivity there, and positive weights over poles,
+         *
+         *     q(eps) = q0 + sum_i w_i eps / (eps + delta_i),
+         *
+         * the form a capacitance takes as the function of one material's
+         * permittivity (Bergman, Phys. Rep. 43(9), 1978) - then read at the
+         * layer's complex permittivity eps_r (1 - j tan delta) - j sigma /
+         * (w eps0). Its real part is C, and minus its imaginary part G / w:
+         * the slow-wave mode of a line over oxide on silicon, and the
+         * transition to the dielectric quasi-TEM one above it (Hasegawa et
+         * al., IEEE Trans. MTT 19(11), 1971). L stays the vacuum's: the
+         * substrate's own currents, which lower it only where its skin depth
+         * falls under its thickness, are left out. Empty where no layer
+         * conducts, more than one does, or the line is no uniform one.
+         */
+        struct Conducting {
+            QString layer;                ///< its name
+            double epsr = 0, tand = 0, sigma = 0;   ///< its own (S/m)
+            QList<double> poles;          ///< delta_i, relative permittivities
+            QList<QList<double>> constant;              ///< F/m: the matrix at nought permittivity there
+            QList<QList<QList<double>>> weights;        ///< [i] F/m: each pole's
+            int solves = 0;               ///< of the cross-section, over its permittivity
+            double misfit = 0;            ///< the fit's worst over them, a share of each value
+            bool on() const { return !constant.isEmpty(); }
+            /// The complex Maxwell matrix per metre at \a frequency (Hz;
+            /// nought or less: direct current, the layer as a metal), F/m.
+            QList<QList<std::complex<double>>> at(double frequency) const;
+        };
+        Conducting conducting;
+        /*!
+         * The line's C and its dielectrics' loss (G / w) per metre at
+         * \a frequency (Hz), each a matrix of the nets: with a layer that
+         * conducts (\a conducting) and a frequency above nought, of that
+         * frequency, the other layers' loss tangents' share added; else the
+         * matrices as solved (\a maxwell, \a dielectricLoss).
+         */
+        void at(double frequency, QList<QList<double>>* c, QList<QList<double>>* loss) const;
     };
     PerMetre perMetre;
     /// Whether there is a ground plane under the stack, so that a lone
@@ -274,7 +317,11 @@ struct ExtractControl {
         /// each pair of heights its panels and cells are at - thousands,
         /// where the stack's own are some tens: done of all
         /// (the tab said the stack's "20 of 20" through 20 minutes).
-        Ended
+        Ended,
+        /// A layer that conducts: the line's cross-section solved again over
+        /// its permittivity, for its C and G of the frequency
+        /// (Extraction::PerMetre::conducting): done of all.
+        Conducting
     };
     const std::atomic_bool* stop = nullptr;
     /// Past this many cells the charge is solved compressed (nought: the
@@ -352,7 +399,9 @@ Extraction extract(const Mesh& mesh, const QList<Conductor>& conductors, const S
  * per metre is nothing - it falls as the log of its length - and so the
  * charge is held to none in all (infinity floats, Kron-reduced out); with a
  * ground plane the plane takes it. With no returns every net is a signal,
- * the matrices as solved.
+ * the matrices as solved. At \a frequency (Hz) above nought, a line over a
+ * layer that conducts takes its C and loss of that frequency
+ * (Extraction::PerMetre::at()).
  */
 struct SignalLines {
     QList<int> nets;                  ///< the signals' nets
@@ -360,7 +409,7 @@ struct SignalLines {
     QString problem;
     bool ok() const { return problem.isEmpty() && !c.isEmpty(); }
 };
-SignalLines signalsOf(const Extraction& extraction, double length);
+SignalLines signalsOf(const Extraction& extraction, double length, double frequency = 0);
 
 /// A line's quasi-TEM parameters, per metre, from the capacitance of a
 /// length of it.

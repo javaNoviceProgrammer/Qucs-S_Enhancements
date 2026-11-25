@@ -2398,6 +2398,89 @@ private slots:
     // at 30 and 45 degrees read 7.81 and 7.84 squares end to end, 9 % under
     // the 8.58 it reads square - and an edge port on its inner edge is
     // graded toward the corner there as square (MeshSettings::ports).
+
+    // A line over oxide on silicon of 10 S/m, quasi-statically, as the full
+    // wave has it: its C and G per metre of the frequency
+    // (Extraction::PerMetre::conducting) - the slow-wave mode below the
+    // silicon's relaxation, the dielectric quasi-TEM one above it (Hasegawa
+    // et al., IEEE Trans. MTT 19(11), 1971). A strip 20 µm wide on 2 µm of
+    // oxide over 300 µm of silicon, its metal perfect: the full wave's gamma
+    // of two lengths, 500 and 1500 µm, their ports taken out (each two-port's
+    // ABCD, one's inverse times the other's: e^(+-gamma mm)). The quasi-static
+    // solve read it as without the silicon's conductivity - alpha nought, and
+    // beta / k0 2.47 at every frequency, where the full wave's falls from 5.92
+    // at 0.3 GHz to 3.03 at 10.
+    void aLineOverSiliconReadsAsTheFullWaveQuasiStatically()
+    {
+        using C = std::complex<double>;
+        const QList<double> fs = {0.3e9, 1e9, 3e9, 10e9};
+        const auto model = [](double length) {
+            rf::Model m = rf::Model::blank();
+            m.stackNode().children.clear();
+            set(add(m.stackNode(), "rf_ground", QStringLiteral("g1"), QStringLiteral("GND")), "kind", QStringLiteral("perfect"));
+            rf::Node& si = add(m.stackNode(), "rf_substrate", QStringLiteral("si"), QStringLiteral("SI"));
+            set(si, "thickness", QStringLiteral("300[um]")); set(si, "epsr", QStringLiteral("11.9")); set(si, "sigma", QStringLiteral("10")); set(si, "tand", QStringLiteral("0"));
+            rf::Node& ox = add(m.stackNode(), "rf_dielectric", QStringLiteral("ox"), QStringLiteral("OX"));
+            set(ox, "thickness", QStringLiteral("2[um]")); set(ox, "epsr", QStringLiteral("3.9")); set(ox, "tand", QStringLiteral("0"));
+            rf::Node& m1 = add(m.stackNode(), "rf_metal", QStringLiteral("m1"), QStringLiteral("M1"));
+            set(m1, "thickness", QStringLiteral("0[um]")); set(m1, "sigma", QStringLiteral("0"));
+            m.add(m.layout().tag, m.make(QStringLiteral("rf_shapes")));
+            const QString tag = m.layout().child(QStringLiteral("rf_shapes"))->tag;
+            rf::Node n = m.make(QStringLiteral("rf_shape"));
+            n.props = boxOn("M1", 0, -10, length, 10);
+            m.add(tag, n);
+            m.layout().child(QStringLiteral("rf_layer_map"))->props.insert(QStringLiteral("rows"), QJsonArray() << QJsonArray{"1", "0", "M1"});
+            m.ports().children.clear();
+            for (const auto& [name, x, facing] : {std::tuple{"P1", 0.0, "-x"}, std::tuple{"P2", length, "+x"}}) {
+                rf::Node p = m.make(QStringLiteral("rf_edge_port"));
+                p.label = QLatin1String(name);
+                p.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+                p.props.insert(QStringLiteral("x"), QStringLiteral("%1[um]").arg(x));
+                p.props.insert(QStringLiteral("y"), QStringLiteral("0[um]"));
+                p.props.insert(QStringLiteral("facing"), QLatin1String(facing));
+                m.ports().children.push_back(p);
+            }
+            return m;
+        };
+        const auto abcd = [](const QList<QList<C>>& s, double z0) {
+            const C s11 = s[0][0], s12 = s[0][1], s21 = s[1][0], s22 = s[1][1];
+            Eigen::Matrix2cd t;
+            t(0, 0) = ((1.0 + s11) * (1.0 - s22) + s12 * s21) / (2.0 * s21);
+            t(0, 1) = z0 * ((1.0 + s11) * (1.0 + s22) - s12 * s21) / (2.0 * s21);
+            t(1, 0) = ((1.0 - s11) * (1.0 - s22) - s12 * s21) / (2.0 * s21) / z0;
+            t(1, 1) = ((1.0 - s11) * (1.0 + s22) + s12 * s21) / (2.0 * s21);
+            return t;
+        };
+        QList<rf::ModelSolution> waves;
+        for (const double length : {500.0, 1500.0}) {
+            rf::SolveJob job;
+            rf::SolveRequest request;
+            request.solver = QStringLiteral("full_wave");
+            request.frequencies = fs;
+            request.adaptive = 0;
+            waves << rf::solveModel(job, model(length), nothingRead(), QStringLiteral("none"), QDir::tempPath(), request);
+        }
+        rf::SolveJob job;
+        rf::SolveRequest request;
+        request.solver = QStringLiteral("quasi_static");
+        const rf::ModelSolution qs = rf::solveModel(job, model(1000), nothingRead(), QStringLiteral("none"), QDir::tempPath(), request);
+        QVERIFY2(qs.extraction && qs.extraction->perMetre.conducting.on(), qPrintable(qs.problem));
+        for (int k = 0; k < fs.size(); ++k) {
+            const double k0 = 2 * M_PI * fs[k] / 299792458.0;
+            QVERIFY2(waves[0].wave && waves[1].wave && waves[0].wave->ok() && waves[1].wave->ok(), qPrintable(waves[0].problem + waves[1].problem));
+            const Eigen::Matrix2cd t = abcd(waves[0].wave->s[k], waves[0].wave->references.value(0, 50)).inverse()
+                                       * abcd(waves[1].wave->s[k], waves[1].wave->references.value(0, 50));
+            const Eigen::ComplexEigenSolver<Eigen::Matrix2cd> es(t);
+            C g = std::log(es.eigenvalues()(0)) / 1e-3;
+            if (g.real() < 0) g = -g;
+            const rf::LineParameters lp = rf::lineParameters(*qs.extraction, 0, 1e-3, fs[k]);
+            QVERIFY2(lp.problems.isEmpty(), qPrintable(lp.problems.join(" | ")));
+            const double alpha = g.real(), beta = std::abs(g.imag());
+            QVERIFY2(std::abs(lp.gamma.real() / alpha - 1) < 0.03 && std::abs(lp.gamma.imag() / beta - 1) < 0.02,
+                     qPrintable(QStringLiteral("at %1 GHz alpha %2 and beta / k0 %3, the full wave's %4 and %5")
+                                    .arg(fs[k] / 1e9).arg(lp.gamma.real()).arg(lp.gamma.imag() / k0).arg(alpha).arg(beta / k0)));
+        }
+    }
     void aStripsBendIsCutSquareToItsCentreline()
     {
         const rf::Model m = shaped({boxOn("M1", 0, 0, 10, 10)});
