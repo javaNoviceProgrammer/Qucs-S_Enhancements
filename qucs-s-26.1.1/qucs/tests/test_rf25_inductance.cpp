@@ -15,6 +15,7 @@
 #include "rf25/rf25_inductance.h"
 #include "rf25/rf25_layout.h"
 #include "multiphysics/fem_sparse.h"
+#include <Eigen/Dense>
 
 #include <cmath>
 #include <chrono>
@@ -355,6 +356,82 @@ private slots:
         const rf::Inductance thin = rf::inductanceOf(thinMesh, {loop}, stack, QPointF(-5000, -100), QPointF(-5000, 100), 1e-6, 1e4);
         QVERIFY2(thin.ok(), qPrintable(thin.problems.join(" | ")));
         QVERIFY2(!thin.runs.isEmpty() && bars(thin) == 0, qPrintable(QStringLiteral("%1 of %2 runs bars").arg(bars(thin)).arg(thin.runs.size())));
+    }
+
+    // Two bars, each its own or near the other, are their double volume
+    // integral of 1/r exactly - Hoer and Love's -, against that integral
+    // taken numerically (the length in closed form, the cross-sections'
+    // differences adaptively): a bar shorter than it is thick, its own and
+    // its neighbour's, which by a geometric mean distance and four points
+    // across were a quarter under and 9 % over, the neighbour over its own;
+    // a long one 0.05 µm wide of 3 µm metal, its neighbour 11 % over; and
+    // one over another, apart along, across and up. Then a two-turn coil's
+    // L, 3 µm metal on 5 µm traces 2 µm apart, is positive definite: 103 of
+    // its 1,534 eigenvalues were negative, and its compressed solve's GMRES
+    // stood still on a finer mesh (the review's P71).
+    void twoBarsAreTheirDoubleVolumeIntegral()
+    {
+        const double um = 1e-6, unit = kMu0 / (4 * M_PI) * um;   // (the integrals below are in µm)
+        const auto bar = [um](double x0, double x1, double y, double w, double z, double t) {
+            rf::Filament f = alongX(x0 * um, x1 * um, y * um, w * um, t * um);
+            f.z0 = f.z1 = z * um;
+            f.bar = t * um;
+            return f;
+        };
+        const auto near = [](double got, double want, double within) {
+            return std::abs(got / want - 1) < within;
+        };
+        {
+            const rf::Filament a = bar(0, 0.42, 0, 0.41, 0, 3), b = bar(0, 0.42, 0.41, 0.41, 0, 3);
+            const double own = rf::partialInductance(a, a), mutual = rf::partialInductance(a, b);
+            QVERIFY2(near(own, 0.299510753759 * unit, 1e-9), qPrintable(QString::number(own / unit, 'g', 12)));
+            QVERIFY2(near(mutual, 0.213536623105 * unit, 1e-9), qPrintable(QString::number(mutual / unit, 'g', 12)));
+        }
+        {
+            const rf::Filament a = bar(0, 25, 0, 0.05, 0, 3), b = bar(0, 25, 0.05, 0.05, 0, 3);
+            const double own = rf::partialInductance(a, a), mutual = rf::partialInductance(a, b);
+            QVERIFY2(near(own, 166.783539485 * unit, 1e-8), qPrintable(QString::number(own / unit, 'g', 12)));
+            QVERIFY2(near(mutual, 165.117729454 * unit, 1e-8), qPrintable(QString::number(mutual / unit, 'g', 12)));
+        }
+        {
+            // (2 by 1 µm, 5 long; 1 by 2, 3 long, 1 µm along and 1.5 up from
+            //  it - and drawn the other way, the same less.)
+            const rf::Filament a = bar(0, 5, 0, 2, 0, 1), b = bar(1, 4, 0, 1, 1.5, 2), back = bar(4, 1, 0, 1, 1.5, 2);
+            const double mutual = rf::partialInductance(a, b);
+            QVERIFY2(near(mutual, 6.18477403688 * unit, 1e-9), qPrintable(QString::number(mutual / unit, 'g', 12)));
+            QVERIFY2(near(-rf::partialInductance(a, back), mutual, 1e-12), qPrintable(QString::number(rf::partialInductance(a, back) / unit)));
+            QVERIFY2(near(rf::partialInductance(b, a), mutual, 1e-9), qPrintable(QString::number(rf::partialInductance(b, a) / unit)));
+        }
+        {
+            // (A bar a million times longer than it is wide: the exact sum's
+            //  terms 1e16 times it, its rounding all of it - 6,939 where its
+            //  own is 16,198 - and its geometric mean distance's, within a
+            //  part in 1e4 so long, is taken.)
+            const rf::Filament a = bar(0, 1000, 0, 0.002, 0, 1);
+            const double own = rf::partialInductance(a, a), byDistance = exactPair(1000 * um, rf::selfDistance(0.002 * um, um));
+            QVERIFY2(near(own, byDistance, 1e-12), qPrintable(QStringLiteral("%1 against %2").arg(own / unit).arg(byDistance / unit)));
+        }
+
+        const QList<QPointF> line{{-37.5, -67.5}, {-37.5, 37.5}, {37.5, 37.5},  {37.5, -37.5},
+                                  {-30.5, -37.5}, {-30.5, 30.5}, {30.5, 30.5}, {30.5, -30.5}, {-26, -30.5}};
+        const rf::Conductor coil = widened(line, 5);
+        const rf::Stack stack = grounded(4.1, 8e-6, 3e-6, 5.8e7);
+        rf::MeshSettings how;
+        how.cellsAcross = 3;
+        how.gaps = true;
+        const rf::Mesh mesh = rf::meshOf({coil}, how, stack, 1e9);
+        QVERIFY2(mesh.ok(), qPrintable(mesh.problems.join(" | ")));
+        const rf::Inductance loop = rf::inductanceOf(mesh, {coil}, stack, line.first(), line.last());
+        QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+        const QList<QList<double>> l = rf::partialInductances(loop.runs);
+        const int n = int(l.size());
+        Eigen::MatrixXd m(n, n);
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) m(i, j) = l.at(i).at(j) / std::sqrt(l.at(i).at(i) * l.at(j).at(j));
+        const Eigen::VectorXd eigen = Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd>(m, Eigen::EigenvaluesOnly).eigenvalues();
+        int negative = 0;
+        for (int i = 0; i < n; ++i) negative += eigen(i) < 0 ? 1 : 0;
+        QVERIFY2(negative == 0, qPrintable(QStringLiteral("%1 of %2 runs' L's eigenvalues negative, the least %3").arg(negative).arg(n).arg(eigen(0))));
     }
 
     void twoFilamentsMutualIsTheirDoubleIntegral()
@@ -1072,6 +1149,40 @@ private slots:
         QVERIFY2(coarse.ok() && !coarse.compressed, qPrintable(coarse.problems.join(" | ")));
         QVERIFY2(std::abs(over.l / coarse.l - 1) < 0.02, qPrintable(QStringLiteral("%1 against %2 nH").arg(over.l * 1e9).arg(coarse.l * 1e9)));
         qWarning().noquote() << over.lines.join(QStringLiteral(" | "));
+    }
+
+    // A compressed loop whose GMRES does not converge is solved dense where
+    // that fits, and says so; where it does not, it says how far it got, what
+    // dense would take, and that another mesh may converge - not "Mesh the
+    // layout more coarsely, so that it is solved dense", which past the
+    // dense limit no mesh but a far coarser one could do (the review's P71).
+    // GMRES held to two iterations stands in for one that stands still.
+    void aCompressedLoopThatDoesNotConvergeIsSolvedDense()
+    {
+        const rf::Stack stack = grounded(9.8, 100e-6, 3e-6, 5.8e7);
+        const QList<rf::Conductor> u{strip(0, 0, 600, 40), strip(560, 40, 40, 300), strip(0, 340, 600, 40)};
+        const rf::Mesh mesh = meshed(u, 10);
+        const rf::Inductance dense = rf::inductanceOf(mesh, u, stack, QPointF(0, 20), QPointF(0, 360));
+        QVERIFY2(dense.ok() && !dense.compressed, qPrintable(dense.problems.join(" | ")));
+        rf::setLoopDenseLimit(50);
+        rf::setLoopMostIterations(2);
+        const rf::Inductance fallen = rf::inductanceOf(mesh, u, stack, QPointF(0, 20), QPointF(0, 360));
+        rf::setLoopMemory(40e6);
+        const rf::Inductance refused = rf::inductanceOf(mesh, u, stack, QPointF(0, 20), QPointF(0, 360));
+        rf::setLoopMemory(0);
+        rf::setLoopMostIterations(0);
+        rf::setLoopDenseLimit(0);
+        QVERIFY2(fallen.ok() && !fallen.compressed, qPrintable(fallen.problems.join(" | ")));
+        QVERIFY2(std::abs(fallen.l / dense.l - 1) < 1e-9 && std::abs(fallen.lDc / dense.lDc - 1) < 1e-9,
+                 qPrintable(QStringLiteral("%1 and %2 nH against %3 and %4").arg(fallen.l * 1e9).arg(fallen.lDc * 1e9).arg(dense.l * 1e9).arg(dense.lDc * 1e9)));
+        const QString said = fallen.lines.join(' ');
+        QVERIFY2(said.contains(QStringLiteral("solved compressed first: GMRES did not converge")) && said.contains(QStringLiteral("so the loop was solved dense")),
+                 qPrintable(said));
+        QVERIFY(!refused.ok());
+        const QString why = refused.problems.join(' ');
+        QVERIFY2(why.contains(QStringLiteral("did not converge")) && why.contains(QStringLiteral("solved dense, more than"))
+                     && why.contains(QStringLiteral("may converge")) && !why.contains(QStringLiteral("more coarsely")),
+                 qPrintable(why));
     }
 
 

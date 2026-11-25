@@ -345,6 +345,10 @@ void setLoopDenseLimit(int runsAndCells);
 /// machine's memory). Past it, inductanceOf() refuses before it fills L or
 /// factorizes its near field, and says what it would have taken.
 void setLoopMemory(double bytes);
+/// Tests: how many GMRES iterations a compressed loop solve may take (0:
+/// 3000). Not converged by then, it is solved dense where that fits beside
+/// what it holds, and refused, said, where it does not.
+void setLoopMostIterations(int iterations);
 /// Tests: \a hook called on the compressed loop's factorization's own thread
 /// before it factorizes its near field (empty: none) - a test holds it
 /// there to stop the solve while it factorizes.
