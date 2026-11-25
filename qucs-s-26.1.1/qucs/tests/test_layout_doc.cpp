@@ -838,6 +838,20 @@ private slots:
                        QJsonArray{QJsonObject{{"add", "polygon"}, {"layer", "1/0"}, {"points", QJsonArray{QJsonArray{0, 0}, QJsonArray{1, 0}, QJsonArray{1, 1}}}}});
         QVERIFY2(intoPcell.ok, qPrintable(intoPcell.error));
         QCOMPARE(intoPcell.cell, QString("TEXT"));
+        // A library's cell placed by no cell, its sub-cell written before
+        // it: the library cell the top - not the sub-cell, the file's first
+        // cell but the context cell.
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_TEST_DATA "/klayout_context_library.gds"), path("context_library.gds")));
+        QCOMPARE(qucs_s::fem::readLayoutShapes(path("context_library.gds")).cell, QString("BLOCK"));
+        const auto library = read(path("context_library.gds"), &error);
+        QVERIFY2(library, qPrintable(error));
+        QCOMPARE(library->topCells.size(), 1);
+        QCOMPARE(library->cells.at(library->mainCell()).name, QString("BLOCK"));
+        const EditResult intoLibrary =
+            editLayout(path("context_library.gds"), QString(),
+                       QJsonArray{QJsonObject{{"add", "polygon"}, {"layer", "1/0"}, {"points", QJsonArray{QJsonArray{0, 0}, QJsonArray{1, 0}, QJsonArray{1, 1}}}}});
+        QVERIFY2(intoLibrary.ok, qPrintable(intoLibrary.error));
+        QCOMPARE(intoLibrary.cell, QString("BLOCK"));
     }
 
     // OASIS as KLayout writes it (data/klayout_sample.py): compressed
