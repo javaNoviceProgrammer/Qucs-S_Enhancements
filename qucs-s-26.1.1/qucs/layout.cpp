@@ -463,7 +463,17 @@ void finish(Layout& layout)
         }
     }
 
+    // KLayout's context cell, if no cell places it: its references (one to
+    // each PCell and library cell) neither placements nor parents - a PCell
+    // only it refers to is a top cell.
+    if (const int c = layout.cellIndex(QStringLiteral("$$$CONTEXT_INFO$$$")); c >= 0) {
+        bool placed = false;
+        for (const Cell& cell : std::as_const(layout.cells))
+            for (const Instance& inst : cell.instances) placed = placed || inst.cell == c;
+        if (!placed) layout.contextCell = c;
+    }
     for (Cell& cell : layout.cells) {
+        if (&cell - layout.cells.data() == layout.contextCell) continue;
         QSet<int> placed;
         for (const Instance& inst : cell.instances) {
             if (inst.cell < 0) continue;
@@ -472,8 +482,6 @@ void finish(Layout& layout)
         }
         for (int child : placed) layout.cells[child].parents++;
     }
-    // (KLayout's context cell, placed by none: not a top cell to show)
-    if (const int c = layout.cellIndex(QStringLiteral("$$$CONTEXT_INFO$$$")); c >= 0 && layout.cells[c].parents == 0) layout.contextCell = c;
     for (int c = 0; c < n; ++c)
         if (layout.cells[c].parents == 0 && c != layout.contextCell) layout.topCells.append(c);
     std::sort(layout.topCells.begin(), layout.topCells.end(), [&](int a, int b) {

@@ -17,6 +17,8 @@
 
 #include "router.h"
 
+#include <vector>
+
 namespace gdstk {
 struct Library;
 struct Cell;
@@ -33,6 +35,9 @@ bool isOasisFile(const QString& path);
 /// in properties, a reference to each of their cells - never the layout's
 /// top cell, though no cell places it.
 bool isKLayoutContext(const gdstk::Cell* cell);
+/// \a lib's top cells: those no other places, KLayout's context cell
+/// neither one nor placing any (a PCell only it refers to is a top cell).
+std::vector<gdstk::Cell*> topCellsOf(const gdstk::Library& lib);
 /// \a path read whole with gdstk - GDSII, or OASIS by its suffix - into
 /// \a lib (its units set when the file has none); false, and why, when it
 /// cannot be (\a lib then freed).

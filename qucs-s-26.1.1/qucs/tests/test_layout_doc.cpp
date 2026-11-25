@@ -70,6 +70,9 @@
 #include "layout.h"
 #include "layoutdoc.h"
 #include "layoutedit.h"
+#include "layoutrouter/router.h"
+#include "layoutrouter/router_gds.h"
+#include "multiphysics/fem_import.h"
 #include "markdowndoc.h"
 #include "menu_owner_close.h"
 #ifdef QUCS_HAVE_QTPDF
@@ -802,6 +805,39 @@ private slots:
         QVERIFY(after->contextCell >= 0);   // (kept, as written)
         QCOMPARE(after->cells.at(after->contextCell).instances.size(), 5);
         QCOMPARE(after->cells.at(after->cellIndex("TOP")).shapes.size(), 1);
+        // Its references are no placements: TOP's one and the block's five.
+        QCOMPARE(after->instanceCount, quint64(6));
+        // The router's commit places its routes in TOP; the multiphysics
+        // import reads TOP (not the five PCells at their origins).
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_TEST_DATA "/klayout_context_many.gds"), path("context_routed_from.gds")));
+        qucs_s::router::Commit commit;
+        commit.source = path("context_routed_from.gds");
+        commit.target = path("context_routed.gds");
+        const qucs_s::router::CommitReport committed = qucs_s::router::commitRoutes(commit, qucs_s::router::Problem(), qucs_s::router::Result());
+        QVERIFY2(committed.ok, qPrintable(committed.error));
+        QVERIFY(committed.placed);
+        const auto routed = read(path("context_routed.gds"), &error);
+        QVERIFY2(routed, qPrintable(error));
+        bool inTop = false;
+        for (const Instance& inst : routed->cells.at(routed->cellIndex("TOP")).instances)
+            inTop = inTop || (inst.cell >= 0 && routed->cells.at(inst.cell).name == QLatin1String("ROUTES"));
+        QVERIFY(inTop);
+        QCOMPARE(routed->cells.at(routed->contextCell).instances.size(), 5);
+        QCOMPARE(qucs_s::fem::readLayoutShapes(path("context_many.gds")).cell, QString("TOP"));
+        // A layout whose top cell is a PCell, which only the context cell
+        // refers to: that PCell the top cell - shown, edited and read.
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_TEST_DATA "/klayout_context_pcell.gds"), path("context_pcell.gds")));
+        const auto pcell = read(path("context_pcell.gds"), &error);
+        QVERIFY2(pcell, qPrintable(error));
+        QCOMPARE(pcell->topCells.size(), 1);
+        QCOMPARE(pcell->cells.at(pcell->mainCell()).name, QString("TEXT"));
+        QCOMPARE(pcell->instanceCount, quint64(0));
+        QCOMPARE(qucs_s::fem::readLayoutShapes(path("context_pcell.gds")).cell, QString("TEXT"));
+        const EditResult intoPcell =
+            editLayout(path("context_pcell.gds"), QString(),
+                       QJsonArray{QJsonObject{{"add", "polygon"}, {"layer", "1/0"}, {"points", QJsonArray{QJsonArray{0, 0}, QJsonArray{1, 0}, QJsonArray{1, 1}}}}});
+        QVERIFY2(intoPcell.ok, qPrintable(intoPcell.error));
+        QCOMPARE(intoPcell.cell, QString("TEXT"));
     }
 
     // OASIS as KLayout writes it (data/klayout_sample.py): compressed
