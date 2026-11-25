@@ -1136,8 +1136,12 @@ private slots:
     // boxes alone. The wide jaw turned, of one width all round, is a strip
     // cut along its centreline, with no pieces, and two strips 20 µm wide
     // 4 µm apart turned so are two: no measure took their segments, and
-    // they read no gap. A strip's corner 5 µm from another's side, the walls
-    // there 45 degrees off facing each other, faces none.
+    // they read no gap; nor did a strip 4 µm from a trapezoid, a piece of
+    // another conductor. A strip's corner 5 µm from another's side, the walls
+    // there 45 degrees off facing each other, faces none. And a spiral of one
+    // strip, 1,800 segments 4 µm apart, reads its gap in under a few seconds:
+    // each pair of its segments looking through both outlines whole, it took
+    // 69 s, cubic in its segments.
     void aGapWithinOneConductorIsAcrossItsWalls()
     {
         const QList<QPair<double, QList<QPointF>>> shapes{
@@ -1173,6 +1177,42 @@ private slots:
             const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), m.solveStack(), 1e9);
             QVERIFY2(mesh.ok() && std::abs(mesh.gapByLayer.value(QStringLiteral("M1")) / 4 - 1) < 0.01,
                      qPrintable(QStringLiteral("two strips at 30 degrees 4 µm apart: read %1").arg(mesh.gapByLayer.value(QStringLiteral("M1")))));
+        }
+        // A strip 4 µm from a trapezoid, turned 30 degrees.
+        {
+            const double c = std::cos(M_PI / 6), s = std::sin(M_PI / 6);
+            QList<QJsonObject> shapes;
+            for (const QList<QPointF>& points : QList<QList<QPointF>>{{{0, 0}, {100, 0}, {100, 20}, {0, 20}}, {{0, 24}, {100, 24}, {80, 44}, {20, 44}}}) {
+                QJsonArray rows;
+                for (const QPointF& q : points)
+                    rows.append(QJsonArray{QString::number(c * q.x() - s * q.y(), 'g', 12) + "[um]", QString::number(s * q.x() + c * q.y(), 'g', 12) + "[um]"});
+                shapes << QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}};
+            }
+            const rf::Model m = shaped(shapes);
+            const rf::Processed processed = rf::processRead(m, nothingRead(), QStringLiteral("none"));
+            QVERIFY(processed.conductors.size() == 2 && processed.conductors.first().isStrip() != processed.conductors.last().isStrip());
+            const rf::Mesh mesh = rf::meshOf(processed.conductors, rf::MeshSettings(), m.solveStack(), 1e9);
+            QVERIFY2(mesh.ok() && std::abs(mesh.gapByLayer.value(QStringLiteral("M1")) / 4 - 1) < 0.01,
+                     qPrintable(QStringLiteral("a strip 4 µm from a trapezoid at 30 degrees: read %1").arg(mesh.gapByLayer.value(QStringLiteral("M1")))));
+        }
+        // A spiral of one strip, 300 µm out, 8 wide, 4 between its turns, 10
+        // turns of 180 segments.
+        {
+            const rf::Model m = stacked();
+            rf::Conductor spiral;
+            spiral.layer = QStringLiteral("M1");
+            for (int i = 0; i <= 1800; ++i) {
+                const double a = 2 * M_PI * i / 180 - M_PI / 2, r = 300 - 12 * double(i) / 180;
+                spiral.spine << QPointF(r * std::cos(a), r * std::sin(a));
+            }
+            spiral.spineWidth = 8;
+            spiral.outline = rf::stripOutline(spiral.spine, spiral.spineWidth);
+            QElapsedTimer clock;
+            clock.start();
+            const rf::Mesh mesh = rf::meshOf({spiral}, rf::MeshSettings(), m.solveStack(), 1e9);
+            const qint64 took = clock.elapsed();
+            QVERIFY2(mesh.ok() && std::abs(mesh.gapByLayer.value(QStringLiteral("M1")) / 4 - 1) < 0.01 && took < 20000,
+                     qPrintable(QStringLiteral("a spiral of one strip: gap %1 µm, %2 ms").arg(mesh.gapByLayer.value(QStringLiteral("M1"))).arg(took)));
         }
         {
             QList<QJsonObject> strips;
