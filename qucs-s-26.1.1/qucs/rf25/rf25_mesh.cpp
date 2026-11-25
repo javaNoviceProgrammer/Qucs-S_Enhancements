@@ -3272,20 +3272,24 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     const double g = std::max(B.top() - A.bottom(), A.top() - B.bottom());
                     gap = gap > 0 && g > 0 ? std::min(gap, g) : std::max(gap, g);
                 }
-                // (Two conductors' pieces whose boxes overlap, one a curve's or
-                //  a slanted side's: how far apart their outlines are. A disc
-                //  4 µm inside a ring of 3 µm metal lay in the ring's box, and
-                //  no gap was found: as a sheet, not said to read low - its C
-                //  26 % under its two faces' -, and Automatic took it as one.)
-                if (gap <= 1e-9 * size && pieces.at(a).conductor != pieces.at(b).conductor
-                    && (!pieces.at(a).rectangle || !pieces.at(b).rectangle) && A.intersects(B))
-                    gap = outlineDistance(outlineOfPiece(pieces.at(a)), outlineOfPiece(pieces.at(b)));
+                // (Pieces whose boxes overlap, one a curve's or a slanted
+                //  side's: how far apart their outlines are. A disc 4 µm
+                //  inside a ring of 3 µm metal lay in the ring's box, and no
+                //  gap was found: as a sheet, not said to read low - its C 26 %
+                //  under its two faces' -, and Automatic took it as one. Of
+                //  one conductor too, its own pairs judged below by its walls
+                //  facing: a slot 4 µm wide or a jaw turned 30 degrees, its two
+                //  sides' parts' boxes overlapping, read no gap.)
+                const bool overlapped = gap <= 1e-9 * size && (!pieces.at(a).rectangle || !pieces.at(b).rectangle) && A.intersects(B);
+                if (overlapped) gap = outlineDistance(outlineOfPiece(pieces.at(a)), outlineOfPiece(pieces.at(b)));
                 if (gap <= 1e-9 * size) continue;
                 // (Two pieces of one conductor with that conductor between
                 //  them face no gap, as the grading above has it: two parts of
                 //  a dodecagonal spiral's turn with a sliver of a slab between
-                //  them were said to be 0.012 µm apart.)
-                if (pieces.at(a).conductor == pieces.at(b).conductor
+                //  them were said to be 0.012 µm apart. Where their boxes
+                //  overlap, the middle of the overlap says nothing: the walls
+                //  below judge them.)
+                if (pieces.at(a).conductor == pieces.at(b).conductor && !overlapped
                     && conductors.at(pieces.at(a).conductor)
                            .outline.containsPoint(QPointF(0.5 * (std::max(A.left(), B.left()) + std::min(A.right(), B.right())),
                                                           0.5 * (std::max(A.top(), B.top()) + std::min(A.bottom(), B.bottom()))),

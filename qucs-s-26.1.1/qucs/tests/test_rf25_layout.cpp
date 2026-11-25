@@ -1130,7 +1130,12 @@ private slots:
     // nearest point was one of its corners - a slot's arm's tip -, the side
     // there taken for its wall was the last of the two, the arm's end, which
     // faces nothing across the slot: none of them read a gap, and Automatic
-    // took a thick metal on them as a sheet.
+    // took a thick metal on them as a sheet. And each turned 30 degrees, its
+    // two sides' parts' boxes overlapping: the slot and the narrow jaw read
+    // no gap, a pair of one conductor whose boxes overlapped measured by its
+    // boxes alone. (The wide jaw turned, of one width all round, is a strip
+    // along its centreline, whose gaps between its own segments no measure
+    // takes: older, and left.)
     void aGapWithinOneConductorIsAcrossItsWalls()
     {
         const QList<QPair<double, QList<QPointF>>> shapes{
@@ -1138,14 +1143,19 @@ private slots:
             {4, {{0, 0}, {100, 0}, {100, 48}, {20, 48}, {20, 52}, {100, 52}, {100, 100}, {0, 100}}},
             {60, {{0, 0}, {100, 0}, {100, 20}, {20, 20}, {20, 80}, {100, 80}, {100, 100}, {0, 100}}},
             {10, {{0, 0}, {100, 0}, {100, 10}, {10, 10}, {10, 20}, {100, 20}, {100, 30}, {10, 30}, {10, 40}, {100, 40}, {100, 50}, {0, 50}}}};
-        for (const auto& [gap, points] : shapes) {
-            QJsonArray rows;
-            for (const QPointF& q : points) rows.append(QJsonArray{QString::number(q.x()) + "[um]", QString::number(q.y()) + "[um]"});
-            const rf::Model m = shaped({QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}}});
-            const rf::Mesh mesh = rf::meshOf(rf::processRead(m, nothingRead(), QStringLiteral("none")).conductors, rf::MeshSettings(), m.solveStack(), 1e9);
-            QVERIFY2(mesh.ok() && std::abs(mesh.gapByLayer.value(QStringLiteral("M1")) / gap - 1) < 0.01,
-                     qPrintable(QStringLiteral("%1 points, a gap of %2 µm: read %3").arg(points.size()).arg(gap).arg(mesh.gapByLayer.value(QStringLiteral("M1")))));
-        }
+        for (const auto& [gap, points] : shapes)
+            for (const double degrees : {0.0, 30.0}) {
+                if (degrees != 0 && gap == 60) continue;
+                const double c = std::cos(degrees * M_PI / 180), s = std::sin(degrees * M_PI / 180);
+                QJsonArray rows;
+                for (const QPointF& q : points)
+                    rows.append(QJsonArray{QString::number(c * q.x() - s * q.y(), 'g', 12) + "[um]", QString::number(s * q.x() + c * q.y(), 'g', 12) + "[um]"});
+                const rf::Model m = shaped({QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}}});
+                const rf::Mesh mesh = rf::meshOf(rf::processRead(m, nothingRead(), QStringLiteral("none")).conductors, rf::MeshSettings(), m.solveStack(), 1e9);
+                QVERIFY2(mesh.ok() && std::abs(mesh.gapByLayer.value(QStringLiteral("M1")) / gap - 1) < 0.01,
+                         qPrintable(QStringLiteral("%1 points at %2 degrees, a gap of %3 µm: read %4")
+                                        .arg(points.size()).arg(degrees).arg(gap).arg(mesh.gapByLayer.value(QStringLiteral("M1")))));
+            }
     }
 
     // A curve turned (turnOf()) beside other shapes on its layer, and fed
