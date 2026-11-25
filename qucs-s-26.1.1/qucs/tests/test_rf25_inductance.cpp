@@ -1167,9 +1167,6 @@ private slots:
         rf::setLoopDenseLimit(50);
         rf::setLoopMostIterations(2);
         const rf::Inductance fallen = rf::inductanceOf(mesh, u, stack, QPointF(0, 20), QPointF(0, 360));
-        rf::setLoopMemory(40e6);
-        const rf::Inductance refused = rf::inductanceOf(mesh, u, stack, QPointF(0, 20), QPointF(0, 360));
-        rf::setLoopMemory(0);
         rf::setLoopMostIterations(0);
         rf::setLoopDenseLimit(0);
         QVERIFY2(fallen.ok() && !fallen.compressed, qPrintable(fallen.problems.join(" | ")));
@@ -1178,9 +1175,36 @@ private slots:
         const QString said = fallen.lines.join(' ');
         QVERIFY2(said.contains(QStringLiteral("solved compressed first: GMRES did not converge")) && said.contains(QStringLiteral("so the loop was solved dense")),
                  qPrintable(said));
-        QVERIFY(!refused.ok());
-        const QString why = refused.problems.join(' ');
-        QVERIFY2(why.contains(QStringLiteral("did not converge")) && why.contains(QStringLiteral("solved dense, more than"))
+
+        // What it may take is the whole of what a solve may: the compressed
+        // L, its near field and its factors let go first, the dense solve
+        // L's rows and the system, factorized in place. Just past that it is
+        // solved dense; just short of it, refused, the budget it says the
+        // one it was weighed against. (Weighed against what was left beside
+        // the compressed solve, a U was refused at 1.1 times its dense size,
+        // "more than" a budget larger than it.)
+        // (On a mesh twice as fine, whose compressed solve takes a fraction
+        //  of its dense one: the coarse U's near field's factors alone were
+        //  nearly its dense size. Not under the sanitizers: its two dense
+        //  solves are most of the function there.)
+        if (slowBuild()) return;
+        const rf::Mesh fine = meshed(u, 5);
+        const rf::Inductance sized = rf::inductanceOf(fine, u, stack, QPointF(0, 20), QPointF(0, 360));
+        QVERIFY2(sized.ok() && sized.compressed, qPrintable(sized.problems.join(" | ")));
+        const double nb = sized.branches, rows = sized.branches + sized.nodes - 1;
+        const double denseBytes = 8 * (nb * nb + rows * rows);
+        rf::setLoopMostIterations(2);
+        rf::setLoopMemory(1.02 * denseBytes);
+        const rf::Inductance roomy = rf::inductanceOf(fine, u, stack, QPointF(0, 20), QPointF(0, 360));
+        rf::setLoopMemory(0.95 * denseBytes);
+        const rf::Inductance tight = rf::inductanceOf(fine, u, stack, QPointF(0, 20), QPointF(0, 360));
+        rf::setLoopMemory(0);
+        rf::setLoopMostIterations(0);
+        QVERIFY2(roomy.ok() && !roomy.compressed && std::abs(roomy.l / sized.l - 1) < 1e-6,
+                 qPrintable(QStringLiteral("%1 | %2 nH against %3").arg(roomy.problems.join(" | ")).arg(roomy.l * 1e9).arg(sized.l * 1e9)));
+        const QString why = tight.problems.join(' ');
+        const QString budget = QStringLiteral("solved dense, more than the %1 GB").arg(0.95 * denseBytes / 1e9, 0, 'g', 3);
+        QVERIFY2(!tight.ok() && why.contains(QStringLiteral("did not converge")) && why.contains(budget)
                      && why.contains(QStringLiteral("may converge")) && !why.contains(QStringLiteral("more coarsely")),
                  qPrintable(why));
     }
