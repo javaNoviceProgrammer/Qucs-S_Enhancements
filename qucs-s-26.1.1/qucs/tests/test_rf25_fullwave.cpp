@@ -1054,6 +1054,53 @@ private slots:
         QVERIFY2(std::abs(skin.at(1) / nh.at(1) / 0.9488 - 1) < 0.005, qPrintable(QStringLiteral("%1 %2").arg(skin.at(1)).arg(nh.at(1))));
     }
 
+    // With the charges eliminated, Z's terms come out up to some four
+    // epsilons of the largest charges' term off, in Ohm: a loop whose
+    // resistance far outweighs its reactance has that reactance in its
+    // rounding at a low frequency, and is said to - its L from Im Z may read
+    // wrong by its whole value (a meander of 34.9 Ohm and 9.23 nH read 4.1
+    // to 10.9 nH at 10 kHz from one solve to the next, nothing said: the
+    // review's P67). A strip 300 by 10 µm of 1 µm copper in free space, one
+    // port returning through a terminal at its far end, 0.51 Ohm and some
+    // 0.27 nH: the charges eliminated, said at 1 kHz, not at 1 MHz, where
+    // its L is as with them unknowns of their own; and with them unknowns of
+    // their own (the dense solve's own choice there), not said at 1 kHz.
+    void aReactanceInTheChargesRoundingIsSaid()
+    {
+        rf::Stack st = grounded(1, 10e-3, 0, 1e-6, 5.8e7);
+        st.layers[0].variant = QStringLiteral("open");
+        const rf::Conductor line = strip(0, -5, 300, 10);
+        rf::FullWavePort p = edgePort(QPointF(0, 0), QString(), QPointF(-1, 0));
+        p.terminals = true;
+        rf::PortTerminal t;
+        t.name = QStringLiteral("T1");
+        t.at = QPointF(300, 0);
+        t.face = true;
+        t.facing = QPointF(1, 0);
+        p.returns = {t};
+        rf::MeshSettings how;
+        how.cellsAcross = 4;
+        const rf::Mesh mesh = rf::meshOf({line}, how, st, 1e6);
+        const auto said = [](const rf::FullWave& w) { return w.warnings.join(' ').contains(QStringLiteral("where the solve's rounding leaves it")); };
+        const rf::FullWave kept = rf::fullWaveOf(mesh, {line}, st, {p}, {1e3, 1e6});
+        QVERIFY2(kept.ok() && !said(kept), qPrintable(why(kept)));
+        const double l = kept.z.at(1).at(0).at(0).imag() / (2 * M_PI * 1e6);
+        QVERIFY2(std::abs(kept.z.at(0).at(0).at(0).imag() / (2 * M_PI * 1e3) / l - 1) < 1e-3, qPrintable(why(kept)));
+        rf::FullWaveControl control;
+        control.augmentedFrom = 1e300;
+        const rf::FullWave eliminated = rf::fullWaveOf(mesh, {line}, st, {p}, {1e3, 1e6}, 1e-6, &control);
+        QVERIFY2(eliminated.ok() && said(eliminated), qPrintable(why(eliminated)));
+        const QString w = eliminated.warnings.join(' ');
+        QVERIFY2(w.contains(QStringLiteral("At 1000 Hz a term")) && w.contains(QStringLiteral("the loop inductance")), qPrintable(w));
+        // (Above some 5.6e5 Hz: where its 1.7e-3 Ohm at 1 MHz, as the
+        //  frequency, is kReactanceDigits times its floor there, as one
+        //  over it.)
+        QVERIFY2(w.contains(QStringLiteral("above some 5.6e+05 Hz")), qPrintable(w));
+        QVERIFY2(std::abs(eliminated.z.at(1).at(0).at(0).imag() / (2 * M_PI * 1e6) / l - 1) < 5e-3, qPrintable(why(eliminated)));
+        const rf::FullWave high = rf::fullWaveOf(mesh, {line}, st, {p}, {1e6}, 1e-6, &control);
+        QVERIFY2(high.ok() && !said(high), qPrintable(why(high)));
+    }
+
     // A thick loop's L falls as its frequency rises, as every conductor's
     // does - its current redistributing toward less magnetic energy -, as
     // its two faces too: the square
