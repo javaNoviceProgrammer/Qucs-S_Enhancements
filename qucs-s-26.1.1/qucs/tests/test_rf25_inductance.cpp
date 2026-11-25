@@ -1185,9 +1185,8 @@ private slots:
         // "more than" a budget larger than it.)
         // (On a mesh twice as fine, whose compressed solve takes a fraction
         //  of its dense one: the coarse U's near field's factors alone were
-        //  nearly its dense size. Not under the sanitizers: its two dense
-        //  solves are most of the function there.)
-        if (slowBuild()) return;
+        //  nearly its dense size. Under the sanitizers too, the only case
+        //  of theirs that reaches the refusal.)
         const rf::Mesh fine = meshed(u, 5);
         const rf::Inductance sized = rf::inductanceOf(fine, u, stack, QPointF(0, 20), QPointF(0, 360));
         QVERIFY2(sized.ok() && sized.compressed, qPrintable(sized.problems.join(" | ")));
