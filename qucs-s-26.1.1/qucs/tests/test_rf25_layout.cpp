@@ -1124,6 +1124,30 @@ private slots:
                  qPrintable(QStringLiteral("under M2 at 45 degrees: %1 squares against %2 fed at 0").arg(slant.squares).arg(square.squares)));
     }
 
+    // Two parts of one conductor face a gap across two of its walls facing
+    // each other, as two conductors do: a slot 4 µm wide, a jaw 4 and 60 µm
+    // across, a comb of one conductor its fingers 10 µm apart. Where the
+    // nearest point was one of its corners - a slot's arm's tip -, the side
+    // there taken for its wall was the last of the two, the arm's end, which
+    // faces nothing across the slot: none of them read a gap, and Automatic
+    // took a thick metal on them as a sheet.
+    void aGapWithinOneConductorIsAcrossItsWalls()
+    {
+        const QList<QPair<double, QList<QPointF>>> shapes{
+            {4, {{0, 0}, {100, 0}, {100, 100}, {52, 100}, {52, 20}, {48, 20}, {48, 100}, {0, 100}}},
+            {4, {{0, 0}, {100, 0}, {100, 48}, {20, 48}, {20, 52}, {100, 52}, {100, 100}, {0, 100}}},
+            {60, {{0, 0}, {100, 0}, {100, 20}, {20, 20}, {20, 80}, {100, 80}, {100, 100}, {0, 100}}},
+            {10, {{0, 0}, {100, 0}, {100, 10}, {10, 10}, {10, 20}, {100, 20}, {100, 30}, {10, 30}, {10, 40}, {100, 40}, {100, 50}, {0, 50}}}};
+        for (const auto& [gap, points] : shapes) {
+            QJsonArray rows;
+            for (const QPointF& q : points) rows.append(QJsonArray{QString::number(q.x()) + "[um]", QString::number(q.y()) + "[um]"});
+            const rf::Model m = shaped({QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}}});
+            const rf::Mesh mesh = rf::meshOf(rf::processRead(m, nothingRead(), QStringLiteral("none")).conductors, rf::MeshSettings(), m.solveStack(), 1e9);
+            QVERIFY2(mesh.ok() && std::abs(mesh.gapByLayer.value(QStringLiteral("M1")) / gap - 1) < 0.01,
+                     qPrintable(QStringLiteral("%1 points, a gap of %2 µm: read %3").arg(points.size()).arg(gap).arg(mesh.gapByLayer.value(QStringLiteral("M1")))));
+        }
+    }
+
     // A curve turned (turnOf()) beside other shapes on its layer, and fed
     // square with a strip at a slant.
     // - Its turned mesh cuts it alone, the rest there for the gaps it faces,

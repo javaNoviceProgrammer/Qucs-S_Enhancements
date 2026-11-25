@@ -848,29 +848,35 @@ double outlineDistance(const QPolygonF& a, const QPolygonF& b, QPointF* between 
 /// do.
 bool wallsFace(const QPolygonF& outline, QPointF p, QPointF q, double near, double apart)
 {
-    const auto normalAt = [&outline, near, apart](QPointF at, QPointF* normal) {
-        double best = near;
+    // The side \a at lies on, its outward normal: of those within \a near of
+    // it - two where it is a corner -, the one turned most towards \a to.
+    // (The last of them, a slot's arm's tip took the arm's end for its wall
+    //  and faced nothing across the slot: a slot, a jaw or a comb of one
+    //  conductor 4 to 60 µm across read no gap.)
+    const auto wallAt = [&outline, near, apart](QPointF at, QPointF to, QPointF* normal) {
+        double most = -std::numeric_limits<double>::infinity();
         bool found = false;
         for (int k = 0, n = int(outline.size()); k < n; ++k) {
             const QPointF s = outline.at(k), e = outline.at((k + 1) % n), d = e - s;
             const double len2 = d.x() * d.x() + d.y() * d.y();
             if (!(len2 > 0)) continue;
             const double t = std::clamp(((at.x() - s.x()) * d.x() + (at.y() - s.y()) * d.y()) / len2, 0.0, 1.0);
-            const double off = std::hypot(at.x() - s.x() - t * d.x(), at.y() - s.y() - t * d.y());
-            if (off > best) continue;
-            best = off;
+            if (std::hypot(at.x() - s.x() - t * d.x(), at.y() - s.y() - t * d.y()) > near) continue;
             const double len = std::sqrt(len2);
-            found = len >= 0.25 * apart;
             QPointF m(-d.y() / len, d.x() / len);
             // (Outward: off the metal.)
             const QPointF mid = s + 0.5 * d, beside = mid + m * std::max(near, 1e-6 * len);
             if (outline.containsPoint(beside, Qt::OddEvenFill)) m = -m;
+            const double towards = (to.x() - at.x()) * m.x() + (to.y() - at.y()) * m.y();
+            if (towards <= most) continue;
+            most = towards;
+            found = len >= 0.25 * apart;
             *normal = m;
         }
         return found;
     };
     QPointF np, nq;
-    if (!normalAt(p, &np) || !normalAt(q, &nq)) return false;
+    if (!wallAt(p, q, &np) || !wallAt(q, p, &nq)) return false;
     const QPointF pq = q - p;
     return np.x() * nq.x() + np.y() * nq.y() <= -std::cos(30 * M_PI / 180) && pq.x() * np.x() + pq.y() * np.y() > 0;
 }
