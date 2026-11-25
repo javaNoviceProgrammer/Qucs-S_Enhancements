@@ -1845,6 +1845,10 @@ struct RunSpec {
     std::optional<int> baseline;
     std::optional<qreal> spacing;
     std::optional<QPen> outline;   // its letters' outline (a:ln); Qt::NoPen: none
+    // A hyperlink's colour and underline: how its link is shown, kept
+    // apart from its own colour - a bullet before it takes its own.
+    std::optional<QColor> linkColor;
+    bool linkUnderline = false;
 
     void over(const RunSpec& o)
     {
@@ -1861,6 +1865,16 @@ struct RunSpec {
         if (o.baseline) baseline = o.baseline;
         if (o.spacing) spacing = o.spacing;
         if (o.outline) outline = o.outline;
+        if (o.linkColor) linkColor = o.linkColor;
+        if (o.linkUnderline) linkUnderline = true;
+    }
+    /// The run without its link's look (for a bullet before it).
+    RunSpec notLinked() const
+    {
+        RunSpec r = *this;
+        r.linkColor.reset();
+        r.linkUnderline = false;
+        return r;
     }
 };
 
@@ -1960,8 +1974,8 @@ RunSpec readRun(const Node* rPr, const Ctx& c)
         if (const Node* list = link->child(u"extLst"))
             for (const Node* ext : list->children(u"ext"))
                 if (const Node* clr = ext->child(u"hlinkClr"); clr != nullptr && clr->attr(u"val") == QLatin1String("tx")) ownColour = true;
-        if (!ownColour) r.color = schemeColor(QStringLiteral("hlink"), c, std::nullopt);
-        if (!r.underline) r.underline = QStringLiteral("sng");
+        if (!ownColour) r.linkColor = schemeColor(QStringLiteral("hlink"), c, std::nullopt);
+        r.linkUnderline = !r.underline.has_value();
     }
     if (const Node* h = rPr->child(u"highlight")) r.highlight = colorOf(h, c);
     if (const Node* latin = rPr->child(u"latin"); latin != nullptr && !latin->attr(u"typeface").isEmpty()) r.face = latin->attr(u"typeface");
@@ -2420,7 +2434,7 @@ QTextCharFormat charFormat(const RunSpec& r, qreal scale, const Ctx& c)
     else if (caps == QLatin1String("small")) font.setCapitalization(QFont::SmallCaps);
     if (r.spacing && *r.spacing != 0) font.setLetterSpacing(QFont::AbsoluteSpacing, *r.spacing);
     f.setFont(font, QTextCharFormat::FontPropertiesAll);
-    const QString u = r.underline.value_or(QStringLiteral("none"));
+    const QString u = r.linkUnderline ? QStringLiteral("sng") : r.underline.value_or(QStringLiteral("none"));
     if (u != QLatin1String("none")) {
         f.setFontUnderline(true);
         if (u.contains(QLatin1String("wav"))) f.setUnderlineStyle(QTextCharFormat::WaveUnderline);
@@ -2428,7 +2442,7 @@ QTextCharFormat charFormat(const RunSpec& r, qreal scale, const Ctx& c)
         else if (u.contains(QLatin1String("dash"), Qt::CaseInsensitive)) f.setUnderlineStyle(QTextCharFormat::DashUnderline);
         else if (u.contains(QLatin1String("dot"))) f.setUnderlineStyle(QTextCharFormat::DotLine);
     }
-    f.setForeground(r.color.value_or(schemeColor(QStringLiteral("tx1"), c, std::nullopt)));
+    f.setForeground(r.linkColor.value_or(r.color.value_or(schemeColor(QStringLiteral("tx1"), c, std::nullopt))));
     if (r.outline && r.outline->style() != Qt::NoPen) f.setTextOutline(*r.outline);
     if (r.highlight) f.setBackground(*r.highlight);
     if (const int b = r.baseline.value_or(0); b > 0) f.setVerticalAlignment(QTextCharFormat::AlignSuperScript);
@@ -2593,7 +2607,7 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
         }
         if (!para.bullet.isEmpty()) {
             RunSpec br = para.runs.isEmpty() ? end : spec.run;
-            if (!para.runs.isEmpty()) br.over(readRun(p->child(u"r") != nullptr ? p->child(u"r")->child(u"rPr") : nullptr, c));
+            if (!para.runs.isEmpty()) br.over(readRun(p->child(u"r") != nullptr ? p->child(u"r")->child(u"rPr") : nullptr, c).notLinked());
             if (spec.bulletColor && !spec.bulletColorText) br.color = spec.bulletColor;
             if (br.face && isSymbolFamily(*br.face)) br.face.reset();
             if (spec.bulletFont && !spec.bulletFontText && kind == QLatin1String("char") && bulletInItsFont) br.face = *spec.bulletFont;
@@ -2613,7 +2627,7 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
         // apart, and Qt measures them from where the first line starts,
         // the paragraph's margin and indent in (a stop at 300 points, with
         // a margin of 100, came out at 400).
-        if (!para.rtl) {
+        {
             const qreal origin = para.marL + b.textIndent();
             const qreal every = spec.defaultTab.value_or(72);
             QList<QTextOption::Tab> tabs;
@@ -2622,10 +2636,12 @@ std::shared_ptr<TextFrame> buildText(const Node* txBody, const TextChain& chain,
                 last = tab.position;
                 if (tab.position <= origin) continue;
                 tab.position = (tab.position - origin) * tabScale();
+                if (para.rtl && tab.type == QTextOption::LeftTab) tab.type = QTextOption::RightTab;
+                else if (para.rtl && tab.type == QTextOption::RightTab) tab.type = QTextOption::LeftTab;
                 tabs << tab;
             }
             for (qreal at = (std::floor(std::max(last, origin) / every) + 1) * every; tabs.size() < 64 && at <= kMaxSlideSide; at += every)
-                tabs << QTextOption::Tab((at - origin) * tabScale(), QTextOption::LeftTab);
+                tabs << QTextOption::Tab((at - origin) * tabScale(), para.rtl ? QTextOption::RightTab : QTextOption::LeftTab);
             b.setTabPositions(tabs);
         }
         frame->paras << para;
