@@ -83,6 +83,9 @@ constexpr double kLoopBytesPerRun = 20e3;
 constexpr double kLoopBytesPerNearPair = 8 + 2 * 24 + 2 * 2 * 20;
 /// Tests: what a compressed loop may take, bytes (0: half the machine's).
 std::atomic<double> loopMemorySet{0};
+/// Tests: how many GMRES iterations a compressed loop may take (0:
+/// kLoopMostIterations).
+std::atomic<int> loopMostIterationsSet{0};
 /// Two runs further apart than this many of their widths have their
 /// transverse distance taken between their middles; nearer than it, it is
 /// averaged across both widths.
@@ -245,6 +248,71 @@ double meanLogBetween(const Segment& a, const Segment& b)
     return sum / (cuts.last() - cuts.first());
 }
 
+/*!
+ * Hoer and Love's function of a difference (x, y, z) between two points of
+ * two bars: twice integrated along each axis, it is 1/r - its sixth mixed
+ * derivative, d^2/dx^2 d^2/dy^2 d^2/dz^2, is 1/sqrt(x^2 + y^2 + z^2) -,
+ * so that the double volume integral of 1/r over two boxes is a sum of it
+ * at the 64 differences of their faces (barPair()). C. M. Hoer and
+ * C. H. Love, "Exact inductance equations for rectangular conductors with
+ * applications to more complicated geometries", J. Res. NBS 69C(2), 1965.
+ *
+ * Its arctangents' terms each hold the cube of the coordinate in their
+ * arctangent's denominator, which crosses nought where the arctangent
+ * jumps by pi: a lower power there leaves deltas on the axes, and two
+ * small boxes one over the other - their differences across both
+ * straddling nought - came out at thousands of times their 1/r.
+ */
+double barFunction(double x, double y, double z)
+{
+    const double r = std::sqrt(x * x + y * y + z * z);
+    double sum = (x * x * x * x + y * y * y * y + z * z * z * z - 3 * (x * x * y * y + y * y * z * z + z * z * x * x)) * r / 60;
+    for (const auto& [a, b, c] : {std::array<double, 3>{x, y, z}, std::array<double, 3>{y, z, x}, std::array<double, 3>{z, x, y}}) {
+        const double across = b * b + c * c;
+        const double k = b * b * c * c / 4 - (b * b * b * b + c * c * c * c) / 24;
+        // a ln(a + r), its argument taken as (b^2 + c^2)/(r - a) where a is
+        // negative and a + r would cancel. (Where b and c are both nought
+        // its factor k is too, and the term is.)
+        if (k != 0 && across > 0) sum += k * a * (a >= 0 ? std::log(a + r) : std::log(across / (r - a)));
+        if (c != 0) sum -= a * b * c * c * c / 6 * std::atan(a * b / (c * r));
+    }
+    return sum;
+}
+
+/*!
+ * The double volume integral of 1/r over two bars both along x - \a a and
+ * \a b, each {x0, x1, y0, y1, z0, z1} -, over the areas of their
+ * cross-sections: what mu0/4pi times is their partial mutual inductance,
+ * exactly (Hoer and Love's). \a terms is the sum of its 64 terms' sizes,
+ * against which its rounding is measured: it is a difference of them, and
+ * of a long thin pair's they are many orders larger.
+ */
+double barPair(const std::array<double, 6>& a, const std::array<double, 6>& b, double* terms)
+{
+    // In the pair's own scale, its largest extent one: the terms go as its
+    // fifth power.
+    double scale = 0;
+    for (int k = 0; k < 6; ++k) scale = std::max({scale, std::abs(a[std::size_t(k)]), std::abs(b[std::size_t(k)])});
+    if (!(scale > 0)) return 0;
+    const auto differences = [&](int axis) {
+        const double a0 = a[std::size_t(2 * axis)] / scale, a1 = a[std::size_t(2 * axis + 1)] / scale;
+        const double b0 = b[std::size_t(2 * axis)] / scale, b1 = b[std::size_t(2 * axis + 1)] / scale;
+        return std::array<std::pair<double, double>, 4>{{{b1 - a0, 1.0}, {b1 - a1, -1.0}, {b0 - a0, -1.0}, {b0 - a1, 1.0}}};
+    };
+    const auto dx = differences(0), dy = differences(1), dz = differences(2);
+    double sum = 0, size = 0;
+    for (const auto& [x, sx] : dx)
+        for (const auto& [y, sy] : dy)
+            for (const auto& [z, sz] : dz) {
+                const double f = barFunction(x, y, z);
+                sum += sx * sy * sz * f;
+                size += std::abs(f);
+            }
+    const double areas = (a[3] - a[2]) * (a[5] - a[4]) * (b[3] - b[2]) * (b[5] - b[4]) / std::pow(scale, 4);
+    if (terms != nullptr) *terms = size / areas * scale;
+    return sum / areas * scale;
+}
+
 } // namespace
 
 double Filament::length() const
@@ -339,6 +407,30 @@ double partialInductance(const Filament& a, const Filament& b)
     const double widest = std::max(breadthOf(a), breadthOf(b));
     // (Bars: their current through their thickness too - Filament::bar.)
     const double tallest = std::max(a.bar, b.bar);
+    // Two bars, each its own or near the other: exactly, the double volume
+    // integral over both (barPair()). A bar's own by its geometric mean
+    // distance, and a near pair by four points across each width and four
+    // up each thickness, are of runs long against their cross-sections: a
+    // two-turn coil's corner cells, 0.42 µm runs 0.41 wide of 3 µm metal,
+    // had their own a quarter under it and each the other's 9 % over - a
+    // mutual larger than either's own, which no current can have -, and of
+    // runs 0.05 wide of 3 µm metal a neighbour's was 11 % over however long
+    // they were. The coil's L had 1,389 negative eigenvalues among its 5,810
+    // runs at 8 cells across, and at 10 the compressed solve's GMRES,
+    // preconditioned by its near field, stood at a residual of 0.93 for its
+    // 3,000 iterations (the review's P71).
+    // Where its terms are so much larger than it that their rounding is past
+    // a part in 1e4 - a bar some thousand times longer than it is wide and
+    // thick, of which the other ways are good -, as before.
+    if (a.bar > 0 && b.bar > 0 && a.width > 0 && b.width > 0 && !(a.rise > 0) && !(b.rise > 0)
+        && apart <= kNearWidths * std::max(widest, tallest)) {
+        const double u = offset.dot(widthOf(a));
+        const std::array<double, 6> boxA{0, la, -a.width / 2, a.width / 2, 0, a.bar};
+        const std::array<double, 6> boxB{d, d + lb, u - b.width / 2, u + b.width / 2, offset.z, offset.z + b.bar};
+        double terms = 0;
+        const double exact = barPair(boxA, boxB, &terms);
+        if (terms <= 1e11 * std::abs(exact)) return sign * kMu0 / (4 * M_PI) * exact;
+    }
     // The same run, or two runs on the same axis - consecutive pieces of
     // one strip - have no distance between their axes, so the distance
     // that stands in for it is the cross-section's own geometric mean.
@@ -1174,6 +1266,11 @@ void setLoopMemory(double bytes)
     loopMemorySet = std::max(0.0, bytes);
 }
 
+void setLoopMostIterations(int iterations)
+{
+    loopMostIterationsSet = std::max(0, iterations);
+}
+
 namespace {
 /// Tests: called on the near field's factorization's thread before it
 /// factorizes (setLoopFactorizing()).
@@ -1640,7 +1737,9 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
     std::unique_ptr<LoopL> compressed;
     std::function<void(const Eigen::VectorXd&, Eigen::VectorXd&)> applyL;
     Eigen::VectorXd answer;
-    if (dense) {
+    // Dense: L whole, the system by LU - false (and said) where it is
+    // singular.
+    const auto solveDense = [&]() -> bool {
         lp = partialInductances(out.runs);
         // L in its own scale, as the compressed solve has it below: its
         // entries are picohenries and A's ones, and the LU's test of
@@ -1670,13 +1769,17 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         if (!(lu.rcond() > 1e-14) || !answer.allFinite()) {
             out.problems << tr("The runs of current do not make a path from one end of the loop to the other: the layout is "
                                "in pieces that nothing joins.");
-            return out;
+            return false;
         }
         applyL = [&lp, nb](const Eigen::VectorXd& x, Eigen::VectorXd& y) {
             y = Eigen::VectorXd::Zero(nb);
             for (int i = 0; i < nb; ++i)
                 for (int j = 0; j < nb; ++j) y(i) += lp.at(i).at(j) * x(j);
         };
+        return true;
+    };
+    if (dense) {
+        if (!solveDense()) return out;
     } else {
         // Compressed: L as H-matrices, the system by GMRES preconditioned
         // by the near field's LU - the near pairs' L with the whole of A.
@@ -1816,7 +1919,8 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         //  to 1.5e4, met 1.35e-10 in 28 iterations and restarted at one
         //  product a time to the 3,000 allowed, 157 s for the answer it had
         //  at the 28th; a meander's 138,746 cells 885 s - the review's P66.)
-        const Gmres solved = gmres(system, precondition, rhs, x, kLoopResidual, kLoopRestart, kLoopMostIterations, stop,
+        const int most = loopMostIterationsSet.load() > 0 ? loopMostIterationsSet.load() : kLoopMostIterations;
+        const Gmres solved = gmres(system, precondition, rhs, x, kLoopResidual, std::min(kLoopRestart, most), most, stop,
                                    [progress](int iterations, double residual) {
                                        if (progress == nullptr) return;
                                        progress->iterations = iterations;
@@ -1827,36 +1931,62 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
             out.problems << tr("The inductance was stopped.");
             return out;
         }
+        // Not converged: solved dense where its matrix, its factors and L's
+        // own rows fit beside what is held - a two-turn coil's 8,395 runs
+        // and 4,372 cells some 3.9 GB -, else said, and how to go on. ("Mesh
+        // the layout more coarsely, so that it is solved dense", as it said,
+        // was no way out past the dense limit's 3,000 runs and cells, and the
+        // coil at 12 cells across had converged where 10 had not - the
+        // review's P71.)
+        const double denseBytes = 3 * 8.0 * double(rows) * rows;
+        const bool fits = denseBytes <= budget - held - lu.factorBytes();
         if (!(solved.residual < 1e-4) || !x.allFinite()) {
-            out.problems << tr("The compressed solve of the loop did not converge: GMRES left a residual of %1 after %2 "
-                               "iterations. Mesh the layout more coarsely, so that it is solved dense.")
-                                .arg(solved.residual, 0, 'g', 2)
-                                .arg(solved.iterations);
-            return out;
+            const QString stalled = tr("GMRES did not converge: it left a residual of %1 after %2 iterations")
+                                        .arg(solved.residual, 0, 'g', 2)
+                                        .arg(solved.iterations);
+            if (!fits) {
+                out.problems << tr("The compressed solve of the loop did not converge, and its %1 runs and cells would take "
+                                   "some %2 GB solved dense, more than the %3 GB a solve may take here: %4. A mesh of a "
+                                   "few cells more or fewer across a conductor may converge.")
+                                    .arg(nb + nn)
+                                    .arg(denseBytes / 1e9, 0, 'g', 3)
+                                    .arg(budget / 1e9, 0, 'g', 3)
+                                    .arg(stalled);
+                return out;
+            }
+            compressed.reset();
+            if (!solveDense()) return out;
+            out.lines << tr("Past the dense limit (%1 runs and cells), solved compressed first: %2, so the loop was solved "
+                            "dense, in %3 GB, %4 s in all.")
+                             .arg(loopDenseLimit())
+                             .arg(stalled)
+                             .arg(denseBytes / 1e9, 0, 'g', 3)
+                             .arg(clock.elapsed() / 1000.0, 0, 'f', 1);
+        } else {
+            answer = x.real();
+            applyL = [&l](const Eigen::VectorXd& v, Eigen::VectorXd& y) {
+                VectorC r;
+                l.apply(v.cast<Complex>(), r);
+                y = r.real();
+            };
+            const double whole = 8.0 * double(rows) * rows;
+            out.compressed = true;
+            out.iterations = solved.iterations;
+            out.residual = solved.residual;
+            out.lines << tr("Past the dense limit (%1 runs and cells), solved compressed: L held in %2 MB where the dense "
+                            "system would take %3 MB, GMRES %4 iteration(s) to a residual of %5%6, in %7 s.")
+                             .arg(loopDenseLimit())
+                             .arg(held / 1048576.0, 0, 'f', 1)
+                             .arg(whole / 1048576.0, 0, 'f', 0)
+                             .arg(solved.iterations)
+                             .arg(solved.residual, 0, 'g', 2)
+                             .arg(solved.converged    ? QString()
+                                  : solved.atRounding ? tr(" (as low as its rounding goes: its node potentials are some %1 times its "
+                                                           "residual's scale)")
+                                                            .arg(x.tail(rows - nb).cwiseAbs().maxCoeff(), 0, 'g', 2)
+                                                      : tr(" (short of the 1e-10 asked)"))
+                             .arg(clock.elapsed() / 1000.0, 0, 'f', 1);
         }
-        answer = x.real();
-        applyL = [&l](const Eigen::VectorXd& v, Eigen::VectorXd& y) {
-            VectorC r;
-            l.apply(v.cast<Complex>(), r);
-            y = r.real();
-        };
-        const double whole = 8.0 * double(rows) * rows;
-        out.compressed = true;
-        out.iterations = solved.iterations;
-        out.residual = solved.residual;
-        out.lines << tr("Past the dense limit (%1 runs and cells), solved compressed: L held in %2 MB where the dense "
-                        "system would take %3 MB, GMRES %4 iteration(s) to a residual of %5%6, in %7 s.")
-                         .arg(loopDenseLimit())
-                         .arg(held / 1048576.0, 0, 'f', 1)
-                         .arg(whole / 1048576.0, 0, 'f', 0)
-                         .arg(solved.iterations)
-                         .arg(solved.residual, 0, 'g', 2)
-                         .arg(solved.converged    ? QString()
-                              : solved.atRounding ? tr(" (as low as its rounding goes: its node potentials are some %1 times its "
-                                                       "residual's scale)")
-                                                        .arg(x.tail(rows - nb).cwiseAbs().maxCoeff(), 0, 'g', 2)
-                                                  : tr(" (short of the 1e-10 asked)"))
-                         .arg(clock.elapsed() / 1000.0, 0, 'f', 1);
     }
 
     // The energy the current carries is the inductance.
