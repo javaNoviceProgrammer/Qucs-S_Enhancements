@@ -749,8 +749,68 @@ QList<MeshCell> stripCells(const Conductor& conductor, const StripQuads& quads, 
     ss.first() = 0;
     ss.last() = total;
     const double hair = 1e-9 * std::max(1.0, total);
+    const auto corner = [&](int k, double v) {
+        const QPointF a = quads.left.at(k), b = quads.right.at(k);
+        return v == 0 ? a : v == 1 ? b : a * (1 - v) + b * v;
+    };
+    // Its lines across it square to the centreline (point(), below), and
+    // none within a corner's mitre - as far along either side of the corner
+    // as the outer side's mitre reaches past it -: where one falls there, a
+    // line on the mitre instead, and one at either end of the stretch the
+    // mitre spans where that is in no other corner's; others within a
+    // quarter of a space of those taken out. So such a mitre is a column of
+    // its own, as long as it spans, wherever the spaces fall (from the
+    // mitre to whichever line was nearest, a bend of 90 degrees read 1.3 %
+    // apart with its arms 89.9 and 90.1 µm long). Where none falls within
+    // it, a cell spans the corner, its sides bent through the mitre's points
+    // at the same fractions across: a curve's gentle corners, a bend of 30
+    // degrees within 0.1 % of finite elements either way. (Each cell's sides
+    // were cut at one share along the strip's two sides, which beside a
+    // mitre are of different lengths: every line across a segment beside
+    // one slanted, up to the mitre's own slant, and the current through them
+    // crossed edges longer than the strip is wide. A bend of 90 degrees
+    // read 8.8 % under finite elements, of 45 degrees 2.1 %, neither
+    // converging there; a bend of 135 degrees 22 %, at 20 across no answer.)
+    QList<double> zones(segments + 1, -1);   // (each corner's half-span along the centreline; -1: none)
+    QList<bool> mitred(segments + 1, false);
+    for (int k = 1; k < segments; ++k) {
+        double turn = std::abs(quads.angles.at(k) - quads.angles.at(k - 1));
+        turn = std::min(turn, 2 * M_PI - turn);
+        zones[k] = width / 2 * std::tan(turn / 2);
+        const double at = starts.at(k);
+        mitred[k] = std::any_of(ss.cbegin() + 1, ss.cend() - 1, [&](double x) { return std::abs(x - at) < zones.at(k) + hair; });
+    }
+    const double space = total / count;
+    QList<double> own;   // (the mitres' lines)
+    for (int k = 1; k < segments; ++k) {
+        if (!mitred.at(k)) continue;
+        own << starts.at(k);
+        for (const double end : {starts.at(k) - zones.at(k), starts.at(k) + zones.at(k)}) {
+            if (!(zones.at(k) > hair) || !(end > hair && end < total - hair)) continue;
+            bool past = false;
+            for (int m = 1; m < segments && !past; ++m) past = m != k && zones.at(m) >= 0 && std::abs(end - starts.at(m)) < zones.at(m) + hair;
+            if (!past) own << end;
+        }
+    }
+    if (!own.isEmpty()) {
+        ss.erase(std::remove_if(ss.begin() + 1, ss.end() - 1,
+                                [&](double x) {
+                                    for (int k = 1; k < segments; ++k)
+                                        if (mitred.at(k) && std::abs(x - starts.at(k)) < zones.at(k) + hair) return true;
+                                    return std::any_of(own.cbegin(), own.cend(), [&](double o) { return std::abs(x - o) < 0.25 * space; });
+                                }),
+                 ss.end() - 1);
+        for (const double o : std::as_const(own))
+            if (o > hair && o < total - hair) ss.insert(std::lower_bound(ss.begin(), ss.end(), o), o);
+        QList<double> kept;
+        for (const double x : std::as_const(ss))
+            if (kept.isEmpty() || x - kept.last() > hair) kept << x;
+        kept.last() = total;
+        ss = kept;
+    }
     // A point at \a at along the centreline, \a v of the way across from its
-    // left; at a corner, the mitre's. \a k: the segment it is on.
+    // left, on the line square to the centreline there; at a corner, the
+    // mitre's. \a k: the segment it is on.
     const auto segmentOf = [&](double at) {
         int k = 0;
         while (k + 1 < segments && at > starts.at(k + 1)) ++k;
@@ -758,15 +818,15 @@ QList<MeshCell> stripCells(const Conductor& conductor, const StripQuads& quads, 
     };
     const auto point = [&](double at, double v) {
         const int k = segmentOf(at);
-        const double u = at <= starts.at(k) ? 0 : at >= starts.at(k + 1) ? 1 : (at - starts.at(k)) / quads.lengths.at(k);
-        const QPointF l0 = quads.left.at(k), l1 = quads.left.at(k + 1), r0 = quads.right.at(k), r1 = quads.right.at(k + 1);
-        const QPointF a = u == 0 ? l0 : u == 1 ? l1 : l0 * (1 - u) + l1 * u;
-        const QPointF b = u == 0 ? r0 : u == 1 ? r1 : r0 * (1 - u) + r1 * u;
-        return v == 0 ? a : v == 1 ? b : a * (1 - v) + b * v;
-    };
-    const auto corner = [&](int k, double v) {
-        const QPointF a = quads.left.at(k), b = quads.right.at(k);
-        return v == 0 ? a : v == 1 ? b : a * (1 - v) + b * v;
+        if (k > 0 && std::abs(at - starts.at(k)) <= hair) return corner(k, v);
+        if (k + 1 < segments && std::abs(at - starts.at(k + 1)) <= hair) return corner(k + 1, v);
+        if (at <= starts.at(k) + hair && k == 0) return corner(0, v);
+        if (at >= starts.at(k + 1) - hair && k + 1 == segments) return corner(segments, v);
+        const QPointF way(std::cos(quads.angles.at(k)), std::sin(quads.angles.at(k)));
+        const QPointF centre = (quads.left.at(k) + quads.right.at(k)) / 2 + way * (at - starts.at(k));
+        QPointF toLeft(-way.y(), way.x());
+        if (QPointF::dotProduct(quads.left.at(k) - quads.right.at(k), toLeft) < 0) toLeft = -toLeft;
+        return centre + toLeft * (width * (0.5 - v));
     };
     for (int i = 0; i + 1 < ss.size(); ++i) {
         const double s0 = ss.at(i), s1 = ss.at(i + 1);
@@ -1425,6 +1485,23 @@ double turnOf(const QPolygonF& outline, double perUnit)
     return angle;
 }
 
+/// The angle, within a quarter turn, that every side of \a outline runs
+/// along or across - an L's or a meander's drawn at a slant -; nought where
+/// they run along the axes, or along no one frame. Sides shorter than
+/// \a shortest are passed over.
+double squareTurnOf(const QPolygonF& outline, double shortest)
+{
+    double angle = -1;
+    for (int k = 0, n = int(outline.size()); k < n; ++k) {
+        const QPointF d = outline.at((k + 1) % n) - outline.at(k);
+        if (!(std::hypot(d.x(), d.y()) >= shortest)) continue;
+        const double way = std::fmod(std::atan2(d.y(), d.x()) + 2 * M_PI, M_PI / 2);
+        if (angle < 0) angle = way;
+        else if (std::min(std::abs(way - angle), M_PI / 2 - std::abs(way - angle)) > 1e-4) return 0;
+    }
+    return angle < 1e-4 || angle > M_PI / 2 - 1e-4 ? 0 : angle;
+}
+
 /// While a conductor turned (turnOf()) is meshed with the rest in its frame:
 /// that meshOf() turns none, and cuts the conductor of \a meshingOnly alone,
 /// the rest there for what it faces (the gaps its edges are graded to).
@@ -1730,8 +1807,18 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     };
     if (axis == 0 && !meshingTurned) {
         for (int c = 0; c < conductors.size(); ++c) {
-            if (conductors.at(c).isStrip()) continue;
-            const double angle = turnOf(conductors.at(c).outline, perUnit);
+            // A strip turned at its corners by right angles, every side
+            // along or across one frame at a slant - an L or a meander drawn
+            // so -, turned too, its corners meshed as they are drawn square:
+            // cut along its centreline, a cell spanning a corner bent round
+            // it in the frame of its chord, the L of arms 100 by 20 µm at 30
+            // and 45 degrees read 7.81 and 7.84 squares end to end, 9 % under
+            // its 8.58. (A strip of one segment, a turned rectangle, its
+            // cells along it exact, stays one.)
+            const Conductor& conductor = conductors.at(c);
+            const double angle = !conductor.isStrip()        ? turnOf(conductor.outline, perUnit)
+                                 : conductor.spine.size() >= 3 ? squareTurnOf(conductor.outline, 20 * kBooleanGrid * 1e-6 / perUnit)
+                                                               : 0;
             if (angle == 0) continue;
             const QRectF box = conductors.at(c).outline.boundingRect();
             bool over = false;
@@ -1758,6 +1845,12 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
             const QList<Conductor> turned = turnedLayout(angle, about);
             MeshSettings own = how;
             own.cellsAcross = perFeature;
+            // (Its edge ports turned with it, their faces' inner corners
+            //  graded to there: MeshSettings::ports.)
+            for (MeshPort& port : own.ports) {
+                port.at = MeshCell::turnedAbout(port.at, about, -angle);
+                port.facing = MeshCell::turnedAbout(port.facing, QPointF(0, 0), -angle);
+            }
             // (Cleared however the meshOf() ends, a throw among them.)
             struct Turning {
                 explicit Turning(int only) { meshingTurned = true; meshingOnly = only; }
@@ -1911,6 +2004,8 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         const Conductor& conductor = conductors.at(c);
         const Layer* metal = stack.named(conductor.layer);
         if (axis != 0 || !conductor.isStrip() || (metal != nullptr && (metal->kind != Layer::Metal || metal->roundWire))) continue;
+        // (One turned square at its corners is pieces, cut in its frame.)
+        if (std::any_of(turns.cbegin(), turns.cend(), [c](const Turn& t) { return t.conductor == c; })) continue;
         quadsOf[c] = stripQuads(conductor.spine, conductor.spineWidth);
         if (quadsOf.at(c).ok()) {
             ++stripsCut;
@@ -2626,10 +2721,10 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
     for (const Layer& l : stack.layers)
         if (l.roundWire) roundWires << l.name;
     // Each conductor's inner corners where an edge port's face ends
-    // (MeshSettings::ports): the corner's turn against its outline's. (Not
-    // in a turned conductor's own frame, where the ports are not.)
+    // (MeshSettings::ports): the corner's turn against its outline's. (In a
+    // turned conductor's own frame, the ports turned with it.)
     QHash<int, QList<QPointF>> portCorners;
-    for (const MeshPort& port : meshingOnly < 0 ? how.ports : QList<MeshPort>()) {
+    for (const MeshPort& port : how.ports) {
         QString onLayer;
         const QLineF face = portFace(conductors, port.at, port.metal, port.facing, &onLayer);
         if (onLayer.isEmpty()) continue;
@@ -3724,7 +3819,9 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
         for (const Turned& t : std::as_const(turnedCells)) {
             kept += t.cells;
             for (qsizetype k = 0; k < t.cells.size(); ++k) keptConductor << t.conductor;
-            mesh.lines << tr("%1's shape about %2, %3 µm, a curve fed at %4 degrees, meshed in the frame of its feeds: %5 cells.")
+            mesh.lines << (conductors.at(t.conductor).isStrip()
+                               ? tr("%1's strip about %2, %3 µm, turned by right angles at %4 degrees, meshed in its own frame: %5 cells.")
+                               : tr("%1's shape about %2, %3 µm, a curve fed at %4 degrees, meshed in the frame of its feeds: %5 cells."))
                               .arg(conductors.at(t.conductor).layer)
                               .arg(conductors.at(t.conductor).outline.boundingRect().center().x(), 0, 'g', 6)
                               .arg(conductors.at(t.conductor).outline.boundingRect().center().y(), 0, 'g', 6)
