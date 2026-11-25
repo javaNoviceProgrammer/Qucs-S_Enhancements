@@ -46,6 +46,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QRegularExpression>
 #include <QSplitter>
 #include <QTimer>
 #include <QTreeWidget>
@@ -429,6 +430,7 @@ void CommitDialog::commitNow(bool push)
         misc::reportError(tr("A %1 is under way: Git > Continue makes its commit, once what is in conflict is resolved and staged.").arg(a_goesOn));
         return;
     }
+    if (!Commands::instance()->knowsWho(a_root)) return;
     // (A merge's commit records it with nothing staged: each file resolved
     // as the branch had it.)
     if (a_staged->count() == 0 && !amend && !a_merging) {
@@ -969,12 +971,18 @@ void Commands::setHistoryDocked(bool docked)
     _settings::Get().setItem<bool>(QStringLiteral("GitHistoryDocked"), docked);
 }
 
-void Commands::editSettings()
+bool Commands::editSettings(const QString& why)
 {
     QDialog dialog(window());
     dialog.setObjectName(QStringLiteral("gitSettingsDialog"));
     dialog.setWindowTitle(tr("Git Settings"));
     auto* layout = new QVBoxLayout(&dialog);
+    if (!why.isEmpty()) {
+        auto* lead = new QLabel(why, &dialog);
+        lead->setObjectName(QStringLiteral("gitSettingsWhy"));
+        lead->setWordWrap(true);
+        layout->addWidget(lead);
+    }
     layout->addWidget(new QLabel(tr("History opens:"), &dialog));
     auto* own = new QRadioButton(tr("In a window of its own"), &dialog);
     own->setObjectName(QStringLiteral("gitHistoryWindow"));
@@ -986,13 +994,85 @@ void Commands::editSettings()
     auto* note = new QLabel(tr("A History open now stays where it is; the next one opens as chosen."), &dialog);
     note->setWordWrap(true);
     layout->addWidget(note);
+
+    // git's own, as it has them: written back only if changed.
+    const QString name = git::setting(QStringLiteral("user.name"));
+    const QString email = git::setting(QStringLiteral("user.email"));
+    const QString branch = firstBranch();
+    layout->addSpacing(8);
+    layout->addWidget(new QLabel(tr("Commits are made by:"), &dialog));
+    auto* form = new QFormLayout;
+    auto* nameEdit = new QLineEdit(name, &dialog);
+    nameEdit->setObjectName(QStringLiteral("gitUserName"));
+    nameEdit->setPlaceholderText(tr("Your Name"));
+    auto* emailEdit = new QLineEdit(email, &dialog);
+    emailEdit->setObjectName(QStringLiteral("gitUserEmail"));
+    emailEdit->setPlaceholderText(tr("you@example.com"));
+    auto* branchEdit = new QLineEdit(branch, &dialog);
+    branchEdit->setObjectName(QStringLiteral("gitFirstBranch"));
+    branchEdit->setPlaceholderText(QStringLiteral("main"));
+    form->addRow(tr("Name:"), nameEdit);
+    form->addRow(tr("Email:"), emailEdit);
+    layout->addLayout(form);
+    layout->addSpacing(8);
+    auto* branchRow = new QFormLayout;
+    branchRow->addRow(tr("A new repository starts on the branch:"), branchEdit);
+    layout->addLayout(branchRow);
+    auto* kept = new QLabel(tr("These are git's own global settings: every repository's (one that sets its own goes by those), "
+                               "and git's in a terminal too."),
+                            &dialog);
+    kept->setWordWrap(true);
+    layout->addWidget(kept);
+    if (!why.isEmpty()) (name.isEmpty() ? nameEdit : emailEdit)->setFocus();
+
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     layout->addWidget(buttons);
-    if (dialog.exec() != QDialog::Accepted) return;
+    // (Asked again, as typed, until what is typed can be kept.)
+    for (;;) {
+        if (dialog.exec() != QDialog::Accepted) return false;
+        const QString n = nameEdit->text().trimmed();
+        const QString e = emailEdit->text().trimmed();
+        const QString b = branchEdit->text().trimmed();
+        // (git drops '<', '>' and line breaks from a name or an address:
+        // what was typed would not be what commits have.)
+        static const QRegularExpression crud(QStringLiteral("[<>\\r\\n]"));
+        QString wrong;
+        if (n.contains(crud)) wrong = tr("A name cannot hold '<', '>' or a line break.");
+        else if (e.contains(crud)) wrong = tr("An email cannot hold '<', '>' or a line break.");
+        else if (!e.isEmpty() && !e.contains(QLatin1Char('@'))) wrong = tr("%1 is no email address.").arg(e);
+        else if (!b.isEmpty() && b != branch && !isBranchName(b)) wrong = tr("%1 cannot be a branch's name.").arg(b);
+        if (!wrong.isEmpty()) {
+            misc::reportError(wrong);
+            continue;
+        }
+        QStringList failed;
+        auto save = [&failed](const QString& key, const QString& was, const QString& now) {
+            if (now == was) return;
+            const Result r = setGlobalSetting(key, now);
+            if (!r.ok()) failed << key + QStringLiteral(": ") + r.error();
+        };
+        save(QStringLiteral("user.name"), name, n);
+        save(QStringLiteral("user.email"), email, e);
+        save(QStringLiteral("init.defaultBranch"), branch, b);
+        if (!failed.isEmpty()) misc::reportError(tr("git could not keep them:") + QStringLiteral("\n") + failed.join(QLatin1Char('\n')));
+        break;
+    }
     setHistoryDocked(docked->isChecked());
     emit message(docked->isChecked() ? tr("History opens docked in the main window") : tr("History opens in a window of its own"));
+    return true;
+}
+
+bool Commands::knowsWho(const QString& root)
+{
+    if (git::knowsWho(root)) return true;
+    if (!editSettings(tr("git has no name and email to make this with (else it would make some up from this computer's name, "
+                         "or refuse). Commits, stashes and tags carry them, for anyone to see.")))
+        return false;
+    if (git::knowsWho(root)) return true;
+    misc::reportError(tr("git still has no name and email to make this with."));
+    return false;
 }
 
 void Commands::showBlame(const QString& root, const QString& path)
@@ -1253,6 +1333,7 @@ void Commands::switchBranch(const QString& root, const QString& branch)
         box.addButton(QMessageBox::Cancel);
         box.exec();
         if (box.clickedButton() != yes) return;
+        if (!knowsWho(root)) return;
         if (!report(git::stash(root, tr("Before switching to %1").arg(branch)), tr("Stash"))) return;
         r = switchTo(root, branch);
     }
@@ -1312,7 +1393,8 @@ void Commands::mergeInto(const QString& root)
     const QString ref = QInputDialog::getItem(window(), tr("Merge"),
                                               tr("Merge into %1:").arg(repo.branch.isEmpty() ? tr("the commit checked out") : repo.branch),
                                               names, 0, false, &ok);
-    if (!ok || ref.isEmpty()) return;
+    // (A fast-forward makes no commit; one that cannot be, does.)
+    if (!ok || ref.isEmpty() || !knowsWho(root)) return;
     const QStringList mergeWith = mergeArgs(ref);
     if (mergeWith.isEmpty()) {
         misc::reportError(tr("%1 is not a name git takes here (it begins with '-').").arg(ref));
@@ -1337,7 +1419,7 @@ void Commands::stashChanges(const QString& root)
                                                   tr("Put every change aside (new files too), the files back to the last commit. "
                                                      "A note for it (or none):"),
                                                   QLineEdit::Normal, QString(), &ok);
-    if (!ok) return;
+    if (!ok || !knowsWho(root)) return;
     if (report(git::stash(root, message.trimmed(), true), tr("Stash Changes"))) done(root, tr("The changes are stashed"));
 }
 
@@ -1372,7 +1454,8 @@ void Commands::newTag(const QString& root, const QString& commit)
     if (!ok || name.isEmpty()) return;
     const QString message = QInputDialog::getText(window(), tr("New Tag"), tr("A message for it (none: a plain tag):"), QLineEdit::Normal,
                                                   QString(), &ok);
-    if (!ok) return;
+    // (A plain tag is no object of its own: no one makes it.)
+    if (!ok || (!message.trimmed().isEmpty() && !knowsWho(root))) return;
     if (report(createTag(root, name, message.trimmed(), commit), tr("New Tag"))) done(root, tr("Tagged %1").arg(name));
 }
 
@@ -1409,6 +1492,7 @@ void Commands::continueOperation(const QString& root, bool skip)
         box.exec();
         if (box.clickedButton() != yes) return;
     }
+    if (!knowsWho(root)) return;
     const Result r = git::continueOperation(root, repo.operation, skip);
     if (!r.ok() && (r.out.contains(QLatin1String("CONFLICT")) || r.err.contains(QLatin1String("CONFLICT")))) {
         misc::reportError(tr("The %1 stopped at a conflict again: resolve it, stage it, and Continue.").arg(repo.operation) + QStringLiteral("\n\n") + r.error());

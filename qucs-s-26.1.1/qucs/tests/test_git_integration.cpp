@@ -289,6 +289,62 @@ private:
     QStringList a_texts;
 };
 
+// Does each of \a steps with the Git Settings window, one each time it
+// comes up (each step closes it).
+void onSettings(const QList<std::function<void(QDialog*)>>& steps)
+{
+    auto* timer = new QTimer(answerers());
+    auto at = std::make_shared<qsizetype>(0);
+    auto tries = std::make_shared<int>(0);
+    timer->setInterval(20);
+    QObject::connect(timer, &QTimer::timeout, [timer, at, tries, steps] {
+        if (++*tries > 3000 || *at >= steps.size()) {
+            timer->stop();
+            timer->deleteLater();
+            return;
+        }
+        for (QWidget* w : QApplication::topLevelWidgets())
+            if (w->objectName() == QLatin1String("gitSettingsDialog") && w->isVisible()) {
+                steps.at((*at)++)(qobject_cast<QDialog*>(w));
+                return;
+            }
+    });
+    timer->start();
+}
+
+QString fieldIn(QDialog* d, const char* name)
+{
+    auto* edit = d->findChild<QLineEdit*>(QString::fromLatin1(name));
+    return edit != nullptr ? edit->text() : QStringLiteral("<no %1>").arg(QString::fromLatin1(name));
+}
+
+// The Git Settings window's name, email and branch typed; OK (else Cancel).
+std::function<void(QDialog*)> fillSettings(const QString& name, const QString& email, const QString& branch, bool ok = true)
+{
+    return [name, email, branch, ok](QDialog* d) {
+        d->findChild<QLineEdit*>("gitUserName")->setText(name);
+        d->findChild<QLineEdit*>("gitUserEmail")->setText(email);
+        d->findChild<QLineEdit*>("gitFirstBranch")->setText(branch);
+        ok ? d->accept() : d->reject();
+    };
+}
+
+// git's global settings, while it lives, \a path's.
+class GlobalSettingsIn
+{
+public:
+    explicit GlobalSettingsIn(const QString& path) : a_was(qgetenv("GIT_CONFIG_GLOBAL"))
+    {
+        qputenv("GIT_CONFIG_GLOBAL", QFile::encodeName(path));
+    }
+    ~GlobalSettingsIn() { qputenv("GIT_CONFIG_GLOBAL", a_was); }
+    GlobalSettingsIn(const GlobalSettingsIn&) = delete;
+    GlobalSettingsIn& operator=(const GlobalSettingsIn&) = delete;
+
+private:
+    QByteArray a_was;
+};
+
 QStringList pathsIn(const QJsonArray& array)
 {
     QStringList out;
@@ -1361,6 +1417,281 @@ private slots:
         QPointer<HistoryView> gone = history;
         history->close();
         QTRY_VERIFY(gone.isNull());
+    }
+
+
+    // Git > Settings...: git's own name, email and a new repository's
+    // branch, as git has them (no branch set: main, not git's "master");
+    // kept in its global settings when changed, and only then; what git
+    // would not take, told and asked again as typed; one cleared, taken
+    // out of them.
+    void theSettingsHoldGitsOwnNameEmailAndBranch()
+    {
+        const QString global = canonical(dir.path()) + "/settings-global";
+        const QByteArray was = "[user]\n\tname = Some One\n\temail = some@example.com\n";
+        QVERIFY(write(global, was));
+        GlobalSettingsIn own(global);
+        QAction* settings = app->findChild<QAction*>(QStringLiteral("gitSettings"));
+        QVERIFY(settings != nullptr);
+        QStringList seen;
+        auto look = [&seen](QDialog* d) {
+            seen = {fieldIn(d, "gitUserName"), fieldIn(d, "gitUserEmail"), fieldIn(d, "gitFirstBranch")};
+            d->reject();
+        };
+        onSettings({look});
+        settings->trigger();
+        QCOMPARE(seen, QStringList({"Some One", "some@example.com", "main"}));
+        QCOMPARE(readAll(global), was);   // (cancelled)
+        // OK, nothing changed: nothing written.
+        onSettings({[](QDialog* d) { d->accept(); }});
+        settings->trigger();
+        QCOMPARE(readAll(global), was);
+        // Changed: kept, and shown so next time.
+        onSettings({fillSettings("Another One", "another@example.com", "trunk")});
+        settings->trigger();
+        QCOMPARE(qucs_s::git::setting("user.name"), QStringLiteral("Another One"));
+        QCOMPARE(qucs_s::git::setting("user.email"), QStringLiteral("another@example.com"));
+        QCOMPARE(qucs_s::git::setting("init.defaultBranch"), QStringLiteral("trunk"));
+        QCOMPARE(firstBranch(), QStringLiteral("trunk"));
+        onSettings({look});
+        settings->trigger();
+        QCOMPARE(seen, QStringList({"Another One", "another@example.com", "trunk"}));
+        // Wrong: told; asked again, as typed; nothing kept.
+        const QByteArray kept = readAll(global);
+        for (const auto& [name, email, branch, told] :
+             {std::tuple{"Another One", "another@example.com", "a..b", "cannot be a branch's name"},
+              std::tuple{"Another One", "nobody", "trunk", "is no email address"},
+              std::tuple{"An <Other>", "another@example.com", "trunk", "A name cannot hold"},
+              std::tuple{"Another One", "a<b>@example.com", "trunk", "An email cannot hold"}}) {
+            misc::ErrorCapture errors;
+            onSettings({fillSettings(name, email, branch), look});
+            settings->trigger();
+            QVERIFY2(errors.errors().join(' ').contains(QLatin1String(told)), qPrintable(errors.errors().join(' ') + " / " + told));
+            QCOMPARE(seen, QStringList({name, email, branch}));
+            QCOMPARE(readAll(global), kept);
+        }
+        // Cleared: taken out.
+        onSettings({fillSettings("Another One", "", "trunk")});
+        settings->trigger();
+        QVERIFY(qucs_s::git::setting("user.email").isEmpty());
+        QVERIFY(!readAll(global).contains("email"));
+        QCOMPARE(qucs_s::git::setting("user.name"), QStringLiteral("Another One"));
+    }
+
+    // A new repository starts on main - git's own would be "master" -,
+    // else on the branch git's settings name (one git would take); made
+    // so by the menu's Create Repository and by Claude's git_init; and by a
+    // git too old to name it at once, which then leaves a repository there
+    // already as it was.
+    void aNewRepositoryStartsOnMainElseTheBranchSet()
+    {
+        const QString global = canonical(dir.path()) + "/init-global";
+        QVERIFY(write(global, "[user]\n\tname = Tester\n\temail = tester@example.com\n"));
+        GlobalSettingsIn own(global);
+        auto headOf = [](const QString& folder) { return gitIn(folder, {"symbolic-ref", "--short", "HEAD"}); };
+        auto fresh = [this](const QString& name) {
+            const QString f = canonical(dir.path()) + "/" + name;
+            QDir().mkpath(f);
+            return canonical(f);
+        };
+        QCOMPARE(firstBranch(), QStringLiteral("main"));
+        const QString plain = fresh("init-plain");
+        QVERIFY(init(plain).ok());
+        QCOMPARE(headOf(plain), QStringLiteral("main"));
+        // The menu's.
+        const QString menu = fresh("init-menu");
+        answerBox("", "Yes");
+        Commands::instance()->createRepository(menu);
+        QCOMPARE(headOf(menu), QStringLiteral("main"));
+        // Claude's.
+        const QString claude = fresh("init-claude");
+        QJsonObject r = call("git_init", {{"path", claude}});
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QCOMPARE(headOf(claude), QStringLiteral("main"));
+        // git's setting first.
+        QVERIFY(write(global, "[init]\n\tdefaultBranch = trunk\n"));
+        QCOMPARE(firstBranch(), QStringLiteral("trunk"));
+        const QString set = fresh("init-set");
+        QVERIFY(init(set).ok());
+        QCOMPARE(headOf(set), QStringLiteral("trunk"));
+        // One git would not take: main.
+        QVERIFY(write(global, "[init]\n\tdefaultBranch = a..b\n"));
+        QCOMPARE(firstBranch(), QStringLiteral("main"));
+        QVERIFY(write(global, ""));
+#ifndef Q_OS_WIN
+        // A git with no --initial-branch.
+        const QString shim = canonical(dir.path()) + "/old-git.sh";
+        QVERIFY(write(shim, "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --initial-branch*) echo \"error: unknown option "
+                            "'$a'\" >&2; exit 129;; esac; done\nexec \"" + QFile::encodeName(program()) + "\" \"$@\"\n"));
+        QFile::setPermissions(shim, QFile::permissions(shim) | QFileDevice::ExeOwner);
+        const QByteArray gitWas = qgetenv("QUCS_GIT");
+        qputenv("QUCS_GIT", QFile::encodeName(shim));
+        const QString old = fresh("init-old");
+        const Result made = init(old);
+        const QString again = fresh("init-old-again");
+        QVERIFY(!gitIn(again, {"init", "-q", "-b", "dev"}).isNull());
+        const Result reinit = init(again);
+        if (gitWas.isNull()) qunsetenv("QUCS_GIT");
+        else qputenv("QUCS_GIT", gitWas);
+        QVERIFY2(made.ok(), qPrintable(made.error()));
+        QCOMPARE(headOf(old), QStringLiteral("main"));
+        QVERIFY2(reinit.ok(), qPrintable(reinit.error()));
+        QCOMPARE(headOf(again), QStringLiteral("dev"));
+#endif
+    }
+
+    // git with no name and email of its own (it would make some up from
+    // the computer's name, or refuse): Claude's commit refused, told where
+    // they are set; the Commit window's, and a stash, an annotated tag, a
+    // merge, a revert and a cherry-pick, ask for them in Git > Settings...
+    // - cancelled, nothing made; answered, kept and made with them. A plain
+    // tag needs none.
+    void aCommitWithNoNameAndEmailAsksForThem()
+    {
+        const QString repo = makeRepo("who");
+        QVERIFY(!repo.isEmpty());
+        QVERIFY(!gitIn(repo, {"branch", "other"}).isNull());
+        QVERIFY(write(repo + "/b.txt", "b, again\n"));
+        QVERIFY(commit(repo, "b again", false, {repo + "/b.txt"}).ok());
+        QVERIFY(!gitIn(repo, {"switch", "-q", "other"}).isNull());
+        QVERIFY(write(repo + "/c.txt", "c\n"));
+        QVERIFY(commit(repo, "c", false, {repo + "/c.txt"}).ok());
+        QVERIFY(!gitIn(repo, {"switch", "-q", "main"}).isNull());
+        // (A merge stopped at a conflict, resolved: to be continued.)
+        const QString stopped = makeRepo("who-stopped");
+        QVERIFY(!stopped.isEmpty());
+        QVERIFY(!gitIn(stopped, {"switch", "-q", "-c", "x"}).isNull());
+        QVERIFY(write(stopped + "/a.txt", "one\nX\nthree\n"));
+        QVERIFY(commit(stopped, "x", false, {stopped + "/a.txt"}).ok());
+        QVERIFY(!gitIn(stopped, {"switch", "-q", "main"}).isNull());
+        QVERIFY(write(stopped + "/a.txt", "one\nM\nthree\n"));
+        QVERIFY(commit(stopped, "m", false, {stopped + "/a.txt"}).ok());
+        QVERIFY(gitIn(stopped, {"merge", "x"}).isNull());   // (stopped)
+        QVERIFY(write(stopped + "/a.txt", "one\nXM\nthree\n"));
+        QVERIFY(!gitIn(stopped, {"add", "a.txt"}).isNull());
+        QCOMPARE(read(stopped).operation, QStringLiteral("merge"));
+        const QString global = canonical(dir.path()) + "/who-global";
+        QVERIFY(write(global, ""));
+        GlobalSettingsIn own(global);
+        QVERIFY(!qucs_s::git::knowsWho(repo));
+        QVERIFY(write(repo + "/a.txt", "one\nTWO\nthree\n"));
+        QVERIFY(!gitIn(repo, {"add", "a.txt"}).isNull());
+        const QString head = gitIn(repo, {"rev-parse", "HEAD"});
+        auto headNow = [repo] { return gitIn(repo, {"rev-parse", "HEAD"}); };
+
+        QJsonObject r = call("git_commit", {{"path", repo}, {"message", "by no one"}});
+        QVERIFY(failed(r));
+        QVERIFY2(text(r).contains("Git > Settings"), qPrintable(text(r)));
+        QCOMPARE(headNow(), head);
+
+        // Each asks; cancelled. (What git says, were it run: kept.)
+        auto errors = std::make_unique<misc::ErrorCapture>();
+        int asked = 0;
+        QString why;
+        auto cancel = [&asked, &why](QDialog* d) {
+            ++asked;
+            if (auto* l = d->findChild<QLabel*>("gitSettingsWhy"); l != nullptr && d->layout()->indexOf(l) >= 0) why = l->text();   // (laid out)
+            d->reject();
+        };
+        Commands::instance()->commit(repo);
+        CommitDialog* d = nullptr;
+        for (const QPointer<QDialog>& w : Commands::instance()->openWindows())
+            if (auto* c = qobject_cast<CommitDialog*>(w.data()); c != nullptr && c->root() == repo) d = c;
+        QVERIFY(d != nullptr);
+        QSignalSpy committed(d, &CommitDialog::committed);
+        d->messageEdit()->setPlainText("by someone");
+        onSettings({cancel});
+        d->commitNow(false);
+        QCOMPARE(asked, 1);
+        QVERIFY2(why.contains("no name and email"), qPrintable(why));
+        QVERIFY(Commands::instance()->runningJob() == nullptr);
+        QCOMPARE(committed.count(), 0);
+
+        onSettings({cancel});
+        answerInput("aside");
+        Commands::instance()->stashChanges(repo);
+        QCOMPARE(asked, 2);
+        QVERIFY(gitIn(repo, {"stash", "list"}).isEmpty());
+
+        onSettings({cancel});
+        answerInput("v1");
+        answerInput("the first");   // (annotated)
+        Commands::instance()->newTag(repo);
+        QCOMPARE(asked, 3);
+        QVERIFY(gitIn(repo, {"tag"}).isEmpty());
+
+        // (A merge, a revert, a cherry-pick: on a clean tree.)
+        QVERIFY(!gitIn(repo, {"-c", "user.name=T", "-c", "user.email=t@example.com", "stash", "-q"}).isNull());
+        onSettings({cancel});
+        answerInput("other");
+        Commands::instance()->mergeInto(repo);
+        QCOMPARE(asked, 4);
+        QVERIFY(Commands::instance()->runningJob() == nullptr);
+        QCOMPARE(headNow(), head);
+
+        HistoryView history(repo);
+        QTRY_VERIFY_WITH_TIMEOUT(history.model()->rowCount() >= 3, 10000);
+        int last = -1;   // (HEAD's: below the uncommitted changes' row, if any)
+        for (int i = 0; i < history.model()->rowCount() && last < 0; ++i)
+            if (history.model()->row(i).commit.subject == QLatin1String("b again")) last = i;
+        QVERIFY(last >= 0);
+        for (const char* action : {"gitRevertCommit", "gitCherryPick"}) {
+            const int row = QString::fromLatin1(action) == QLatin1String("gitRevertCommit") ? last : last + 1;
+            QMenu* menu = history.menuFor(row);
+            QVERIFY(menu != nullptr);
+            onSettings({cancel});
+            QAction* act = menu->findChild<QAction*>(QLatin1String(action));
+            QVERIFY2(act != nullptr, action);
+            act->trigger();
+            delete menu;
+            QCOMPARE(headNow(), head);
+        }
+        QCOMPARE(asked, 6);
+
+        onSettings({cancel});
+        Commands::instance()->continueOperation(stopped);
+        QCOMPARE(asked, 7);
+        QCOMPARE(read(stopped).operation, QStringLiteral("merge"));
+
+        QVERIFY2(errors->errors().isEmpty(), qPrintable(errors->errors().join(' ')));
+        errors.reset();
+        // Switching, a change in the way: stashed first - asked. (Its question
+        // answered here: not by the capture, which would cancel it.)
+        QVERIFY(write(repo + "/b.txt", "b, changed\n"));
+        answerBox("gitStashFirstQuestion", "Stash and Switch");
+        onSettings({cancel});
+        Commands::instance()->switchBranch(repo, "other");
+        QCOMPARE(asked, 8);
+        QCOMPARE(read(repo).branch, QStringLiteral("main"));
+        QCOMPARE(readAll(repo + "/b.txt"), QByteArray("b, changed\n"));
+        QVERIFY(!gitIn(repo, {"stash", "list"}).contains('\n'));   // (the test's own alone)
+        QVERIFY(!gitIn(repo, {"checkout", "--", "b.txt"}).isNull());
+
+        // A plain tag: not asked.
+        answerInput("plain");
+        answerInput("");
+        Commands::instance()->newTag(repo);
+        QCOMPARE(gitIn(repo, {"tag"}), QStringLiteral("plain"));
+        QCOMPARE(asked, 8);
+
+        // OK with none typed: told, and nothing made.
+        {
+            misc::ErrorCapture still;
+            onSettings({[](QDialog* s) { s->accept(); }});
+            d->commitNow(false);
+            QVERIFY2(still.errors().join(' ').contains("still has no name and email"), qPrintable(still.errors().join(' ')));
+            QVERIFY(Commands::instance()->runningJob() == nullptr);
+            QCOMPARE(committed.count(), 0);
+        }
+        // Answered: kept, and the commit made with them.
+        QVERIFY(!gitIn(repo, {"stash", "pop", "-q", "--index"}).isNull());
+        onSettings({fillSettings("New One", "new@example.com", "main")});
+        d->commitNow(false);
+        QVERIFY(committed.wait(30000));
+        QCOMPARE(gitIn(repo, {"log", "-1", "--format=%an <%ae>"}), QStringLiteral("New One <new@example.com>"));
+        QCOMPARE(qucs_s::git::setting("user.email"), QStringLiteral("new@example.com"));
+        QVERIFY(qucs_s::git::knowsWho(repo));
+        d->close();
     }
 
     // The History closed while a commit's menu is up: the menu goes with

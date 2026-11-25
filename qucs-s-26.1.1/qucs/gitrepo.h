@@ -156,8 +156,26 @@ Result untrack(const QString& root, const QStringList& paths);
 /// \a path in the top folder's .gitignore ("/build/", "/run.dat"): added,
 /// or there already. False and why when it cannot be.
 bool ignore(const QString& root, const QString& path, QString* why = nullptr);
-/// A new repository in \a folder.
+/// A new repository in \a folder, on firstBranch().
 Result init(const QString& folder);
+
+/// What git's own settings have for \a key outside any repository (the
+/// system's, the user's global ones: what a new repository, or one that
+/// sets nothing, goes by), or empty.
+QString setting(const QString& key);
+/// \a key set to \a value in git's global settings (the user's own, for
+/// every repository and a terminal's git too; a repository's own come
+/// first); \a value empty: taken out of them.
+Result setGlobalSetting(const QString& key, const QString& value);
+/// The branch a new repository starts on: git's init.defaultBranch, else
+/// "main" (git's own would be "master").
+QString firstBranch();
+/// Whether \a name may be a branch's.
+bool isBranchName(const QString& name);
+/// Whether git has a name and an email to make a commit with in \a root,
+/// from its settings or the environment (none made up from the login and
+/// the computer's name, as git otherwise would, or refuses to).
+bool knowsWho(const QString& root);
 
 /// A branch, local or a remote's.
 struct Branch {

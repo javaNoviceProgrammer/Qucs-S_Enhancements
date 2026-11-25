@@ -1175,12 +1175,17 @@ QMenu* HistoryView::menuFor(int row)
             }
         menu->addAction(tr("Merge %1 into %2…").arg(what, into), menu, [this, root, what, into, after] {
             if (QMessageBox::question(this, tr("Merge"), tr("Merge %1 into %2?").arg(what, into)) != QMessageBox::Yes) return;
+            if (!Commands::instance()->knowsWho(root)) return;
             after(merge(root, what), tr("Merge"));
         })->setObjectName(QStringLiteral("gitMergeHere"));
     }
-    menu->addAction(tr("Revert This Commit"), menu, [root, hash, after] { after(revert(root, hash), tr("Revert")); })
+    menu->addAction(tr("Revert This Commit"), menu, [root, hash, after] {
+        if (Commands::instance()->knowsWho(root)) after(revert(root, hash), tr("Revert"));
+    })
         ->setObjectName(QStringLiteral("gitRevertCommit"));
-    menu->addAction(tr("Cherry-Pick into %1").arg(into), menu, [root, hash, after] { after(cherryPick(root, hash), tr("Cherry-Pick")); })
+    menu->addAction(tr("Cherry-Pick into %1").arg(into), menu, [root, hash, after] {
+        if (Commands::instance()->knowsWho(root)) after(cherryPick(root, hash), tr("Cherry-Pick"));
+    })
         ->setObjectName(QStringLiteral("gitCherryPick"));
     QMenu* reset = menu->addMenu(tr("Reset %1 Here").arg(into));
     reset->setObjectName(QStringLiteral("gitResetMenu"));
