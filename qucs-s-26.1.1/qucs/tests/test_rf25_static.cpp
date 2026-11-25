@@ -829,6 +829,24 @@ private slots:
         QCOMPARE(rf::surfaceImpedance(5.8e7, 1e-6, 0), std::complex<double>(0, 0));
     }
 
+    // A dielectric that conducts - a silicon substrate's few S/m - said to
+    // be left out of the quasi-static solve, which takes a loss tangent
+    // alone: its C and G read as without it, and nothing said so.
+    void aConductingDielectricIsSaidToBeLeftOut()
+    {
+        const QList<rf::Conductor> line{strip(0, 0, 200, 600)};
+        for (const double sigma : {0.0, 10.0}) {
+            rf::Stack stack = grounded(11.9, 300e-6);
+            for (rf::Layer& l : stack.layers)
+                if (l.kind == rf::Layer::Substrate) l.sigma = sigma;
+            const rf::Extraction e = rf::extract(meshed(line, 50), line, stack);
+            QVERIFY2(e.ok(), qPrintable(e.problems.join(" | ")));
+            const bool said = sigma > 0 ? says(e.warnings, "SUB conducts (10 S/m)") && says(e.lines, "left out of the quasi-static solve")
+                                        : !says(e.warnings + e.lines, "conducts");
+            QVERIFY2(said, qPrintable(QStringLiteral("at %1 S/m: %2").arg(sigma).arg(e.warnings.join(" | "))));
+        }
+    }
+
     // R and G of a microstrip: the resistance from the surface impedance
     // and how the charge crowds, the conductance from the substrate's
     // loss tangent, and what the two make of the line.
