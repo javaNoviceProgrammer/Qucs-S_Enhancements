@@ -7,7 +7,10 @@
 # KLayout's context cell then has five references, TOP one: the cell
 # edit_layout, the router and the multiphysics import must still take for
 # the top. And klayout_context_pcell.gds: a PCell placed by no cell, its
-# own layout's top cell, which only the context cell refers to.
+# own layout's top cell, which only the context cell refers to. And
+# klayout_context_library.gds: a library's cell BLOCK, placing its PART,
+# taken into a layout and placed by no cell - its top cell, PART written
+# before it.
 #   klayout -zz -r klayout_context.py
 import os
 import pya
@@ -33,3 +36,23 @@ ly = pya.Layout()
 ly.dbu = 0.001
 ly.create_cell("TEXT", "Basic", {"text": "TOP", "layer": pya.LayerInfo(3, 0), "mag": 1.0})
 ly.write(os.path.join(os.path.dirname(os.path.abspath(__file__)), "klayout_context_pcell.gds"))
+
+
+class ProbeLibrary(pya.Library):
+    def __init__(self):
+        self.description = "the test's library"
+        lib = self.layout()
+        lib.dbu = 0.001
+        part = lib.create_cell("PART")
+        part.shapes(lib.layer(1, 0)).insert(pya.Box(0, 0, 1000, 1000))
+        block = lib.create_cell("BLOCK")
+        block.insert(pya.CellInstArray(part.cell_index(), pya.Trans(pya.Vector(2000, 0))))
+        block.shapes(lib.layer(2, 0)).insert(pya.Box(0, 0, 5000, 3000))
+        self.register("ProbeLib")
+
+
+ProbeLibrary()
+ly = pya.Layout()
+ly.dbu = 0.001
+ly.create_cell("BLOCK", "ProbeLib")
+ly.write(os.path.join(os.path.dirname(os.path.abspath(__file__)), "klayout_context_library.gds"))
