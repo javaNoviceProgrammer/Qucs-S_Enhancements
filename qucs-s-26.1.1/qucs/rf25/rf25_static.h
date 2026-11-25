@@ -155,7 +155,10 @@ struct Extraction {
     /// Each net's effective loss tangent: the dielectrics' own, weighted
     /// by how much of the field each holds (eps dC/deps). G = w C tand.
     /// The diagonal of \a dielectricLoss over that of the capacitance, as
-    /// a single line needs it.
+    /// a single line needs it: the dielectrics' loss tangents' share, a
+    /// layer that conducts (PerMetre::conducting) with its own loss tangent
+    /// and not its conductivity, whose share is of the frequency - the
+    /// line's G there (lineParameters()).
     QList<double> lossTangent;
     /// The metal each net is on, for its surface resistance: its
     /// conductivity (S/m) and thickness (m), or zero where it said none.
@@ -448,6 +451,16 @@ struct LineParameters {
  * a structure solved both ways gives the same numbers.
  */
 LineParameters lineParameters(const Extraction& extraction, int index, double length, double frequency = 0);
+
+/// A line's slowest quasi-TEM velocity, m/s - what the quasi-static
+/// solve's limit takes its first resonance from (quasiStaticLimit()): its
+/// velocity as solved, or, over a layer that conducts
+/// (Extraction::PerMetre::conducting), its slow-wave mode's at direct
+/// current, that layer a metal, where that is slower. A strip 20 µm wide
+/// on 2 µm of oxide over 300 µm of silicon of 10 S/m is 2.4 times slower
+/// there than its velocity as solved, and its limit was said that much too
+/// high. Nought where it has none.
+double slowestVelocity(const Extraction& extraction, int index, double length);
 
 /*!
  * The surface impedance of a metal of conductivity \a sigma (S/m) and

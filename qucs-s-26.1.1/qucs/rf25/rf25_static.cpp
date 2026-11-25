@@ -819,6 +819,89 @@ Eigen::VectorXd stieltjesFit(const QList<double>& samples, const QList<double>& 
     return x;
 }
 
+/*!
+ * The per metre Maxwell matrices \a solved, each at \a samples'
+ * permittivity, fitted together as C(eps) = A + sum B_i eps / (eps +
+ * poles_i), A and each B_i a sum of v v' over directions v with weights
+ * nought or above - positive semidefinite, and so C's real part and minus
+ * its imaginary part (G / w) at a permittivity eps_r - j t, t >= 0, with
+ * them: eps / (eps + delta) has its real part above nought there and its
+ * imaginary part nought or below. The directions: each net's own and each
+ * two nets' together and against each other (a capacitance network's), the
+ * eigenvectors of each solved matrix, and of each step from one to the next
+ * - where the poles between them put their weight. (A network's alone
+ * held a coplanar line's C 0.9 % off its own at the layer's permittivity.)
+ * Each entry held to its share of sqrt(C_ii C_jj). \a misfit, its worst.
+ */
+void capacitanceFit(const QList<double>& samples, const QList<QList<QList<double>>>& solved, const QList<double>& poles,
+                    Extraction::PerMetre::Conducting* fit)
+{
+    const int n = int(solved.first().size()), m = int(samples.size()), groups = int(poles.size()) + 1;
+    const auto matrix = [n](const QList<QList<double>>& c) {
+        Eigen::MatrixXd out(n, n);
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) out(i, j) = 0.5 * (c.at(i).at(j) + c.at(j).at(i));
+        return out;
+    };
+    QList<Eigen::VectorXd> directions;
+    for (int k = 0; k < n; ++k) {
+        directions << Eigen::VectorXd::Unit(n, k);
+        for (int l = k + 1; l < n; ++l) {
+            directions << Eigen::VectorXd::Unit(n, k) + Eigen::VectorXd::Unit(n, l);
+            directions << Eigen::VectorXd::Unit(n, k) - Eigen::VectorXd::Unit(n, l);
+        }
+    }
+    if (n > 1)
+        for (int s = 0; s < m; ++s) {
+            const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> own(matrix(solved.at(s)));
+            for (int k = 0; k < n; ++k) directions << own.eigenvectors().col(k);
+            if (s + 1 < m) {
+                const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> step(matrix(solved.at(s + 1)) - matrix(solved.at(s)));
+                for (int k = 0; k < n; ++k) directions << step.eigenvectors().col(k);
+            }
+        }
+    QList<QPair<int, int>> entries;   // (i <= j)
+    for (int i = 0; i < n; ++i)
+        for (int j = i; j < n; ++j) entries << qMakePair(i, j);
+    const int nd = int(directions.size()), ne = int(entries.size());
+    Eigen::MatrixXd a = Eigen::MatrixXd::Zero(m * ne, groups * nd);
+    Eigen::VectorXd b(m * ne);
+    for (int s = 0; s < m; ++s) {
+        const Eigen::MatrixXd c = matrix(solved.at(s));
+        for (int e = 0; e < ne; ++e) {
+            const auto [i, j] = entries.at(e);
+            const double scale = std::sqrt(std::abs(c(i, i) * c(j, j)));
+            const double weight = scale > 0 ? 1 / scale : 1;
+            const int row = s * ne + e;
+            b(row) = weight * c(i, j);
+            for (int g = 0; g < groups; ++g) {
+                const double factor = g == 0 ? 1 : samples.at(s) / (samples.at(s) + poles.at(g - 1));
+                for (int k = 0; k < nd; ++k) a(row, g * nd + k) = weight * factor * directions.at(k)(i) * directions.at(k)(j);
+            }
+        }
+    }
+    const Eigen::VectorXd x = nonNegativeLeastSquares(a, b);
+    fit->misfit = (a * x - b).cwiseAbs().maxCoeff();
+    const auto matrixOf = [&](int g) {
+        Eigen::MatrixXd w = Eigen::MatrixXd::Zero(n, n);
+        for (int k = 0; k < nd; ++k) w += x(g * nd + k) * directions.at(k) * directions.at(k).transpose();
+        QList<QList<double>> out(n, QList<double>(n, 0.0));
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) out[i][j] = w(i, j);
+        return out;
+    };
+    fit->constant = matrixOf(0);
+    fit->poles.clear();
+    fit->weights.clear();
+    for (int g = 1; g < groups; ++g) {
+        bool taken = false;
+        for (int k = 0; k < nd && !taken; ++k) taken = x(g * nd + k) != 0;
+        if (!taken) continue;
+        fit->poles << poles.at(g - 1);
+        fit->weights << matrixOf(g);
+    }
+}
+
 } // namespace
 
 QList<QList<std::complex<double>>> Extraction::PerMetre::Conducting::at(double frequency) const
@@ -2122,35 +2205,33 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
             }
         }
         if (sized && n > 0) {
-            // Each entry's coefficients from the forms', the poles any of
-            // them takes kept.
-            const auto entry = [&single, &pairs](int i, int j, int c) {
-                if (i == j) return single.at(i)(c);
-                const Eigen::VectorXd& both = pairs.value({std::min(i, j), std::max(i, j)});
-                return 0.5 * (both(c) - single.at(i)(c) - single.at(j)(c));
-            };
-            fit.layer = conductingLayers.first()->name;
-            fit.epsr = own;
-            fit.tand = base.slabs.at(conductingSlab).tand;
-            fit.sigma = base.slabs.at(conductingSlab).sigma;
-            fit.solves = int(samples.size());
-            fit.misfit = worst;
-            fit.constant = QList<QList<double>>(n, QList<double>(n, 0.0));
-            for (int i = 0; i < n; ++i)
-                for (int j = 0; j < n; ++j) fit.constant[i][j] = entry(i, j, 0);
+            // The whole matrix fitted together, each term a capacitance's
+            // own (capacitanceFit()), over the poles any form's own fit took
+            // and those beside them: polarized from the forms fitted apart,
+            // a pole's weights were no capacitance's - a coplanar line's
+            // worst pole's least eigenvalue minus its largest, its constant
+            // indefinite -, its G right by chance alone.
+            QSet<int> near;
             for (int p = 0; p < poles.size(); ++p) {
                 bool taken = false;
                 for (int i = 0; i < n && !taken; ++i) {
                     taken = single.at(i)(p + 1) != 0;
                     for (int j = i + 1; j < n && !taken; ++j) taken = pairs.value({i, j})(p + 1) != 0;
                 }
-                if (!taken) continue;
-                QList<QList<double>> w(n, QList<double>(n, 0.0));
-                for (int i = 0; i < n; ++i)
-                    for (int j = 0; j < n; ++j) w[i][j] = entry(i, j, p + 1);
-                fit.poles << poles.at(p);
-                fit.weights << w;
+                if (taken)
+                    for (int q = std::max(0, p - 2); q <= std::min(int(poles.size()) - 1, p + 2); ++q) near.insert(q);
             }
+            QList<int> chosen(near.cbegin(), near.cend());
+            std::sort(chosen.begin(), chosen.end());
+            QList<double> candidates;
+            for (const int p : std::as_const(chosen)) candidates << poles.at(p);
+            capacitanceFit(samples, solved, candidates, &fit);
+            fit.layer = conductingLayers.first()->name;
+            fit.epsr = own;
+            fit.tand = base.slabs.at(conductingSlab).tand;
+            fit.sigma = base.slabs.at(conductingSlab).sigma;
+            fit.solves = int(samples.size());
+            (void)worst;
         }
     }
     // (The layer's own loss tangent's share: the fit's where it was made, the
@@ -2269,14 +2350,19 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
     // matrix over its row of the capacitance - of the line's middle where
     // that was taken, which is what its C per metre is of too.
     {
+        // (Over a fitted layer, its own loss tangent's share with the rest's:
+        //  the line's loss per metre leaves it to the fit, and its tangent
+        //  read the oxide's alone. Its conductivity's, of the frequency, is
+        //  the line's G there - lineParameters() - and no tangent of one.)
         const bool middle = out.perMetre.fromMiddle;
         const QList<QList<double>>& cap = middle ? out.perMetre.maxwell : out.maxwell;
         const QList<QList<double>>& loss = middle ? out.perMetre.dielectricLoss : out.dielectricLoss;
+        const bool own = middle && out.perMetre.conducting.on();
         for (int i = 0; i < nets.size(); ++i) {
             double here = 0, lost = 0;
             for (int j = 0; j < nets.size(); ++j) {
                 here += cap.at(i).at(j);
-                lost += loss.at(i).at(j);
+                lost += loss.at(i).at(j) + (own ? ownLoss.at(i).at(j) : 0.0);
             }
             out.lossTangent << (here != 0 ? lost / here : 0.0);
         }
@@ -2528,6 +2614,16 @@ SignalLines signalsOf(const Extraction& extraction, double length, double freque
         out.loss << rl;
     }
     return out;
+}
+
+double slowestVelocity(const Extraction& extraction, int index, double length)
+{
+    double v = lineParameters(extraction, index, length).velocity;
+    // (At 1 Hz the layer is a metal to some parts in ten thousand at the
+    //  least: its tangent there a thousand times its floor's at 1 MHz.)
+    if (extraction.perMetre.conducting.on())
+        if (const double slow = lineParameters(extraction, index, length, 1.0).velocity; slow > 0 && (v <= 0 || slow < v)) v = slow;
+    return v;
 }
 
 LineParameters lineParameters(const Extraction& extraction, int index, double length, double frequency)
