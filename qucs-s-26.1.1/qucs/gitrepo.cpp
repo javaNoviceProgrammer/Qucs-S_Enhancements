@@ -880,7 +880,9 @@ Result init(const QString& folder)
     const bool was = QFileInfo::exists(QDir(folder).filePath(QStringLiteral(".git")));
     r = run(folder, {QStringLiteral("init")});
     if (!r.ok() || was) return r;
-    const Result head = run(folder, composed({QStringLiteral("symbolic-ref"), QStringLiteral("HEAD"), QStringLiteral("refs/heads/") + branch}));
+    // (Composed by git here: a repository a Mac's git makes says
+    // core.precomposeUnicode.)
+    const Result head = run(folder, {QStringLiteral("symbolic-ref"), QStringLiteral("HEAD"), QStringLiteral("refs/heads/") + branch});
     return head.ok() ? r : head;
 }
 
