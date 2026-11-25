@@ -936,6 +936,23 @@ Extraction extractSheets(const Mesh& mesh, const QList<Conductor>& conductors, c
                         "sqrt(eps_eff mu_eff) and Z0 sqrt(L/C). Its magnetic loss is the full wave's alone.");
     else if (magneticLoss)
         out.lines << tr("A layer has a magnetic loss tangent: its loss is the full wave's alone, and not in this solve's.");
+    // A dielectric that conducts - a silicon substrate's few S/m: this solve
+    // is of the real permittivity, its loss a loss tangent's small share
+    // of the field (below), and a conductivity is no such share. Its
+    // tangent sigma / (omega eps) is some 15 for 10 S/m at 1 GHz, the field
+    // itself changed by it - the slow-wave mode of a line over oxide on
+    // silicon (Hasegawa et al., IEEE Trans. MTT 19(11), 1971). Left out
+    // and said: it was left out without a word, C and G read as without
+    // it.
+    for (const Layer& l : stack.layers)
+        if ((l.kind == Layer::Dielectric || l.kind == Layer::Substrate) && l.sigma > 0) {
+            const QString w = tr("%1 conducts (%2 S/m): its conductivity is left out of the quasi-static solve, which takes a "
+                                 "dielectric's loss tangent alone. The full-wave solve takes it.")
+                                  .arg(l.name)
+                                  .arg(l.sigma, 0, 'g', 4);
+            out.warnings << w;
+            out.lines << w;
+        }
     if (layers0.groundAbove)
         out.lines << tr("A perfect metal lid closes the stack at %1 µm: the charges' images, and C0's, are of the ground and "
                         "the lid together.")

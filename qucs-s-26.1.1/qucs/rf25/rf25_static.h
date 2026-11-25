@@ -239,7 +239,8 @@ struct Extraction {
     QStringList problems;
     QStringList lines;                ///< what it did, for the panel
     /// What makes it doubtful, among the lines too: a capacitance matrix
-    /// that is no Maxwell matrix (maxwellDoubts()).
+    /// that is no Maxwell matrix (maxwellDoubts()); a dielectric that
+    /// conducts, whose conductivity the solve leaves out.
     QStringList warnings;
     bool ok() const { return problems.isEmpty() && !c.isEmpty(); }
     /// The self capacitance of net \a i to everything else, F.
