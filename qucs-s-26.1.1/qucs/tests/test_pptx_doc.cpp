@@ -3789,7 +3789,12 @@ private slots:
         hebrew.tree = box(2, 20, para(run(shalom, plain), "<a:pPr algn=\"r\" rtl=\"1\"><a:buNone/></a:pPr>"))
                       + box(3, 80, para(run(shalom, plain), "<a:pPr><a:buNone/></a:pPr>"))
                       + box(4, 140, para(run(shalom, plain), "<a:pPr marL=\"" + emu(72) + "\" indent=\"-" + emu(36) + "\" algn=\"r\" rtl=\"1\">"
-                                                                 "<a:buFont typeface=\"Arial\"/><a:buChar char=\"&#8226;\"/></a:pPr>"));
+                                                                 "<a:buFont typeface=\"Arial\"/><a:buChar char=\"&#8226;\"/></a:pPr>"))
+                      // (Mixed, left to right: the Hebrew first, on the left.)
+                      + box(5, 200, para(run(QStringLiteral("עברית world"), plain), "<a:pPr rtl=\"0\"><a:buNone/></a:pPr>"))
+                      // (Right to left, a stop of its own and the default one: from the right.)
+                      + box(6, 260, para(run(QStringLiteral("אאא\tבבב"), plain), "<a:pPr algn=\"r\" rtl=\"1\"><a:buNone/><a:tabLst>" + at300 + "</a:tabLst></a:pPr>"))
+                      + box(7, 320, para(run(QStringLiteral("גגג\tדדד"), plain), "<a:pPr algn=\"r\" rtl=\"1\"><a:buNone/></a:pPr>"));
         Deck::SlideSpec coloured;
         coloured.rels = "<Relationship Id=\"rIdH\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" "
                         "Target=\"https://example.com/\" TargetMode=\"External\"/>";
@@ -3808,7 +3813,15 @@ private slots:
         Deck::SlideSpec centred;
         centred.tree = box(2, 20, para(run(QStringLiteral("centred"), plain), "<a:pPr marL=\"342900\" indent=\"-342900\" algn=\"ctr\"><a:buFont typeface=\"Arial\"/>"
                                                                                  "<a:buChar char=\"&#8226;\"/></a:pPr>"));
-        d.slides << tabbed << hebrew << coloured << centred;
+        Deck::SlideSpec links;
+        links.rels = coloured.rels;
+        links.tree = letters(2, 20, "<a:hlinkClick r:id=\"rIdH\"/>")   // underlined
+                     + box(3, 200, para(run(QStringLiteral("MMMM"), "<a:rPr lang=\"en-US\" " + big + " u=\"none\"><a:hlinkClick r:id=\"rIdH\"/></a:rPr>"),
+                                        "<a:pPr><a:buNone/></a:pPr>"))   // said not to be
+                     // A bullet before a link: in the run's own colour, not the link's.
+                     + box(4, 380, para(run(QStringLiteral("linked"), "<a:rPr lang=\"en-US\" sz=\"4000\">" + solid("FF0000") + "<a:hlinkClick r:id=\"rIdH\"/></a:rPr>"),
+                                        bulleted + "</a:pPr>"));
+        d.slides << tabbed << hebrew << coloured << centred << links;
         QString why;
         const auto deck = readDeck(d, &why);
         QVERIFY2(deck != nullptr, qPrintable(why));
@@ -3846,6 +3859,14 @@ private slots:
                 if (qGray(rtl.pixel(x, y)) < 128) bulletLeft = std::min(bulletLeft, x);
         // (The bullet in the margin's half nearer the text: at marL + indent from the right.)
         QVERIFY2(bulletLeft > 912.8 - 72 && bulletLeft < 912.8 - 36, qPrintable(QString::number(bulletLeft)));
+        // A left-to-right paragraph keeps its words in that order, though
+        // its first is Hebrew (Qt would have guessed right to left).
+        QVERIFY2(word(1, QStringLiteral("world")).left() > word(1, QStringLiteral("עברית")).right(),
+                 qPrintable(QStringLiteral("%1 %2").arg(word(1, QStringLiteral("world")).left()).arg(word(1, QStringLiteral("עברית")).right())));
+        // A right-to-left paragraph's stops, its own and the default, from
+        // the right: the word after the tab starts there.
+        QVERIFY2(near(word(1, QStringLiteral("בבב")).right(), 912.8 - 300), qPrintable(QString::number(word(1, QStringLiteral("בבב")).right())));
+        QVERIFY2(near(word(1, QStringLiteral("דדד")).right(), 912.8 - 72), qPrintable(QString::number(word(1, QStringLiteral("דדד")).right())));
         // Colours.
         const QImage page = deck->render(2, 1.0);
         const auto count = [&page](double top, const std::function<bool(QColor)>& is) {
@@ -3874,6 +3895,23 @@ private slots:
                 if (qGray(c.pixel(x, y)) < 128) first = std::min(first, x);
         const double text = word(3, QStringLiteral("centred")).left();
         QVERIFY2(first > text - 27 - 2 && first < text - 5, qPrintable(QStringLiteral("%1 %2").arg(first).arg(text)));
+        // A link underlined (unless it says not to be); a bullet before it
+        // in the run's own colour.
+        const QImage l = deck->render(4, 1.0);
+        const auto inLink = [&l, &close](double top, double height, double left, double right) {
+            int n = 0;
+            const auto link = close(QColor(0x05, 0x63, 0xC1));
+            for (int y = int(top); y < int(top + height); ++y)
+                for (int x = int(left); x < int(right); ++x) n += link(l.pixelColor(x, y)) ? 1 : 0;
+            return n;
+        };
+        const int underlined = inLink(20, 90, 40, 920), plainLink = inLink(200, 90, 40, 920);
+        QVERIFY2(plainLink > 1000 && underlined > plainLink + 150, qPrintable(QStringLiteral("%1 %2").arg(underlined).arg(plainLink)));
+        int bulletRed = 0;
+        for (int y = 380; y < 440; ++y)
+            for (int x = 41; x < qRound(word(4, QStringLiteral("linked")).left()) - 2; ++x) bulletRed += close(Qt::red)(l.pixelColor(x, y)) ? 1 : 0;
+        QVERIFY2(bulletRed > 20, qPrintable(QString::number(bulletRed)));
+        QCOMPARE(inLink(380, 60, 41, word(4, QStringLiteral("linked")).left() - 2), 0);
     }
 };
 
