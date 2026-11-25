@@ -1059,8 +1059,10 @@ bool Commands::editSettings(const QString& why)
                 return;
             }
             // (A file the global one includes after it, or the system's, goes
-            // first: kept, and not what git goes by.)
-            if (const QString goes = git::setting(key); goes != now)
+            // first: kept, and not what git goes by. Composed both: a Mac's
+            // git keeps what was pasted decomposed composed - the same name.)
+            if (const QString goes = git::setting(key);
+                goes.normalized(QString::NormalizationForm_C) != now.normalized(QString::NormalizationForm_C))
                 passedBy << (goes.isEmpty() ? tr("%1: none").arg(key) : tr("%1: %2").arg(key, goes));
         };
         save(QStringLiteral("user.name"), name, n);

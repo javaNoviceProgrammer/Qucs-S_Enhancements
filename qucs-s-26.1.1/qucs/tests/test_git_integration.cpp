@@ -1519,6 +1519,16 @@ private slots:
             settings->trigger();
             QVERIFY2(readAll(global).contains("Zo\xc3\xab"), readAll(global).toHex(' ').constData());
             QCOMPARE(qucs_s::git::setting("user.name"), name);
+            // Pasted decomposed (as a Mac's Finder hands a file's name over):
+            // kept, and not told as passed by - the same name.
+            QVERIFY(write(global, ""));
+            misc::ErrorCapture errors;
+            const QString decomposed = name.normalized(QString::NormalizationForm_D);
+            QVERIFY(decomposed != name);
+            onSettings({fillSettings(decomposed, "zoe@example.com", "main")});
+            settings->trigger();
+            QVERIFY2(errors.errors().isEmpty(), qPrintable(errors.errors().join(' ')));
+            QCOMPARE(qucs_s::git::setting("user.name").normalized(QString::NormalizationForm_C), name);
         }
         // Kept, but another of git's settings goes first (a file the global
         // one includes after it): told what git goes by.
@@ -1598,6 +1608,16 @@ private slots:
         QCOMPARE(headOf(old), QStringLiteral("main"));
         QVERIFY2(reinit.ok(), qPrintable(reinit.error()));
         QCOMPARE(headOf(again), QStringLiteral("dev"));
+        // Its HEAD named not in ASCII: as named (composed).
+        QVERIFY(write(global, "[init]\n\tdefaultBranch = br\xc3\xbcnn\n"));
+        qputenv("QUCS_GIT", QFile::encodeName(shim));
+        const QString oldAccented = fresh("init-old-accented");
+        const Result accentedMade = init(oldAccented);
+        if (gitWas.isNull()) qunsetenv("QUCS_GIT");
+        else qputenv("QUCS_GIT", gitWas);
+        QVERIFY2(accentedMade.ok(), qPrintable(accentedMade.error()));
+        QVERIFY2(readAll(oldAccented + "/.git/HEAD").contains("refs/heads/br\xc3\xbcnn"),
+                 readAll(oldAccented + "/.git/HEAD").toHex(' ').constData());
 #endif
     }
 
