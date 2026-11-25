@@ -116,6 +116,9 @@ constexpr double kCornersMerged = 0.05;
 /// Lines of two pieces that meet nearer than this share of the finest space
 /// of any piece's own grid are one line (shareLines(), meshOf()).
 constexpr double kMergeShare = 0.25;
+/// The widest wedge a strip's mitre is fanned into about its inner corner
+/// (stripCells()), radians: a bend of 45 degrees, its two wedges, unfanned.
+constexpr double kFanWedge = 22.5 * M_PI / 180 * (1 + 1e-9);
 
 QList<double> gridLines(double from, double length, double step, bool gradeLow, bool gradeHigh, double finestLow = 0,
                         double finestHigh = 0)
@@ -782,9 +785,32 @@ QList<MeshCell> stripCells(const Conductor& conductor, const StripQuads& quads, 
     }
     const double space = total / count;
     QList<double> own;   // (the mitres' lines)
+    // A mitre's column is two wedges about the strip's inner corner, the
+    // lines square to the segments at its ends and the mitre between them
+    // all through that corner. Where the strip turns by more than 45
+    // degrees, each wedge is fanned into wedges of 22.5 degrees at most, and
+    // its rows are at their distance from the inner corner, the strip's
+    // width across, with one row more out to the outer side (point(),
+    // beyond()). At shares of each wedge's side - from the strip's width at
+    // a square line to the mitre's length -, the rows ran slanted across
+    // the current turning about the corner, however many cells across: a
+    // bend of 135 degrees read 3.4 % over finite elements at 10 across, 3.1 %
+    // at 20, converging no further - the review's P69. Fanned and its rows
+    // round the corner, 0.36 % and 0.18 %.
+    QList<int> fans(segments + 1, 1);   // (each corner's wedges a side)
     for (int k = 1; k < segments; ++k) {
         if (!mitred.at(k)) continue;
         own << starts.at(k);
+        double turn = std::abs(quads.angles.at(k) - quads.angles.at(k - 1));
+        turn = std::min(turn, 2 * M_PI - turn);
+        // (Only where its mitre's stretch is within its two segments and
+        //  clear of every other corner's.)
+        bool clear = zones.at(k) <= quads.lengths.at(k - 1) - hair && zones.at(k) <= quads.lengths.at(k) - hair;
+        for (int m = 1; m < segments && clear; ++m)
+            clear = m == k || zones.at(m) < 0 || std::abs(starts.at(m) - starts.at(k)) >= zones.at(m) + zones.at(k) + hair;
+        if (clear) fans[k] = std::max(1, int(std::ceil(turn / 2 / kFanWedge - 1e-9)));
+        for (int f = 1; f < fans.at(k); ++f)
+            for (const double side : {-1.0, 1.0}) own << starts.at(k) + side * zones.at(k) * f / fans.at(k);
         for (const double end : {starts.at(k) - zones.at(k), starts.at(k) + zones.at(k)}) {
             if (!(zones.at(k) > hair) || !(end > hair && end < total - hair)) continue;
             bool past = false;
@@ -816,17 +842,95 @@ QList<MeshCell> stripCells(const Conductor& conductor, const StripQuads& quads, 
         while (k + 1 < segments && at > starts.at(k + 1)) ++k;
         return k;
     };
-    const auto point = [&](double at, double v) {
-        const int k = segmentOf(at);
-        if (k > 0 && std::abs(at - starts.at(k)) <= hair) return corner(k, v);
-        if (k + 1 < segments && std::abs(at - starts.at(k + 1)) <= hair) return corner(k + 1, v);
-        if (at <= starts.at(k) + hair && k == 0) return corner(0, v);
-        if (at >= starts.at(k + 1) - hair && k + 1 == segments) return corner(segments, v);
+    const auto square = [&](int k, double at, double v) {
         const QPointF way(std::cos(quads.angles.at(k)), std::sin(quads.angles.at(k)));
         const QPointF centre = (quads.left.at(k) + quads.right.at(k)) / 2 + way * (at - starts.at(k));
         QPointF toLeft(-way.y(), way.x());
         if (QPointF::dotProduct(quads.left.at(k) - quads.right.at(k), toLeft) < 0) toLeft = -toLeft;
         return centre + toLeft * (width * (0.5 - v));
+    };
+    // (Within a corner's mitre cut into fans, \a at from the mitre's end to
+    //  the mitre itself: the ray from its inner corner \a in, turned from
+    //  the mitre toward the line square to the segment at the mitre's end as
+    //  far as \a at's share of the way, \a u; \a reach along it to the
+    //  segment's outer side; \a inner, the strip's side the inner corner is
+    //  on, 0 its left.)
+    const auto fanRay = [&](double at, QPointF* in, QPointF* u, double* reach, double* inner) {
+        const int k = segmentOf(at);
+        for (const int c : {k, k + 1}) {
+            if (c < 1 || c >= segments || fans.at(c) < 2 || !mitred.at(c)) continue;
+            const double off = at - starts.at(c);
+            if (!(std::abs(off) <= zones.at(c) + hair)) continue;
+            const QPointF vertex = (quads.left.at(c) + quads.right.at(c)) / 2;
+            const QPointF back(std::cos(quads.angles.at(c - 1)), std::sin(quads.angles.at(c - 1)));
+            *inner = QPointF::dotProduct(quads.left.at(c) - vertex, back) < 0 ? 0 : 1;
+            *in = corner(c, *inner);
+            const QPointF outer = corner(c, 1 - *inner);
+            const int on = off < 0 ? c - 1 : c;
+            const QPointF end = square(on, starts.at(c) + (off < 0 ? -zones.at(c) : zones.at(c)), 1 - *inner);
+            const double toMitre = std::atan2(outer.y() - in->y(), outer.x() - in->x());
+            const double toEnd = std::remainder(std::atan2(end.y() - in->y(), end.x() - in->x()) - toMitre, 2 * M_PI);
+            const double a = toMitre + toEnd * std::min(1.0, std::abs(off) / zones.at(c));
+            *u = QPointF(std::cos(a), std::sin(a));
+            const QPointF side = outer - end;
+            const double den = u->x() * side.y() - u->y() * side.x();
+            if (!(std::abs(den) > 0)) return false;
+            *reach = ((end.x() - in->x()) * side.y() - (end.y() - in->y()) * side.x()) / den;
+            return true;
+        }
+        return false;
+    };
+    const auto point = [&](double at, double v) {
+        QPointF in, u;
+        double reach = 0, inner = 0;
+        if (fanRay(at, &in, &u, &reach, &inner)) {
+            const double fromIn = inner == 0 ? v : 1 - v;
+            return in + u * std::min(reach, width * fromIn);
+        }
+        const int k = segmentOf(at);
+        if (k > 0 && std::abs(at - starts.at(k)) <= hair) return corner(k, v);
+        if (k + 1 < segments && std::abs(at - starts.at(k + 1)) <= hair) return corner(k + 1, v);
+        if (at <= starts.at(k) + hair && k == 0) return corner(0, v);
+        if (at >= starts.at(k + 1) - hair && k + 1 == segments) return corner(segments, v);
+        return square(k, at, v);
+    };
+    // (A fan's rows at their distance from the inner corner, the strip's
+    //  width across; past it, out to the outer side, one more row: its cell
+    //  between \a s0 and \a s1, where both are on rays of a fan.)
+    const auto beyond = [&](double s0, double s1, MeshCell* cell) {
+        QPointF in0, u0, in1, u1;
+        double r0 = 0, r1 = 0, inner0 = 0, inner1 = 0;
+        if (!fanRay(s0, &in0, &u0, &r0, &inner0) || !fanRay(s1, &in1, &u1, &r1, &inner1)) return false;
+        if (!(std::max(r0, r1) > width * (1 + 1e-9))) return false;
+        // (A triangle where a ray reaches the outer side at the width: at the
+        //  line square to a segment.)
+        QPolygonF outline;
+        outline << in0 + u0 * width;
+        if (r0 > width * (1 + 1e-9)) outline << in0 + u0 * r0;
+        if (r1 > width * (1 + 1e-9)) outline << in1 + u1 * r1;
+        outline << in1 + u1 * width;
+        double a = areaOf(outline);
+        if (a < 0) {
+            std::reverse(outline.begin(), outline.end());
+            a = -a;
+        }
+        if (!(a > 0)) return false;
+        cell->layer = conductor.layer;
+        cell->share = conductor.share;
+        cell->outline = outline;
+        cell->area = a;
+        cell->centre = centroidOf(outline, a);
+        cell->onEdge = true;
+        const QPointF ray0 = in0 + u0 * std::max(r0, width), ray1 = in1 + u1 * std::max(r1, width);
+        const QPointF w0 = in0 + u0 * width, w1 = in1 + u1 * width;
+        // (Its frame as a strip's cell's: along the fan, from ray to ray, and
+        //  across, out along them.)
+        const QPointF along = (ray1 + w1 - ray0 - w0) / 2, out = (ray0 + ray1 - w0 - w1) / 2;
+        const double la = std::hypot(along.x(), along.y()), lb = std::hypot(out.x(), out.y());
+        const double scale = la > 0 && lb > 0 ? std::sqrt(a / (la * lb)) : 1;
+        cell->angle = std::atan2(along.y(), along.x());
+        cell->frame = QSizeF(la * scale, lb * scale);
+        return true;
     };
     for (int i = 0; i + 1 < ss.size(); ++i) {
         const double s0 = ss.at(i), s1 = ss.at(i + 1);
@@ -862,6 +966,8 @@ QList<MeshCell> stripCells(const Conductor& conductor, const StripQuads& quads, 
             cell.frame = QSizeF(a * scale, b * scale);
             out << cell;
         }
+        MeshCell outer;
+        if (beyond(s0, s1, &outer)) out << outer;
     }
     return out;
 }
