@@ -2234,9 +2234,12 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     //  strip being the stronger: a plate 200 µm square with a
                     //  hole of 40 µm radius, fed across its faces, was cut into
                     //  rows 2.7 µm high and up to 22 µm long, through which the
-                    //  current turned about the hole, and its R read 5.7 %
-                    //  under at 10 across, 2.9 % at 20 and 1.3 % at 40; joined,
-                    //  1.0 %, 0.5 % - the review's P70. Joined, a plate takes
+                    //  current turned about the hole, and its loop's R read
+                    //  1.65 % under at 10 across, 0.93 % at 20 and 0.49 % at
+                    //  40; joined, 0.46, 0.27 and 0.16 % - the review's P70. (The
+                    //  full wave's, 5.7 % under at 10 across, most of it its
+                    //  ports' short of the faces by half an end cell, which
+                    //  the long cells made the longer.) Joined, a plate takes
                     //  more cells: 300 µm square with three round holes, 2,309
                     //  at 10 across where apart it was 1,063.)
                     const auto ownStrip = [&outline](const QRectF& b) {
