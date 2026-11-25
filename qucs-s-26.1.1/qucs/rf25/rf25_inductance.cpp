@@ -1857,8 +1857,8 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
         // Asked to stop, the solve lets
         // it finish in the background - it holds what it works on - and
         // ends at once.
-        const auto factors = std::make_shared<fem::SparseComplexLdlt>();
-        const auto nearField = std::make_shared<const Eigen::SparseMatrix<Complex>>(std::move(pre));
+        auto factors = std::make_shared<fem::SparseComplexLdlt>();
+        auto nearField = std::make_shared<const Eigen::SparseMatrix<Complex>>(std::move(pre));
         fem::SparseComplexLdlt& lu = *factors;
         lu.setMemoryLimit(std::max(1.0, left));
         if (left > 0) {
@@ -1931,20 +1931,26 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
             out.problems << tr("The inductance was stopped.");
             return out;
         }
-        // Not converged: solved dense where its matrix, its factors and L's
-        // own rows fit beside what is held - a two-turn coil's 8,395 runs
-        // and 4,372 cells some 3.9 GB -, else said, and how to go on. ("Mesh
-        // the layout more coarsely, so that it is solved dense", as it said,
-        // was no way out past the dense limit's 3,000 runs and cells, and the
-        // coil at 12 cells across had converged where 10 had not - the
-        // review's P71.)
-        const double denseBytes = 3 * 8.0 * double(rows) * rows;
-        const bool fits = denseBytes <= budget - held - lu.factorBytes();
+        // Not converged: solved dense where L's rows and the system - which
+        // its LU factorizes in place - fit in what a solve may take, once
+        // the compressed L, its near field and its factors are let go - a
+        // two-turn coil's 8,395 runs and 4,372 cells some 1.9 GB -, else
+        // said, and how to go on. ("Mesh the layout more coarsely, so that it
+        // is solved dense", as it said, was no way out past the dense limit's
+        // 3,000 runs and cells, and the coil at 12 cells across had converged
+        // where 10 had not - the review's P71. Weighed against what was left
+        // beside the compressed solve's own, and said against the whole, a U
+        // whose dense solve was 0.0657 GB was refused at 0.0723 "more than
+        // the 0.067 GB a solve may take here".)
         if (!(solved.residual < 1e-4) || !x.allFinite()) {
             const QString stalled = tr("GMRES did not converge: it left a residual of %1 after %2 iterations")
                                         .arg(solved.residual, 0, 'g', 2)
                                         .arg(solved.iterations);
-            if (!fits) {
+            compressed.reset();
+            factors.reset();
+            nearField.reset();
+            const double denseBytes = 8.0 * (double(nb) * nb + double(rows) * rows);
+            if (denseBytes > budget) {
                 out.problems << tr("The compressed solve of the loop did not converge, and its %1 runs and cells would take "
                                    "some %2 GB solved dense, more than the %3 GB a solve may take here: %4. A mesh of a "
                                    "few cells more or fewer across a conductor may converge.")
@@ -1954,7 +1960,6 @@ Inductance inductanceOf(const Mesh& mesh, const QList<Conductor>& conductors, co
                                     .arg(stalled);
                 return out;
             }
-            compressed.reset();
             if (!solveDense()) return out;
             out.lines << tr("Past the dense limit (%1 runs and cells), solved compressed first: %2, so the loop was solved "
                             "dense, in %3 GB, %4 s in all.")
