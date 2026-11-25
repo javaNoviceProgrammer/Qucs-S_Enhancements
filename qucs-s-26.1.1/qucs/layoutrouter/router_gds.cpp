@@ -13,6 +13,8 @@
 
 #include <gdstk/gdstk.hpp>
 
+#include <cstring>
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -87,6 +89,11 @@ bool isWritableLayout(const QString& path)
 bool isOasisFile(const QString& path)
 {
     return isOasis(path);
+}
+
+bool isKLayoutContext(const gdstk::Cell* cell)
+{
+    return cell != nullptr && cell->name != nullptr && std::strcmp(cell->name, "$$$CONTEXT_INFO$$$") == 0;
 }
 
 bool readLibrary(const QString& path, gdstk::Library* lib, QString* error)
@@ -208,7 +215,9 @@ CommitReport commitRoutes(const Commit& commit, const Problem& problem, const Re
         lib.top_level(tops, rawTops);
         uint64_t most = 0;
         for (uint64_t i = 0; i < tops.count; ++i) {
-            if (QByteArray(tops[i]->name) == cellName) continue;
+            // (KLayout's context cell: a reference to each PCell, often
+            // more than the top cell has - the routes were placed in it)
+            if (QByteArray(tops[i]->name) == cellName || isKLayoutContext(tops[i])) continue;
             const uint64_t size = tops[i]->polygon_array.count + tops[i]->reference_array.count;
             if (!top || size > most) {
                 top = tops[i];

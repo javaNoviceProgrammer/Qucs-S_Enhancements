@@ -247,14 +247,20 @@ int integer(const QString& text, int otherwise)
     return ok ? v : otherwise;
 }
 
-LayerEntry readEntry(QXmlStreamReader& xml)
+// (Groups within groups as deep as this at most: a file of them nested
+// 200,000 deep overflowed the stack, reading them one within the other.
+// Deeper ones skipped.)
+constexpr int MostNested = 100;
+
+LayerEntry readEntry(QXmlStreamReader& xml, int depth = 0)
 {
     LayerEntry e;
     while (xml.readNextStartElement()) {
         const QStringView name = xml.name();
         if (name == QLatin1String("group-members")) {
             e.group = true;
-            e.members.append(readEntry(xml));
+            if (depth >= MostNested) xml.skipCurrentElement();
+            else e.members.append(readEntry(xml, depth + 1));
             continue;
         }
         const QString text = xml.readElementText(QXmlStreamReader::SkipChildElements);

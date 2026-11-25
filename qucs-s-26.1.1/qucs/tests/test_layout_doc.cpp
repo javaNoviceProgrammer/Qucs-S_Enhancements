@@ -69,6 +69,7 @@
 #include "isolated_settings.h"
 #include "layout.h"
 #include "layoutdoc.h"
+#include "layoutedit.h"
 #include "markdowndoc.h"
 #include "menu_owner_close.h"
 #ifdef QUCS_HAVE_QTPDF
@@ -786,6 +787,21 @@ private slots:
         only.cells[0].name = QStringLiteral("$$$CONTEXT_INFO$$$");
         only.contextCell = 0;
         QCOMPARE(only.mainCell(), -1);
+        // Nor the top cell edit_layout (and the router, and the multiphysics
+        // import) takes when none is named: TOP placing a cell of five PCells,
+        // the context cell referring to the five - the largest by its count,
+        // it had the edits.
+        QVERIFY(QFile::copy(QStringLiteral(QUCS_TEST_DATA "/klayout_context_many.gds"), path("context_many.gds")));
+        const EditResult edited =
+            editLayout(path("context_many.gds"), QString(),
+                       QJsonArray{QJsonObject{{"add", "polygon"}, {"layer", "1/0"}, {"points", QJsonArray{QJsonArray{0, 0}, QJsonArray{1, 0}, QJsonArray{1, 1}}}}});
+        QVERIFY2(edited.ok, qPrintable(edited.error));
+        QCOMPARE(edited.cell, QString("TOP"));
+        const auto after = read(path("context_many.gds"), &error);
+        QVERIFY2(after, qPrintable(error));
+        QVERIFY(after->contextCell >= 0);   // (kept, as written)
+        QCOMPARE(after->cells.at(after->contextCell).instances.size(), 5);
+        QCOMPARE(after->cells.at(after->cellIndex("TOP")).shapes.size(), 1);
     }
 
     // OASIS as KLayout writes it (data/klayout_sample.py): compressed
@@ -2546,6 +2562,20 @@ private slots:
         QCOMPARE(tabs.entries.size(), 2);
         QCOMPARE(tabs.entries.at(0).source, QString("9/0"));
         QCOMPARE(tabs.stipples.size(), 1);
+        // Groups within groups 200,000 deep (it overflowed the stack): read,
+        // those past 100 deep left out.
+        {
+            QByteArray deep = "<layer-properties><properties><name>g</name>";
+            for (int i = 0; i < 200000; ++i) deep += "<group-members><name>g</name>";
+            deep += "<source>1/0</source>";
+            for (int i = 0; i < 200000; ++i) deep += "</group-members>";
+            deep += "</properties></layer-properties>";
+            const LayerProperties nested = parseLayerProperties(deep, &error);
+            QCOMPARE(nested.entries.size(), 1);
+            int levels = 0;
+            for (const LayerEntry* e = &nested.entries.at(0); !e->members.isEmpty(); e = &e->members.at(0)) ++levels;
+            QCOMPARE(levels, 100);
+        }
         // Not one, cut short, or none in it: refused, and why.
         for (const char* bad : {"", "not xml at all", "<layer-properties><properties>", "<other/>", "<layer-properties></layer-properties>",
                                 "<layer-properties><name>tab</name></layer-properties>"}) {
