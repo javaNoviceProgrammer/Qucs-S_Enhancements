@@ -1038,30 +1038,45 @@ bool Commands::editSettings(const QString& why)
         // (git drops '<', '>' and line breaks from a name or an address:
         // what was typed would not be what commits have.)
         static const QRegularExpression crud(QStringLiteral("[<>\\r\\n]"));
+        // (What git has already, left as it is, is not judged again: OK keeps
+        // the History's choice.)
         QString wrong;
-        if (n.contains(crud)) wrong = tr("A name cannot hold '<', '>' or a line break.");
-        else if (e.contains(crud)) wrong = tr("An email cannot hold '<', '>' or a line break.");
-        else if (!e.isEmpty() && !e.contains(QLatin1Char('@'))) wrong = tr("%1 is no email address.").arg(e);
-        else if (!b.isEmpty() && b != branch && !isBranchName(b)) wrong = tr("%1 cannot be a branch's name.").arg(b);
+        if (n != name && n.contains(crud)) wrong = tr("A name cannot hold '<', '>' or a line break.");
+        else if (e != email && e.contains(crud)) wrong = tr("An email cannot hold '<', '>' or a line break.");
+        else if (e != email && !e.isEmpty() && !e.contains(QLatin1Char('@'))) wrong = tr("%1 is no email address.").arg(e);
+        else if (b != branch && !b.isEmpty() && !isBranchName(b)) wrong = tr("%1 cannot be a branch's name.").arg(b);
         if (!wrong.isEmpty()) {
             misc::reportError(wrong);
             continue;
         }
         QStringList failed;
-        auto save = [&failed](const QString& key, const QString& was, const QString& now) {
+        QStringList passedBy;
+        auto save = [&failed, &passedBy](const QString& key, const QString& was, const QString& now) {
             if (now == was) return;
             const Result r = setGlobalSetting(key, now);
-            if (!r.ok()) failed << key + QStringLiteral(": ") + r.error();
+            if (!r.ok()) {
+                failed << key + QStringLiteral(": ") + r.error();
+                return;
+            }
+            // (A file the global one includes after it, or the system's, goes
+            // first: kept, and not what git goes by.)
+            if (const QString goes = git::setting(key); goes != now)
+                passedBy << (goes.isEmpty() ? tr("%1: none").arg(key) : tr("%1: %2").arg(key, goes));
         };
         save(QStringLiteral("user.name"), name, n);
         save(QStringLiteral("user.email"), email, e);
         save(QStringLiteral("init.defaultBranch"), branch, b);
-        if (!failed.isEmpty()) misc::reportError(tr("git could not keep them:") + QStringLiteral("\n") + failed.join(QLatin1Char('\n')));
-        break;
+        QStringList told;
+        if (!failed.isEmpty()) told << tr("git could not keep them:") + QStringLiteral("\n") + failed.join(QLatin1Char('\n'));
+        if (!passedBy.isEmpty())
+            told << tr("Kept, but git goes by another of its settings files (one the global settings include, or the system's):")
+                        + QStringLiteral("\n") + passedBy.join(QLatin1Char('\n'));
+        setHistoryDocked(docked->isChecked());
+        emit message(docked->isChecked() ? tr("History opens docked in the main window") : tr("History opens in a window of its own"));
+        if (told.isEmpty()) return true;
+        misc::reportError(told.join(QStringLiteral("\n\n")));
+        return false;
     }
-    setHistoryDocked(docked->isChecked());
-    emit message(docked->isChecked() ? tr("History opens docked in the main window") : tr("History opens in a window of its own"));
-    return true;
 }
 
 bool Commands::knowsWho(const QString& root)

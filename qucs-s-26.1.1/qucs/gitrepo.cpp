@@ -856,17 +856,31 @@ bool ignore(const QString& root, const QString& path, QString* why)
     return true;
 }
 
+namespace {
+
+// \a args, composed back by git: a Mac hands a program its arguments
+// decomposed ("e" and a combining diaeresis for "ë"), and git composes them
+// only where a repository says core.precomposeUnicode (one made on a Mac
+// does) - not outside one, for a global setting or a new repository's
+// branch. Other systems ignore it.
+QStringList composed(const QStringList& args)
+{
+    return QStringList{QStringLiteral("-c"), QStringLiteral("core.precomposeUnicode=true")} + args;
+}
+
+} // namespace
+
 Result init(const QString& folder)
 {
     const QString branch = firstBranch();
-    Result r = run(folder, {QStringLiteral("init"), QStringLiteral("--initial-branch=") + branch});
+    Result r = run(folder, composed({QStringLiteral("init"), QStringLiteral("--initial-branch=") + branch}));
     // (A git before 2.28 has no --initial-branch: its HEAD named after it,
     // in the new repository alone.)
     if (r.ok() || !r.err.contains(QLatin1String("initial-branch"))) return r;
     const bool was = QFileInfo::exists(QDir(folder).filePath(QStringLiteral(".git")));
     r = run(folder, {QStringLiteral("init")});
     if (!r.ok() || was) return r;
-    const Result head = run(folder, {QStringLiteral("symbolic-ref"), QStringLiteral("HEAD"), QStringLiteral("refs/heads/") + branch});
+    const Result head = run(folder, composed({QStringLiteral("symbolic-ref"), QStringLiteral("HEAD"), QStringLiteral("refs/heads/") + branch}));
     return head.ok() ? r : head;
 }
 
@@ -895,7 +909,7 @@ Result setGlobalSetting(const QString& key, const QString& value)
         if (r.exitCode == 5) r.exitCode = 0;   // (none there)
         return r;
     }
-    return outsideAny({QStringLiteral("config"), QStringLiteral("--global"), QStringLiteral("--replace-all"), QStringLiteral("--"), key, value});
+    return outsideAny(composed({QStringLiteral("config"), QStringLiteral("--global"), QStringLiteral("--replace-all"), QStringLiteral("--"), key, value}));
 }
 
 QString firstBranch()

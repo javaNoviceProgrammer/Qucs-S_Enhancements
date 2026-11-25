@@ -1476,6 +1476,62 @@ private slots:
         QVERIFY(qucs_s::git::setting("user.email").isEmpty());
         QVERIFY(!readAll(global).contains("email"));
         QCOMPARE(qucs_s::git::setting("user.name"), QStringLiteral("Another One"));
+        // Cleared where git has none: nothing written, nothing said.
+        {
+            QVERIFY(write(global, "[user]\n\tname = Another One\n"));
+            misc::ErrorCapture errors;
+            onSettings({fillSettings("Another One", "", "")});
+            settings->trigger();
+            QVERIFY2(errors.errors().isEmpty(), qPrintable(errors.errors().join(' ')));
+            QCOMPARE(readAll(global), QByteArray("[user]\n\tname = Another One\n"));
+        }
+        // What git has already, not checked again: OK keeps the History's
+        // choice with a name and an email git took as they are.
+        {
+            QVERIFY(write(global, "[user]\n\tname = A <B>\n\temail = no <body>\n"));
+            misc::ErrorCapture errors;
+            int shown = 0;
+            auto docked = [&shown](QDialog* d) {
+                ++shown;
+                d->findChild<QRadioButton*>("gitHistoryDocked")->setChecked(true);
+                d->accept();
+            };
+            auto cancel = [&shown](QDialog* d) {
+                ++shown;
+                d->reject();
+            };
+            onSettings({docked, cancel});
+            settings->trigger();
+            QVERIFY2(errors.errors().isEmpty(), qPrintable(errors.errors().join(' ')));
+            QCOMPARE(shown, 1);
+            qDeleteAll(answerers()->children());   // (the Cancel for a second showing, unused)
+            QVERIFY(Commands::historyDocked());
+            Commands::setHistoryDocked(false);
+            QCOMPARE(readAll(global), QByteArray("[user]\n\tname = A <B>\n\temail = no <body>\n"));
+        }
+        // A name not in ASCII kept as typed (composed): a Mac hands a
+        // program's arguments over decomposed, and git outside a
+        // repository leaves them so - the same person two names to git log.
+        {
+            QVERIFY(write(global, ""));
+            const QString name = QString::fromUtf8("Zo\xc3\xab \xe5\x90\x8d\xe5\x89\x8d");
+            onSettings({fillSettings(name, "zoe@example.com", "main")});
+            settings->trigger();
+            QVERIFY2(readAll(global).contains("Zo\xc3\xab"), readAll(global).toHex(' ').constData());
+            QCOMPARE(qucs_s::git::setting("user.name"), name);
+        }
+        // Kept, but another of git's settings goes first (a file the global
+        // one includes after it): told what git goes by.
+        {
+            QVERIFY(write(canonical(dir.path()) + "/settings-included", "[user]\n\temail = included@example.com\n"));
+            QVERIFY(write(global, "[user]\n\temail = some@example.com\n[include]\n\tpath = " + QFile::encodeName(canonical(dir.path()))
+                                      + "/settings-included\n"));
+            misc::ErrorCapture errors;
+            onSettings({fillSettings("Another One", "changed@example.com", "main")});
+            settings->trigger();
+            QVERIFY2(errors.errors().join(' ').contains("included@example.com"), qPrintable(errors.errors().join(' ')));
+            QVERIFY(readAll(global).contains("changed@example.com"));
+        }
     }
 
     // A new repository starts on main - git's own would be "master" -,
@@ -1514,6 +1570,11 @@ private slots:
         const QString set = fresh("init-set");
         QVERIFY(init(set).ok());
         QCOMPARE(headOf(set), QStringLiteral("trunk"));
+        // One not in ASCII, kept as named (composed).
+        QVERIFY(write(global, "[init]\n\tdefaultBranch = br\xc3\xbcnn\n"));
+        const QString accented = fresh("init-accented");
+        QVERIFY(init(accented).ok());
+        QVERIFY2(readAll(accented + "/.git/HEAD").contains("refs/heads/br\xc3\xbcnn"), readAll(accented + "/.git/HEAD").toHex(' ').constData());
         // One git would not take: main.
         QVERIFY(write(global, "[init]\n\tdefaultBranch = a..b\n"));
         QCOMPARE(firstBranch(), QStringLiteral("main"));
@@ -1583,11 +1644,25 @@ private slots:
         QVERIFY(failed(r));
         QVERIFY2(text(r).contains("Git > Settings"), qPrintable(text(r)));
         QCOMPARE(headNow(), head);
+        // Claude's others that make one: refused alike.
+        auto refused = [this](const QString& tool, const QJsonObject& args) {
+            const QJsonObject res = call(tool, args);
+            return failed(res) && text(res).contains("Git > Settings") ? QString() : tool + ": " + text(res);
+        };
+        QString why = refused("git_stash", {{"path", repo}, {"action", "push"}});
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QVERIFY(gitIn(repo, {"stash", "list"}).isEmpty());
+        why = refused("git_tag", {{"path", repo}, {"action", "create"}, {"name", "v0"}, {"message", "annotated"}});
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QVERIFY(gitIn(repo, {"tag"}).isEmpty());
+        r = call("git_tag", {{"path", repo}, {"action", "create"}, {"name", "light"}});   // (a plain one: no one makes it)
+        QVERIFY2(!failed(r), qPrintable(text(r)));
+        QVERIFY(!gitIn(repo, {"tag", "-d", "light"}).isNull());
 
         // Each asks; cancelled. (What git says, were it run: kept.)
         auto errors = std::make_unique<misc::ErrorCapture>();
         int asked = 0;
-        QString why;
+        why.clear();
         auto cancel = [&asked, &why](QDialog* d) {
             ++asked;
             if (auto* l = d->findChild<QLabel*>("gitSettingsWhy"); l != nullptr && d->layout()->indexOf(l) >= 0) why = l->text();   // (laid out)
@@ -1653,11 +1728,26 @@ private slots:
         QCOMPARE(asked, 7);
         QCOMPARE(read(stopped).operation, QStringLiteral("merge"));
 
+        const QString otherTip = gitIn(repo, {"rev-parse", "other"});
+        for (const auto& [tool, args] : {std::pair{QStringLiteral("git_commit_action"), QJsonObject{{"path", repo}, {"action", "revert"}, {"commit", head}}},
+                                         std::pair{QStringLiteral("git_commit_action"), QJsonObject{{"path", repo}, {"action", "cherry_pick"}, {"commit", otherTip}}},
+                                         std::pair{QStringLiteral("git_branch"), QJsonObject{{"path", repo}, {"action", "merge"}, {"name", "other"}}},
+                                         std::pair{QStringLiteral("git_continue"), QJsonObject{{"path", stopped}}}}) {
+            why = refused(tool, args);
+            QVERIFY2(why.isEmpty(), qPrintable(why));
+        }
+        QCOMPARE(headNow(), head);
+        QCOMPARE(read(stopped).operation, QStringLiteral("merge"));
+
         QVERIFY2(errors->errors().isEmpty(), qPrintable(errors->errors().join(' ')));
         errors.reset();
         // Switching, a change in the way: stashed first - asked. (Its question
         // answered here: not by the capture, which would cancel it.)
         QVERIFY(write(repo + "/b.txt", "b, changed\n"));
+        why = refused("git_branch", {{"path", repo}, {"action", "switch"}, {"name", "other"}, {"stash", true}});
+        QVERIFY2(why.isEmpty(), qPrintable(why));
+        QCOMPARE(read(repo).branch, QStringLiteral("main"));
+        QVERIFY(!gitIn(repo, {"stash", "list"}).contains('\n'));
         answerBox("gitStashFirstQuestion", "Stash and Switch");
         onSettings({cancel});
         Commands::instance()->switchBranch(repo, "other");
@@ -1674,6 +1764,17 @@ private slots:
         QCOMPARE(gitIn(repo, {"tag"}), QStringLiteral("plain"));
         QCOMPARE(asked, 8);
 
+        // git's settings that cannot be written: told once.
+        {
+            GlobalSettingsIn nowhere(canonical(dir.path()) + "/no-such-folder/gitconfig");
+            misc::ErrorCapture once;
+            onSettings({fillSettings("New One", "new@example.com", "main")});
+            d->commitNow(false);
+            QCOMPARE(once.errors().size(), 1);
+            QVERIFY2(once.errors().first().contains("could not keep"), qPrintable(once.errors().first()));
+            QVERIFY(Commands::instance()->runningJob() == nullptr);
+            QCOMPARE(committed.count(), 0);
+        }
         // OK with none typed: told, and nothing made.
         {
             misc::ErrorCapture still;

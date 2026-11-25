@@ -186,7 +186,8 @@ public:
     static void setHistoryDocked(bool docked);
     /// Git > Settings...: how the Git commands behave, and git's own name,
     /// email and a new repository's branch. \a why, when given, heads it.
-    /// False when cancelled.
+    /// False when cancelled, or what was typed is not what git goes by
+    /// (told).
     bool editSettings(const QString& why = {});
     /// Whether git has a name and an email for a commit in \a root: else
     /// Git > Settings... asks for them. False when it still has none.
