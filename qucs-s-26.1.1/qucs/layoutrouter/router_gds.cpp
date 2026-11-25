@@ -14,6 +14,7 @@
 #include <gdstk/gdstk.hpp>
 
 #include <cstring>
+#include <QSet>
 
 #include <QDir>
 #include <QFile>
@@ -94,6 +95,21 @@ bool isOasisFile(const QString& path)
 bool isKLayoutContext(const gdstk::Cell* cell)
 {
     return cell != nullptr && cell->name != nullptr && std::strcmp(cell->name, "$$$CONTEXT_INFO$$$") == 0;
+}
+
+std::vector<gdstk::Cell*> topCellsOf(const gdstk::Library& lib)
+{
+    QSet<const gdstk::Cell*> placed;
+    for (uint64_t c = 0; c < lib.cell_array.count; ++c) {
+        const gdstk::Cell* cell = lib.cell_array[c];
+        if (isKLayoutContext(cell)) continue;
+        for (uint64_t i = 0; i < cell->reference_array.count; ++i)
+            if (cell->reference_array[i]->type == gdstk::ReferenceType::Cell) placed.insert(cell->reference_array[i]->cell);
+    }
+    std::vector<gdstk::Cell*> tops;
+    for (uint64_t c = 0; c < lib.cell_array.count; ++c)
+        if (!isKLayoutContext(lib.cell_array[c]) && !placed.contains(lib.cell_array[c])) tops.push_back(lib.cell_array[c]);
+    return tops;
 }
 
 bool readLibrary(const QString& path, gdstk::Library* lib, QString* error)
@@ -210,22 +226,17 @@ CommitReport commitRoutes(const Commit& commit, const Problem& problem, const Re
             return fail(QStringLiteral("%1 has no cell %2").arg(QFileInfo(commit.source).fileName(), commit.topCell));
         }
     } else {
-        gdstk::Array<gdstk::Cell*> tops = {};
-        gdstk::Array<gdstk::RawCell*> rawTops = {};
-        lib.top_level(tops, rawTops);
+        // (KLayout's context cell not one: a reference to each PCell, often
+        // more than the top cell has - the routes were placed in it)
         uint64_t most = 0;
-        for (uint64_t i = 0; i < tops.count; ++i) {
-            // (KLayout's context cell: a reference to each PCell, often
-            // more than the top cell has - the routes were placed in it)
-            if (QByteArray(tops[i]->name) == cellName || isKLayoutContext(tops[i])) continue;
-            const uint64_t size = tops[i]->polygon_array.count + tops[i]->reference_array.count;
+        for (gdstk::Cell* t : topCellsOf(lib)) {
+            if (QByteArray(t->name) == cellName) continue;
+            const uint64_t size = t->polygon_array.count + t->reference_array.count;
             if (!top || size > most) {
-                top = tops[i];
+                top = t;
                 most = size;
             }
         }
-        tops.clear();
-        rawTops.clear();
         if (!top) {
             lib.free_all();
             return fail(QStringLiteral("%1 has no top cell to place the routes in").arg(QFileInfo(commit.source).fileName()));

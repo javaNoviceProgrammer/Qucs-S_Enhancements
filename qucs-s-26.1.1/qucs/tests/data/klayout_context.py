@@ -6,7 +6,8 @@
 # klayout_context_many.gds: TOP placing one cell that places five PCells -
 # KLayout's context cell then has five references, TOP one: the cell
 # edit_layout, the router and the multiphysics import must still take for
-# the top.
+# the top. And klayout_context_pcell.gds: a PCell placed by no cell, its
+# own layout's top cell, which only the context cell refers to.
 #   klayout -zz -r klayout_context.py
 import os
 import pya
@@ -27,3 +28,8 @@ for i in range(5):
     t = ly.create_cell("TEXT", "Basic", {"text": "T%d" % i, "layer": pya.LayerInfo(2, 0), "mag": 1.0})
     block.insert(pya.CellInstArray(t.cell_index(), pya.Trans(pya.Vector(0, i * 2000))))
 ly.write(os.path.join(os.path.dirname(os.path.abspath(__file__)), "klayout_context_many.gds"))
+
+ly = pya.Layout()
+ly.dbu = 0.001
+ly.create_cell("TEXT", "Basic", {"text": "TOP", "layer": pya.LayerInfo(3, 0), "mag": 1.0})
+ly.write(os.path.join(os.path.dirname(os.path.abspath(__file__)), "klayout_context_pcell.gds"))

@@ -11,6 +11,7 @@
 #include "fem_import.h"
 
 #include <cstring>
+#include <QSet>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -1219,25 +1220,31 @@ LayoutShapes readLayoutShapes(const QString& path, const QString& cellName, cons
         }
     } else {
         // The largest of the cells no other places.
-        gdstk::Array<gdstk::Cell*> tops = {};
-        gdstk::Array<gdstk::RawCell*> raw = {};
-        library.top_level(tops, raw);
+        // (Not KLayout's context cell, $$$CONTEXT_INFO$$$, nor counting its
+        // references: one to each PCell at its origin, as large as all of
+        // them together - and a PCell only it refers to is a top cell.)
+        const auto context = [](const gdstk::Cell* c) { return c->name != nullptr && std::strcmp(c->name, "$$$CONTEXT_INFO$$$") == 0; };
+        QSet<const gdstk::Cell*> placed;
+        for (uint64_t c = 0; c < library.cell_array.count; ++c) {
+            const gdstk::Cell* from = library.cell_array[c];
+            if (context(from)) continue;
+            for (uint64_t i = 0; i < from->reference_array.count; ++i)
+                if (from->reference_array[i]->type == gdstk::ReferenceType::Cell) placed.insert(from->reference_array[i]->cell);
+        }
         double best = -1;
-        for (uint64_t i = 0; i < tops.count; ++i) {
-            // (Not KLayout's context cell, $$$CONTEXT_INFO$$$: a reference to
-            // each PCell at its origin, as large as all of them together.)
-            if (tops[i]->name != nullptr && std::strcmp(tops[i]->name, "$$$CONTEXT_INFO$$$") == 0) continue;
+        for (uint64_t c = 0; c < library.cell_array.count; ++c) {
+            gdstk::Cell* top = library.cell_array[c];
+            if (context(top) || placed.contains(top)) continue;
             gdstk::Vec2 lo, hi;
-            tops[i]->bounding_box(lo, hi);
+            top->bounding_box(lo, hi);
             const double area = hi.x >= lo.x ? (hi.x - lo.x) * (hi.y - lo.y) : 0;
             if (area > best) {
                 best = area;
-                cell = tops[i];
+                cell = top;
             }
         }
-        tops.clear();
-        raw.clear();
-        if (!cell && library.cell_array.count > 0) cell = library.cell_array[0];
+        for (uint64_t c = 0; !cell && c < library.cell_array.count; ++c)
+            if (!context(library.cell_array[c])) cell = library.cell_array[c];
     }
     if (!cell) {
         out.error = tr("%1 has no cells").arg(QFileInfo(path).fileName());
