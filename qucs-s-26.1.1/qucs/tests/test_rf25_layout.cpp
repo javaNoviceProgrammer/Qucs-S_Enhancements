@@ -2382,6 +2382,107 @@ private slots:
         QVERIFY(rf::meshOf({split}, how, m.solveStack(), 1e9).cells.size() > rf::meshOf({split}, bare, m.solveStack(), 1e9).cells.size());
     }
 
+    // A strip's bend (stripCells()): its lines across it square to the
+    // centreline, each mitre a column of its own. Cut at one share along its
+    // two sides, every line across a segment beside a mitre slanted, and the
+    // current through them crossed edges longer than the strip is wide. A
+    // strip 20 µm wide of two segments of 100 read, against finite elements
+    // on its outline (P1, refined to 200,000 nodes):
+    // - bent 45 degrees, 9.705 squares at 10 across against 9.911 (-2.1 %);
+    // - 90 degrees, 8.719 against 9.560 (-8.8 %);
+    // - 135 degrees, 6.497 against some 8.33 (-22 %), and at 20 across no
+    //   answer;
+    // none converging there. And an L drawn at a slant, every side along or
+    // across one frame, is turned and meshed in it as it is drawn square
+    // (MeshCell::angle): cut along its centreline, the L of arms 100 by 20
+    // at 30 and 45 degrees read 7.81 and 7.84 squares end to end, 9 % under
+    // the 8.58 it reads square - and an edge port on its inner edge is
+    // graded toward the corner there as square (MeshSettings::ports).
+    void aStripsBendIsCutSquareToItsCentreline()
+    {
+        const rf::Model m = shaped({boxOn("M1", 0, 0, 10, 10)});
+        const rf::Stack stack = m.solveStack();
+        const rf::Layer* metal = stack.named(QStringLiteral("M1"));
+        const auto squares = [&](double bend, double turned, int across, double first = 100, int* zeros = nullptr) {
+            const double a = bend * M_PI / 180, r = turned * M_PI / 180;
+            const auto turn = [r](QPointF p) { return QPointF(p.x() * std::cos(r) - p.y() * std::sin(r), p.x() * std::sin(r) + p.y() * std::cos(r)); };
+            const QPolygonF spine({turn(QPointF(0, 10)), turn(QPointF(first, 10)), turn(QPointF(first + first * std::cos(a), 10 + first * std::sin(a)))});
+            rf::Conductor strip;
+            strip.layer = QStringLiteral("M1");
+            strip.spine = spine;
+            strip.spineWidth = 20;
+            strip.outline = rf::stripOutline(spine, 20);
+            rf::MeshSettings how;
+            how.cellsAcross = across;
+            const rf::Mesh mesh = rf::meshOf({strip}, how, stack, 1e9);
+            if (zeros != nullptr) {
+                *zeros = 0;
+                for (const rf::MeshCell& cell : mesh.cells)
+                    for (qsizetype i = 0; i < cell.outline.size(); ++i)
+                        *zeros += QLineF(cell.outline.at(i), cell.outline.at((i + 1) % cell.outline.size())).length() < 1e-9;
+            }
+            const rf::Inductance loop = rf::inductanceOf(mesh, {strip}, stack, spine.first(), spine.last());
+            return loop.ok() ? loop.rDc * metal->sigma * metal->thickness : -1.0;
+        };
+        // (Bent 90 degrees, its sides along the axes: cut as a strip, the
+        //  processing never giving such a one; at a slant, turned, below.)
+        for (const auto& [bend, fe, within] : {std::tuple{45.0, 9.911, 0.005}, std::tuple{90.0, 9.560, 0.01}, std::tuple{135.0, 8.33, 0.04}}) {
+            const double at10 = squares(bend, 0, 10), at20 = squares(bend, 0, 20);
+            QVERIFY2(std::abs(at10 / fe - 1) < within && std::abs(at20 / fe - 1) < within,
+                     qPrintable(QStringLiteral("bent %1: %2 and %3 squares at 10 and 20 across, against %4").arg(bend).arg(at10).arg(at20).arg(fe)));
+        }
+        // Its mitre a column as long as it spans, wherever the spaces fall:
+        // bent 90 degrees with its arms 89.9 and 90.1 µm long, 22 spaces
+        // along it and 23, as far apart as 0.4 µm of it, a fiftieth of a
+        // square (a mitre to its nearest line, 1.3 % apart). And no cell
+        // with two corners in one place, at the strip's inner corner.
+        int zeros = -1;
+        const double shorter = squares(90, 0, 10, 89.9, &zeros), longer = squares(90, 0, 10, 90.1);
+        QVERIFY2(std::abs(longer - shorter - 0.02) < 0.015, qPrintable(QStringLiteral("%1 and %2 squares").arg(shorter).arg(longer)));
+        QCOMPARE(zeros, 0);
+        // The same bend at any angle alike.
+        const double flat = squares(45, 0, 10), slanted = squares(45, 30, 10);
+        QVERIFY2(std::abs(slanted / flat - 1) < 1e-6, qPrintable(QStringLiteral("%1 against %2 squares").arg(slanted).arg(flat)));
+        // The L drawn at 30 and 45 degrees as square, from end to end and to
+        // its upright arm's inner edge, through the tab's solve.
+        const auto l = [&](double turned, bool inner, QStringList* lines = nullptr) {
+            const double r = turned * M_PI / 180;
+            const auto turn = [r](QPointF p) { return QPointF(p.x() * std::cos(r) - p.y() * std::sin(r), p.x() * std::sin(r) + p.y() * std::cos(r)); };
+            QJsonArray rows;
+            for (const QPointF p : {QPointF(0, 0), QPointF(100, 0), QPointF(100, 20), QPointF(20, 20), QPointF(20, 100), QPointF(0, 100)}) {
+                const QPointF q = turn(p);
+                rows.append(QJsonArray{QString::number(q.x(), 'g', 15) + "[um]", QString::number(q.y(), 'g', 15) + "[um]"});
+            }
+            rf::Model model = shaped({QJsonObject{{"layer", "M1"}, {"shape", "polygon"}, {"points", rows}}});
+            model.ports().children.clear();
+            for (const auto& [name, at] : {std::pair{"P1", QPointF(100, 10)}, std::pair{"P2", inner ? QPointF(20, 60) : QPointF(10, 100)}}) {
+                const QPointF q = turn(at);
+                rf::Node p = model.make(QStringLiteral("rf_edge_port"));
+                p.label = QLatin1String(name);
+                p.props.insert(QStringLiteral("conductor"), QStringLiteral("M1"));
+                p.props.insert(QStringLiteral("x"), QString::number(q.x(), 'g', 15) + "[um]");
+                p.props.insert(QStringLiteral("y"), QString::number(q.y(), 'g', 15) + "[um]");
+                model.ports().children.push_back(p);
+            }
+            rf::SolveJob job;
+            rf::SolveRequest request;
+            request.solver = QStringLiteral("quasi_static");
+            request.loopOnly = true;
+            const rf::ModelSolution sol = rf::solveModel(job, model, nothingRead(), QStringLiteral("none"), QDir::tempPath(), request);
+            if (lines != nullptr && sol.mesh) *lines = sol.mesh->lines;
+            return sol.inductance && sol.inductance->ok() ? sol.inductance->rDc * metal->sigma * metal->thickness : -1.0;
+        };
+        const double ends = l(0, false), inner = l(0, true);
+        for (const double turned : {30.0, 45.0}) {
+            QStringList lines;
+            const double e = l(turned, false, &lines), i = l(turned, true);
+            QVERIFY2(std::abs(e / ends - 1) < 1e-3 && std::abs(i / inner - 1) < 1e-3,
+                     qPrintable(QStringLiteral("at %1 degrees %2 and %3 squares, square %4 and %5").arg(turned).arg(e).arg(i).arg(ends).arg(inner)));
+            QVERIFY2(lines.join(' ').contains(QStringLiteral("turned by right angles")) && !lines.join(' ').contains(QStringLiteral("along their centrelines")),
+                     qPrintable(lines.join(" | ")));
+        }
+    }
+
     // A loop's runs taken as bars by the narrowest conductor its current runs
     // on, not by every one of their layer: a triangle 5 µm tall drawn 500 µm
     // off a strip, joined to nothing, made each of the strip's runs a bar -
