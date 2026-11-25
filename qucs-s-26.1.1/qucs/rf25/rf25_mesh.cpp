@@ -2110,34 +2110,37 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     QList<QPolygonF> parts;
                     int cuts = -1;
                     // (A rectangle of the curve's own joins it too, unless it is
-                    //  a strip of its own: both its long sides on the outline,
-                    //  no metal beyond either - a feed -, or one, and it at
-                    //  least half as deep as the conductor's own width, 2A/P - a
-                    //  strip along a plate's edge, whose cells are long along
-                    //  it. Kept apart, the rectangle a ring was cut into beside
-                    //  its keyhole's slit, 1.75 µm deep, met the region on lines
-                    //  of its own, and the ring's R at 20 across read 0.85 %
-                    //  over its value at 10 and at 40. Apart by one side
-                    //  however shallow, a feed cut into columns where a gap
-                    //  between a gear's teeth lay under its end - two of them
-                    //  5.3 and 6.8 µm wide, each with the feed's side - was
-                    //  meshed as strips that narrow, their fine lines through
-                    //  the feed and the gear: a gear turned 4 degrees, fed by
-                    //  two strips 20 µm wide, 6,939 cells where square it is
-                    //  2,728. Apart by both sides alone, a plate's edge strips
-                    //  joined its region, square cells where they were long: a
-                    //  plate 300 µm square with three round holes 2,309 cells
-                    //  at 10 across where it was 1,063, 33,602 at 40 for
-                    //  13,600, its R within 0.3 %.)
-                    const auto ownStrip = [&outline, across = wide](const QRectF& b) {
+                    //  a strip of its own - a feed: both its long sides on the
+                    //  outline, no metal beyond either. Kept apart, the
+                    //  rectangle a ring was cut into beside its keyhole's slit,
+                    //  1.75 µm deep, met the region on lines of its own, and the
+                    //  ring's R at 20 across read 0.85 % over its value at 10
+                    //  and at 40. Apart by one side however shallow, a feed cut
+                    //  into columns where a gap between a gear's teeth lay under
+                    //  its end - two of them 5.3 and 6.8 µm wide, each with the
+                    //  feed's side - was meshed as strips that narrow, their
+                    //  fine lines through the feed and the gear: a gear turned
+                    //  4 degrees, fed by two strips 20 µm wide, 6,939 cells
+                    //  where square it is 2,728. And apart by one side where
+                    //  half the conductor's width deep - a plate's edge strips,
+                    //  their cells long along the edge -, the region between
+                    //  them took their lines along it in place of its own, a
+                    //  strip being the stronger: a plate 200 µm square with a
+                    //  hole of 40 µm radius, fed across its faces, was cut into
+                    //  rows 2.7 µm high and up to 22 µm long, through which the
+                    //  current turned about the hole, and its R read 5.7 %
+                    //  under at 10 across, 2.9 % at 20 and 1.3 % at 40; joined,
+                    //  1.0 %, 0.5 % - the review's P70. Joined, a plate takes
+                    //  more cells: 300 µm square with three round holes, 2,309
+                    //  at 10 across where apart it was 1,063.)
+                    const auto ownStrip = [&outline](const QRectF& b) {
                         const bool wide = b.width() >= b.height();
                         const double e = 1e-6 * std::max(b.width(), b.height());
                         const QList<QPointF> beyond = wide ? QList<QPointF>{QPointF(b.center().x(), b.top() - e), QPointF(b.center().x(), b.bottom() + e)}
                                                            : QList<QPointF>{QPointF(b.left() - e, b.center().y()), QPointF(b.right() + e, b.center().y())};
-                        int open = 0;
                         for (const QPointF& p : beyond)
-                            if (!outline.containsPoint(p, Qt::OddEvenFill)) ++open;
-                        return open == 2 || (open == 1 && std::min(b.width(), b.height()) >= 0.5 * across);
+                            if (outline.containsPoint(p, Qt::OddEvenFill)) return false;
+                        return true;
                     };
                     QList<qsizetype> joined;
                     for (qsizetype k = first; k < pieces.size(); ++k)
