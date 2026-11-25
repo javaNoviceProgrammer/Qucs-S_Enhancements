@@ -184,8 +184,13 @@ public:
     /// of its own): Git > Settings...'s choice, kept with the settings.
     static bool historyDocked();
     static void setHistoryDocked(bool docked);
-    /// Git > Settings...: how the Git commands behave.
-    void editSettings();
+    /// Git > Settings...: how the Git commands behave, and git's own name,
+    /// email and a new repository's branch. \a why, when given, heads it.
+    /// False when cancelled.
+    bool editSettings(const QString& why = {});
+    /// Whether git has a name and an email for a commit in \a root: else
+    /// Git > Settings... asks for them. False when it still has none.
+    bool knowsWho(const QString& root);
     /// The main window the histories dock in (none: each floats).
     void setMainWindow(QMainWindow* window);
     void showBlame(const QString& root, const QString& path);

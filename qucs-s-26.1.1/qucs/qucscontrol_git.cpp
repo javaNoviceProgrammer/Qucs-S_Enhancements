@@ -534,6 +534,12 @@ void QucsControl::gitCommit(const QJsonObject& args, const Done& done)
                             "git_abort gives it up.").arg(under)));
         return;
     }
+    // (Not one made up from the computer's name, nor a dialog Claude cannot answer.)
+    if (!git::knowsWho(root)) {
+        done(errorResult(tr("git has no name and email to make the commit with: the user sets them in Git > Settings... "
+                            "(or with git config user.name and user.email).")));
+        return;
+    }
     QStringList commitArgs{QStringLiteral("commit"), QStringLiteral("-F"), QStringLiteral("-")};
     if (amend) commitArgs << QStringLiteral("--amend");
     if (!paths.isEmpty()) {

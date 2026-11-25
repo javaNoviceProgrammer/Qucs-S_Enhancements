@@ -187,7 +187,8 @@ void QucsApp::initGitMenu()
   // (Its own: not moved to the application menu as its Preferences, as a
   // Mac would a "Settings..." by its name.)
   add("gitSettings", tr("Settings..."), [git] { git->editSettings(); },
-      tr("How the Git commands behave: whether History opens in a window of its own or docked in this window"))
+      tr("How the Git commands behave (whether History opens in a window of its own or docked in this window), "
+         "and git's own name and email for commits and a new repository's branch"))
       ->setMenuRole(QAction::NoRole);
   connect(gitMenu, &QMenu::aboutToShow, this, &QucsApp::updateGitMenu);
 

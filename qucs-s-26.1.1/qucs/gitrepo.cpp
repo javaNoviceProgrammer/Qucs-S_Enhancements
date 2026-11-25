@@ -25,6 +25,7 @@
 #include <QMutexLocker>
 #include <QPromise>
 #include <QRegularExpression>
+#include <QTemporaryDir>
 #include <QThreadPool>
 #include <QTimer>
 
@@ -857,7 +858,65 @@ bool ignore(const QString& root, const QString& path, QString* why)
 
 Result init(const QString& folder)
 {
-    return run(folder, {QStringLiteral("init")});
+    const QString branch = firstBranch();
+    Result r = run(folder, {QStringLiteral("init"), QStringLiteral("--initial-branch=") + branch});
+    // (A git before 2.28 has no --initial-branch: its HEAD named after it,
+    // in the new repository alone.)
+    if (r.ok() || !r.err.contains(QLatin1String("initial-branch"))) return r;
+    const bool was = QFileInfo::exists(QDir(folder).filePath(QStringLiteral(".git")));
+    r = run(folder, {QStringLiteral("init")});
+    if (!r.ok() || was) return r;
+    const Result head = run(folder, {QStringLiteral("symbolic-ref"), QStringLiteral("HEAD"), QStringLiteral("refs/heads/") + branch});
+    return head.ok() ? r : head;
+}
+
+namespace {
+
+// git's own settings, read in an empty folder (no repository's).
+Result outsideAny(const QStringList& args)
+{
+    QTemporaryDir empty;
+    if (!empty.isValid()) return failure(tr("no folder to run git in: %1").arg(empty.errorString()));
+    return run(empty.path(), args, false, 15000);
+}
+
+} // namespace
+
+QString setting(const QString& key)
+{
+    const Result r = outsideAny({QStringLiteral("config"), QStringLiteral("--get"), QStringLiteral("--"), key});
+    return r.ok() ? r.out.trimmed() : QString();
+}
+
+Result setGlobalSetting(const QString& key, const QString& value)
+{
+    if (value.isEmpty()) {
+        Result r = outsideAny({QStringLiteral("config"), QStringLiteral("--global"), QStringLiteral("--unset-all"), QStringLiteral("--"), key});
+        if (r.exitCode == 5) r.exitCode = 0;   // (none there)
+        return r;
+    }
+    return outsideAny({QStringLiteral("config"), QStringLiteral("--global"), QStringLiteral("--replace-all"), QStringLiteral("--"), key, value});
+}
+
+QString firstBranch()
+{
+    const QString set = setting(QStringLiteral("init.defaultBranch"));
+    return isBranchName(set) ? set : QStringLiteral("main");
+}
+
+bool isBranchName(const QString& name)
+{
+    if (name.isEmpty() || optionLike(name)) return false;
+    return outsideAny({QStringLiteral("check-ref-format"), QStringLiteral("refs/heads/") + name}).ok();
+}
+
+bool knowsWho(const QString& root)
+{
+    for (const char* who : {"GIT_AUTHOR_IDENT", "GIT_COMMITTER_IDENT"})
+        if (!run(root, {QStringLiteral("-c"), QStringLiteral("user.useConfigOnly=true"), QStringLiteral("var"), QString::fromLatin1(who)}, true, 15000)
+                 .ok())
+            return false;
+    return true;
 }
 
 // ----------------------------------------------------------------------
