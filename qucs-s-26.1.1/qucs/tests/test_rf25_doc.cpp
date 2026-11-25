@@ -6101,14 +6101,15 @@ private slots:
         QVERIFY2(!doc->showsKeptSolution() && doc->keptSaid().contains(QStringLiteral("was solved on a mesh of")),
                  qPrintable(doc->keptSaid()));
         app->closeAllFiles();
-        // Of another format - a later build's: not read, and why said.
+        // Of another format - a later build's: not read, and why said. (Far
+        // past this build's: the format 6 this was written with became one.)
         {
             QFile later(kept);
             QVERIFY(later.open(QIODevice::WriteOnly));
             QDataStream s(&later);
             s.setVersion(QDataStream::Qt_6_0);
             s.writeRawData("QRF25SOL", 8);
-            s << quint32(6) << QByteArray("a later build's");
+            s << quint32(1000) << QByteArray("a later build's");
         }
         doc = open(file);
         QVERIFY(doc != nullptr && doc->waitForLayout(60000) && doc->waitForPrepared(60000));
