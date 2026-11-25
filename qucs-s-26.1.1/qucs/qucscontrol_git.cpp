@@ -38,6 +38,16 @@ namespace git = qucs_s::git;
 
 namespace {
 
+// Why git cannot make a commit, a stash or an annotated tag in \a root:
+// it has no name and email of its own (none made up from the computer's
+// name, nor a dialog Claude cannot answer) - else empty.
+QString noOneToMakeIt(const QString& root)
+{
+    if (git::knowsWho(root)) return {};
+    return QucsControl::tr("git has no name and email to make this with: the user sets them in Git > Settings... "
+                           "(or with git config user.name and user.email).");
+}
+
 // Long texts cut, and said so.
 constexpr int kMostText = 150000;
 
@@ -534,10 +544,8 @@ void QucsControl::gitCommit(const QJsonObject& args, const Done& done)
                             "git_abort gives it up.").arg(under)));
         return;
     }
-    // (Not one made up from the computer's name, nor a dialog Claude cannot answer.)
-    if (!git::knowsWho(root)) {
-        done(errorResult(tr("git has no name and email to make the commit with: the user sets them in Git > Settings... "
-                            "(or with git config user.name and user.email).")));
+    if (const QString why = noOneToMakeIt(root); !why.isEmpty()) {
+        done(errorResult(why));
         return;
     }
     QStringList commitArgs{QStringLiteral("commit"), QStringLiteral("-F"), QStringLiteral("-")};
@@ -626,6 +634,7 @@ QJsonObject QucsControl::gitBranch(const QJsonObject& args)
         r = git::switchTo(root, name);
         if (!r.ok() && args.value(QLatin1String("stash")).toBool()
             && (r.err.contains(QLatin1String("would be overwritten")) || r.err.contains(QLatin1String("commit your changes")))) {
+            if (const QString why = noOneToMakeIt(root); !why.isEmpty()) return errorResult(why);
             const git::Result stashed = git::stash(root, tr("Before switching to %1").arg(name));
             if (!stashed.ok()) return errorResult(tr("git could not stash the changes: %1").arg(stashed.error()));
             r = git::switchTo(root, name);
@@ -641,6 +650,7 @@ QJsonObject QucsControl::gitBranch(const QJsonObject& args)
         if (!r.ok() && r.err.contains(QLatin1String("not fully merged")))
             return errorResult(tr("%1 has commits no other branch has - they would be lost: 'force' deletes it all the same.").arg(name));
     } else if (action == QLatin1String("merge")) {
+        if (const QString why = noOneToMakeIt(root); !why.isEmpty()) return errorResult(why);
         r = git::merge(root, name);
         if (!r.ok() && (r.out.contains(QLatin1String("CONFLICT")) || r.err.contains(QLatin1String("CONFLICT")))) {
             QJsonObject o = gitState(root);
@@ -748,6 +758,7 @@ QJsonObject QucsControl::gitStash(const QJsonObject& args)
     }
     git::Result r;
     if (action == QLatin1String("push")) {
+        if (const QString why = noOneToMakeIt(root); !why.isEmpty()) return errorResult(why);
         r = git::stash(root, args.value(QLatin1String("message")).toString().trimmed(), args.value(QLatin1String("untracked")).toBool(true));
     } else if (action == QLatin1String("apply") || action == QLatin1String("pop")) {
         r = git::applyStash(root, index, action == QLatin1String("pop"));
@@ -783,8 +794,12 @@ QJsonObject QucsControl::gitTag(const QJsonObject& args)
         return jsonResult(QJsonObject{{QStringLiteral("repository"), native(root)}, {QStringLiteral("tags"), QJsonArray::fromStringList(git::tags(root))}});
     if (name.isEmpty()) return errorResult(tr("Which tag? ('name')"));
     git::Result r;
-    if (action == QLatin1String("create"))
-        r = git::createTag(root, name, args.value(QLatin1String("message")).toString().trimmed(), args.value(QLatin1String("commit")).toString().trimmed());
+    if (action == QLatin1String("create")) {
+        const QString message = args.value(QLatin1String("message")).toString().trimmed();
+        // (A plain tag is no object of its own: no one makes it.)
+        if (const QString why = message.isEmpty() ? QString() : noOneToMakeIt(root); !why.isEmpty()) return errorResult(why);
+        r = git::createTag(root, name, message, args.value(QLatin1String("commit")).toString().trimmed());
+    }
     else if (action == QLatin1String("delete"))
         r = git::deleteTag(root, name);
     else
@@ -802,6 +817,8 @@ QJsonObject QucsControl::gitCommitAction(const QJsonObject& args)
     QString error;
     const QString root = gitRootOf(args.value(QLatin1String("path")).toString(), &error);
     if (root.isEmpty()) return errorResult(error);
+    if (action == QLatin1String("revert") || action == QLatin1String("cherry_pick"))
+        if (const QString why = noOneToMakeIt(root); !why.isEmpty()) return errorResult(why);
     const git::Repository before = git::read(root);
     git::Result r;
     if (action == QLatin1String("revert")) r = git::revert(root, commit);
@@ -863,6 +880,7 @@ QJsonObject QucsControl::gitContinue(const QJsonObject& args)
     if (skip && under == QLatin1String("merge")) return errorResult(tr("A merge has no commit to skip: git_abort gives it up."));
     if (!skip && before.conflictCount() > 0)
         return errorResult(tr("%1 file(s) still in conflict: git_resolve takes a side, an edited file is marked resolved with git_stage. git_status lists them.").arg(before.conflictCount()));
+    if (const QString why = noOneToMakeIt(root); !why.isEmpty()) return errorResult(why);
     const git::Result r = git::continueOperation(root, under, skip);
     if (!r.ok() && git::read(root).conflictCount() > 0) {
         QJsonObject o = gitState(root);
