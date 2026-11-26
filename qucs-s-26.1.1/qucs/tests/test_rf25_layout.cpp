@@ -2535,6 +2535,30 @@ private slots:
         // The same bend at any angle alike.
         const double flat = squares(45, 0, 10), slanted = squares(45, 30, 10);
         QVERIFY2(std::abs(slanted / flat - 1) < 1e-6, qPrintable(QStringLiteral("%1 against %2 squares").arg(slanted).arg(flat)));
+        // A zigzag of two bends of 135 degrees, its middle segment 40 µm long
+        // and 100: the mitres' stretches, some 24 µm either side of each
+        // corner, overlap at 40, and neither corner is fanned there - each
+        // fanned, their cells overlapped, 1.2 % more than the outline's area,
+        // no clash said -; at 100 both are. Either way the cells tile the
+        // outline, their areas its area.
+        for (const double middle : {40.0, 100.0}) {
+            const double a = 135 * M_PI / 180;
+            const QPointF turn(100 + middle * std::cos(a), 10 + middle * std::sin(a));
+            const QPolygonF spine({QPointF(0, 10), QPointF(100, 10), turn, turn + QPointF(100, 0)});
+            rf::Conductor zigzag;
+            zigzag.layer = QStringLiteral("M1");
+            zigzag.spine = spine;
+            zigzag.spineWidth = 20;
+            zigzag.outline = rf::stripOutline(spine, 20);
+            rf::MeshSettings how;
+            const rf::Mesh mesh = rf::meshOf({zigzag}, how, stack, 1e9);
+            QVERIFY2(mesh.ok() && !mesh.cells.isEmpty(), qPrintable(mesh.problems.join(" | ")));
+            double sum = 0;
+            for (const rf::MeshCell& cell : mesh.cells) sum += std::abs(rf::areaOf(cell.outline));
+            const double whole = std::abs(rf::areaOf(zigzag.outline));
+            QVERIFY2(std::abs(sum / whole - 1) < 1e-9,
+                     qPrintable(QStringLiteral("middle %1 µm: cells %2 µm2 against the outline's %3").arg(middle).arg(sum).arg(whole)));
+        }
         // The L drawn at 30 and 45 degrees as square, from end to end and to
         // its upright arm's inner edge, through the tab's solve.
         const auto l = [&](double turned, bool inner, QStringList* lines = nullptr) {
