@@ -1054,14 +1054,17 @@ private slots:
         QVERIFY2(std::abs(skin.at(1) / nh.at(1) / 0.9488 - 1) < 0.005, qPrintable(QStringLiteral("%1 %2").arg(skin.at(1)).arg(nh.at(1))));
     }
 
-    // An edge port's reference plane is its face: the stubs from the face to
-    // its cells' centres are in its own impedance (addPortStubs()). Without
-    // them it was at the centres, half an end cell in at each port: a strip
-    // 200 by 20 µm of 1 µm copper over a ground, ten squares, read 9.00 at 2
-    // across, 9.80 at 10 and 9.90 at 20 - its loop's R exact on the same
-    // mesh -, and the
-    // full wave's R of anything a few per cent under by its end cells. Ten
-    // squares now at 2, 10 and 20 across, and its loop's R alike.
+    // An edge port's reference plane for its resistance is its face: the
+    // stubs from the face to its cells' centres, their sheet's impedance, are
+    // in its own (addPortStubs()). Without them it was at the centres, half an
+    // end cell in at each port: a strip 200 by 20 µm of 1 µm copper over a
+    // ground, ten squares, read 9.00 at 2 across, 9.80 at 10 and 9.90 at 20,
+    // its loop's R exact on the same mesh; ten squares at each now. And the
+    // strip of 3 µm copper solved as its two faces, each face's stub its
+    // face's own impedance and its twin's through the metal: with the whole
+    // sheet's on each, 9.75 and 9.90 squares at 4 and 10 across; ten now.
+    // (Its reactance's plane is still at the centres: the stubs have no
+    // field of their own - addPortStubs().)
     void anEdgePortsReferencePlaneIsItsFace()
     {
         const rf::Stack st = grounded(1, 100e-6, 0, 1e-6, 5.8e7);
@@ -1069,18 +1072,33 @@ private slots:
         const double square = 1 / (5.8e7 * 1e-6);
         const QList<rf::FullWavePort> ports{edgePort(QPointF(0, 10), QString(), QPointF(-1, 0)),
                                             edgePort(QPointF(200, 10), QString(), QPointF(1, 0))};
+        const auto series = [](const rf::FullWave& w) {
+            const auto& z = w.z.at(0);
+            return (z.at(0).at(0) * z.at(1).at(1) - z.at(0).at(1) * z.at(1).at(0)) / z.at(0).at(1);   // (-1/Y12)
+        };
         for (const int across : {2, 10, 20}) {
             rf::MeshSettings how;
             how.cellsAcross = across;
             const rf::Mesh mesh = rf::meshOf({line}, how, st, 1e6);
             const rf::FullWave w = rf::fullWaveOf(mesh, {line}, st, ports, {1e6});
             QVERIFY2(w.ok(), qPrintable(why(w)));
-            const auto& z = w.z.at(0);
-            const double series = ((z.at(0).at(0) * z.at(1).at(1) - z.at(0).at(1) * z.at(1).at(0)) / z.at(0).at(1)).real() / square;
+            const double squares = series(w).real() / square;
             const rf::Inductance loop = rf::inductanceOf(mesh, {line}, st, QPointF(0, 10), QPointF(200, 10));
             QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
-            QVERIFY2(std::abs(series / 10 - 1) < 2e-4 && std::abs(series * square / loop.rDc - 1) < 2e-4,
-                     qPrintable(QStringLiteral("%1 across: %2 squares, the loop's %3").arg(across).arg(series).arg(loop.rDc / square)));
+            QVERIFY2(std::abs(squares / 10 - 1) < 2e-4 && std::abs(squares * square / loop.rDc - 1) < 2e-4,
+                     qPrintable(QStringLiteral("%1 across: %2 squares, the loop's %3").arg(across).arg(squares).arg(loop.rDc / square)));
+        }
+        rf::Stack faces = grounded(1, 100e-6, 0, 3e-6, 5.8e7);
+        faces.layers.last().twoSheets = true;
+        const double thick = 1 / (5.8e7 * 3e-6);
+        for (const int across : {4, 10}) {
+            rf::MeshSettings how;
+            how.cellsAcross = across;
+            const rf::Mesh mesh = rf::meshOf({line}, how, faces, 1e6);
+            const rf::FullWave w = rf::fullWaveOf(mesh, {line}, faces, ports, {1e6});
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            QVERIFY2(std::abs(series(w).real() / thick / 10 - 1) < 2e-4,
+                     qPrintable(QStringLiteral("as its two faces, %1 across: %2 squares").arg(across).arg(series(w).real() / thick)));
         }
     }
 

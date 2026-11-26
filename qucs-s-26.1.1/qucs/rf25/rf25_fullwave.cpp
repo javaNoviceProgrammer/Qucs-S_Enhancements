@@ -1143,6 +1143,10 @@ struct Context {
     /// the sheet's conductivity and thickness, as a run from the cell has
     /// them.
     QList<double> stubRatio, stubSigma, stubThickness;
+    /// And of each such stub the run from its cell inward along it, whose
+    /// sheet it is (-1: none); and of a metal solved as its two faces, the
+    /// other face's cell (-1: none).
+    QList<int> stubRun, stubTwin;
     /// The legs of the ports' own currents where they come up by no path
     /// (SourceRun), and what each column carries along each, legs x columns:
     /// +1 out along its own side's, -1 along its return's.
@@ -2250,19 +2254,52 @@ void addPortPaths(const Context& c, const Kernels& k, MatrixC& rhs, MatrixC& own
  * an end cell in from the face at each port: a strip 20 µm wide and 200 long
  * read 0.2 squares under its loop's R at 10 across, 0.1 at 20 - 2 % and
  * 1 % -, and a plate with a hole, its end cells 22 µm long, 4 % (the loop
- * solve's ports have such stubs: inductanceOf()).
+ * solve's ports have such stubs: inductanceOf()). Their own field is not
+ * taken: a stub's partial inductances, scaled from its run's, broke a plane
+ * of symmetry's half against its whole, a via's inductance and two lines'
+ * references - an edge run's static parts are its parts', not one
+ * filament's. So the reactance's reference plane is still at the cells'
+ * centres: the strip's series L, 225.6 / 241.5 / 243.7 pH at 2 / 10 / 20
+ * across, short by its end cells' half lengths' L'.
  */
 void addPortStubs(const Context& c, double f, MatrixC& own)
 {
     if (c.stubRatio.isEmpty()) return;
     for (int i = 0; i < c.nc; ++i) {
         if (!(c.stubRatio.at(i) > 0)) continue;
-        const Complex r = sheetImpedance(c.stubSigma.at(i), c.stubThickness.at(i), f) * c.stubRatio.at(i);
+        // (Of a metal solved as its two faces, each face's stub its face's
+        //  own impedance and its twin's through the metal, as the faces'
+        //  runs have them (faceImpedances()): each face carries its share
+        //  of the drive, half, and with the whole sheet's impedance the two
+        //  in parallel lost half - a strip of 3 µm copper read 9.75 squares
+        //  of ten at 4 across.)
+        const int twin = c.stubTwin.at(i);
+        Complex r = sheetImpedance(c.stubSigma.at(i), c.stubThickness.at(i), f) * c.stubRatio.at(i), across(0, 0);
+        if (twin >= 0 && c.stubSigma.at(i) > 0) {
+            Complex self, through;
+            faceImpedances(c.stubSigma.at(i), c.stubThickness.at(i), f, &self, &through);
+            // (The faces' even current's inside held to its section's, as
+            //  their run's is: ownImpedances(). Not held, a square loop of
+            //  wire as its two faces read 0.22 % over at 10 Hz.)
+            if (const double k = c.stubRun.at(i) >= 0 ? c.inside.value(c.stubRun.at(i), 1.0) : 1.0; k < 1) {
+                const double even = (self + through).imag(), held = k * 2 * M_PI * f * kMu0 * c.stubThickness.at(i) / 6;
+                if (even > held) {
+                    const Complex shift(0, -0.5 * (even - held));
+                    self += shift;
+                    through += shift;
+                }
+            }
+            r = self * c.stubRatio.at(i);
+            across = through * c.stubRatio.at(i);
+        }
         if (r == Complex(0, 0)) continue;
         for (int a = 0; a < c.np; ++a) {
             const Complex da = c.drive(i, a);
             if (da == Complex(0, 0)) continue;
-            for (int b = 0; b < c.np; ++b) own(a, b) += da * c.drive(i, b) * r;
+            for (int b = 0; b < c.np; ++b) {
+                own(a, b) += da * c.drive(i, b) * r;
+                if (twin >= 0) own(a, b) += da * c.drive(twin, b) * across;
+            }
         }
     }
 }
@@ -5109,6 +5146,8 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     //  face over its width along it - and its top's, of a metal solved as
     //  its two faces.)
     c.stubRatio = QList<double>(nc, 0.0);
+    c.stubTwin = QList<int>(nc, -1);
+    QList<QPointF> stubInward(nc);   // (each stub's way, from the face in)
     const auto stubs = [&](const QList<int>& face, const QList<double>& shares, QPointF on, QPointF along, double width) {
         const double n = std::hypot(along.x(), along.y());
         if (!(n > 0) || !(width > 0)) return;
@@ -5117,9 +5156,16 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             const double w = shares.at(k) * width;
             if (!(w > 0)) continue;
             const QPointF d = mesh.cells.at(face.at(k)).centre - on;
-            const double ratio = std::abs(d.x() * normal.x() + d.y() * normal.y()) / w;
-            for (const int cell : {face.at(k), int(thick.topOf.value(face.at(k), -1))})
-                if (cell >= 0 && nodeOf.contains(cell) && !(c.stubRatio.at(nodeOf.value(cell)) > 0)) c.stubRatio[nodeOf.value(cell)] = ratio;
+            const double deep = d.x() * normal.x() + d.y() * normal.y();
+            const int top = thick.topOf.value(face.at(k), -1);
+            const bool twins = top >= 0 && nodeOf.contains(top);
+            for (const int cell : {face.at(k), top}) {
+                if (cell < 0 || !nodeOf.contains(cell) || c.stubRatio.at(nodeOf.value(cell)) > 0) continue;
+                const int i = nodeOf.value(cell);
+                c.stubRatio[i] = std::abs(deep) / w;
+                stubInward[i] = deep < 0 ? -normal : normal;
+                if (twins) c.stubTwin[i] = nodeOf.value(cell == top ? face.at(k) : top);
+            }
         }
     };
     for (int p = 0; p < np; ++p) {
@@ -5721,15 +5767,33 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     }
     c.drive = MatrixC(nc, columns.size());
     for (int k = 0; k < columns.size(); ++k) c.drive.col(k) = columns.at(k);
-    // (Each stub's sheet as a run from its cell has it.)
+    // (Each stub's sheet as the run from its cell has it that leaves it most
+    //  nearly the stub's way, inward - the stub continuing it to the face.)
     c.stubSigma = QList<double>(nc, 0.0);
     c.stubThickness = QList<double>(nc, 0.0);
-    for (int a = 0; a < c.planar; ++a)
-        for (const int i : {c.tail.at(a), c.head.at(a)})
-            if (i >= 0 && c.stubRatio.at(i) > 0 && !(c.stubSigma.at(i) > 0)) {
-                c.stubSigma[i] = c.runs.at(a).sigma;
-                c.stubThickness[i] = c.runs.at(a).thickness;
+    c.stubRun = QList<int>(nc, -1);
+    {
+        QList<double> best(nc, -2);
+        for (int a = 0; a < c.planar; ++a) {
+            const Filament& run = c.runs.at(a);
+            const double length = run.length();
+            if (!(length > 0)) continue;
+            const QPointF u = (run.to - run.from) / length;
+            for (const int end : {0, 1}) {
+                const int i = end == 0 ? c.tail.at(a) : c.head.at(a);
+                if (i < 0 || !(c.stubRatio.at(i) > 0)) continue;
+                // (Leaving the cell: along the run from its tail, against it
+                //  from its head.)
+                const QPointF away = end == 0 ? u : -u;
+                const double along = away.x() * stubInward.at(i).x() + away.y() * stubInward.at(i).y();
+                if (!(along > best.at(i))) continue;
+                best[i] = along;
+                c.stubRun[i] = a;
+                c.stubSigma[i] = run.sigma;
+                c.stubThickness[i] = run.thickness;
             }
+        }
+    }
     c.np = int(columns.size());
     c.portOf = portOf;
 
