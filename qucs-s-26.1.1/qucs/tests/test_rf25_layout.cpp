@@ -2392,12 +2392,21 @@ private slots:
     // - 90 degrees, 8.719 against 9.560 (-8.8 %);
     // - 135 degrees, 6.497 against some 8.33 (-22 %), and at 20 across no
     //   answer;
-    // none converging there. And an L drawn at a slant, every side along or
-    // across one frame, is turned and meshed in it as it is drawn square
-    // (MeshCell::angle): cut along its centreline, the L of arms 100 by 20
-    // at 30 and 45 degrees read 7.81 and 7.84 squares end to end, 9 % under
-    // the 8.58 it reads square - and an edge port on its inner edge is
-    // graded toward the corner there as square (MeshSettings::ports).
+    // none converging there. A mitre's column as two wedges about the inner
+    // corner, its rows at shares of each wedge's side - from the strip's
+    // width at the square line to the mitre's length -, slanted across the
+    // current turning about the corner however many cells across: bent 135
+    // degrees, 8.6035 / 8.5827 squares at 10 / 20 across against 8.324 (P1
+    // elements graded to the inner corner, 70,000 triangles), +3.4 / +3.1 %
+    // - the review's P69. Fanned in wedges of 22.5 degrees at most, its rows
+    // at their distance from the inner corner: 8.3538 / 8.3388 / 8.3252 at
+    // 10 / 20 / 40, +0.36 / +0.18 / +0.02 %. And an L drawn at a slant,
+    // every side along or across one frame, is turned and meshed in it as
+    // it is drawn square (MeshCell::angle): cut along its centreline, the L
+    // of arms 100 by 20 at 30 and 45 degrees read 7.81 and 7.84 squares end
+    // to end, 9 % under the 8.58 it reads square - and an edge port on its
+    // inner edge is graded toward the corner there as square
+    // (MeshSettings::ports).
 
     // A line over oxide on silicon of 10 S/m, quasi-statically, as the full
     // wave has it: its C and G per metre of the frequency
@@ -2509,7 +2518,7 @@ private slots:
         };
         // (Bent 90 degrees, its sides along the axes: cut as a strip, the
         //  processing never giving such a one; at a slant, turned, below.)
-        for (const auto& [bend, fe, within] : {std::tuple{45.0, 9.911, 0.005}, std::tuple{90.0, 9.560, 0.01}, std::tuple{135.0, 8.33, 0.04}}) {
+        for (const auto& [bend, fe, within] : {std::tuple{45.0, 9.911, 0.005}, std::tuple{90.0, 9.560, 0.01}, std::tuple{135.0, 8.324, 0.006}}) {
             const double at10 = squares(bend, 0, 10), at20 = squares(bend, 0, 20);
             QVERIFY2(std::abs(at10 / fe - 1) < within && std::abs(at20 / fe - 1) < within,
                      qPrintable(QStringLiteral("bent %1: %2 and %3 squares at 10 and 20 across, against %4").arg(bend).arg(at10).arg(at20).arg(fe)));
