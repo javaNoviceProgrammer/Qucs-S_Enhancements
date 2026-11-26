@@ -94,6 +94,10 @@ constexpr double kEta = 1.5;
 constexpr double kNear = 1.5;
 constexpr double kResidual = 1e-10;
 constexpr int kRestart = 100;
+/// How far above the rounding floor of the charges' term eliminated a term
+/// of Z's reactance must be to be taken as its own (FullWave's warning):
+/// within half a per cent.
+constexpr double kReactanceDigits = 200;
 constexpr int kMostIterations = 3000;
 /// The charges' term over the currents' past which a dense solve keeps the
 /// charges as unknowns of their own (AtFrequency::augmented). Measured on a
@@ -1436,6 +1440,8 @@ struct AtFrequency {
     /// its rounding - the mixed potential's breakdown at a low frequency,
     /// an open where a coil is. Nought: not measured.
     double chargeOverSeries = 0;
+    /// The charges' term of that run, Ohm: what Z's rounding is of.
+    double chargeTerm = 0;
     /// At a low frequency: solved with the cells' charges as unknowns of
     /// their own (kAugmentedFrom).
     bool augmented = false;
@@ -3039,6 +3045,7 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, dou
             const double rest = std::abs(m(a, a));
             const double ratio = std::abs(charge) / std::max(rest, 1e-300 * std::abs(charge) + 1e-300);
             out.chargeOverSeries = std::max(out.chargeOverSeries, ratio);
+            out.chargeTerm = std::max(out.chargeTerm, std::abs(charge));
         }
     }
     // At a low frequency the charges kept as unknowns of their own, not
@@ -3674,6 +3681,7 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
             const Complex own = run.width > 0 ? sheetImpedance(run.sigma, run.thickness, f) * (run.length() / run.width) : Complex(0, 0);
             const double rest = std::abs(jw * k.inductance(a, a) + own);
             if (rest > 0) out.chargeOverSeries = std::max(out.chargeOverSeries, std::abs(charge) / rest);
+            out.chargeTerm = std::max(out.chargeTerm, std::abs(charge));
         }
     }
     // At a low frequency the charges unknowns of their own, as the dense
@@ -6296,6 +6304,13 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     // (Each frequency's own answer moved out of the sweep's, not copied: two
     //  copies of the currents kept. Those not kept were dropped as solved.)
     const int keptCount = int(std::count(keepCurrents.begin(), keepCurrents.end(), true));
+    // (The frequencies whose reactance is near the rounding floor of the
+    //  charges' term eliminated: how many, the highest of them with its
+    //  reactance and that floor; and the lowest whose reactance is clear of
+    //  it, with the same.)
+    int floored = 0;
+    double flooredAt = 0, flooredX = 0, flooredFloor = 0, flooredRatio = 0;
+    double clearAt = 0, clearX = 0, clearFloor = 0;
     for (int k = 0; k < nf; ++k) {
         AtFrequency a = std::move(solved[std::size_t(k)]);
         if (c.basis.size() > 0) {
@@ -6369,6 +6384,39 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         out.frequencies << frequencies.at(k);
         out.z << zRows;
         out.s << scatteringOf(zRows, out.references);
+        // With the charges eliminated, a run's equation is its charges' term
+        // beside its currents': Z's terms come out up to some four epsilons
+        // of the largest charges' term off, in Ohm, whatever their own size.
+        // A term of Z above that whose reactance is within kReactanceDigits
+        // of it - a loop whose resistance far outweighs its
+        // reactance, at a low frequency - has that reactance in its rounding:
+        // a meander of 34.9 Ohm and 9.23 nH, one port returning through a
+        // terminal, read from 4.1 to 10.9 nH at 10 kHz and from 78 to 930 nH
+        // at 1 kHz from one solve to the next, its R exact, nothing said (the
+        // review's P67); its rounding 1.1e-4 to 3.2e-4 Ohm at 10 kHz beside a
+        // charges' term of 5.9e11 Ohm. The floor goes as one over the
+        // frequency and an inductance's reactance as the frequency: it holds
+        // above the frequency where the two are kReactanceDigits apart.
+        if (!a.augmented && !a.loopTree && a.chargeTerm > 0) {
+            const double floor = 4 * std::numeric_limits<double>::epsilon() * a.chargeTerm;
+            double least = -1;
+            for (const QList<Complex>& row : zRows)
+                for (const Complex& v : row)
+                    if (std::abs(v) > 10 * floor && (least < 0 || std::abs(v.imag()) < least)) least = std::abs(v.imag());
+            if (least >= 0 && least < kReactanceDigits * floor) {
+                ++floored;
+                if (frequencies.at(k) > flooredAt) {
+                    flooredAt = frequencies.at(k);
+                    flooredX = least;
+                    flooredFloor = floor;
+                    flooredRatio = a.chargeOverSeries;
+                }
+            } else if (least > 0 && (clearAt <= 0 || frequencies.at(k) < clearAt)) {
+                clearAt = frequencies.at(k);
+                clearX = least;
+                clearFloor = floor;
+            }
+        }
         // Compressed with the charges as unknowns, Z is first order in GMRES's
         // residual: where that leaves Z's terms further apart than a part of
         // the ports' references, S - a line's S21 wants Z11 - Z21 to some
@@ -6461,6 +6509,27 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             out.lines << tr("At %1 GHz the system is nearly singular (a reciprocal condition of %2): the answer there may "
                             "be rounding.")
                              .arg(frequencies.at(k) / 1e9, 0, 'g', 4).arg(a.rcond, 0, 'g', 2);
+    }
+    if (floored > 0) {
+        // (Above what frequency it holds, from the lowest whose reactance is
+        //  clear of its floor - the floor as one over the frequency, an
+        //  inductance's reactance as the frequency -: from a floored one's
+        //  own, itself rounding, it came out 40 times too low.)
+        const QString above = clearAt > flooredAt
+                                  ? tr("Solved above some %1 Hz it holds").arg(clearAt * std::sqrt(kReactanceDigits * clearFloor / clearX), 0, 'g', 2)
+                                  : tr("Solved at a frequency high enough it holds");
+        const QString w = tr("At %1 Hz%2 a term of Z has a reactance of some %3 Ohm, where the solve's rounding leaves it up "
+                             "to some %4 Ohm out: its charges' term, eliminated, outweighs its currents' %5 times. An inductance read "
+                             "from it is no better than that - a loop whose resistance far outweighs its reactance may "
+                             "read wrong by its whole value, or of the wrong sign. %6; the loop inductance gives it at DC.")
+                              .arg(flooredAt, 0, 'g', 4)
+                              .arg(floored > 1 ? tr(" and %1 frequency(ies) below").arg(floored - 1) : QString())
+                              .arg(flooredX, 0, 'g', 2)
+                              .arg(flooredFloor, 0, 'g', 2)
+                              .arg(flooredRatio, 0, 'g', 2)
+                              .arg(above);
+        out.warnings << w;
+        out.lines << w;
     }
     if (keptCount < nf)
         out.lines << tr("Each run's current kept at %1 of the %2 frequencies, evenly spread, the highest among them: at "
