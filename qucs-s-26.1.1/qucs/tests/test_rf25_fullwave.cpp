@@ -1092,9 +1092,13 @@ private slots:
     // to 10.9 nH at 10 kHz from one solve to the next, nothing said: the
     // review's P67). A strip 300 by 10 µm of 1 µm copper in free space, one
     // port returning through a terminal at its far end, 0.51 Ohm and some
-    // 0.27 nH: the charges eliminated, said at 1 kHz, not at 1 MHz, where
-    // its L is as with them unknowns of their own; and with them unknowns of
-    // their own (the dense solve's own choice there), not said at 1 kHz.
+    // 0.27 nH: the charges eliminated, said at 1 kHz and 100 kHz, not at 1
+    // MHz, where its L is as with them unknowns of their own; and with them
+    // unknowns of their own (the dense solve's own choice there), not said
+    // at 1 kHz. Compressed, the charges unknowns of their own falling short
+    // and eliminated - the meander's way -, said alike. And of 35 µm copper,
+    // its whole Z under ten of its floors at 1 kHz, said: no term clear of
+    // them was no frequency at all.
     void aReactanceInTheChargesRoundingIsSaid()
     {
         rf::Stack st = grounded(1, 10e-3, 0, 1e-6, 5.8e7);
@@ -1118,15 +1122,34 @@ private slots:
         QVERIFY2(std::abs(kept.z.at(0).at(0).at(0).imag() / (2 * M_PI * 1e3) / l - 1) < 1e-3, qPrintable(why(kept)));
         rf::FullWaveControl control;
         control.augmentedFrom = 1e300;
-        const rf::FullWave eliminated = rf::fullWaveOf(mesh, {line}, st, {p}, {1e3, 1e6}, 1e-6, &control);
+        const rf::FullWave eliminated = rf::fullWaveOf(mesh, {line}, st, {p}, {1e3, 1e5, 1e6}, 1e-6, &control);
         QVERIFY2(eliminated.ok() && said(eliminated), qPrintable(why(eliminated)));
         const QString w = eliminated.warnings.join(' ');
-        QVERIFY2(w.contains(QStringLiteral("At 1000 Hz a term")) && w.contains(QStringLiteral("the loop inductance")), qPrintable(w));
+        // (At 100 kHz its reactance some six of its floors, under
+        //  kReactanceDigits of them; at 1 kHz under one.)
+        QVERIFY2(w.contains(QStringLiteral("At 1e+05 Hz and 1 frequency(ies) below a term")) && w.contains(QStringLiteral("the loop inductance")),
+                 qPrintable(w));
         // (Above some 5.6e5 Hz: where its 1.7e-3 Ohm at 1 MHz, as the
         //  frequency, is kReactanceDigits times its floor there, as one
         //  over it.)
         QVERIFY2(w.contains(QStringLiteral("above some 5.6e+05 Hz")), qPrintable(w));
-        QVERIFY2(std::abs(eliminated.z.at(1).at(0).at(0).imag() / (2 * M_PI * 1e6) / l - 1) < 5e-3, qPrintable(why(eliminated)));
+        QVERIFY2(std::abs(eliminated.z.at(2).at(0).at(0).imag() / (2 * M_PI * 1e6) / l - 1) < 5e-3, qPrintable(why(eliminated)));
+        // Compressed, the charges as unknowns of their own falling short (in
+        // two iterations) and eliminated: as the meander was solved.
+        rf::FullWaveControl shortOf;
+        shortOf.matrix = rf::FullWaveControl::Matrix::Compressed;
+        shortOf.augmentedMost = 2;
+        const rf::FullWave compressed = rf::fullWaveOf(mesh, {line}, st, {p}, {1e3, 1e6}, 1e-6, &shortOf);
+        QVERIFY2(compressed.ok() && said(compressed) && compressed.warnings.join(' ').contains(QStringLiteral("At 1000 Hz a term")),
+                 qPrintable(why(compressed)));
+        // And a strip of 35 µm copper, its 0.015 Ohm itself under ten of its
+        // floors at 1 kHz: no term of Z clear of them, said alike.
+        const rf::Stack thick = grounded(1, 10e-3, 0, 35e-6, 5.8e7);
+        rf::Stack open = thick;
+        open.layers[0].variant = QStringLiteral("open");
+        const rf::Mesh thickMesh = rf::meshOf({line}, how, open, 1e6);
+        const rf::FullWave whole = rf::fullWaveOf(thickMesh, {line}, open, {p}, {1e3}, 1e-6, &control);
+        QVERIFY2(whole.ok() && said(whole), qPrintable(why(whole) + whole.warnings.join(' ')));
         const rf::FullWave high = rf::fullWaveOf(mesh, {line}, st, {p}, {1e6}, 1e-6, &control);
         QVERIFY2(high.ok() && !said(high), qPrintable(why(high)));
     }

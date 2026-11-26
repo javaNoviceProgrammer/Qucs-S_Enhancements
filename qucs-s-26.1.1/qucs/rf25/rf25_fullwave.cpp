@@ -6465,11 +6465,18 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         // above the frequency where the two are kReactanceDigits apart.
         if (!a.augmented && !a.loopTree && a.chargeTerm > 0) {
             const double floor = 4 * std::numeric_limits<double>::epsilon() * a.chargeTerm;
-            double least = -1;
+            double least = -1, most = 0;
             for (const QList<Complex>& row : zRows)
-                for (const Complex& v : row)
+                for (const Complex& v : row) {
+                    most = std::max(most, std::abs(v.imag()));
                     if (std::abs(v) > 10 * floor && (least < 0 || std::abs(v.imag()) < least)) least = std::abs(v.imag());
-            if (least >= 0 && least < kReactanceDigits * floor) {
+                }
+            // (No term clear of it: Z itself in the rounding, its largest
+            //  reactance said. Left out, a plate 300 µm square of 35 µm
+            //  copper, 4.3e-4 Ohm beside a floor of 1.7e-4 at 1 kHz, read
+            //  1.214 nH for 0.0751, nothing said.)
+            if (least < 0) least = most;
+            if (least < kReactanceDigits * floor) {
                 ++floored;
                 if (frequencies.at(k) > flooredAt) {
                     flooredAt = frequencies.at(k);
