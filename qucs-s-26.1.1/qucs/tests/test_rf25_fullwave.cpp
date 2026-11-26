@@ -1054,6 +1054,36 @@ private slots:
         QVERIFY2(std::abs(skin.at(1) / nh.at(1) / 0.9488 - 1) < 0.005, qPrintable(QStringLiteral("%1 %2").arg(skin.at(1)).arg(nh.at(1))));
     }
 
+    // An edge port's reference plane is its face: the stubs from the face to
+    // its cells' centres are in its own impedance (addPortStubs()). Without
+    // them it was at the centres, half an end cell in at each port: a strip
+    // 200 by 20 µm of 1 µm copper over a ground, ten squares, read 9.00 at 2
+    // across, 9.80 at 10 and 9.90 at 20 - its loop's R exact on the same
+    // mesh -, and the
+    // full wave's R of anything a few per cent under by its end cells. Ten
+    // squares now at 2, 10 and 20 across, and its loop's R alike.
+    void anEdgePortsReferencePlaneIsItsFace()
+    {
+        const rf::Stack st = grounded(1, 100e-6, 0, 1e-6, 5.8e7);
+        const rf::Conductor line = strip(0, 0, 200, 20);
+        const double square = 1 / (5.8e7 * 1e-6);
+        const QList<rf::FullWavePort> ports{edgePort(QPointF(0, 10), QString(), QPointF(-1, 0)),
+                                            edgePort(QPointF(200, 10), QString(), QPointF(1, 0))};
+        for (const int across : {2, 10, 20}) {
+            rf::MeshSettings how;
+            how.cellsAcross = across;
+            const rf::Mesh mesh = rf::meshOf({line}, how, st, 1e6);
+            const rf::FullWave w = rf::fullWaveOf(mesh, {line}, st, ports, {1e6});
+            QVERIFY2(w.ok(), qPrintable(why(w)));
+            const auto& z = w.z.at(0);
+            const double series = ((z.at(0).at(0) * z.at(1).at(1) - z.at(0).at(1) * z.at(1).at(0)) / z.at(0).at(1)).real() / square;
+            const rf::Inductance loop = rf::inductanceOf(mesh, {line}, st, QPointF(0, 10), QPointF(200, 10));
+            QVERIFY2(loop.ok(), qPrintable(loop.problems.join(" | ")));
+            QVERIFY2(std::abs(series / 10 - 1) < 2e-4 && std::abs(series * square / loop.rDc - 1) < 2e-4,
+                     qPrintable(QStringLiteral("%1 across: %2 squares, the loop's %3").arg(across).arg(series).arg(loop.rDc / square)));
+        }
+    }
+
     // With the charges eliminated, Z's terms come out up to some four
     // epsilons of the largest charges' term off, in Ohm: a loop whose
     // resistance far outweighs its reactance has that reactance in its

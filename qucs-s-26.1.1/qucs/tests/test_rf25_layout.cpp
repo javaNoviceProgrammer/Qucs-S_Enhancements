@@ -2714,8 +2714,9 @@ private slots:
     // Rayleigh's formula for a square array of holes gives 1.287474), its
     // loop's R 1.65 % under - the review's P70. Joined, 1,331 cells, 1.0 %
     // under and the loop's 0.46 %. (Between the two, the full wave's ports
-    // short of the faces by half an end cell, which the long cells made the
-    // longer.) A plate 300 µm
+    // were short of the faces by half an end cell, which the long cells made
+    // the longer: with the stubs from the faces, anEdgePortsReferencePlane-
+    // IsItsFace, 0.17 % under.) A plate 300 µm
     // square with three round holes cut by the cutout, its edge strips
     // joined, is one piece with no side held by three cells. And a disc's
     // short wide feed, 20 by 9 µm beyond it, joins the disc's region: 431
@@ -2765,7 +2766,7 @@ private slots:
         QVERIFY2(wave.ok(), qPrintable(wave.problems.join(" | ")));
         const auto& z = wave.z.at(0);
         const rf::Complex series = (z.at(0).at(0) * z.at(1).at(1) - z.at(0).at(1) * z.at(1).at(0)) / z.at(0).at(1);   // (-1/Y12)
-        QVERIFY2(std::abs(series.real() / square / 1.2875 - 1) < 0.015,
+        QVERIFY2(std::abs(series.real() / square / 1.2875 - 1) < 0.005,
                  qPrintable(QStringLiteral("%1 squares against 1.2875, %2 cells").arg(series.real() / square).arg(mesh.cells.size())));
 
         rf::Model plate = shaped({boxOn("M1", 0, 0, 300, 300)});
