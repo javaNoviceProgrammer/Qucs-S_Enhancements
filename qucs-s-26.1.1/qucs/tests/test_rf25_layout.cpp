@@ -2708,10 +2708,14 @@ private slots:
     // high and as long as the strips' cells (0b02d12f). A plate 200 µm square
     // with a round hole of 40 µm radius drawn as a keyhole, 1 µm of copper as
     // a sheet over 100 µm of eps_r 4 and a ground, fed across its two faces:
-    // in rows 2.7 µm high and up to 22 µm long, its R read 1.2142 squares at
-    // 10 across, 5.7 % under the 1.2875 of a finite-difference solve of it
-    // (grids of 2 to 0.25 µm, extrapolated), 2.9 % at 20 and 1.3 % at 40 -
-    // the review's P70. Joined, 1,331 cells and 1.0 % under. A plate 300 µm
+    // in rows 2.7 µm high and up to 22 µm long, its full wave's -1/Y12 read
+    // 1.2142 squares at 10 across, 5.7 % under the 1.2875 of a
+    // finite-difference solve of it (grids of 2 to 0.25 µm, extrapolated;
+    // Rayleigh's formula for a square array of holes gives 1.287474), its
+    // loop's R 1.65 % under - the review's P70. Joined, 1,331 cells, 1.0 %
+    // under and the loop's 0.46 %. (Between the two, the full wave's ports
+    // short of the faces by half an end cell, which the long cells made the
+    // longer.) A plate 300 µm
     // square with three round holes cut by the cutout, its edge strips
     // joined, is one piece with no side held by three cells. And a disc's
     // short wide feed, 20 by 9 µm beyond it, joins the disc's region: 431
