@@ -2238,8 +2238,9 @@ Mesh meshOf(const QList<Conductor>& given, const MeshSettings& how, const Stack&
                     //  1.65 % under at 10 across, 0.93 % at 20 and 0.49 % at
                     //  40; joined, 0.46, 0.27 and 0.16 % - the review's P70. (The
                     //  full wave's, 5.7 % under at 10 across, most of it its
-                    //  ports' short of the faces by half an end cell, which
-                    //  the long cells made the longer.) Joined, a plate takes
+                    //  ports' then short of the faces by half an end cell,
+                    //  which the long cells made the longer: addPortStubs().)
+                    //  Joined, a plate takes
                     //  more cells: 300 µm square with three round holes, 2,309
                     //  at 10 across where apart it was 1,063.)
                     const auto ownStrip = [&outline](const QRectF& b) {

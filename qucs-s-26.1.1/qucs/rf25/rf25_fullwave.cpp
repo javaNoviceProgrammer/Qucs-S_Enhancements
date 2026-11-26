@@ -1137,6 +1137,12 @@ struct Context {
     /// coplanar port, whose current comes back beside it. Their spans are
     /// among the vias'.
     QList<PortPath> paths;
+    /// Each cell's stub from the face a port or a return drives it across to
+    /// its centre (addPortStubs()): how deep the centre is in from the face
+    /// over the cell's width along it - nought where it is no face's -, and
+    /// the sheet's conductivity and thickness, as a run from the cell has
+    /// them.
+    QList<double> stubRatio, stubSigma, stubThickness;
     /// The legs of the ports' own currents where they come up by no path
     /// (SourceRun), and what each column carries along each, legs x columns:
     /// +1 out along its own side's, -1 along its return's.
@@ -2235,6 +2241,33 @@ void addPortPaths(const Context& c, const Kernels& k, MatrixC& rhs, MatrixC& own
 }
 
 /*!
+ * What the stubs from the faces the ports and their returns drive to the
+ * driven cells' centres add at frequency \a f to \a own, the columns' own
+ * impedances: each cell's sheet impedance times its depth over its width
+ * (Context::stubRatio), weighted by the two columns' shares into it - the
+ * power its share of the current loses on the way in, the shares as they
+ * are fixed. Without them the reference plane is at the cells' centres, half
+ * an end cell in from the face at each port: a strip 20 µm wide and 200 long
+ * read 0.2 squares under its loop's R at 10 across, 0.1 at 20 - 2 % and
+ * 1 % -, and a plate with a hole, its end cells 22 µm long, 4 % (the loop
+ * solve's ports have such stubs: inductanceOf()).
+ */
+void addPortStubs(const Context& c, double f, MatrixC& own)
+{
+    if (c.stubRatio.isEmpty()) return;
+    for (int i = 0; i < c.nc; ++i) {
+        if (!(c.stubRatio.at(i) > 0)) continue;
+        const Complex r = sheetImpedance(c.stubSigma.at(i), c.stubThickness.at(i), f) * c.stubRatio.at(i);
+        if (r == Complex(0, 0)) continue;
+        for (int a = 0; a < c.np; ++a) {
+            const Complex da = c.drive(i, a);
+            if (da == Complex(0, 0)) continue;
+            for (int b = 0; b < c.np; ++b) own(a, b) += da * c.drive(i, b) * r;
+        }
+    }
+}
+
+/*!
  * What the ports' own currents add at \a k's frequency where they come up
  * by no path (SourceRun): the radiating part of each leg's vector potential
  * (Kernels::smooth()) along every run in the plane - the run's cosine with
@@ -3088,6 +3121,7 @@ AtFrequency solveAt(const Context& c, double f, int threads, bool symmetric, dou
     MatrixC pathZ = MatrixC::Zero(c.np, c.np);
     addPortPaths(c, k, rhs, pathZ);
     addSourceFields(c, k, rhs, pathZ);
+    addPortStubs(c, f, pathZ);
     // (Where a port has more than one column, the columns solved for:
     //  Context::basis. Each term above is linear in the columns' drives.)
     const bool based = c.basis.size() > 0;
@@ -3913,6 +3947,7 @@ AtFrequency solveCompressed(const Context& c, const Compression& z, double f, in
         pathZ = MatrixC::Zero(columns, columns);
         addPortPaths(c, k, rhs, pathZ);
         addSourceFields(c, k, rhs, pathZ);
+        addPortStubs(c, f, pathZ);
         if (based) {
             rhs = rhs * c.basis;
             pathZ = c.basis.transpose() * pathZ * c.basis;
@@ -5070,6 +5105,23 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     QList<int> naming;
     QStringList drivesSaid = QStringList(QList<QString>(np));
     QList<Conductor> placedOn;   // (the conductors whole, on a plane of symmetry: portPlace())
+    // (Each cell of a face driven, its stub: its centre's depth in from the
+    //  face over its width along it - and its top's, of a metal solved as
+    //  its two faces.)
+    c.stubRatio = QList<double>(nc, 0.0);
+    const auto stubs = [&](const QList<int>& face, const QList<double>& shares, QPointF on, QPointF along, double width) {
+        const double n = std::hypot(along.x(), along.y());
+        if (!(n > 0) || !(width > 0)) return;
+        const QPointF normal(-along.y() / n, along.x() / n);
+        for (int k = 0; k < face.size(); ++k) {
+            const double w = shares.at(k) * width;
+            if (!(w > 0)) continue;
+            const QPointF d = mesh.cells.at(face.at(k)).centre - on;
+            const double ratio = std::abs(d.x() * normal.x() + d.y() * normal.y()) / w;
+            for (const int cell : {face.at(k), int(thick.topOf.value(face.at(k), -1))})
+                if (cell >= 0 && nodeOf.contains(cell) && !(c.stubRatio.at(nodeOf.value(cell)) > 0)) c.stubRatio[nodeOf.value(cell)] = ratio;
+        }
+    };
     for (int p = 0; p < np; ++p) {
         const FullWavePort& port = ports.at(p);
         const QString& name = out.portNames.at(p);
@@ -5215,6 +5267,7 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
         const QList<double> shares = sharesOf(mesh, face, on, along, &faceWidth);
         Eigen::VectorXcd own = Eigen::VectorXcd::Zero(nc);
         for (int k = 0; k < face.size(); ++k) put(own, face.at(k), shares.at(k));
+        stubs(face, shares, on, along, faceWidth);
         // (What of it goes to a top face, said as driven.)
         int topped = 0;
         for (const int cell : std::as_const(face)) {
@@ -5331,7 +5384,9 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
             if (ground.isEmpty()) continue;
             through << nets.value(netOf.value(ground.first(), -1)).name;
             returnNets[p] << netOf.value(ground.first(), -1);
-            const QList<double> back = sharesOf(mesh, ground, on, along);
+            double groundWidth = 0;
+            const QList<double> back = sharesOf(mesh, ground, on, along, &groundWidth);
+            stubs(ground, back, on, along, groundWidth);
             Eigen::VectorXcd column = own;
             for (int k = 0; k < ground.size(); ++k) put(column, ground.at(k), -back.at(k));
             for (const int cell : ground) {
@@ -5452,8 +5507,10 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
                                         .arg(name, t.name, x, y, metal);
                     return out;
                 }
-                const QList<double> shares = sharesOf(mesh, face, on, along);
+                double faceWidth = 0;
+                const QList<double> shares = sharesOf(mesh, face, on, along, &faceWidth);
                 for (int k = 0; k < face.size(); ++k) put(back, face.at(k), shares.at(k));
+                stubs(face, shares, on, along, faceWidth);
                 cells = int(face.size());
                 // Its place in the port's frame, for strips of its feed: its
                 // stretch across, where it is on the port's own face's line
@@ -5664,6 +5721,15 @@ FullWave fullWaveOf(const Mesh& given, const QList<Conductor>& givenConductors, 
     }
     c.drive = MatrixC(nc, columns.size());
     for (int k = 0; k < columns.size(); ++k) c.drive.col(k) = columns.at(k);
+    // (Each stub's sheet as a run from its cell has it.)
+    c.stubSigma = QList<double>(nc, 0.0);
+    c.stubThickness = QList<double>(nc, 0.0);
+    for (int a = 0; a < c.planar; ++a)
+        for (const int i : {c.tail.at(a), c.head.at(a)})
+            if (i >= 0 && c.stubRatio.at(i) > 0 && !(c.stubSigma.at(i) > 0)) {
+                c.stubSigma[i] = c.runs.at(a).sigma;
+                c.stubThickness[i] = c.runs.at(a).thickness;
+            }
     c.np = int(columns.size());
     c.portOf = portOf;
 
